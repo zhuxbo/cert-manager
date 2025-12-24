@@ -1,0 +1,290 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+  build:
+    name: Build Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version info
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # 判断是否为开发版
+          if [[ "$TAG" == *"-dev"* ]] || [[ "$TAG" == *"-alpha"* ]] || [[ "$TAG" == *"-beta"* ]] || [[ "$TAG" == *"-rc"* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "channel=dev" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "channel=main" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
+          tools: composer:v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Cache pnpm
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-store-
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: composer install --prefer-dist --no-dev --optimize-autoloader --no-interaction
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build admin frontend
+        run: pnpm build:admin
+
+      - name: Build user frontend
+        run: pnpm build:user
+
+      - name: Prepare release directory
+        run: |
+          mkdir -p release/ssl-manager
+
+          # 复制后端
+          cp -r backend release/ssl-manager/
+          rm -rf release/ssl-manager/backend/vendor
+          rm -rf release/ssl-manager/backend/storage/logs/*
+          rm -rf release/ssl-manager/backend/storage/framework/cache/*
+          rm -rf release/ssl-manager/backend/storage/framework/sessions/*
+          rm -rf release/ssl-manager/backend/storage/framework/views/*
+          rm -rf release/ssl-manager/backend/bootstrap/cache/*
+          rm -f release/ssl-manager/backend/.env
+
+          # 复制前端构建产物
+          mkdir -p release/ssl-manager/frontend
+          cp -r frontend/admin/dist release/ssl-manager/frontend/admin
+          cp -r frontend/user/dist release/ssl-manager/frontend/user
+
+          # 复制部署脚本
+          cp -r deploy release/ssl-manager/
+          rm -rf release/ssl-manager/deploy/_reference
+          rm -rf release/ssl-manager/deploy/release-server
+
+          # 复制配置文件
+          cp -r build/nginx release/ssl-manager/ 2>/dev/null || true
+          cp version.json release/ssl-manager/
+
+          # 更新版本信息
+          cat > release/ssl-manager/config.json <<EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "channel": "${{ steps.version.outputs.channel }}",
+            "build_time": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          }
+          EOF
+
+          # 创建 manifest.json
+          cat > release/ssl-manager/manifest.json <<EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "channel": "${{ steps.version.outputs.channel }}",
+            "build_time": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          }
+          EOF
+
+      - name: Create full package
+        run: |
+          cd release
+          zip -rq ssl-manager-full-${{ steps.version.outputs.version }}.zip ssl-manager
+
+      - name: Create upgrade package
+        run: |
+          cd release
+          mkdir -p upgrade
+          cp -r ssl-manager/backend upgrade/
+          cp -r ssl-manager/frontend upgrade/
+          cp ssl-manager/config.json upgrade/
+          cp ssl-manager/manifest.json upgrade/
+          rm -rf upgrade/backend/vendor
+          rm -rf upgrade/backend/.env*
+          rm -rf upgrade/backend/storage
+          rm -rf upgrade/backend/bootstrap/cache/*
+          mkdir -p upgrade/backend/vendor
+          touch upgrade/backend/vendor/.gitkeep
+          mkdir -p upgrade/backend/storage/{app/public,framework/{cache,sessions,views},logs}
+          mkdir -p upgrade/backend/bootstrap/cache
+          zip -rq ssl-manager-upgrade-${{ steps.version.outputs.version }}.zip upgrade
+
+      - name: Create script deploy package
+        run: |
+          cd release
+          mkdir -p script-deploy
+          cp -r ssl-manager/deploy/scripts script-deploy/
+          cp ssl-manager/deploy/deploy.sh script-deploy/
+          cp ssl-manager/deploy/nginx/*.conf script-deploy/ 2>/dev/null || true
+          cat > script-deploy/README.md <<EOF
+          # SSL Manager 脚本部署包
+
+          版本: ${{ steps.version.outputs.version }}
+
+          ## 使用方法
+
+          \`\`\`bash
+          chmod +x deploy.sh
+          ./deploy.sh
+          \`\`\`
+          EOF
+          zip -rq ssl-manager-script-${{ steps.version.outputs.version }}.zip script-deploy
+
+      - name: Create docker deploy package
+        run: |
+          cd release
+          mkdir -p docker-deploy
+          cp -r ssl-manager/deploy/docker docker-deploy/
+          cat > docker-deploy/README.md <<EOF
+          # SSL Manager Docker 部署包
+
+          版本: ${{ steps.version.outputs.version }}
+
+          ## 使用方法
+
+          \`\`\`bash
+          cp docker-compose.example.yml docker-compose.yml
+          # 编辑 docker-compose.yml 配置
+          docker-compose up -d
+          \`\`\`
+          EOF
+          zip -rq ssl-manager-docker-${{ steps.version.outputs.version }}.zip docker-deploy
+
+      - name: Calculate checksums
+        run: |
+          cd release
+          sha256sum ssl-manager-*.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: |
+            release/ssl-manager-*.zip
+            release/checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            release/ssl-manager-full-${{ steps.version.outputs.version }}.zip
+            release/ssl-manager-upgrade-${{ steps.version.outputs.version }}.zip
+            release/ssl-manager-script-${{ steps.version.outputs.version }}.zip
+            release/ssl-manager-docker-${{ steps.version.outputs.version }}.zip
+            release/checksums.txt
+          body: |
+            ## SSL Manager ${{ steps.version.outputs.version }}
+
+            ### 下载
+
+            | 包类型 | 说明 |
+            |--------|------|
+            | `ssl-manager-full-*.zip` | 完整安装包 |
+            | `ssl-manager-upgrade-*.zip` | 升级包 |
+            | `ssl-manager-script-*.zip` | 脚本部署包 |
+            | `ssl-manager-docker-*.zip` | Docker 部署包 |
+
+            ### 校验和
+
+            见 `checksums.txt` 文件
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create latest packages
+        if: steps.version.outputs.prerelease != 'true'
+        run: |
+          cd release
+          cp ssl-manager-full-${{ steps.version.outputs.version }}.zip ssl-manager-full-latest.zip
+          cp ssl-manager-script-${{ steps.version.outputs.version }}.zip ssl-manager-script-latest.zip
+
+      - name: Update latest tag
+        if: steps.version.outputs.prerelease != 'true'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag -d latest 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+          git tag latest
+          git push origin latest
+
+      - name: Update latest release
+        if: steps.version.outputs.prerelease != 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: Latest Stable Release (${{ steps.version.outputs.version }})
+          prerelease: false
+          files: |
+            release/ssl-manager-full-latest.zip
+            release/ssl-manager-script-latest.zip
+          body: |
+            ## Latest Stable Release
+
+            当前最新稳定版本: **${{ steps.version.outputs.version }}**
+
+            ### 快速安装
+
+            ```bash
+            curl -fsSL https://gitee.com/zhuxbo/cert-manager/raw/main/deploy/install.sh | bash
+            ```
+
+            ### 下载
+
+            | 包类型 | 说明 |
+            |--------|------|
+            | `ssl-manager-full-latest.zip` | 完整安装包 |
+            | `ssl-manager-script-latest.zip` | 脚本部署包 |
+
+            ---
+            查看完整版本列表请访问 [Releases](https://github.com/zhuxbo/cert-manager/releases)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

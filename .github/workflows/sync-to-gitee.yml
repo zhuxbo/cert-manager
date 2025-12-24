@@ -1,0 +1,192 @@
+name: Sync to Gitee
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - 'v*'
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  sync-code:
+    name: Sync Code to Gitee
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && !contains(github.repository, '-dev')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Gitee
+        run: |
+          git remote add gitee https://oauth2:${{ secrets.GITEE_TOKEN }}@gitee.com/zhuxbo/cert-manager.git
+
+          if [ "${{ github.ref_type }}" == "branch" ]; then
+            git push gitee HEAD:${{ github.ref_name }} --force
+          else
+            git push gitee ${{ github.ref_name }} --force
+          fi
+
+  sync-release:
+    name: Sync Release to Gitee
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && !contains(github.repository, '-dev')
+
+    steps:
+      - name: Get release info
+        id: release_info
+        run: |
+          # 从触发的 workflow run 获取 tag
+          HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+          echo "Head branch/tag: $HEAD_BRANCH"
+
+          # 获取 release 信息
+          RELEASE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$HEAD_BRANCH")
+
+          echo "Release response: $RELEASE"
+
+          TAG=$(echo "$RELEASE" | jq -r '.tag_name')
+          NAME=$(echo "$RELEASE" | jq -r '.name')
+          PRERELEASE=$(echo "$RELEASE" | jq -r '.prerelease')
+
+          if [ "$TAG" == "null" ] || [ -z "$TAG" ]; then
+            echo "No release found for tag $HEAD_BRANCH"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all assets
+        if: steps.release_info.outputs.skip != 'true'
+        run: |
+          mkdir -p assets
+          RELEASE_TAG="${{ steps.release_info.outputs.tag }}"
+
+          echo "Downloading assets for $RELEASE_TAG..."
+          gh release download "$RELEASE_TAG" --repo ${{ github.repository }} --dir assets || true
+
+          ls -la assets/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Gitee Release
+        if: steps.release_info.outputs.skip != 'true'
+        run: |
+          RELEASE_TAG="${{ steps.release_info.outputs.tag }}"
+          RELEASE_NAME="${{ steps.release_info.outputs.name }}"
+          PRERELEASE="${{ steps.release_info.outputs.prerelease }}"
+
+          echo "Creating Gitee release for $RELEASE_TAG..."
+
+          # 创建 release
+          RESPONSE=$(curl -s -X POST "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"access_token\": \"${{ secrets.GITEE_TOKEN }}\",
+              \"tag_name\": \"$RELEASE_TAG\",
+              \"name\": \"$RELEASE_NAME\",
+              \"body\": \"从 GitHub 同步: https://github.com/${{ github.repository }}/releases/tag/$RELEASE_TAG\",
+              \"prerelease\": $PRERELEASE,
+              \"target_commitish\": \"dev\"
+            }")
+
+          echo "Create release response: $RESPONSE"
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
+
+          if [ "$RELEASE_ID" == "null" ] || [ -z "$RELEASE_ID" ]; then
+            echo "Failed to create release, trying to get existing one..."
+            RESPONSE=$(curl -s "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases/tags/$RELEASE_TAG?access_token=${{ secrets.GITEE_TOKEN }}")
+            RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
+          fi
+
+          echo "Release ID: $RELEASE_ID"
+
+          # 上传附件
+          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
+            for file in assets/*; do
+              if [ -f "$file" ]; then
+                echo "Uploading: $file"
+                curl -s -X POST "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases/$RELEASE_ID/attach_files" \
+                  -H "Content-Type: multipart/form-data" \
+                  -F "access_token=${{ secrets.GITEE_TOKEN }}" \
+                  -F "file=@$file"
+              fi
+            done
+          fi
+
+      - name: Sync latest release
+        if: steps.release_info.outputs.skip != 'true' && steps.release_info.outputs.prerelease == 'false'
+        run: |
+          echo "Syncing latest release to Gitee..."
+
+          # 推送 latest tag
+          git clone --depth 1 https://oauth2:${{ secrets.GITEE_TOKEN }}@gitee.com/zhuxbo/cert-manager.git /tmp/gitee-repo
+          cd /tmp/gitee-repo
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag -d latest 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+          git tag latest
+          git push origin latest
+
+          # 下载 latest 包
+          cd /tmp
+          mkdir -p latest-assets
+          gh release download latest --repo ${{ github.repository }} --dir latest-assets || true
+          ls -la latest-assets/
+
+          # 创建/更新 Gitee latest release
+          RELEASE_TAG="latest"
+          VERSION="${{ steps.release_info.outputs.tag }}"
+
+          # 先尝试删除现有的 latest release
+          EXISTING=$(curl -s "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases/tags/latest?access_token=${{ secrets.GITEE_TOKEN }}")
+          EXISTING_ID=$(echo "$EXISTING" | jq -r '.id')
+          if [ "$EXISTING_ID" != "null" ] && [ -n "$EXISTING_ID" ]; then
+            echo "Deleting existing latest release: $EXISTING_ID"
+            curl -s -X DELETE "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases/$EXISTING_ID?access_token=${{ secrets.GITEE_TOKEN }}"
+          fi
+
+          # 创建新的 latest release
+          RESPONSE=$(curl -s -X POST "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"access_token\": \"${{ secrets.GITEE_TOKEN }}\",
+              \"tag_name\": \"latest\",
+              \"name\": \"Latest Stable Release ($VERSION)\",
+              \"body\": \"当前最新稳定版本: $VERSION\\n\\n从 GitHub 同步\",
+              \"prerelease\": false,
+              \"target_commitish\": \"main\"
+            }")
+
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
+          echo "Created latest release: $RELEASE_ID"
+
+          # 上传 latest 包
+          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
+            for file in latest-assets/*latest*; do
+              if [ -f "$file" ]; then
+                echo "Uploading: $file"
+                curl -s -X POST "https://gitee.com/api/v5/repos/zhuxbo/cert-manager/releases/$RELEASE_ID/attach_files" \
+                  -H "Content-Type: multipart/form-data" \
+                  -F "access_token=${{ secrets.GITEE_TOKEN }}" \
+                  -F "file=@$file"
+              fi
+            done
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
