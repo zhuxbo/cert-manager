@@ -14,7 +14,7 @@ return [
             'username' => env('DB_USERNAME', 'root'),
             'password' => env('DB_PASSWORD', ''),
             'charset' => 'utf8mb4',
-            'collation' => env('DB_COLLATION', 'utf8mb4_0900_ai_ci'),
+            'collation' => env('DB_COLLATION') ?: null,  // 空值使用 MySQL 默认
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
@@ -32,7 +32,7 @@ return [
             'username' => env('DB_USERNAME', 'root'),
             'password' => env('DB_PASSWORD', ''),
             'charset' => 'utf8mb4',
-            'collation' => env('DB_COLLATION', 'utf8mb4_0900_ai_ci'),
+            'collation' => env('DB_COLLATION') ?: null,  // 空值使用 MySQL 默认
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
