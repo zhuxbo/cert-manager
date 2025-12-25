@@ -7,4 +7,5 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('auto')->middleware('api.auto')->group(function () {
     Route::get('cert', [ApiController::class, 'get']);
     Route::post('cert', [ApiController::class, 'update']);
+    Route::post('callback', [ApiController::class, 'callback']);
 });

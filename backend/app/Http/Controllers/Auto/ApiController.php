@@ -162,11 +162,11 @@ class ApiController extends Controller
             if (! $order) {
                 $this->error('订单不存在');
             }
+        }
 
-            // 续费会生成新订单
-            if ($order->latestCert->status === 'renewed') {
-                $order = $this->findNewOrder($order->latestCert);
-            }
+        // 续费会生成新订单：当 refer_id 指向已标记为 renewed 的证书时，跟随链路找到最新订单
+        if ($order->latestCert->status === 'renewed') {
+            $order = $this->findNewOrder($order->latestCert);
         }
 
         // 缓存查询结果到 request 中供中间件复用，避免重复查询
@@ -208,6 +208,60 @@ class ApiController extends Controller
     }
 
     /**
+     * 部署回调接口
+     * 部署工具完成部署后调用此接口通知 Manager
+     */
+    public function callback(Request $request): void
+    {
+        // 从 Authorization Header 中获取 refer_id
+        $referId = $request->bearerToken();
+
+        if (empty($referId) || strlen($referId) !== 32) {
+            $this->error('refer_id 无效');
+        }
+
+        $params = $request->validate([
+            'domain' => ['required', 'string'],
+            'status' => ['required', 'in:success,failure'],
+            'deployed_at' => ['nullable', 'string'],
+            'cert_expires_at' => ['nullable', 'string'],
+            'cert_serial' => ['nullable', 'string'],
+            'server_type' => ['nullable', 'string'],
+            'message' => ['nullable', 'string'],
+        ]);
+
+        // 查找证书
+        $cert = Cert::where('refer_id', $referId)->first();
+
+        if (! $cert) {
+            $this->error('证书不存在');
+        }
+
+        // 只有部署成功才记录时间
+        if ($params['status'] === 'success') {
+            $deployTime = now();
+
+            // 如果传了 deployed_at，尝试解析
+            if (! empty($params['deployed_at'])) {
+                try {
+                    $deployTime = \Carbon\Carbon::parse($params['deployed_at']);
+                } catch (\Exception) {
+                    // 解析失败使用当前时间
+                }
+            }
+
+            $cert->auto_deploy_at = $deployTime;
+            $cert->save();
+        }
+
+        $this->success([
+            'domain' => $params['domain'],
+            'status' => $params['status'],
+            'recorded' => $params['status'] === 'success',
+        ]);
+    }
+
+    /**
      * 统一返回数据
      */
     private function getCertData(Cert $cert): array
@@ -217,6 +271,7 @@ class ApiController extends Controller
             'common_name' => $cert->common_name,
             'cert' => $cert->cert,
             'intermediate_cert' => $cert->intermediate_cert,
+            'private_key' => $cert->private_key,
             'status' => $cert->status,
             'expires_at' => $cert->expires_at?->toDateTimeString(),
         ];

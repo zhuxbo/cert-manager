@@ -1,0 +1,40 @@
+# 开发环境 PHP 镜像
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# 安装基础工具和 PHP 8.3
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        unzip \
+        gnupg \
+        software-properties-common && \
+    add-apt-repository -y ppa:ondrej/php && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        php8.3-cli \
+        php8.3-bcmath \
+        php8.3-curl \
+        php8.3-gd \
+        php8.3-intl \
+        php8.3-mbstring \
+        php8.3-mysql \
+        php8.3-redis \
+        php8.3-xml \
+        php8.3-zip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# 安装 Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# 配置 Composer 镜像
+RUN composer config -g repos.packagist composer https://mirrors.aliyun.com/composer/
+
+WORKDIR /var/www/html
+
+CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]

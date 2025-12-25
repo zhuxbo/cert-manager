@@ -1,0 +1,42 @@
+# PHP-FPM 生产环境镜像
+FROM php:8.3-fpm
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    libzip-dev \
+    libicu-dev \
+    libpq-dev \
+    libonig-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 配置和安装 PHP 扩展
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        pdo \
+        pdo_mysql \
+        zip \
+        intl \
+        bcmath \
+        pcntl \
+        mbstring
+
+# 安装 Redis 扩展
+RUN pecl install redis && docker-php-ext-enable redis
+
+# 安装 Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# 配置 PHP-FPM
+RUN echo "pm.max_children = 50" >> /usr/local/etc/php-fpm.d/zz-docker.conf \
+    && echo "pm.start_servers = 5" >> /usr/local/etc/php-fpm.d/zz-docker.conf \
+    && echo "pm.min_spare_servers = 5" >> /usr/local/etc/php-fpm.d/zz-docker.conf \
+    && echo "pm.max_spare_servers = 35" >> /usr/local/etc/php-fpm.d/zz-docker.conf
+
+WORKDIR /var/www/html

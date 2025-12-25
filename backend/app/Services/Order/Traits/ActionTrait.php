@@ -119,6 +119,11 @@ trait ActionTrait
             $params['last_cert_id'] = $order->latestCert->id;
             $params['last_cert'] = $order->latestCert->toArray();
 
+            // 续费默认继承旧订单的自动续费设置（除非显式传入）
+            if ($params['action'] === 'renew' && ! array_key_exists('auto_renew', $params)) {
+                $params['auto_renew'] = (bool) $order->auto_renew;
+            }
+
             CsrUtil::matchKey($params['csr'] ?? '', $order->latestCert->private_key ?? '')
             && $params['private_key'] = $order->latestCert->private_key;
 
@@ -158,6 +163,8 @@ trait ActionTrait
         $order['period'] = (int) ($params['period'] ?? 0);
         $order['contact'] = $params['contact'] ?? null;
         isset($params['organization']) && $order['organization'] = $params['organization'];
+        // 如果请求包含自动续费标记，则持久化到新订单
+        array_key_exists('auto_renew', $params) && $order['auto_renew'] = (bool) $params['auto_renew'];
 
         return $order;
     }

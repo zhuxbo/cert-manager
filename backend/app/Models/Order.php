@@ -35,6 +35,7 @@ class Order extends BaseModel
         'cancelled_at',
         'admin_remark',
         'remark',
+        'auto_renew',
     ];
 
     protected $casts = [
@@ -46,6 +47,7 @@ class Order extends BaseModel
         'period_from' => 'datetime',
         'period_till' => 'datetime',
         'cancelled_at' => 'datetime',
+        'auto_renew' => 'boolean',
     ];
 
     /**
