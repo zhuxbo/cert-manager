@@ -17,16 +17,63 @@ class ApiController extends Controller
      * 查询订单列表
      * 统一使用 order 参数：纯数字为 ID，字符串为域名，含逗号为批量查询
      * 不传时返回最新 100 条 active 订单
+     * field=certificate|private_key：order 为单个数字 ID 或域名时返回纯 PEM 文本（适配 certimate URL 拉取）
+     * 域名模式按 common_name 精确匹配取最新已签发证书，续费后 URL 无需变更
      */
-    public function query(Request $request): void
+    public function query(Request $request): mixed
     {
         $request->validate([
             'order' => ['nullable', 'string'],
+            'field' => ['nullable', 'in:certificate,private_key'],
             'page' => ['nullable', 'integer', 'min:1'],
             'page_size' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
         $order = trim($request->input('order', ''));
+        $field = $request->input('field');
+
+        if ($field !== null) {
+            if ($order === '' || str_contains($order, ',')) {
+                abort(400, 'field 参数要求 order 为单个订单 ID 或域名');
+            }
+
+            if (ctype_digit($order)) {
+                $found = Order::with('latestCert')
+                    ->whereHas('latestCert')
+                    ->where('id', $order)
+                    ->first();
+
+                if (! $found) {
+                    abort(404, '订单不存在');
+                }
+
+                $found = $this->resolveRenewedOrder($found);
+                $cert = $found->latestCert;
+
+                if ($cert->status !== 'active') {
+                    abort(400, '证书状态非 active');
+                }
+            } else {
+                // 域名模式：按 common_name 精确匹配取最新已签发的 active 证书
+                // 通过 whereHas('order') 应用 Order 的 UserScope 保证隔离
+                $cert = Cert::whereHas('order')
+                    ->where('common_name', strtolower($order))
+                    ->where('status', 'active')
+                    ->orderByDesc('issued_at')
+                    ->orderByDesc('id')
+                    ->first();
+
+                if (! $cert) {
+                    abort(404, '未找到该域名的活跃证书');
+                }
+            }
+
+            $pem = $field === 'certificate'
+                ? rtrim((string) $cert->cert)."\n".(string) $cert->intermediate_cert
+                : (string) $cert->private_key;
+
+            return response($pem, 200, ['Content-Type' => 'text/plain; charset=utf-8']);
+        }
 
         if ($order !== '') {
             // 含逗号：批量查询（支持 ID 和域名混合）
