@@ -269,7 +269,7 @@ trait OrderController
         // User 端：Order 受 UserScope 保护，只能查到自己的订单
         // Admin 端：无 UserScope，可查任意订单，通过 user_id 定位对应用户的 token
         $firstId = (int) explode(',', $orderIds)[0];
-        $order = Order::find($firstId);
+        $order = Order::with('latestCert')->find($firstId);
         if (! $order) {
             $this->error('订单不存在');
         }
@@ -300,6 +300,10 @@ trait OrderController
             $releaseUrl = "$siteUrl/release";
         }
 
+        // URL 拉取仅支持单订单（用于 certimate 等通过 URL 获取证书的场景）
+        $singleOrderId = ! str_contains($orderIds, ',') ? $orderIds : null;
+        $commonName = $singleOrderId ? $order->latestCert?->common_name : null;
+
         $this->success([
             'install' => [
                 'linux' => "curl -fsSL $releaseUrl/sslctl/install.sh | sudo bash -s -- $releaseDomain",
@@ -315,6 +319,18 @@ trait OrderController
                 'linux' => "curl -fsSL $releaseUrl/sslbt/install.sh | sudo bash -s -- $releaseDomain",
             ],
             'bt_deploy' => "$deployUrl?token=$token&order=$orderIds",
+            'cert_url_id' => $singleOrderId
+                ? "$deployUrl?token=$token&order=$singleOrderId&field=certificate"
+                : null,
+            'key_url_id' => $singleOrderId
+                ? "$deployUrl?token=$token&order=$singleOrderId&field=private_key"
+                : null,
+            'cert_url_domain' => $commonName
+                ? "$deployUrl?token=$token&order=$commonName&field=certificate"
+                : null,
+            'key_url_domain' => $commonName
+                ? "$deployUrl?token=$token&order=$commonName&field=private_key"
+                : null,
         ]);
     }
 
