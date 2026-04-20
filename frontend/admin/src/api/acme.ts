@@ -6,6 +6,7 @@ export interface Acme {
   product_id: number;
   brand: string;
   period: number;
+  plus: number;
   purchased_standard_count: number;
   purchased_wildcard_count: number;
   refer_id: string | null;
@@ -17,6 +18,8 @@ export interface Acme {
   period_till: string | null;
   cancelled_at: string | null;
   status: string;
+  channel: string;
+  directory_url: string | null;
   remark: string | null;
   amount: string;
   admin_remark: string | null;
@@ -29,9 +32,19 @@ export interface Acme {
 export interface AcmeParams {
   currentPage?: number;
   pageSize?: number;
-  user_id?: number;
-  brand?: string;
+  quickSearch?: string;
+  id?: number | string;
+  statusSet?: string;
   status?: string;
+  brand?: string;
+  period?: number;
+  eab_kid?: string;
+  user_id?: number;
+  username?: string;
+  product_name?: string;
+  amount?: (number | undefined)[];
+  created_at?: string[];
+  period_till?: string[];
 }
 
 /** 创建 ACME 订阅 */
@@ -39,8 +52,7 @@ export function createOrder(data: {
   user_id: number;
   product_id: number;
   period: number;
-  purchased_standard_count?: number;
-  purchased_wildcard_count?: number;
+  plus?: number;
 }): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, typeof data>("/acme/new", { data });
 }
@@ -75,10 +87,63 @@ export function cancelAcme(id: number): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, null>(`/acme/commit-cancel/${id}`);
 }
 
+/** 撤回 ACME 取消 */
+export function revokeCancelAcme(id: number): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, null>(`/acme/revoke-cancel/${id}`);
+}
+
 /** ACME 备注 */
 export function remarkAcme(id: number, remark: string): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, { remark: string }>(
     `/acme/remark/${id}`,
     { data: { remark } }
   );
+}
+
+/** 批量支付 ACME */
+export function batchPayAcme(ids: number[]): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, { ids: number[] }>("/acme/batch-pay", {
+    data: { ids }
+  });
+}
+
+/** 批量提交 ACME */
+export function batchCommitAcme(ids: number[]): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, { ids: number[] }>(
+    "/acme/batch-commit",
+    { data: { ids } }
+  );
+}
+
+/** 批量同步 ACME */
+export function batchSyncAcme(ids: number[]): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, { ids: number[] }>("/acme/batch-sync", {
+    data: { ids }
+  });
+}
+
+/** 批量取消 ACME */
+export function batchCommitCancelAcme(ids: number[]): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, { ids: number[] }>(
+    "/acme/batch-commit-cancel",
+    { data: { ids } }
+  );
+}
+
+/** 批量撤回取消 ACME */
+export function batchRevokeCancelAcme(ids: number[]): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, { ids: number[] }>(
+    "/acme/batch-revoke-cancel",
+    { data: { ids } }
+  );
+}
+
+/** 批量复制 EAB */
+export function batchCopyEabAcme(
+  ids: number[]
+): Promise<BaseResponse<{ text: string; count: number }>> {
+  return http.post<
+    BaseResponse<{ text: string; count: number }>,
+    { ids: number[] }
+  >("/acme/batch-copy-eab", { data: { ids } });
 }

@@ -81,7 +81,7 @@ abstract class BaseProductRequest extends BaseRequest
 
     /**
      * 为 ACME 产品设置默认值并清除不适用字段
-     * ACME 产品需要域名数量配置，但不需要保险、验证方法等 SSL 专用字段
+     * ACME 以 EAB 为交付产物，加密算法/签名摘要/续期/重用CSR 均由 ACME 客户端自行决定
      */
     protected function setAcmeDefaults(array &$data): void
     {
@@ -95,6 +95,10 @@ abstract class BaseProductRequest extends BaseRequest
         $data['reissue'] = 0;
         $data['gift_root_domain'] = 0;
         $data['server'] = 0;
+        $data['encryption_alg'] = [];
+        $data['signature_digest_alg'] = [];
+        $data['renew'] = 0;
+        $data['reuse_csr'] = 0;
     }
 
     /**

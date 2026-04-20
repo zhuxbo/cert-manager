@@ -302,7 +302,7 @@ trait OrderController
 
         // URL 拉取仅支持单订单（用于 certimate 等通过 URL 获取证书的场景）
         $singleOrderId = ! str_contains($orderIds, ',') ? $orderIds : null;
-        $commonName = $singleOrderId ? $order->latestCert?->common_name : null;
+        $commonName = $singleOrderId ? $order->latestCert->common_name : null;
 
         $this->success([
             'install' => [

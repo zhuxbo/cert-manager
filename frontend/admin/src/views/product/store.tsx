@@ -211,7 +211,8 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         placeholder: "请选择加密算法",
         multiple: true
       },
-      options: encryptionAlgOptions
+      options: encryptionAlgOptions,
+      hideInForm: isACME.value
     },
     {
       label: "签名摘要算法",
@@ -221,7 +222,8 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         placeholder: "请选择签名摘要算法",
         multiple: true
       },
-      options: signatureDigestAlgOptions
+      options: signatureDigestAlgOptions,
+      hideInForm: isACME.value
     },
     {
       label: "验证类型",
@@ -372,13 +374,15 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       label: "续期",
       prop: "renew",
       valueType: "switch",
-      fieldProps: switchOptions
+      fieldProps: switchOptions,
+      hideInForm: isACME.value
     },
     {
       label: "重用CSR",
       prop: "reuse_csr",
       valueType: "switch",
-      fieldProps: switchOptions
+      fieldProps: switchOptions,
+      hideInForm: isACME.value
     },
     {
       label: "赠送根域名",
@@ -475,14 +479,20 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       status: [{ required: true, message: "请选择状态" }]
     };
 
-    // 所有产品类型都需要加密相关字段
+    // 所有产品类型都需要加密标准
     baseRules.encryption_standard = [
       { required: true, message: "请选择加密标准" }
     ];
-    baseRules.encryption_alg = [{ required: true, message: "请选择加密算法" }];
-    baseRules.signature_digest_alg = [
-      { required: true, message: "请选择签名摘要算法" }
-    ];
+
+    // ACME 产品不需要加密算法和签名摘要算法（由 ACME 客户端自行决定）
+    if (!isACME.value) {
+      baseRules.encryption_alg = [
+        { required: true, message: "请选择加密算法" }
+      ];
+      baseRules.signature_digest_alg = [
+        { required: true, message: "请选择签名摘要算法" }
+      ];
+    }
 
     // SSL 和 ACME 产品共用的域名数量验证规则
     if (needsDomainConfig.value) {
@@ -585,6 +595,14 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
     // CodeSign、DocSign、ACME 不支持重签
     if (["codesign", "docsign", "acme"].includes(filtered.product_type ?? "")) {
       filtered.reissue = 0;
+    }
+
+    // ACME 以 EAB 为交付产物，这 4 个字段均由 ACME 客户端自行决定
+    if (filtered.product_type === "acme") {
+      filtered.encryption_alg = [];
+      filtered.signature_digest_alg = [];
+      filtered.renew = 0;
+      filtered.reuse_csr = 0;
     }
 
     return filtered;

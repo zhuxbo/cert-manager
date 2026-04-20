@@ -7,6 +7,7 @@
     destroy-on-close
     append-to-body
     @update:model-value="$emit('update:visible', $event)"
+    @open="handleOpen"
   >
     <el-form
       ref="formRef"
@@ -31,55 +32,31 @@
         />
       </el-form-item>
 
-      <el-row :gutter="20">
-        <el-col :span="12">
-          <el-form-item label="有效期" prop="period" :rules="rules.period">
-            <el-select
-              v-model="formData.period"
-              placeholder="请选择有效期"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="option in periodOptions"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-          </el-form-item>
-        </el-col>
-      </el-row>
+      <el-form-item label="有效期" prop="period" :rules="rules.period">
+        <el-select
+          v-model="formData.period"
+          placeholder="请选择有效期"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="option in periodOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
+      </el-form-item>
 
-      <el-row :gutter="20">
-        <el-col :span="12">
-          <el-form-item
-            label="标准域名额度"
-            prop="purchased_standard_count"
-            :rules="rules.purchased_standard_count"
-          >
-            <el-input-number
-              v-model="formData.purchased_standard_count"
-              :min="0"
-              :max="999"
-              style="width: 100%"
-            />
-          </el-form-item>
-        </el-col>
-        <el-col :span="12">
-          <el-form-item
-            label="通配符域名额度"
-            prop="purchased_wildcard_count"
-            :rules="rules.purchased_wildcard_count"
-          >
-            <el-input-number
-              v-model="formData.purchased_wildcard_count"
-              :min="0"
-              :max="999"
-              style="width: 100%"
-            />
-          </el-form-item>
-        </el-col>
-      </el-row>
+      <el-form-item label="数量" prop="quantity" :rules="rules.quantity">
+        <el-input-number
+          v-model="formData.quantity"
+          :min="1"
+          :max="20"
+          :precision="0"
+          controls-position="right"
+          style="width: 100%"
+        />
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="handleClose">取消</el-button>
@@ -92,8 +69,8 @@
 
 <script setup lang="ts">
 import { ref, reactive } from "vue";
+import { useRoute } from "vue-router";
 import { createOrder } from "@/api/acme";
-import type { CreateAcmeForm } from "@/api/acme";
 import { show as productShow } from "@/api/product";
 import { message } from "@shared/utils";
 import ReRemoteSelect from "@shared/components/ReRemoteSelect";
@@ -101,10 +78,17 @@ import { periodLabels } from "@/views/system/dictionary";
 import type { FormInstance, FormRules } from "element-plus";
 import { useDialogSize } from "@/views/system/dialog";
 
-defineProps({
+// 与传统订单申请一致：?plus=0 可取消赠送时间，默认 1
+const route = useRoute();
+
+const props = defineProps({
   visible: {
     type: Boolean,
     default: false
+  },
+  productId: {
+    type: Number,
+    default: 0
   }
 });
 
@@ -114,11 +98,10 @@ const { dialogSize } = useDialogSize();
 const formRef = ref<FormInstance>();
 const loading = ref(false);
 
-const formData = reactive<CreateAcmeForm>({
-  product_id: undefined,
-  period: "",
-  purchased_standard_count: 0,
-  purchased_wildcard_count: 0
+const formData = reactive({
+  product_id: undefined as number | undefined,
+  period: "" as number | string,
+  quantity: 1
 });
 
 const periodOptions = ref<{ label: string; value: number }[]>([]);
@@ -126,13 +109,18 @@ const periodOptions = ref<{ label: string; value: number }[]>([]);
 const rules = reactive<FormRules>({
   product_id: [{ required: true, message: "请选择产品", trigger: "change" }],
   period: [{ required: true, message: "请选择有效期", trigger: "change" }],
-  purchased_standard_count: [
-    { required: true, message: "请输入标准域名额度", trigger: "blur" }
-  ],
-  purchased_wildcard_count: [
-    { required: true, message: "请输入通配符域名额度", trigger: "blur" }
-  ]
+  quantity: [{ required: true, message: "请输入数量", trigger: "blur" }]
 });
+
+const handleOpen = () => {
+  formData.product_id = props.productId > 0 ? props.productId : undefined;
+  formData.period = "";
+  formData.quantity = 1;
+  periodOptions.value = [];
+  if (formData.product_id) {
+    handleProductChange(formData.product_id);
+  }
+};
 
 const handleProductChange = (productId: number) => {
   if (!productId) return;
@@ -155,21 +143,33 @@ const handleSubmit = async () => {
   if (!formRef.value) return;
   await formRef.value.validate();
 
+  const total = Math.max(1, Math.min(20, Number(formData.quantity) || 1));
+  const payload = {
+    product_id: formData.product_id as number,
+    period: Number(formData.period),
+    plus: Number(route.query.plus ?? 1)
+  };
+
   loading.value = true;
+  let success = 0;
   try {
-    const res = await createOrder({
-      product_id: formData.product_id as number,
-      period: Number(formData.period),
-      purchased_standard_count: formData.purchased_standard_count,
-      purchased_wildcard_count: formData.purchased_wildcard_count
-    });
-    if (res.code === 1) {
-      message("创建成功", { type: "success" });
-      emit("success");
-      emit("update:visible", false);
+    for (let i = 0; i < total; i++) {
+      const res = await createOrder(payload);
+      if (res.code === 1) success++;
     }
   } finally {
     loading.value = false;
+  }
+
+  if (success === total) {
+    message(total > 1 ? `成功创建 ${total} 个订阅` : "创建成功", {
+      type: "success"
+    });
+    emit("success");
+    emit("update:visible", false);
+  } else if (success > 0) {
+    message(`部分成功：已创建 ${success} / ${total}`, { type: "warning" });
+    emit("success");
   }
 };
 

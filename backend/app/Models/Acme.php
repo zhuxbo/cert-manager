@@ -35,6 +35,7 @@ class Acme extends BaseModel
         'product_id',
         'brand',
         'period',
+        'plus',
         'purchased_standard_count',
         'purchased_wildcard_count',
         'refer_id',
@@ -46,6 +47,7 @@ class Acme extends BaseModel
         'period_till',
         'cancelled_at',
         'status',
+        'channel',
         'remark',
         'amount',
         'admin_remark',
@@ -58,6 +60,7 @@ class Acme extends BaseModel
     protected $casts = [
         'eab_hmac' => 'encrypted',
         'period' => 'integer',
+        'plus' => 'integer',
         'purchased_standard_count' => 'integer',
         'purchased_wildcard_count' => 'integer',
         'amount' => 'decimal:2',

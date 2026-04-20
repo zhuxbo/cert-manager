@@ -45,11 +45,20 @@ class TaskJob implements ShouldQueue
             $action = $task->action;
 
             try {
-                if ($action === 'cancel_acme') {
-                    (new AcmeAction)->cancel($task->order_id);
+                if (in_array($action, ['cancel_acme', 'commit_acme', 'sync_acme'], true)) {
+                    $method = str_replace('_acme', '', $action); // cancel / commit / sync
+                    $acmeAction = new AcmeAction;
+                    if (! method_exists($acmeAction, $method)) {
+                        throw new \RuntimeException("AcmeAction::$method 方法不存在（请确认 queue worker 已重启加载新代码）");
+                    }
+                    $acmeAction->$method($task->order_id);
+                } else {
+                    $orderAction = new Action;
+                    if (! method_exists($orderAction, $action)) {
+                        throw new \RuntimeException("Action::$action 方法不存在（请确认 queue worker 已重启加载新代码）");
+                    }
+                    $orderAction->$action($task->order_id);
                 }
-
-                (new Action)->$action($task->order_id);
             } catch (ApiResponseException $e) {
                 $response = $e->getApiResponse();
                 $data['result'] = $response;

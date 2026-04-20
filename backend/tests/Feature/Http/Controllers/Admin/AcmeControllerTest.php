@@ -175,6 +175,7 @@ test('new 成功创建订单', function () {
     expect($acme->status)->toBe(Acme::STATUS_UNPAID);
     expect($acme->user_id)->toBe($user->id);
     expect($acme->product_id)->toBe($product->id);
+    expect($acme->channel)->toBe('admin');
 });
 
 // ==================== pay ====================
@@ -283,7 +284,44 @@ test('commitCancel 成功取消', function () {
 
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_CANCELLING);
-    expect($acme->cancelled_at)->not->toBeNull();
+    // 仅提交取消阶段不记录 cancelled_at（实际取消完成后由 cancel() 写入）
+    expect($acme->cancelled_at)->toBeNull();
+});
+
+// ==================== revokeCancel ====================
+
+test('revokeCancel 撤回取消恢复 active 并清理 Task', function () {
+    Queue::fake();
+
+    $product = createAcmeProduct();
+    $acme = Acme::factory()->active()->create([
+        'product_id' => $product->id,
+        'api_id' => 'upstream-123',
+        'amount' => '100.00',
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/acme/commit-cancel/$acme->id")
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/acme/revoke-cancel/$acme->id");
+
+    $response->assertOk()->assertJson(['code' => 1]);
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
+    expect($acme->cancelled_at)->toBeNull();
+    expect(\App\Models\Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+});
+
+test('revokeCancel 非 cancelling 状态拒绝', function () {
+    $acme = Acme::factory()->active()->create();
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/acme/revoke-cancel/$acme->id");
+
+    $response->assertOk()->assertJson(['code' => 0, 'msg' => '订单不在取消中状态']);
 });
 
 // ==================== remark ====================
@@ -299,4 +337,101 @@ test('remark 更新 admin_remark', function () {
 
     $acme->refresh();
     expect($acme->admin_remark)->toBe('管理员测试备注');
+});
+
+// ==================== batch-pay ====================
+
+test('admin batch-pay 成功支付多个 unpaid', function () {
+    $user = User::factory()->create(['balance' => '500.00']);
+    $product = createAcmeProduct();
+    createProductPrice($product, $user);
+    setupAdminGatewaySettings();
+
+    $a1 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'unpaid', 'amount' => '100.00']);
+    $a2 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'unpaid', 'amount' => '100.00']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-pay', ['ids' => [$a1->id, $a2->id]]);
+    $res->assertJsonPath('code', 1);
+    $res->assertJsonPath('data.success_count', 2);
+});
+
+// ==================== batch-commit ====================
+
+test('admin batch-commit 仅处理 pending 并入队 commit_acme', function () {
+    Queue::fake();
+    $user = User::factory()->create();
+    $a1 = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
+    $a2 = Acme::factory()->create(['user_id' => $user->id, 'status' => 'unpaid']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-commit', ['ids' => [$a1->id, $a2->id]]);
+    $res->assertJsonPath('code', 1);
+    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+});
+
+// ==================== batch-sync ====================
+
+test('admin batch-sync 仅处理 active/cancelling 并入队 sync_acme', function () {
+    Queue::fake();
+    $user = User::factory()->create();
+    $active = Acme::factory()->create(['user_id' => $user->id, 'status' => 'active', 'api_id' => 'x1']);
+    $pending = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-sync', ['ids' => [$active->id, $pending->id]]);
+    $res->assertJsonPath('code', 1);
+    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+});
+
+// ==================== batch-commit-cancel ====================
+
+test('admin batch-commit-cancel 混合处理', function () {
+    Queue::fake();
+    $user = User::factory()->create(['balance' => '500.00']);
+    $product = createAcmeProduct();
+
+    $unpaid = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'unpaid', 'amount' => '100.00']);
+    $active = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'active', 'api_id' => 'x1']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-commit-cancel', ['ids' => [$unpaid->id, $active->id]]);
+    $res->assertJsonPath('code', 1);
+    expect(Acme::find($unpaid->id)->status)->toBe('cancelled');
+    expect(Acme::find($active->id)->status)->toBe('cancelling');
+});
+
+// ==================== batch-revoke-cancel ====================
+
+test('admin batch-revoke-cancel 回滚 cancelling 至 active', function () {
+    $user = User::factory()->create();
+    $c = Acme::factory()->create(['user_id' => $user->id, 'status' => 'cancelling', 'api_id' => 'a1']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-revoke-cancel', ['ids' => [$c->id]]);
+    $res->assertJsonPath('code', 1);
+    expect(Acme::find($c->id)->status)->toBe('active');
+});
+
+// ==================== batch-copy-eab ====================
+
+test('admin batch-copy-eab 同用户正常返回文本', function () {
+    $user = User::factory()->create();
+    $product = createAcmeProduct(['ca' => 'google']);
+    setupAdminGatewaySettings();
+
+    $a1 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID1', 'eab_hmac' => 'HMAC1']);
+    $a2 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID2', 'eab_hmac' => 'HMAC2']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-copy-eab', ['ids' => [$a1->id, $a2->id]]);
+    $res->assertJsonPath('code', 1);
+    $res->assertJsonPath('data.count', 2);
+    expect($res->json('data.text'))->toContain('eab_kid=KID1');
+    expect($res->json('data.text'))->toContain('eab_kid=KID2');
+});
+
+test('admin batch-copy-eab 跨用户拒绝', function () {
+    $u1 = User::factory()->create();
+    $u2 = User::factory()->create();
+    $a1 = Acme::factory()->create(['user_id' => $u1->id, 'eab_kid' => 'K1', 'eab_hmac' => 'H1']);
+    $a2 = Acme::factory()->create(['user_id' => $u2->id, 'eab_kid' => 'K2', 'eab_hmac' => 'H2']);
+
+    $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-copy-eab', ['ids' => [$a1->id, $a2->id]]);
+    $res->assertJsonPath('code', 0);
+    $res->assertJsonPath('msg', '仅能复制同一用户的 EAB');
 });

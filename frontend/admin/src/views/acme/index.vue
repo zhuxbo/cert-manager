@@ -5,13 +5,24 @@ import { useAcme } from "./hook";
 import { useAcmeSearch } from "./search";
 import { useAcmeTable } from "./table";
 import AcmeButtons from "./buttons.vue";
+import AcmeBatch from "./batch.vue";
 import AcmeCreate from "./create.vue";
+import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
+import CloseBold from "~icons/ep/close-bold";
 
 defineOptions({
   name: "Acme"
 });
 
-const { tableColumns } = useAcmeTable();
+const {
+  tableRef,
+  tableColumns,
+  selectedIds,
+  selectedRows,
+  handleSelectionChange,
+  handleCancelSelection,
+  handleRowClick
+} = useAcmeTable();
 
 const {
   loading,
@@ -23,9 +34,9 @@ const {
   onSearch,
   onReset,
   onCollapse
-} = useAcme();
+} = useAcme(tableRef);
 
-const { searchColumns } = useAcmeSearch(onSearch);
+const { searchColumns } = useAcmeSearch(onSearch, search);
 
 const createVisible = ref(false);
 
@@ -80,7 +91,36 @@ onBeforeUnmount(() => {
         >
       </template>
       <template v-slot="{ size, dynamicColumns }">
+        <div
+          v-if="selectedIds.length > 0"
+          v-motion-fade
+          class="bg-(--el-fill-color-light) w-full h-[46px] mb-2 pl-3 pr-2 flex items-center"
+        >
+          <div class="flex-auto">
+            <el-tooltip placement="top" content="取消选择">
+              <el-button
+                type="primary"
+                size="small"
+                class="w-[15px]! p-0! h-[15px]! rounded-[3px]!"
+                :icon="useRenderIcon(CloseBold)"
+                @click="handleCancelSelection"
+              />
+            </el-tooltip>
+            <span
+              style="font-size: var(--el-font-size-base)"
+              class="text-[rgba(42,46,54,0.5)] dark:text-[rgba(220,220,242,0.5)] ml-2"
+            >
+              已选 {{ selectedIds.length }} 项
+            </span>
+          </div>
+          <AcmeBatch
+            :selected-rows="selectedRows"
+            :table-ref="tableRef?.getTableRef?.()"
+            @refresh="onSearch"
+          />
+        </div>
         <pure-table
+          ref="tableRef"
           row-key="id"
           align-whole="left"
           table-layout="auto"
@@ -97,6 +137,8 @@ onBeforeUnmount(() => {
           }"
           @page-size-change="handleSizeChange"
           @page-current-change="handleCurrentChange"
+          @row-click="handleRowClick"
+          @selection-change="handleSelectionChange"
         >
           <template #operation="{ row, size }">
             <AcmeButtons :row="row" :size="size" @refresh="onSearch" />

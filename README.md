@@ -150,23 +150,28 @@ POST /api/deploy                     # 更新/续费证书
 POST /api/deploy/callback            # 部署结果回调
 ```
 
-### ACME 协议
+### ACME 订阅管理
 
-支持标准 ACME (RFC 8555) 协议，兼容 certbot、acme.sh 等客户端：
+Manager 作为 ACME 订阅管理平台（"封装下单 + 交付 EAB"模式），自身不实现 RFC 8555 服务端；directory URL 与 EAB 凭据均由上游系统签发并透传。
 
 ```bash
-# 获取 EAB 凭据（通过 Deploy Token）
-curl -H "Authorization: Bearer <deploy-token>" https://your-platform.com/api/deploy/acme/eab
+# Deploy API：一步到位创建 + 支付 + 提交，返回 EAB + directory_url
+curl -X POST -H "Authorization: Bearer <deploy-token>" \
+  -H 'Content-Type: application/json' \
+  -d '{"product_id": 57, "period": 12, "plus": 1}' \
+  https://your-platform.com/api/deploy/acme/new
 
-# certbot 注册
-certbot certonly --server https://your-platform.com/acme/directory \
+# 查询订阅详情（含 EAB + directory_url）
+curl -H "Authorization: Bearer <deploy-token>" \
+  https://your-platform.com/api/deploy/acme/<id>
+
+# certbot 使用返回的 directory_url 注册
+certbot certonly --server <directory_url> \
   --eab-kid <EAB_KID> --eab-hmac-key <EAB_HMAC> \
   -d example.com --preferred-challenges dns-01
 ```
 
-配合 CNAME 委托，ACME 证书申请时自动完成 DNS-01 验证。
-
-Web 端支持两步创建：先建立订阅（pending），再从详情页提交到上游。同步按钮通过 ACME REST API 获取状态，不依赖 SOAP 接口。
+Web 端支持两步创建：先建立订阅（unpaid → pending），再从详情页提交到上游激活（active）。详情页展示 directory URL / EAB KID / EAB HMAC，每项可一键复制。列表页支持批量支付、提交、同步、取消、撤回取消、复制 EAB 等批量操作。
 
 ## 文档
 

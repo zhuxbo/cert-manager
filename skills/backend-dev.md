@@ -22,7 +22,7 @@ backend/
 │   │   └── Callback/       # 回调处理
 │   ├── Models/
 │   ├── Services/           # 业务逻辑层
-│   │   ├── Acme/          # ACME 协议服务
+│   │   ├── Acme/          # ACME 订阅管理（封装下单 + 交付 EAB，不实现 RFC 8555）
 │   │   ├── Order/         # 订单服务
 │   │   └── Upgrade/       # 升级系统
 │   ├── Jobs/               # 队列任务
@@ -323,10 +323,11 @@ Schema::table('products', function (Blueprint $table) {
 
 | 前缀              | CA                  | 匹配规则           |
 | ----------------- | ------------------- | ------------------ |
-| `_acme-challenge` | ACME                | 严格子域匹配       |
 | `_dnsauth`        | DigiCert、TrustAsia | 严格子域匹配       |
 | `_pki-validation` | Sectigo             | 优先子域，回落根域 |
 | `_certum`         | Certum              | 优先子域，回落根域 |
+
+> ACME 通道证书由客户端自行验证，不走委托体系，不使用 `_acme-challenge` 前缀。
 
 ### TXT 记录自动写入
 

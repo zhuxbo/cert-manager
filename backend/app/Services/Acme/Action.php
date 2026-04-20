@@ -31,17 +31,214 @@ class Action
     }
 
     /**
-     * 支付订单 — 扣费，状态 → pending
+     * 支付订单 — 扣费，状态 → pending，默认自动入队 commit_acme
      */
-    public function pay(int $acmeId): void
+    public function pay(int $acmeId, bool $autoCommit = true): void
     {
         $acme = Acme::findOrFail($acmeId);
         $this->payOrder($acme);
+
+        if ($autoCommit) {
+            $existing = Task::where('order_id', $acmeId)
+                ->where('action', 'commit_acme')
+                ->where('status', 'executing')
+                ->exists();
+            if (! $existing) {
+                $this->createTasks([$acmeId], 'commit_acme');
+            }
+        }
+
         $this->success();
     }
 
     /**
-     * 提交订单到 Gateway — 成功后状态 → active
+     * 批量支付订单
+     *
+     * 逐条独立事务执行，单条失败收集到 errors，不影响其他。
+     * 仅处理 unpaid 状态订单，非 unpaid 静默过滤。
+     */
+    public function batchPay(array $acmeIds): void
+    {
+        $acmeIds = array_map('intval', $acmeIds);
+
+        $payableIds = Acme::whereIn('id', $acmeIds)
+            ->where('status', Acme::STATUS_UNPAID)
+            ->pluck('id')
+            ->all();
+
+        if (empty($payableIds)) {
+            $this->error('没有可以支付的订单');
+        }
+
+        $successIds = [];
+        $errors = [];
+
+        foreach ($payableIds as $id) {
+            try {
+                (new self)->pay($id, false);  // 禁用单体 autoCommit，由 batchPay 统一批量创建
+            } catch (ApiResponseException $e) {
+                $res = $e->getApiResponse();
+                if (($res['code'] ?? 0) === 1) {
+                    $successIds[] = $id;
+                } else {
+                    $errors[] = ['id' => $id, 'msg' => $res['msg'] ?? '支付失败'];
+                }
+            } catch (\Throwable $e) {
+                $errors[] = ['id' => $id, 'msg' => $e->getMessage()];
+            }
+        }
+
+        // 支付成功的订单自动入队 commit_acme（对齐 Order batchPay 默认 commit=true 语义）
+        // 跳过已有 executing 任务的 id 以防重复
+        $commitIds = [];
+        if (! empty($successIds)) {
+            $existing = Task::whereIn('order_id', $successIds)
+                ->where('action', 'commit_acme')
+                ->where('status', 'executing')
+                ->pluck('order_id')
+                ->all();
+            $commitIds = array_values(array_diff($successIds, $existing));
+            if (! empty($commitIds)) {
+                $this->createTasks($commitIds, 'commit_acme');
+            }
+        }
+
+        $this->success([
+            'success_count' => count($successIds),
+            'commit_count' => count($commitIds),
+            'errors' => $errors,
+        ]);
+    }
+
+    /**
+     * 批量提交订单
+     */
+    public function batchCommit(array $acmeIds): void
+    {
+        $acmeIds = array_map('intval', $acmeIds);
+
+        $ids = Acme::whereIn('id', $acmeIds)
+            ->where('status', Acme::STATUS_PENDING)
+            ->pluck('id')
+            ->all();
+
+        if (empty($ids)) {
+            $this->error('没有可以提交的订单');
+        }
+
+        $this->checkRepeat($ids, 'commit_acme');
+        $this->createTasks($ids, 'commit_acme');
+
+        $this->success();
+    }
+
+    /**
+     * 批量同步订单状态
+     *
+     * 仅 active/cancelling 可同步（有 api_id）；pending/unpaid 被过滤。
+     */
+    public function batchSync(array $acmeIds): void
+    {
+        $acmeIds = array_map('intval', $acmeIds);
+
+        $ids = Acme::whereIn('id', $acmeIds)
+            ->whereIn('status', [Acme::STATUS_ACTIVE, Acme::STATUS_CANCELLING])
+            ->whereNotNull('api_id')
+            ->pluck('id')
+            ->all();
+
+        if (empty($ids)) {
+            $this->error('没有可以同步的订单');
+        }
+
+        $this->checkRepeat($ids, 'sync_acme');
+        $this->createTasks($ids, 'sync_acme');
+
+        $this->success();
+    }
+
+    /**
+     * 批量取消订单
+     *
+     * 允许状态：unpaid / pending / active。
+     * 实际处理由单体 commitCancel 决定：unpaid 或无 api_id 的 pending 直接退费，
+     * 其余创建 cancel_acme Task 延时 123s。逐条独立事务。
+     */
+    public function batchCommitCancel(array $acmeIds): void
+    {
+        $acmeIds = array_map('intval', $acmeIds);
+
+        $ids = Acme::whereIn('id', $acmeIds)
+            ->whereIn('status', [Acme::STATUS_UNPAID, Acme::STATUS_PENDING, Acme::STATUS_ACTIVE])
+            ->pluck('id')
+            ->all();
+
+        if (empty($ids)) {
+            $this->error('没有可以取消的订单');
+        }
+
+        $successCount = 0;
+        $errors = [];
+
+        foreach ($ids as $id) {
+            try {
+                (new self)->commitCancel($id);
+            } catch (ApiResponseException $e) {
+                $res = $e->getApiResponse();
+                if (($res['code'] ?? 0) === 1) {
+                    $successCount++;
+                } else {
+                    $errors[] = ['id' => $id, 'msg' => $res['msg'] ?? '取消失败'];
+                }
+            } catch (\Throwable $e) {
+                $errors[] = ['id' => $id, 'msg' => $e->getMessage()];
+            }
+        }
+
+        $this->success(['success_count' => $successCount, 'errors' => $errors]);
+    }
+
+    /**
+     * 批量撤回取消
+     *
+     * 仅 cancelling 状态可撤回；逐条调单体 revokeCancel（已含悲观锁 + Task 清理）。
+     */
+    public function batchRevokeCancel(array $acmeIds): void
+    {
+        $acmeIds = array_map('intval', $acmeIds);
+
+        $ids = Acme::whereIn('id', $acmeIds)
+            ->where('status', Acme::STATUS_CANCELLING)
+            ->pluck('id')
+            ->all();
+
+        if (empty($ids)) {
+            $this->error('没有可以撤回取消的订单');
+        }
+
+        $successCount = 0;
+        $errors = [];
+
+        foreach ($ids as $id) {
+            try {
+                (new self)->revokeCancel($id);
+            } catch (ApiResponseException $e) {
+                $res = $e->getApiResponse();
+                if (($res['code'] ?? 0) === 1) {
+                    $successCount++;
+                } else {
+                    $errors[] = ['id' => $id, 'msg' => $res['msg'] ?? '撤回失败'];
+                }
+            } catch (\Throwable $e) {
+                $errors[] = ['id' => $id, 'msg' => $e->getMessage()];
+            }
+        }
+
+        $this->success(['success_count' => $successCount, 'errors' => $errors]);
+    }
+
+    /**
+     * 提交订单到上游系统 — 成功后状态 → active
      */
     public function commit(int $acmeId): void
     {
@@ -53,6 +250,7 @@ class Action
             'order_id' => $acme->id,
             'eab_kid' => $acme->eab_kid,
             'eab_hmac' => $acme->eab_hmac,
+            'directory_url' => $this->syncDirectoryUrl($acme),
         ]);
     }
 
@@ -74,6 +272,7 @@ class Action
             'eab_kid' => $acme->eab_kid,
             'eab_hmac' => $acme->eab_hmac,
             'status' => $acme->status,
+            'directory_url' => $this->syncDirectoryUrl($acme),
         ]);
     }
 
@@ -85,8 +284,18 @@ class Action
         DB::transaction(function () use ($acmeId) {
             $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
 
-            if (! in_array($acme->status, [Acme::STATUS_ACTIVE, Acme::STATUS_PENDING])) {
+            if (! in_array($acme->status, [Acme::STATUS_UNPAID, Acme::STATUS_ACTIVE, Acme::STATUS_PENDING])) {
                 $this->error('当前状态不允许取消');
+            }
+
+            // 未支付订单，直接标记取消（无扣费记录，无需退费）
+            if ($acme->status === Acme::STATUS_UNPAID) {
+                $acme->update([
+                    'status' => Acme::STATUS_CANCELLED,
+                    'cancelled_at' => now(),
+                ]);
+
+                return;
             }
 
             // 未提交上游的 pending 订单，直接退费取消
@@ -100,10 +309,7 @@ class Action
                 return;
             }
 
-            $acme->update([
-                'status' => Acme::STATUS_CANCELLING,
-                'cancelled_at' => now(),
-            ]);
+            $acme->update(['status' => Acme::STATUS_CANCELLING]);
 
             // 检查是否已存在相同的执行中任务，避免重复创建
             $existingTask = Task::where('order_id', $acme->id)
@@ -130,21 +336,86 @@ class Action
     }
 
     /**
+     * 立即取消 — 不走延时任务，同步调上游并退费
+     *
+     * 下游 API（/api/acme/cancel）场景使用；Web 入口仍走 commitCancel 延时流程，保留撤回窗口。
+     * 并发安全：整个流程（状态校验 + 上游调用 + 退费 + 状态更新）在同一事务内持有 acme 行级锁，
+     * 避免与 revokeCancel 产生"退费成功 + 订单被吊销"的双重损害。
+     */
+    public function cancelNow(int $acmeId): void
+    {
+        DB::transaction(function () use ($acmeId) {
+            $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
+
+            if (! in_array($acme->status, [Acme::STATUS_ACTIVE, Acme::STATUS_PENDING])) {
+                $this->error('当前状态不允许取消');
+            }
+
+            $this->performCancel($acme);
+        });
+
+        $this->success();
+    }
+
+    /**
+     * 撤回取消 — 清理延时任务，状态回滚至 active
+     *
+     * 仅在 acme 状态仍为 cancelling 时有效。
+     * 并发安全：acme 行级锁保证与 cancel/cancelNow 串行化；若 TaskJob 已在 cancel 内持锁，
+     * 此处会阻塞至 cancel 提交完成，再次校验 status 时已非 cancelling 而报错退出。
+     */
+    public function revokeCancel(int $acmeId): void
+    {
+        DB::transaction(function () use ($acmeId) {
+            $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
+
+            if ($acme->status !== Acme::STATUS_CANCELLING) {
+                $this->error('订单不在取消中状态');
+            }
+
+            Task::where('order_id', $acme->id)
+                ->where('action', 'cancel_acme')
+                ->whereIn('status', ['executing', 'stopped'])
+                ->delete();
+
+            $acme->update(['status' => Acme::STATUS_ACTIVE]);
+        });
+
+        $this->success();
+    }
+
+    /**
      * 执行取消 — 延时任务调用，调 Api->cancel()，退费处理
+     *
+     * 并发安全：整个流程（状态校验 + 上游调用 + 退费 + 状态更新）在同一事务内持有 acme 行级锁，
+     * 锁粒度仅为 acme 单行，不影响产品/用户；即使上游调用耗时数秒也可接受，避免 revokeCancel 穿插
+     * 导致的资金与状态不一致。
      */
     public function cancel(int $acmeId): void
     {
-        $acme = Acme::find($acmeId);
+        DB::transaction(function () use ($acmeId) {
+            $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
 
-        if (! $acme) {
-            $this->error('ACME 订单不存在');
-        }
+            if ($acme->status !== Acme::STATUS_CANCELLING) {
+                $this->error('订单状态不是取消中');
+            }
 
-        if ($acme->status !== Acme::STATUS_CANCELLING) {
-            $this->error('订单状态不是取消中');
-        }
+            $this->performCancel($acme);
+        });
 
-        // 调用上游取消
+        $this->success();
+    }
+
+    /**
+     * 取消公共逻辑（内部方法）— 必须在外层事务且 acme 行已锁的前提下调用
+     *
+     * 根据 api_id 决定是否调上游；退费与最终状态更新在锁内完成。
+     * 上游返回 status=revoked 则本地落 revoked，否则（含无 api_id 直接退费场景）落 cancelled。
+     */
+    private function performCancel(Acme $acme): void
+    {
+        $targetStatus = Acme::STATUS_CANCELLED;
+
         if ($acme->api_id) {
             try {
                 $result = (new Api)->cancel($acme->id);
@@ -154,24 +425,20 @@ class Action
                 $this->error($e->getMessage());
             }
 
-            // 上游返回吊销状态
-            $status = $result['data']['status'] ?? '';
-            if ($status === 'revoked') {
-                $this->refund($acme);
-                $acme->update(['status' => Acme::STATUS_REVOKED]);
-                $this->success();
+            if (($result['data']['status'] ?? '') === 'revoked') {
+                $targetStatus = Acme::STATUS_REVOKED;
             }
         }
 
-        // 退费并标记已取消
         $this->refund($acme);
-        $acme->update(['status' => Acme::STATUS_CANCELLED]);
-
-        $this->success();
+        $acme->update([
+            'status' => $targetStatus,
+            'cancelled_at' => now(),
+        ]);
     }
 
     /**
-     * 同步订单状态 — 从 Gateway 拉取最新状态
+     * 同步订单状态 — 从上游系统拉取最新状态
      *
      * @param  bool  $force  true 时静默返回（供 get 内部调用），false 时返回 success 响应（供 Admin 调用）
      */
@@ -202,12 +469,27 @@ class Action
         $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
         if (isset($data['status']) && in_array($data['status'], $syncableStatuses)) {
             $updateData['status'] = $data['status'];
+            // 上游已取消/吊销且本地尚未记录取消时间 → 用当前时间补记（正式取消时间）
+            if (in_array($data['status'], [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED]) && ! $acme->cancelled_at) {
+                $updateData['cancelled_at'] = now();
+            }
         }
         if (isset($data['vendor_id'])) {
             $updateData['vendor_id'] = $data['vendor_id'];
         }
+        // ACME 本地仅记录占位周期（commit 时的 now），上游是权威数据源，sync 时以上游为准覆盖
+        if (isset($data['period_from'])) {
+            $updateData['period_from'] = $data['period_from'];
+        }
+        if (isset($data['period_till'])) {
+            $updateData['period_till'] = $data['period_till'];
+        }
         if (! empty($updateData)) {
             $acme->update($updateData);
+        }
+
+        if (! empty($data['directory_url'])) {
+            $this->cacheDirectoryUrl((string) ($acme->product->ca ?? ''), (string) $data['directory_url']);
         }
 
         Cache::set($cacheKey, time(), 10);
@@ -229,6 +511,8 @@ class Action
 
     /**
      * 创建订单（内部方法）
+     *
+     * 额度按产品的 standard_max / wildcard_max 自动推断：ACME 当前只保留单域名 / 单通配符两种
      */
     private function createOrder(array $params): Acme
     {
@@ -245,8 +529,7 @@ class Action
             $this->error('无效的购买时长');
         }
 
-        $standardCount = (int) ($params['purchased_standard_count'] ?? 0);
-        $wildcardCount = (int) ($params['purchased_wildcard_count'] ?? 0);
+        [$standardCount, $wildcardCount] = $this->resolveDomainCounts($product);
 
         // 计算订单金额
         $amount = OrderUtil::getLatestCertAmount(
@@ -260,13 +543,94 @@ class Action
             'product_id' => $params['product_id'],
             'brand' => $product->brand,
             'period' => $period,
+            'plus' => (int) ($params['plus'] ?? 1) === 0 ? 0 : 1,
             'purchased_standard_count' => $standardCount,
             'purchased_wildcard_count' => $wildcardCount,
             'refer_id' => bin2hex(random_bytes(16)),
             'amount' => $amount,
             'status' => Acme::STATUS_UNPAID,
+            'channel' => $params['channel'] ?? 'web',
             'remark' => $params['remark'] ?? null,
         ]);
+    }
+
+    /**
+     * 按产品 standard_max / wildcard_max 推断域名额度
+     */
+    private function resolveDomainCounts(Product $product): array
+    {
+        $standardMax = (int) ($product->standard_max ?? 0);
+        $wildcardMax = (int) ($product->wildcard_max ?? 0);
+
+        if ($standardMax >= 1 && $wildcardMax === 0) {
+            return [1, 0];
+        }
+        if ($standardMax === 0 && $wildcardMax >= 1) {
+            return [0, 1];
+        }
+
+        return [1, 0];
+    }
+
+    /**
+     * 获取 ACME directory URL — 系统 Cache 优先，缺失则同步上游再查询
+     *
+     * 上游为权威数据源；Manager 以系统 Cache（key `acme_directory_url:{ca}`，按签发 CA 聚合）做长期缓存。
+     * commit / sync 用上游返回值刷新缓存；show 查不到时回源上游 get 拉取并写回。
+     * 缓存被清理只是多一次向上游同步，不影响正确性。
+     */
+    public function syncDirectoryUrl(Acme $acme): ?string
+    {
+        $ca = $this->normalizeCa((string) ($acme->product->ca ?? ''));
+        if ($ca === '') {
+            return null;
+        }
+
+        $cached = Cache::get($this->directoryUrlCacheKey($ca));
+        if ($cached) {
+            return (string) $cached;
+        }
+
+        if (! $acme->api_id) {
+            return null;
+        }
+
+        try {
+            $result = (new Api)->get($acme->id);
+            $url = $result['data']['directory_url'] ?? null;
+            if ($url) {
+                $this->cacheDirectoryUrl($ca, (string) $url);
+
+                return (string) $url;
+            }
+        } catch (\Throwable) {
+            // 上游暂不可达不应阻塞详情接口，静默降级为 null
+        }
+
+        return null;
+    }
+
+    /**
+     * 写入/刷新 directory URL 缓存（Cache::forever，按 CA 聚合）
+     */
+    private function cacheDirectoryUrl(string $ca, ?string $url): void
+    {
+        $ca = $this->normalizeCa($ca);
+        if ($ca === '' || ! $url) {
+            return;
+        }
+
+        Cache::forever($this->directoryUrlCacheKey($ca), $url);
+    }
+
+    private function directoryUrlCacheKey(string $ca): string
+    {
+        return "acme_directory_url:$ca";
+    }
+
+    private function normalizeCa(string $ca): string
+    {
+        return strtolower(trim($ca));
     }
 
     /**
@@ -307,6 +671,8 @@ class Action
 
     /**
      * 提交订单到 Gateway（内部方法）
+     *
+     * 对齐上游系统 /acme/new 接口：只传 customer / product_code / refer_id
      */
     private function commitOrder(Acme $acme): Acme
     {
@@ -315,14 +681,18 @@ class Action
         }
 
         $product = $acme->product;
+        $user = $acme->user;
 
+        if (! $user->email) {
+            $this->error('用户邮箱缺失，无法提交 ACME 订单');
+        }
+
+        // source 用于 Api 路由到对应 source 实现类（上游接收端会忽略多余字段）
         $data = [
             'source' => $product->source,
-            'product_api_id' => $product->api_id,
-            'product_type' => $product->product_type,
-            'period' => $acme->period,
-            'purchased_standard_count' => $acme->purchased_standard_count,
-            'purchased_wildcard_count' => $acme->purchased_wildcard_count,
+            'customer' => $user->email,
+            'product_code' => $product->code,
+            'plus' => (int) $acme->plus,
             'refer_id' => $acme->refer_id,
         ];
 
@@ -334,15 +704,22 @@ class Action
             $this->error($e->getMessage());
         }
 
+        $data = $result['data'] ?? [];
         $acme->update([
-            'api_id' => $result['data']['api_id'] ?? null,
-            'vendor_id' => $result['data']['vendor_id'] ?? null,
-            'eab_kid' => $result['data']['eab_kid'] ?? null,
-            'eab_hmac' => $result['data']['eab_hmac'] ?? null,
-            'period_from' => now(),
-            'period_till' => now()->addMonths($acme->period),
+            // 上游返回 data.order_id 作为其订单 ID（非 api_id）
+            'api_id' => $data['order_id'] ?? ($data['api_id'] ?? null),
+            'vendor_id' => $data['vendor_id'] ?? null,
+            'eab_kid' => $data['eab_kid'] ?? null,
+            'eab_hmac' => $data['eab_hmac'] ?? null,
+            // 上游返回订单周期则覆盖本地值，否则用本地计算（now 起算）
+            'period_from' => $data['period_from'] ?? now(),
+            'period_till' => $data['period_till'] ?? now()->addMonths($acme->period),
             'status' => Acme::STATUS_ACTIVE,
         ]);
+
+        if (! empty($data['directory_url'])) {
+            $this->cacheDirectoryUrl((string) $product->ca, (string) $data['directory_url']);
+        }
 
         return $acme->refresh();
     }
@@ -357,5 +734,46 @@ class Action
             Transaction::TYPE_ACME_CANCEL
         );
         Transaction::create($transaction);
+    }
+
+    /**
+     * 检查是否存在 executing 状态的重复任务
+     */
+    private function checkRepeat(array $acmeIds, string $action): void
+    {
+        $exists = Task::where('action', $action)
+            ->whereIn('order_id', $acmeIds)
+            ->where('status', 'executing')
+            ->exists();
+
+        if ($exists) {
+            $this->error('已存在处理中的任务，请稍后刷新页面');
+        }
+    }
+
+    /**
+     * 批量创建 Task 并 dispatch TaskJob（started_at 可选延时）
+     */
+    private function createTasks(array $acmeIds, string $action, int $delaySeconds = 0): void
+    {
+        $startedAt = $delaySeconds > 0 ? now()->addSeconds($delaySeconds) : now();
+        $source = getControllerCategory();
+
+        foreach ($acmeIds as $id) {
+            $task = Task::create([
+                'order_id' => $id,
+                'action' => $action,
+                'started_at' => $startedAt,
+                'status' => 'executing',
+                'source' => $source,
+            ]);
+
+            $job = TaskJob::dispatch(['id' => $task->id])
+                ->onQueue(config('queue.names.tasks'));
+
+            if ($delaySeconds > 0) {
+                $job->delay($startedAt);
+            }
+        }
     }
 }

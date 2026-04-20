@@ -8,6 +8,9 @@ export const actionLabels: Record<string, string> = {
   sync: "同步",
   revalidate: "验证",
   cancel: "取消",
+  commit_acme: "提交ACME",
+  sync_acme: "同步ACME",
+  cancel_acme: "取消ACME",
   callback: "回调",
   delegation: "委托"
 };
@@ -25,6 +28,9 @@ export const actionTypes: Record<string, string> = {
   sync: "primary",
   revalidate: "primary",
   cancel: "danger",
+  commit_acme: "primary",
+  sync_acme: "primary",
+  cancel_acme: "danger",
   callback: "primary",
   delegation: "info"
 };

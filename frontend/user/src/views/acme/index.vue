@@ -1,18 +1,32 @@
 <script setup lang="tsx">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { ref, onMounted, onActivated, onBeforeUnmount } from "vue";
+import { useRoute } from "vue-router";
 import { PureTableBar } from "@shared/components";
 import { PlusSearch } from "plus-pro-components";
 import { useAcme } from "./hook";
 import { useAcmeSearch } from "./search";
 import { useAcmeTable } from "./table";
 import AcmeButtons from "./buttons.vue";
+import AcmeBatch from "./batch.vue";
 import AcmeCreate from "./create.vue";
+import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
+import CloseBold from "~icons/ep/close-bold";
 
 defineOptions({
   name: "Acme"
 });
 
-const { tableColumns } = useAcmeTable();
+const route = useRoute();
+
+const {
+  tableRef,
+  tableColumns,
+  selectedIds,
+  selectedRows,
+  handleSelectionChange,
+  handleCancelSelection,
+  handleRowClick
+} = useAcmeTable();
 
 const {
   loading,
@@ -24,23 +38,41 @@ const {
   onSearch,
   onReset,
   onCollapse
-} = useAcme();
+} = useAcme(tableRef);
 
-const { searchColumns } = useAcmeSearch(onSearch);
+const { searchColumns } = useAcmeSearch(onSearch, search);
 
 const createVisible = ref(false);
+const presetProductId = ref(0);
+// 记录已弹过窗的 product_id，避免切换 tab 回来重复弹出；同 id 再点产品列表申请需手动重开
+const lastHandledPid = ref(0);
 
 type TimerRef = ReturnType<typeof setInterval>;
 let searchTimer: TimerRef | null = null;
 
+// keep-alive 下 onMounted 只触发一次，产品列表跳入需在 onActivated 兜底
+const autoOpenFromQuery = () => {
+  const pid = Number(route.query.product_id);
+  if (pid > 0 && pid !== lastHandledPid.value) {
+    lastHandledPid.value = pid;
+    presetProductId.value = pid;
+    createVisible.value = true;
+  }
+};
+
 onMounted(() => {
   onSearch();
+  autoOpenFromQuery();
   searchTimer = setInterval(
     () => {
       onSearch();
     },
     3 * 60 * 1000
   );
+});
+
+onActivated(() => {
+  autoOpenFromQuery();
 });
 
 onBeforeUnmount(() => {
@@ -59,7 +91,7 @@ onBeforeUnmount(() => {
       <PlusSearch
         v-model="search"
         :columns="searchColumns"
-        :show-number="2"
+        :show-number="3"
         :row-props="{ gutter: 12 }"
         :col-props="{ xs: 24, sm: 12, md: 8, lg: 6, xl: 4 }"
         label-width="80"
@@ -76,12 +108,48 @@ onBeforeUnmount(() => {
     </div>
     <PureTableBar title="ACME订阅" :columns="tableColumns" @refresh="onSearch">
       <template #buttons>
-        <el-button type="primary" @click="createVisible = true"
+        <el-button
+          type="primary"
+          @click="
+            () => {
+              presetProductId = 0;
+              createVisible = true;
+            }
+          "
           >创建订阅</el-button
         >
       </template>
       <template v-slot="{ size, dynamicColumns }">
+        <div
+          v-if="selectedIds.length > 0"
+          v-motion-fade
+          class="bg-(--el-fill-color-light) w-full h-[46px] mb-2 pl-3 pr-2 flex items-center"
+        >
+          <div class="flex-auto">
+            <el-tooltip placement="top" content="取消选择">
+              <el-button
+                type="primary"
+                size="small"
+                class="w-[15px]! p-0! h-[15px]! rounded-[3px]!"
+                :icon="useRenderIcon(CloseBold)"
+                @click="handleCancelSelection"
+              />
+            </el-tooltip>
+            <span
+              style="font-size: var(--el-font-size-base)"
+              class="text-[rgba(42,46,54,0.5)] dark:text-[rgba(220,220,242,0.5)] ml-2"
+            >
+              已选 {{ selectedIds.length }} 项
+            </span>
+          </div>
+          <AcmeBatch
+            :selected-rows="selectedRows"
+            :table-ref="tableRef?.getTableRef?.()"
+            @refresh="onSearch"
+          />
+        </div>
         <pure-table
+          ref="tableRef"
           row-key="id"
           align-whole="left"
           table-layout="auto"
@@ -98,6 +166,8 @@ onBeforeUnmount(() => {
           }"
           @page-size-change="handleSizeChange"
           @page-current-change="handleCurrentChange"
+          @row-click="handleRowClick"
+          @selection-change="handleSelectionChange"
         >
           <template #operation="{ row, size }">
             <AcmeButtons :row="row" :size="size" @refresh="onSearch" />
@@ -106,7 +176,11 @@ onBeforeUnmount(() => {
       </template>
     </PureTableBar>
 
-    <AcmeCreate v-model:visible="createVisible" @success="onSearch" />
+    <AcmeCreate
+      v-model:visible="createVisible"
+      :product-id="presetProductId"
+      @success="onSearch"
+    />
   </div>
 </template>
 

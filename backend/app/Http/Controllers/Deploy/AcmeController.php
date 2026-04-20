@@ -17,8 +17,7 @@ class AcmeController extends Controller
         $request->validate([
             'product_id' => 'required|integer|exists:products,id',
             'period' => 'required|integer',
-            'purchased_standard_count' => 'integer|min:0',
-            'purchased_wildcard_count' => 'integer|min:0',
+            'plus' => 'nullable|integer|in:0,1',
         ]);
 
         $userId = $request->attributes->get('authenticated_user_id');
@@ -31,8 +30,8 @@ class AcmeController extends Controller
             'user_id' => $userId,
             'product_id' => $request->input('product_id'),
             'period' => $request->input('period'),
-            'purchased_standard_count' => (int) $request->input('purchased_standard_count', 0),
-            'purchased_wildcard_count' => (int) $request->input('purchased_wildcard_count', 0),
+            'plus' => (int) $request->input('plus', 1),
+            'channel' => 'deploy',
         ]);
     }
 
@@ -44,14 +43,15 @@ class AcmeController extends Controller
      */
     public function get(int $id): void
     {
-        $acme = Acme::find($id);
+        $acme = Acme::with('product')->find($id);
 
         if (! $acme) {
             $this->error('Order not found');
         }
 
-        $acme->makeVisible('eab_hmac');
+        $data = $acme->makeVisible('eab_hmac')->toArray();
+        $data['directory_url'] = app(Action::class)->syncDirectoryUrl($acme);
 
-        $this->success($acme->toArray());
+        $this->success($data);
     }
 }

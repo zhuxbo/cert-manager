@@ -146,7 +146,16 @@ Route::middleware('api.user')->group(function () {
         Route::post('new', [AcmeController::class, 'new']);
         Route::post('pay/{id}', [AcmeController::class, 'pay'])->where('id', '[0-9]+');
         Route::post('commit/{id}', [AcmeController::class, 'commit'])->where('id', '[0-9]+');
+        Route::post('sync/{id}', [AcmeController::class, 'sync'])->where('id', '[0-9]+');
         Route::post('commit-cancel/{id}', [AcmeController::class, 'commitCancel'])->where('id', '[0-9]+');
+        Route::post('revoke-cancel/{id}', [AcmeController::class, 'revokeCancel'])->where('id', '[0-9]+');
+        Route::post('remark/{id}', [AcmeController::class, 'remark'])->where('id', '[0-9]+');
+        Route::post('batch-pay', [AcmeController::class, 'batchPay']);
+        Route::post('batch-commit', [AcmeController::class, 'batchCommit']);
+        Route::post('batch-sync', [AcmeController::class, 'batchSync']);
+        Route::post('batch-commit-cancel', [AcmeController::class, 'batchCommitCancel']);
+        Route::post('batch-revoke-cancel', [AcmeController::class, 'batchRevokeCancel']);
+        Route::post('batch-copy-eab', [AcmeController::class, 'batchCopyEab']);
     });
 
     // CNAME 委托管理路由

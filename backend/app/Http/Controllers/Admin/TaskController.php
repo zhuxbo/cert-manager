@@ -8,6 +8,7 @@ use App\Http\Requests\Task\GetIdsRequest;
 use App\Http\Requests\Task\IndexRequest;
 use App\Jobs\TaskJob;
 use App\Models\Task;
+use App\Services\Acme\Action as AcmeAction;
 use App\Services\Order\Action;
 
 class TaskController extends Controller
@@ -104,7 +105,7 @@ class TaskController extends Controller
 
     /**
      * 执行任务
-     * 只有 commit revalidate sync cancel callback delegation 可以加入任务队列
+     * 只有 commit revalidate sync cancel cancel_acme callback delegation 可以加入任务队列
      */
     public function batchExecute(GetIdsRequest $request): void
     {
@@ -120,7 +121,20 @@ class TaskController extends Controller
         foreach ($tasks as $task) {
             $action = $task->action;
             try {
-                (new Action)->$action($task->order_id);
+                if (in_array($action, ['cancel_acme', 'commit_acme', 'sync_acme'], true)) {
+                    $method = str_replace('_acme', '', $action);
+                    $acmeAction = new AcmeAction;
+                    if (! method_exists($acmeAction, $method)) {
+                        throw new ApiResponseException("AcmeAction::$method 方法不存在");
+                    }
+                    $acmeAction->$method($task->order_id);
+                } else {
+                    $orderAction = new Action;
+                    if (! method_exists($orderAction, $action)) {
+                        throw new ApiResponseException("Action::$action 方法不存在");
+                    }
+                    $orderAction->$action($task->order_id);
+                }
             } catch (ApiResponseException $e) {
                 $result = $e->getApiResponse();
                 $data['result'] = $result;
@@ -157,7 +171,7 @@ class TaskController extends Controller
 
         foreach ($tasks as $task) {
             $data = ['status' => 'executing', 'weight' => $task->id];
-            if ($task->action === 'cancel') {
+            if (in_array($task->action, ['cancel', 'cancel_acme'])) {
                 $data['started_at'] = now()->addSeconds(120);
             } else {
                 $data['started_at'] = now();

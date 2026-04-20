@@ -192,7 +192,9 @@ test('new 成功创建订单', function () {
         ->and($acme->user_id)
         ->toBe($user->id)
         ->and($acme->product_id)
-        ->toBe($product->id);
+        ->toBe($product->id)
+        ->and($acme->channel)
+        ->toBe('web');
 });
 
 // ==================== pay ====================
@@ -291,8 +293,9 @@ test('commitCancel 成功取消', function () {
     $acme->refresh();
     expect($acme->status)
         ->toBe(Acme::STATUS_CANCELLING)
+        // 仅提交取消阶段不记录 cancelled_at（实际取消完成后由 cancel() 写入）
         ->and($acme->cancelled_at)
-        ->not->toBeNull();
+        ->toBeNull();
 });
 
 test('commitCancel 他人订单返回 404', function () {
@@ -312,4 +315,156 @@ test('commitCancel 他人订单返回 404', function () {
     $this->actingAsUser($user)
         ->postJson("/api/acme/commit-cancel/$acme->id")
         ->assertNotFound();
+});
+
+// ==================== revokeCancel ====================
+
+test('revokeCancel 撤回取消恢复 active', function () {
+    Queue::fake();
+
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct();
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-123',
+        'amount' => '100.00',
+    ]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/acme/commit-cancel/$acme->id")
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/acme/revoke-cancel/$acme->id")
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $acme->refresh();
+    expect($acme->status)
+        ->toBe(Acme::STATUS_ACTIVE)
+        ->and($acme->cancelled_at)
+        ->toBeNull();
+    expect(\App\Models\Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+});
+
+test('revokeCancel 他人订单返回 404', function () {
+    $user = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $product = createUserAcmeProduct();
+    $acme = Acme::factory()->create([
+        'user_id' => $otherUser->id,
+        'product_id' => $product->id,
+        'status' => Acme::STATUS_CANCELLING,
+    ]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/acme/revoke-cancel/$acme->id")
+        ->assertNotFound();
+});
+
+// ==================== sync ====================
+
+test('user sync 接口调用 Action::sync', function () {
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct(['source' => 'default']);
+    $acme = Acme::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'status' => 'active',
+        'api_id' => 'order-123',
+    ]);
+
+    setupUserGatewaySettings();
+    Http::fake([
+        '*' => Http::response(['code' => 1, 'data' => ['status' => 'active']]),
+    ]);
+
+    $res = $this->actingAsUser($user)
+        ->postJson("/api/acme/sync/$acme->id");
+
+    $res->assertJsonPath('code', 1);
+});
+
+test('user sync 他人订单应失败（UserScope 隔离）', function () {
+    $user = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $product = createUserAcmeProduct();
+    $other = Acme::factory()->create([
+        'user_id' => $otherUser->id,
+        'product_id' => $product->id,
+        'api_id' => 'x',
+    ]);
+
+    $res = $this->actingAsUser($user)
+        ->postJson("/api/acme/sync/$other->id");
+
+    $res->assertJsonPath('code', 0);
+});
+
+// ==================== batch-pay ====================
+
+test('user batch-pay 成功支付自己的 unpaid', function () {
+    $user = User::factory()->withBalance('500.00')->create();
+    $product = createUserAcmeProduct();
+    createUserProductPrice($product, $user);
+    setupUserGatewaySettings();
+
+    $a = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'unpaid', 'amount' => '100.00']);
+
+    $res = $this->actingAsUser($user)->postJson('/api/acme/batch-pay', ['ids' => [$a->id]]);
+    $res->assertJsonPath('code', 1);
+});
+
+test('user batch-pay 不能支付他人订单（UserScope 隔离）', function () {
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct();
+    $other = Acme::factory()->create(['user_id' => 99999, 'product_id' => $product->id, 'status' => 'unpaid', 'amount' => '100.00']);
+
+    $res = $this->actingAsUser($user)->postJson('/api/acme/batch-pay', ['ids' => [$other->id]]);
+    $res->assertJsonPath('code', 0);
+    $res->assertJsonPath('msg', '没有可以支付的订单');
+});
+
+// ==================== batch-commit ====================
+
+test('user batch-commit 仅处理 pending 并入队 commit_acme', function () {
+    Queue::fake();
+
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct();
+    $pending = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'pending']);
+    $unpaid = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'unpaid']);
+
+    $res = $this->actingAsUser($user)->postJson('/api/acme/batch-commit', ['ids' => [$pending->id, $unpaid->id]]);
+    $res->assertJsonPath('code', 1);
+    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+});
+
+// ==================== batch-sync ====================
+
+test('user batch-sync 仅处理 active 并入队 sync_acme', function () {
+    Queue::fake();
+
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct();
+    $active = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'active', 'api_id' => 'x1']);
+    $pending = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'status' => 'pending']);
+
+    $res = $this->actingAsUser($user)->postJson('/api/acme/batch-sync', ['ids' => [$active->id, $pending->id]]);
+    $res->assertJsonPath('code', 1);
+    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+});
+
+// ==================== batch-copy-eab ====================
+
+test('user batch-copy-eab 返回含 eab_kid 的文本', function () {
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct(['ca' => 'google']);
+    setupUserGatewaySettings();
+
+    $a = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID1', 'eab_hmac' => 'HMAC1']);
+
+    $res = $this->actingAsUser($user)->postJson('/api/acme/batch-copy-eab', ['ids' => [$a->id]]);
+    $res->assertJsonPath('code', 1);
+    expect($res->json('data.text'))->toContain('eab_kid=KID1');
 });

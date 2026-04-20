@@ -75,7 +75,8 @@ test('new 一步到位成功', function () {
     $acme = Acme::withoutGlobalScopes()->find($response->json('data.order_id'));
     expect($acme)
         ->status->toBe(Acme::STATUS_ACTIVE)
-        ->user_id->toBe($user->id);
+        ->user_id->toBe($user->id)
+        ->channel->toBe('deploy');
 });
 
 test('new 产品不存在报错', function () {

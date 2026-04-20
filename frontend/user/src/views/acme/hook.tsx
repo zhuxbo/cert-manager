@@ -1,9 +1,9 @@
 import type { PaginationProps } from "@pureadmin/table";
-import { reactive, ref, toRaw } from "vue";
+import { reactive, ref, toRaw, nextTick } from "vue";
 import type { AcmeParams } from "@/api/acme";
 import * as acmeApi from "@/api/acme";
 
-export function useAcme() {
+export function useAcme(tableRef?: any) {
   const search = ref<AcmeParams>({});
 
   const dataList = ref([]);
@@ -42,6 +42,10 @@ export function useAcme() {
         pagination.total = data.total;
         pagination.pageSize = data.pageSize;
         pagination.currentPage = data.currentPage;
+
+        nextTick(() => {
+          tableRef?.value?.getTableRef?.()?.clearSelection?.();
+        });
       })
       .finally(() => {
         loading.value = false;
