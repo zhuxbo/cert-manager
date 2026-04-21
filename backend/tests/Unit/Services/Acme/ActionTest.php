@@ -231,6 +231,19 @@ test('pay rejects when balance insufficient', function () {
     );
 });
 
+test('pay 串行第二次调用报错，保证只扣一次费（基础回归）', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    createAcmeProductPrice($product->id, $user);
+    $acme = createAcmeOrder($user, $product);
+
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    expectApiError(fn () => $this->service->pay($acme->id, false), '未支付状态');
+
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_ORDER)->count())->toBe(1);
+});
+
 // ==================== commit ====================
 
 test('commit 成功调用 API 转 active 返回 eab 数据', function () {

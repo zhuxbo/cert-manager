@@ -16,6 +16,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class TaskJob implements ShouldQueue
@@ -34,15 +35,24 @@ class TaskJob implements ShouldQueue
      */
     public function handle(): void
     {
-        $task = TaskModel::where('id', $this->data['id'] ?? 0)
-            ->where('status', 'executing')
-            ->where('started_at', '<=', now())
-            ->lockForUpdate()
-            ->first();
-
         $failedException = null;
-        if ($task) {
+
+        // 整体包事务：lockForUpdate 行锁必须在事务中才真正持有到 COMMIT
+        // action 内部可能抛 ApiResponseException（success/error 均是）——必须被 try/catch 兜住，
+        // 避免冒出闭包触发 Laravel 自动 rollback，导致 task 状态无法落库
+        DB::transaction(function () use (&$failedException) {
+            $task = TaskModel::where('id', $this->data['id'] ?? 0)
+                ->where('status', 'executing')
+                ->where('started_at', '<=', now())
+                ->lockForUpdate()
+                ->first();
+
+            if (! $task) {
+                return;
+            }
+
             $action = $task->action;
+            $data = [];
 
             try {
                 if (in_array($action, ['cancel_acme', 'commit_acme', 'sync_acme'], true)) {
@@ -83,8 +93,9 @@ class TaskJob implements ShouldQueue
             $data['weight'] = 0;
             $data['last_execute_at'] = now();
             $task->update($data);
-        }
+        });
 
+        // $this->fail() 是 Queue framework 机制，不属于我们的事务范畴
         if ($failedException) {
             $this->fail($failedException);
         }

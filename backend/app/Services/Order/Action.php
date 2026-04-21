@@ -11,6 +11,7 @@ use App\Models\Callback;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\Task;
 use App\Models\Transaction;
 use App\Services\Acme\Api\Api as AcmeApi;
 use App\Services\Delegation\AutoDcvTxtService;
@@ -750,6 +751,11 @@ class Action
     /**
      * 提交取消
      *
+     * 并发安全：processing/approving/active 分支在事务内持 order 行级锁，
+     * 与 cancel TaskJob / revokeCancel / batchCommitCancel 串行化；锁内二次
+     * 校验 latestCert.status，避免"双重 cancelling"或"撤回竞争"产生的脏状态。
+     * unpaid/pending 分支委派给 delete/cancelPending，其自身已持锁。
+     *
      * @throws Throwable
      */
     public function commitCancel(int $orderId): void
@@ -771,14 +777,38 @@ class Action
         $status === 'failed' && $this->error('订单已失败');
 
         if (in_array($status, ['processing', 'approving', 'active'])) {
-            $refundPeriod = $product->refund_period ?? 0;
-            $order->created_at->timestamp < time() - 86400 * $refundPeriod
-            && $this->error("订单已超过 $refundPeriod 天不能取消");
+            DB::transaction(function () use ($orderId, $product) {
+                // 锁顺序 1：先锁 sync/revalidate task（与 TaskJob::handle 的 task→order 顺序一致，避免死锁）
+                Task::where('order_id', $orderId)
+                    ->whereIn('action', ['sync', 'revalidate'])
+                    ->whereIn('status', ['executing', 'stopped'])
+                    ->lockForUpdate()
+                    ->get();
 
-            // 2分钟后取消
-            $order->latestCert->update(['status' => 'cancelling']);
-            $this->deleteTask($orderId, 'sync,revalidate');
-            $this->createTask($orderId, 'cancel');
+                // 锁顺序 2：再锁 order
+                $order = Order::with(['latestCert'])
+                    ->whereHas('latestCert')
+                    ->lock()
+                    ->find($orderId);
+
+                if (! $order) {
+                    $this->error('订单或相关数据不存在');
+                }
+
+                // 锁内二次校验状态，拦住并发 commitCancel / revokeCancel 竞争
+                $lockedStatus = $order->latestCert->status;
+                in_array($lockedStatus, ['processing', 'approving', 'active'])
+                || $this->error('订单状态不是可取消状态');
+
+                $refundPeriod = $product->refund_period ?? 0;
+                $order->created_at->timestamp < time() - 86400 * $refundPeriod
+                && $this->error("订单已超过 $refundPeriod 天不能取消");
+
+                // 2分钟后取消
+                $order->latestCert->update(['status' => 'cancelling']);
+                $this->deleteTask($orderId, 'sync,revalidate');
+                $this->createTask($orderId, 'cancel');
+            });
         }
 
         $this->success();
@@ -789,15 +819,38 @@ class Action
      *
      * 设计说明：状态统一恢复为 approving，同时创建 sync 任务，
      * 同步一次即可从上游恢复正确状态（processing/approving/active）
+     *
+     * 并发安全：按 "task → order" 的统一锁顺序拿锁（与 TaskJob::handle 一致），避免死锁。
+     * 若 TaskJob 正在 cancel 内，此处 task lockForUpdate 会阻塞至 TaskJob 提交，
+     * 拿到 task 锁后再锁 order，此时 latestCert.status 已非 cancelling，校验报错退出。
+     * 避免"撤回成功 + 钱已退 + 上游已吊销"的资金/状态三重损害与 InnoDB 死锁回滚。
      */
     public function revokeCancel(int $orderId): void
     {
-        $order = FindUtil::Order($orderId);
-        $order->latestCert->status !== 'cancelling' && $this->error('订单不在取消中状态');
+        DB::transaction(function () use ($orderId) {
+            // 锁顺序 1：先锁 task（与 TaskJob 一致，避免 task↔order 循环等待死锁）
+            Task::where('order_id', $orderId)
+                ->where('action', 'cancel')
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
 
-        $this->deleteTask($orderId, 'cancel');
-        $order->latestCert->update(['status' => 'approving']);
-        $this->createTask($orderId, 'sync');
+            // 锁顺序 2：再锁 order
+            $order = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($orderId);
+
+            if (! $order) {
+                $this->error('订单或相关数据不存在');
+            }
+
+            $order->latestCert->status !== 'cancelling' && $this->error('订单不在取消中状态');
+
+            $this->deleteTask($orderId, 'cancel');
+            $order->latestCert->update(['status' => 'approving']);
+            $this->createTask($orderId, 'sync');
+        });
 
         $this->success();
     }

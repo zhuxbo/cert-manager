@@ -10,6 +10,7 @@ use App\Models\Acme;
 use App\Models\Product;
 use App\Models\Task;
 use App\Models\Transaction;
+use App\Models\User;
 use App\Services\Acme\Api\Api;
 use App\Services\Order\Utils\OrderUtil;
 use App\Traits\ApiResponse;
@@ -239,11 +240,18 @@ class Action
 
     /**
      * 提交订单到上游系统 — 成功后状态 → active
+     *
+     * 并发安全：事务内持 acme 行级锁，包含上游 API 调用。与 commitCancel 串行化，
+     * 避免"提交到上游 + 本地状态被 commitCancel 改为 cancelled 后又被 commit 覆盖回 active"
+     * 导致的"已退款但订单仍激活"或"上游订单存在但本地 cancelled"的资金/状态错乱。
      */
     public function commit(int $acmeId): void
     {
-        $acme = Acme::findOrFail($acmeId);
-        $acme = $this->commitOrder($acme);
+        $acme = DB::transaction(function () use ($acmeId) {
+            $locked = Acme::where('id', $acmeId)->lock()->firstOrFail();
+
+            return $this->commitOrder($locked);
+        });
 
         $acme->makeVisible('eab_hmac');
         $this->success([
@@ -326,7 +334,9 @@ class Action
                     'source' => getControllerCategory(),
                 ]);
 
+                // afterCommit 防止 worker 在外层事务提交前消费 job 导致 task 查无记录静默丢失
                 TaskJob::dispatch(['id' => $task->id])
+                    ->afterCommit()
                     ->delay(now()->addSeconds(123))
                     ->onQueue(config('queue.names.tasks'));
             }
@@ -361,12 +371,21 @@ class Action
      * 撤回取消 — 清理延时任务，状态回滚至 active
      *
      * 仅在 acme 状态仍为 cancelling 时有效。
-     * 并发安全：acme 行级锁保证与 cancel/cancelNow 串行化；若 TaskJob 已在 cancel 内持锁，
-     * 此处会阻塞至 cancel 提交完成，再次校验 status 时已非 cancelling 而报错退出。
+     * 并发安全：按 "task → acme" 的统一锁顺序拿锁（与 TaskJob::handle 一致），避免死锁。
+     * 若 TaskJob 正在 cancel 内，此处 task lockForUpdate 会阻塞至 TaskJob 提交；
+     * 拿到 task 锁后再锁 acme，此时 status 已非 cancelling，校验报错退出。
      */
     public function revokeCancel(int $acmeId): void
     {
         DB::transaction(function () use ($acmeId) {
+            // 锁顺序 1：先锁 task（与 TaskJob 一致，避免 task↔acme 循环等待死锁）
+            Task::where('order_id', $acmeId)
+                ->where('action', 'cancel_acme')
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
+
+            // 锁顺序 2：再锁 acme
             $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
 
             if ($acme->status !== Acme::STATUS_CANCELLING) {
@@ -635,38 +654,47 @@ class Action
 
     /**
      * 支付订单（内部方法）
+     *
+     * 并发安全：acme 行锁 + user 行锁，同一用户跨订单并发支付时序列化余额校验，
+     * 避免两笔不同订单都基于旧余额通过 credit_limit 检查后双双扣款至额度以下。
      */
     private function payOrder(Acme $acme): Acme
     {
-        if ($acme->status !== Acme::STATUS_UNPAID) {
-            $this->error('订单不是未支付状态');
-        }
+        DB::transaction(function () use ($acme) {
+            // 锁内重取 acme：串行化同一订单的重复支付
+            $locked = Acme::where('id', $acme->id)->lock()->firstOrFail();
 
-        $user = $acme->user;
+            if ($locked->status !== Acme::STATUS_UNPAID) {
+                $this->error('订单不是未支付状态');
+            }
 
-        // 构造交易数据（金额取负数表示扣费）
-        $transactionAmount = '-'.$acme->amount;
+            // 锁内取 user：序列化同一用户并发的不同订单支付。
+            // Transaction::creating 虽也 lockForUpdate user 并扣款，但不再校验 credit_limit，
+            // 若此处仅读快照通过校验，并发的另一订单会把余额推至额度以下。
+            $user = User::where('id', $locked->user_id)->lockForUpdate()->firstOrFail();
 
-        // 管理员支付跳过余额检测，允许欠费支付
-        $balanceAfter = bcadd((string) $user->balance, $transactionAmount, 2);
-        if (bccomp($balanceAfter, (string) $user->credit_limit, 2) === -1) {
-            Auth::guard('admin')->check() || $this->error('余额不足');
-        }
+            // 构造交易数据（金额取负数表示扣费）
+            $transactionAmount = '-'.$locked->amount;
 
-        DB::transaction(function () use ($acme, $user, $transactionAmount) {
+            // 管理员支付跳过余额检测，允许欠费支付
+            $balanceAfter = bcadd((string) $user->balance, $transactionAmount, 2);
+            if (bccomp($balanceAfter, (string) $user->credit_limit, 2) === -1) {
+                Auth::guard('admin')->check() || $this->error('余额不足');
+            }
+
             Transaction::create([
                 'user_id' => $user->id,
                 'type' => Transaction::TYPE_ACME_ORDER,
-                'transaction_id' => $acme->id,
+                'transaction_id' => $locked->id,
                 'amount' => $transactionAmount,
-                'standard_count' => $acme->purchased_standard_count,
-                'wildcard_count' => $acme->purchased_wildcard_count,
+                'standard_count' => $locked->purchased_standard_count,
+                'wildcard_count' => $locked->purchased_wildcard_count,
             ]);
 
-            $acme->update(['status' => Acme::STATUS_PENDING]);
+            $locked->update(['status' => Acme::STATUS_PENDING]);
         });
 
-        return $acme->refresh();
+        return Acme::findOrFail($acme->id);
     }
 
     /**
@@ -768,7 +796,9 @@ class Action
                 'source' => $source,
             ]);
 
+            // afterCommit 防止 worker 在外层事务提交前消费 job 导致 task 查无记录静默丢失
             $job = TaskJob::dispatch(['id' => $task->id])
+                ->afterCommit()
                 ->onQueue(config('queue.names.tasks'));
 
             if ($delaySeconds > 0) {
