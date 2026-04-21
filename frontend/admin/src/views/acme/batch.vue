@@ -1,32 +1,41 @@
 <template>
   <div class="batch-buttons">
-    <el-button
+    <el-popconfirm
       v-if="canPay()"
-      type="primary"
-      size="small"
-      class="ml-2"
-      @click="pay()"
+      title="确定要为这些订单扣款支付吗？"
+      width="200px"
+      @confirm="pay()"
     >
-      批量支付
-    </el-button>
-    <el-button
+      <template #reference>
+        <el-button type="primary" size="small" class="ml-2">
+          批量支付
+        </el-button>
+      </template>
+    </el-popconfirm>
+    <el-popconfirm
       v-if="canCommit()"
-      type="primary"
-      size="small"
-      class="ml-2"
-      @click="commit()"
+      title="确定要提交这些订单到上游吗？"
+      width="200px"
+      @confirm="commit()"
     >
-      批量提交
-    </el-button>
-    <el-button
+      <template #reference>
+        <el-button type="primary" size="small" class="ml-2">
+          批量提交
+        </el-button>
+      </template>
+    </el-popconfirm>
+    <el-popconfirm
       v-if="canSync()"
-      type="primary"
-      size="small"
-      class="ml-2"
-      @click="sync()"
+      title="确定要同步这些订单状态吗？"
+      width="200px"
+      @confirm="sync()"
     >
-      批量同步
-    </el-button>
+      <template #reference>
+        <el-button type="primary" size="small" class="ml-2">
+          批量同步
+        </el-button>
+      </template>
+    </el-popconfirm>
     <el-popconfirm
       v-if="canCommitCancel()"
       title="确定要取消这些订单吗？"
@@ -39,15 +48,18 @@
         </el-button>
       </template>
     </el-popconfirm>
-    <el-button
+    <el-popconfirm
       v-if="canRevokeCancel()"
-      type="warning"
-      size="small"
-      class="ml-2"
-      @click="revokeCancel()"
+      title="确定要撤回这些订单的取消吗？"
+      width="200px"
+      @confirm="revokeCancel()"
     >
-      批量撤回取消
-    </el-button>
+      <template #reference>
+        <el-button type="warning" size="small" class="ml-2">
+          批量撤回取消
+        </el-button>
+      </template>
+    </el-popconfirm>
     <el-button
       v-if="canCopyEab()"
       type="primary"
@@ -171,12 +183,18 @@ const revokeCancel = () => {
 };
 
 const copyEab = async () => {
-  const ids = getSelectedRows()
-    .filter(r => !!r.eab_kid)
-    .map(r => r.id);
-  if (!ids.length)
+  const rows = getSelectedRows().filter(r => !!r.eab_kid);
+  if (!rows.length)
     return message("请至少选择一个已有 EAB 的订单", { type: "error" });
 
+  // Admin 端后端 batchCopyEab 禁止跨用户，前端先拦截以给出明确提示
+  const userIds = Array.from(new Set(rows.map(r => r.user_id)));
+  if (userIds.length > 1)
+    return message("不支持跨用户复制 EAB，请选择同一用户的订单", {
+      type: "error"
+    });
+
+  const ids = rows.map(r => r.id);
   const res = await acmeApi.batchCopyEabAcme(ids);
   if (res.code !== 1) return;
 

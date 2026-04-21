@@ -65,6 +65,8 @@ onMounted(() => {
   autoOpenFromQuery();
   searchTimer = setInterval(
     () => {
+      // 用户已勾选批量操作目标行时跳过本次自动刷新，避免清空选择
+      if (selectedIds.value.length > 0) return;
       onSearch();
     },
     3 * 60 * 1000

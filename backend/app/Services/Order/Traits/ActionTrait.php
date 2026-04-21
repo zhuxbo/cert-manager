@@ -994,6 +994,14 @@ trait ActionTrait
     {
         DB::beginTransaction();
         try {
+            // task → order 锁顺序：先锁 commit task 再锁 order 行，与
+            // revokeCancel / commitCancel / TaskJob::handle 的锁顺序统一防死锁
+            Task::where('order_id', $order_id)
+                ->where('action', 'commit')
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
+
             $order = Order::with(['latestCert'])
                 ->whereHas('latestCert')
                 ->lock()
@@ -1068,13 +1076,15 @@ trait ActionTrait
                 $cert->update(['status' => 'cancelled']);
                 $order->update(['cancelled_at' => now()]);
             }
+
+            // 事务内、task 锁保护下 DELETE，避免与 TaskJob::handle 竞争
+            $this->deleteTask($order_id, 'commit');
+
             DB::commit();
         } catch (Throwable $e) {
             DB::rollback();
             throw $e;
         }
-
-        $this->deleteTask($order_id, 'commit');
     }
 
     /**

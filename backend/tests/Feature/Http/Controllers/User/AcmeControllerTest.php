@@ -245,7 +245,7 @@ test('commit 成功提交', function () {
         'fake-gateway.test/*' => Http::response([
             'code' => 1,
             'data' => [
-                'api_id' => 'gw-123',
+                'order_id' => 'gw-123',
                 'vendor_id' => 'v-456',
                 'eab_kid' => 'kid-abc',
                 'eab_hmac' => 'hmac-xyz',

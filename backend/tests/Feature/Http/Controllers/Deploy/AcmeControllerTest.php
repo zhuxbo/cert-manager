@@ -54,7 +54,7 @@ test('new 一步到位成功', function () {
     Http::fake([
         'fake-gateway.test/*' => Http::response([
             'code' => 1,
-            'data' => ['api_id' => 'gw-123', 'vendor_id' => 'v-456', 'eab_kid' => 'kid-deploy', 'eab_hmac' => 'hmac-deploy'],
+            'data' => ['order_id' => 'gw-123', 'vendor_id' => 'v-456', 'eab_kid' => 'kid-deploy', 'eab_hmac' => 'hmac-deploy'],
         ]),
     ]);
 

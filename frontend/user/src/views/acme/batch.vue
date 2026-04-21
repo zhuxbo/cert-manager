@@ -1,32 +1,41 @@
 <template>
   <div class="batch-buttons">
-    <el-button
+    <el-popconfirm
       v-if="canPay()"
-      type="primary"
-      size="small"
-      class="ml-2"
-      @click="pay()"
+      title="确定要为这些订单扣款支付吗？"
+      width="200px"
+      @confirm="pay()"
     >
-      批量支付
-    </el-button>
-    <el-button
+      <template #reference>
+        <el-button type="primary" size="small" class="ml-2">
+          批量支付
+        </el-button>
+      </template>
+    </el-popconfirm>
+    <el-popconfirm
       v-if="canCommit()"
-      type="primary"
-      size="small"
-      class="ml-2"
-      @click="commit()"
+      title="确定要提交这些订单到上游吗？"
+      width="200px"
+      @confirm="commit()"
     >
-      批量提交
-    </el-button>
-    <el-button
+      <template #reference>
+        <el-button type="primary" size="small" class="ml-2">
+          批量提交
+        </el-button>
+      </template>
+    </el-popconfirm>
+    <el-popconfirm
       v-if="canSync()"
-      type="primary"
-      size="small"
-      class="ml-2"
-      @click="sync()"
+      title="确定要同步这些订单状态吗？"
+      width="200px"
+      @confirm="sync()"
     >
-      批量同步
-    </el-button>
+      <template #reference>
+        <el-button type="primary" size="small" class="ml-2">
+          批量同步
+        </el-button>
+      </template>
+    </el-popconfirm>
     <el-popconfirm
       v-if="canCommitCancel()"
       title="确定要取消这些订单吗？"
@@ -39,15 +48,18 @@
         </el-button>
       </template>
     </el-popconfirm>
-    <el-button
+    <el-popconfirm
       v-if="canRevokeCancel()"
-      type="warning"
-      size="small"
-      class="ml-2"
-      @click="revokeCancel()"
+      title="确定要撤回这些订单的取消吗？"
+      width="200px"
+      @confirm="revokeCancel()"
     >
-      批量撤回取消
-    </el-button>
+      <template #reference>
+        <el-button type="warning" size="small" class="ml-2">
+          批量撤回取消
+        </el-button>
+      </template>
+    </el-popconfirm>
     <el-button
       v-if="canCopyEab()"
       type="primary"

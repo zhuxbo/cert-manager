@@ -25,11 +25,19 @@ return new class extends Migration
             }
         }
 
-        // plus 列（赠送时间，0/1）
+        // plus 列（赠送时间，0/1，默认 1）
         if (! Schema::hasColumn('acmes', 'plus')) {
             Schema::table('acmes', function (Blueprint $table) {
-                $table->unsignedTinyInteger('plus')->default(0)->after('period')->comment('赠送时间');
+                $table->unsignedTinyInteger('plus')->default(1)->after('period')->comment('赠送时间');
             });
+        } else {
+            // 列已存在但 default 非 1（早期版本建表时 default 为 0）→ ALTER 修正
+            $plus = collect(Schema::getColumns('acmes'))->firstWhere('name', 'plus');
+            if ($plus && (int) ($plus['default'] ?? 1) !== 1) {
+                Schema::table('acmes', function (Blueprint $table) {
+                    $table->unsignedTinyInteger('plus')->default(1)->comment('赠送时间')->change();
+                });
+            }
         }
 
         // channel 列（提交通道：web/admin/api/deploy/auto）

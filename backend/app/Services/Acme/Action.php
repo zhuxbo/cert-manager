@@ -615,12 +615,12 @@ class Action
         }
 
         try {
-            $result = (new Api)->get($acme->id);
-            $url = $result['data']['directory_url'] ?? null;
-            if ($url) {
-                $this->cacheDirectoryUrl($ca, (string) $url);
-
-                return (string) $url;
+            // 复用 sync() 的 10s 防抖窗口，避免详情页反复点击触发重复上游请求；
+            // 顺带更新 status / period 等上游权威字段
+            $this->sync($acme->id, true);
+            $cached = Cache::get($this->directoryUrlCacheKey($ca));
+            if ($cached) {
+                return (string) $cached;
             }
         } catch (\Throwable) {
             // 上游暂不可达不应阻塞详情接口，静默降级为 null
@@ -733,9 +733,12 @@ class Action
         }
 
         $data = $result['data'] ?? [];
+        if (empty($data['order_id'])) {
+            // 上游权威字段为 data.order_id（非 api_id），缺失即视为响应异常
+            $this->error('上游返回缺少 order_id，无法登记 ACME 订单');
+        }
         $acme->update([
-            // 上游返回 data.order_id 作为其订单 ID（非 api_id）
-            'api_id' => $data['order_id'] ?? ($data['api_id'] ?? null),
+            'api_id' => $data['order_id'],
             'vendor_id' => $data['vendor_id'] ?? null,
             'eab_kid' => $data['eab_kid'] ?? null,
             'eab_hmac' => $data['eab_hmac'] ?? null,

@@ -745,7 +745,7 @@ test('newAndCommit 一步完成 new+pay+commit', function () {
         'fake-gateway.test/*' => Http::response([
             'code' => 1,
             'data' => [
-                'api_id' => 'gw-deploy',
+                'order_id' => 'gw-deploy',
                 'vendor_id' => 'v-deploy',
                 'eab_kid' => 'kid-deploy',
                 'eab_hmac' => 'hmac-deploy',
@@ -770,8 +770,7 @@ test('newAndCommit 一步完成 new+pay+commit', function () {
 });
 
 test('commit 主路径读上游 data.order_id 写入本地 api_id', function () {
-    // 覆盖 commitOrder 的主路径：上游响应使用 order_id（权威字段），本地落到 acmes.api_id 列。
-    // 回落逻辑（data.api_id）仅为兼容历史调用，主路径必须独立测试以防回落失效时漏问题。
+    // 上游权威字段为 data.order_id，本地落到 acmes.api_id 列。
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
     createAcmeProductPrice($product->id, $user);
@@ -803,8 +802,8 @@ test('commit 主路径读上游 data.order_id 写入本地 api_id', function () 
     expect($acme->eab_kid)->toBe('kid-main');
 });
 
-test('commit 主路径优先于回落字段 api_id', function () {
-    // 上游同时返回 order_id 与 api_id 时，必须取 order_id（上游权威字段）。
+test('commit 上游同时返回 order_id 与 api_id 时忽略 api_id', function () {
+    // 只信任 order_id，防止上游误字段名污染本地列。
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
     createAcmeProductPrice($product->id, $user);
@@ -815,7 +814,7 @@ test('commit 主路径优先于回落字段 api_id', function () {
             'code' => 1,
             'data' => [
                 'order_id' => 'authoritative-id',
-                'api_id' => 'fallback-id',
+                'api_id' => 'should-be-ignored',
                 'eab_kid' => 'kid',
                 'eab_hmac' => 'hmac',
             ],
@@ -832,6 +831,34 @@ test('commit 主路径优先于回落字段 api_id', function () {
 
     $acme = Acme::find($response['data']['order_id']);
     expect($acme->api_id)->toBe('authoritative-id');
+});
+
+test('commit 上游响应缺 order_id 报错回滚', function () {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'eab_kid' => 'kid',
+                'eab_hmac' => 'hmac',
+            ],
+        ]),
+    ]);
+
+    expectApiError(
+        fn () => $this->service->newAndCommit([
+            'user_id' => $user->id,
+            'product_id' => $product->id,
+            'period' => 12,
+            'purchased_standard_count' => 1,
+            'purchased_wildcard_count' => 0,
+        ]),
+        '上游返回缺少 order_id'
+    );
 });
 
 test('newAndCommit 余额不足报错', function () {
