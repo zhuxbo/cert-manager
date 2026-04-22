@@ -1,5 +1,6 @@
 <script setup lang="tsx">
 import { ref, onMounted, onBeforeUnmount } from "vue";
+import { useRoute } from "vue-router";
 import { PlusSearch } from "plus-pro-components";
 import { useAcme } from "./hook";
 import { useAcmeSearch } from "./search";
@@ -13,6 +14,8 @@ import CloseBold from "~icons/ep/close-bold";
 defineOptions({
   name: "Acme"
 });
+
+const route = useRoute();
 
 const {
   tableRef,
@@ -44,6 +47,11 @@ type TimerRef = ReturnType<typeof setInterval>;
 let searchTimer: TimerRef | null = null;
 
 onMounted(() => {
+  // 支持从交易流水等页面通过 ?id= 跳转定位到具体 ACME 订阅
+  const queryId = Number(route.query.id);
+  if (queryId > 0) {
+    search.value.id = queryId;
+  }
   onSearch();
   searchTimer = setInterval(
     () => {

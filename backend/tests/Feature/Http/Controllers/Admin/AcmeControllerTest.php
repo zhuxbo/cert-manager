@@ -180,10 +180,24 @@ test('new 成功创建订单', function () {
 
 // ==================== pay ====================
 
-test('pay 成功支付', function () {
+test('pay 成功支付并同步提交至 active', function () {
     $user = User::factory()->create(['balance' => '500.00']);
-    $product = createAcmeProduct();
+    $product = createAcmeProduct(['source' => 'default']);
     createProductPrice($product, $user);
+
+    setupAdminGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'order_id' => 'gw-pay-123',
+                'vendor_id' => 'v-pay',
+                'eab_kid' => 'kid-pay',
+                'eab_hmac' => 'hmac-pay',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
 
     $acme = createAcmeViaAction($user, $product);
     expect($acme->status)->toBe(Acme::STATUS_UNPAID);
@@ -191,9 +205,10 @@ test('pay 成功支付', function () {
     $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/acme/pay/$acme->id");
 
     $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.eab_kid'))->toBe('kid-pay');
 
     $acme->refresh();
-    expect($acme->status)->toBe(Acme::STATUS_PENDING);
+    expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
 });
 
 // ==================== commit ====================
@@ -205,10 +220,10 @@ test('commit 成功提交', function () {
 
     $acme = createAcmeViaAction($user, $product);
 
-    // 先支付
+    // 先支付（仅扣费，单独测试 commit）
     $action = app(Action::class);
     try {
-        $action->pay($acme->id);
+        $action->pay($acme->id, false);
     } catch (ApiResponseException) {
     }
 

@@ -61,6 +61,11 @@ const autoOpenFromQuery = () => {
 };
 
 onMounted(() => {
+  // 支持从交易流水等页面通过 ?id= 跳转定位到具体 ACME 订阅
+  const queryId = Number(route.query.id);
+  if (queryId > 0) {
+    search.value.id = queryId;
+  }
   onSearch();
   autoOpenFromQuery();
   searchTimer = setInterval(

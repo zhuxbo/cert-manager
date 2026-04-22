@@ -35,17 +35,18 @@ export function useTransactionTable() {
       width: 145,
       cellRenderer: ({ row }) => {
         const handleClick = () => {
-          const path = ["order", "cancel"].includes(row.type)
-            ? "/order"
-            : "/funds";
-          if (path) {
-            router.push({
-              path,
-              query: {
-                id: row.transaction_id
-              }
-            });
+          let path = "/funds";
+          if (["order", "cancel"].includes(row.type)) {
+            path = "/order";
+          } else if (["acme_order", "acme_cancel"].includes(row.type)) {
+            path = "/acme";
           }
+          router.push({
+            path,
+            query: {
+              id: row.transaction_id
+            }
+          });
         };
         return (
           <span class="cursor-pointer" onClick={handleClick}>

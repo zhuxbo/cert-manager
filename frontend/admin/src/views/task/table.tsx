@@ -41,8 +41,11 @@ export const useTaskTable = () => {
       minWidth: 100,
       cellRenderer: ({ row }) => {
         const handleClick = () => {
+          const path = String(row.action ?? "").endsWith("_acme")
+            ? "/acme"
+            : "/order";
           router.push({
-            path: "/order",
+            path,
             query: {
               id: row.order_id
             }

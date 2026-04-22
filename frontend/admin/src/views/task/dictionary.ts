@@ -8,11 +8,11 @@ export const actionLabels: Record<string, string> = {
   sync: "同步",
   revalidate: "验证",
   cancel: "取消",
+  callback: "回调",
+  delegation: "委托",
   commit_acme: "提交ACME",
   sync_acme: "同步ACME",
-  cancel_acme: "取消ACME",
-  callback: "回调",
-  delegation: "委托"
+  cancel_acme: "取消ACME"
 };
 
 export const actionOptions = Object.entries(actionLabels).map(

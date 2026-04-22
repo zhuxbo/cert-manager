@@ -96,7 +96,7 @@ withDefaults(
 );
 
 const allowCancel = (row: Acme) => {
-  return ["pending", "active"].includes(row.status);
+  return ["unpaid", "pending", "active"].includes(row.status);
 };
 
 const handleView = (row: Acme) => {

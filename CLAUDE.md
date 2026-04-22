@@ -74,7 +74,7 @@ skills/         # 开发规范（详细文档）
 
 - **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden；`eab_kid` 建索引；`plus` 列（赠送时间 0/1）
 - **字段映射**：上游响应 `data.order_id` → 本地 `acmes.api_id` 列（**切勿用 `api_id` 键读上游响应**，老代码踩过坑）
-- **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id)`（pending/待提交）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（事务保护，失败回滚）
+- **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id, bool $autoCommit = true)`（Admin/User 入口默认"先支付独立事务，再单独事务调 commit"——commit 失败 **不回滚扣费**，订单保留 pending 可走 `commit` 接口重试；`$autoCommit=false` 仅置 pending，由 batchPay 统一入队 commit）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（**单事务原子，失败回滚**，API 入口使用）
 - **上游 `/acme/new` 入参**：`source`（路由用，上游忽略）/ `customer`（用户邮箱）/ `product_code` / `plus`（赠送时间）/ `refer_id`（幂等键），**不传** `period`/`purchased_*count`/`product_type` 等
 - **directory_url 缓存**：Laravel `Cache::forever("acme_directory_url:{ca}")` 按签发 CA 聚合；commit/sync 刷新、show 缺失时回源一次性回填；不入 system_setting、不落库
 - **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
@@ -92,7 +92,7 @@ skills/         # 开发规范（详细文档）
 - **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
 - **传统流程完全隔离**：ACME 通过独立控制器、服务和前端模块处理，与传统订单无交集；V2 API `new` 和 `Order\Action::initParams` 拒绝 ACME 产品
 - **批量操作**：列表页 6 个批量按钮
-    - `POST /api/{admin,user}/acme/batch-pay` — 同步逐条，状态限 unpaid，返回 `{success_count, errors}`
+    - `POST /api/{admin,user}/acme/batch-pay` — 同步逐条扣费（pay autoCommit=false），成功的 id 批量入队 `commit_acme`；状态限 unpaid，返回 `{success_count, commit_count, errors}`
     - `POST /api/{admin,user}/acme/batch-commit` — 创建 `commit_acme` Task 立即入队，状态限 pending；`checkRepeat` 存在 executing 任务时整体报错
     - `POST /api/{admin,user}/acme/batch-sync` — 创建 `sync_acme` Task 立即入队，状态限 active/cancelling（必须有 api_id），pending/unpaid 无 api_id 无法同步
     - `POST /api/{admin,user}/acme/batch-commit-cancel` — 同步逐条调单体 commitCancel（混合直接退费 + 延时 Task），状态限 unpaid/pending/active；单体 commitCancel 已扩展支持 unpaid（未扣费无需 refund）

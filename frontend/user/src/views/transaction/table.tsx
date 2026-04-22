@@ -28,8 +28,14 @@ export function useTransactionTable() {
       minWidth: 150,
       cellRenderer: ({ row }) => {
         const handleClick = () => {
+          let path = "/funds";
+          if (["order", "cancel"].includes(row.type)) {
+            path = "/order";
+          } else if (["acme_order", "acme_cancel"].includes(row.type)) {
+            path = "/acme";
+          }
           router.push({
-            path: ["order", "cancel"].includes(row.type) ? "/order" : "/funds",
+            path,
             query: {
               id: row.transaction_id
             }

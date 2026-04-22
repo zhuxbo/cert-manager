@@ -93,7 +93,8 @@ function payUserAcmeViaAction(Acme $acme): Acme
     $action = app(Action::class);
 
     try {
-        $action->pay($acme->id);
+        // 测试场景仅扣费到 pending，避免同步 commit 触发上游调用
+        $action->pay($acme->id, false);
     } catch (ApiResponseException) {
     }
 
@@ -199,10 +200,24 @@ test('new 成功创建订单', function () {
 
 // ==================== pay ====================
 
-test('pay 成功支付', function () {
+test('pay 成功支付并同步提交至 active', function () {
     $user = User::factory()->withBalance('1000.00')->create();
-    $product = createUserAcmeProduct();
+    $product = createUserAcmeProduct(['source' => 'default']);
     createUserProductPrice($product, $user);
+
+    setupUserGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'order_id' => 'gw-user-pay',
+                'vendor_id' => 'v-user-pay',
+                'eab_kid' => 'kid-user-pay',
+                'eab_hmac' => 'hmac-user-pay',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
 
     $acme = createUserAcmeViaAction($user, $product);
     expect($acme->status)->toBe(Acme::STATUS_UNPAID);
@@ -212,8 +227,10 @@ test('pay 成功支付', function () {
         ->assertOk()
         ->assertJson(['code' => 1]);
 
+    expect($response->json('data.eab_kid'))->toBe('kid-user-pay');
+
     $acme->refresh();
-    expect($acme->status)->toBe(Acme::STATUS_PENDING);
+    expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
 });
 
 test('pay 他人订单返回 404', function () {

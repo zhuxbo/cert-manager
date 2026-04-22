@@ -6,7 +6,7 @@ export default {
     icon: "ri:robot-2-fill",
     title: "ACME",
     rank: 1.5,
-    showLink: false
+    showLink: true
   },
   children: [
     {

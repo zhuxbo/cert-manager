@@ -74,10 +74,10 @@ getPlatformConfig(app).then(async config => {
   await exposeSharedDeps();
   // 暴露主应用 http 给插件使用（已认证、带 token 刷新）
   window.__deps.http = sharedHttp;
-  // ACME 菜单配置控制
-  if (config.Acme === true) {
+  // ACME 菜单配置控制：默认显示，platform-config.json 显式 false 时隐藏
+  if (config.Acme === false) {
     const acmeMenu = constantMenus.find((r: any) => r.name === "Acmes") as any;
-    if (acmeMenu?.meta) acmeMenu.meta.showLink = true;
+    if (acmeMenu?.meta) acmeMenu.meta.showLink = false;
   }
   // 加载插件（在 router 安装之前，确保菜单数据就绪）
   await loadPlugins(router, "user", constantMenus);

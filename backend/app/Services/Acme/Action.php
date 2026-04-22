@@ -32,24 +32,38 @@ class Action
     }
 
     /**
-     * 支付订单 — 扣费，状态 → pending，默认自动入队 commit_acme
+     * 支付订单 — Admin/User 入口默认"先支付，再提交"两步独立事务
+     *
+     * autoCommit=true（默认）：先 payOrder 独立完成扣费 → pending；
+     *   再独立事务调用 commitOrder 提交上游。提交失败 **不撤回扣费**，
+     *   订单保留 pending 状态，可由 commit 接口重试。
+     * autoCommit=false（batchPay 内部复用）：仅扣费置 pending，提交由调用方入队处理。
+     *
+     * 与 newAndCommit（API 入口）的"扣费提交一体事务"语义有意区分。
      */
     public function pay(int $acmeId, bool $autoCommit = true): void
     {
         $acme = Acme::findOrFail($acmeId);
         $this->payOrder($acme);
 
-        if ($autoCommit) {
-            $existing = Task::where('order_id', $acmeId)
-                ->where('action', 'commit_acme')
-                ->where('status', 'executing')
-                ->exists();
-            if (! $existing) {
-                $this->createTasks([$acmeId], 'commit_acme');
-            }
+        if (! $autoCommit) {
+            $this->success();
         }
 
-        $this->success();
+        // 提交单独事务执行；失败抛出异常时扣费已提交不会回滚
+        $acme = DB::transaction(function () use ($acmeId) {
+            $locked = Acme::where('id', $acmeId)->lock()->firstOrFail();
+
+            return $this->commitOrder($locked);
+        });
+
+        $acme->makeVisible('eab_hmac');
+        $this->success([
+            'order_id' => $acme->id,
+            'eab_kid' => $acme->eab_kid,
+            'eab_hmac' => $acme->eab_hmac,
+            'directory_url' => $this->syncDirectoryUrl($acme),
+        ]);
     }
 
     /**
@@ -550,10 +564,16 @@ class Action
 
         [$standardCount, $wildcardCount] = $this->resolveDomainCounts($product);
 
-        // 计算订单金额
+        // 计算订单金额；ACME SAN 数量直接使用 acme.purchased_*，无 Cert 模型
         $amount = OrderUtil::getLatestCertAmount(
-            ['user_id' => $params['user_id'], 'product_id' => $params['product_id'], 'period' => $period, 'purchased_standard_count' => 0, 'purchased_wildcard_count' => 0],
-            ['standard_count' => $standardCount, 'wildcard_count' => $wildcardCount, 'action' => 'new'],
+            [
+                'user_id' => $params['user_id'],
+                'product_id' => $params['product_id'],
+                'period' => $period,
+                'purchased_standard_count' => $standardCount,
+                'purchased_wildcard_count' => $wildcardCount,
+            ],
+            ['action' => 'new'],
             $product->toArray()
         );
 
