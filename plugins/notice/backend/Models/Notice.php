@@ -10,7 +10,7 @@ class Notice extends Model
 {
     use HasFactory;
 
-    protected $table = 'notice_notices';
+    protected $table = 'notices';
 
     protected $fillable = [
         'title',
