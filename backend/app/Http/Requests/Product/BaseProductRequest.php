@@ -82,13 +82,12 @@ abstract class BaseProductRequest extends BaseRequest
     /**
      * 为 ACME 产品设置默认值并清除不适用字段
      * ACME 以 EAB 为交付产物，加密算法/签名摘要/续期/重用CSR 均由 ACME 客户端自行决定
+     * common_name_types / alternative_name_types 保留，用于成本页驱动附加域名价格列
      */
     protected function setAcmeDefaults(array &$data): void
     {
         $data['warranty_currency'] = '$';
         $data['warranty'] = 0;
-        $data['common_name_types'] = [];
-        $data['alternative_name_types'] = [];
         $data['validation_methods'] = [];
         $data['add_san'] = 0;
         $data['replace_san'] = 0;

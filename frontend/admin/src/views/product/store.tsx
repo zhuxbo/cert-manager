@@ -243,7 +243,7 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         multiple: true
       },
       options: nameTypeOptions,
-      hideInForm: !isSSL.value
+      hideInForm: !isSSL.value && !isACME.value
     },
     {
       label: "备用名称类型",
@@ -254,7 +254,7 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         multiple: true
       },
       options: nameTypeOptions,
-      hideInForm: !isSSL.value
+      hideInForm: !isSSL.value && !isACME.value
     },
     {
       label: "验证方法",
@@ -571,8 +571,6 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
     // 非 SSL 产品，清除不适用字段
     if (filtered.product_type && filtered.product_type !== "ssl") {
       // 清除 SSL 专用字段（非域名数量相关）
-      filtered.common_name_types = [];
-      filtered.alternative_name_types = [];
       filtered.validation_methods = [];
       filtered.add_san = 0;
       filtered.replace_san = 0;
@@ -581,8 +579,10 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       filtered.warranty_currency = "$";
       filtered.warranty = 0;
 
-      // ACME 产品保留域名数量字段，其他非 SSL 产品清零
+      // ACME 产品保留域名数量字段及名称类型（成本页据此渲染附加域名价格列），其他非 SSL 产品清零
       if (filtered.product_type !== "acme") {
+        filtered.common_name_types = [];
+        filtered.alternative_name_types = [];
         filtered.standard_min = 0;
         filtered.standard_max = 0;
         filtered.wildcard_min = 0;
