@@ -19,6 +19,7 @@ Manager 作为 ACME 订阅管理平台，通过 REST API 连接 上游系统，�
 - 单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），替代旧的 `acme_orders`/`acme_certs`/`acme_authorizations` 多表
 - `eab_hmac` 加密存储（`encrypted` cast），默认 hidden
 - `eab_kid` 建索引，支持前缀匹配搜索
+- `contact_email`（`VARCHAR(254) NULL`）：ACME 账号邮箱（RFC 8555 `contact`）。下单表单必填，user 端默认填当前用户绑定邮箱、admin 端选中用户后自动回填该用户邮箱；用户可改为任意 email。`commit` 时作为 `customer` 传给上游，且以上游回写为权威值
 - `plus`：赠送时间开关（0/1），UI 默认 1；仅在产品 brand ∈ `certum/positive/sectigo/ssltrus` 时展示
 - `products.product_type = 'acme'`（`Product::TYPE_ACME`）标识 ACME 产品
 - Transaction 类型：`acme_order`（下单扣费）/ `acme_cancel`（取消退费）
@@ -52,7 +53,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 **`commitOrder` 对上游发送的参数**（与上游系统 `/acme/new` 接口对齐）：
 - `source`（Manager 用于路由到对应 source 类，上游会忽略）
-- `customer`（订单用户邮箱，上游用于 ACME 账户注册）
+- `contact_email`（= `acmes.contact_email`，**所有下单入口都必填**：User/Admin 表单 / API Token / Deploy Token。上游正常返回会覆盖回写，缺失则保持本地值。**HTTP 字段名全链路统一为 `contact_email`**，Certum REST 契约层的 `customer` 只存在 Gateway → Certum SDK 这一跳内部）
 - `product_code`（Manager Product.code，上游用该 code 查自身 Product 并映射到 CA 产品代码）
 - `plus`（赠送时间 0/1，由本地订单 `acmes.plus` 读出）
 - `refer_id`（Manager 端生成的 32 位幂等键，上游按此幂等返回同一订单）
@@ -136,7 +137,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 |------|------|------|
 | GET | `/acme` | 列表（见"搜索"章节，UserScope 以外无隔离） |
 | GET | `/acme/{id}` | 详情（含 EAB + directory_url） |
-| POST | `/acme/new` | 创建订单（`plus` 可选） |
+| POST | `/acme/new` | 创建订单（`plus` 可选；`contact_email` 必填） |
 | POST | `/acme/pay/{id}` | 支付 |
 | POST | `/acme/commit/{id}` | 提交上游系统 |
 | POST | `/acme/sync/{id}` | 同步状态（status 白名单校验，顺带刷 directory_url） |
@@ -150,8 +151,13 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 ### Deploy（`/api/deploy/acme/`）
 
-- `POST /acme/new` — 一步到位：创建 + 支付 + 提交（`plus` 可选）
+- `POST /acme/new` — 一步到位：创建 + 支付 + 提交（`plus` 可选；`contact_email` 必填）
 - `GET /acme/{id}` — 获取详情（含 EAB + directory_url）
+
+### API Token（`/api/acme/`，api.v2 guard）
+
+- `POST /acme/new` — 一步到位：创建 + 支付 + 提交（`contact_email` 必填）
+- `GET /acme/get?order_id=` / `POST /acme/cancel` / `GET /acme/get-products`
 
 ## 搜索
 
@@ -176,7 +182,7 @@ Admin/User `index()` 复用同套过滤器，对齐传统订单搜索：
 | `batch-sync` | `active` / `cancelling` | 必须有 `api_id`；pending/unpaid 无 api_id 无法同步 |
 | `batch-commit-cancel` | `unpaid` / `pending` / `active` | 同步逐条调单体 `commitCancel`；unpaid 无需 refund，pending 无 api_id 直接退费，active 走延时 Task |
 | `batch-revoke-cancel` | `cancelling` | 同步逐条调单体 `revokeCancel` |
-| `batch-copy-eab` | 任意（纯读） | 返回 EAB 文本（`directory_url\neab_kid\neab_hmac`，条目间空行）；**Admin 端跨用户请求拒绝**，User 端由 UserScope 自动限制 |
+| `batch-copy-eab` | 任意（纯读） | 返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行）；**Admin 端跨用户请求拒绝**，User 端由 UserScope 自动限制 |
 
 ### checkRepeat 语义
 

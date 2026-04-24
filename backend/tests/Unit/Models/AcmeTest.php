@@ -32,6 +32,7 @@ test('can create acme model with all fillable fields', function () {
         'refer_id' => 'test-refer-id',
         'api_id' => 'test-api-id',
         'vendor_id' => 'test-vendor-id',
+        'contact_email' => 'buyer@example.com',
         'eab_kid' => 'test-eab-kid',
         'eab_hmac' => 'test-eab-hmac-secret',
         'period_from' => now(),
@@ -50,6 +51,7 @@ test('can create acme model with all fillable fields', function () {
     expect($acme->refer_id)->toBe('test-refer-id');
     expect($acme->api_id)->toBe('test-api-id');
     expect($acme->vendor_id)->toBe('test-vendor-id');
+    expect($acme->contact_email)->toBe('buyer@example.com');
     expect($acme->eab_kid)->toBe('test-eab-kid');
     expect($acme->status)->toBe('pending');
     expect($acme->remark)->toBe('test remark');

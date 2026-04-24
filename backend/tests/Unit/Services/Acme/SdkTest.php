@@ -33,7 +33,7 @@ test('new sends POST to gateway', function () {
     ]);
 
     $sdk = new Sdk;
-    $result = $sdk->new(['customer' => 'test@example.com', 'product_code' => '12345']);
+    $result = $sdk->new(['contact_email' => 'test@example.com', 'product_code' => '12345']);
 
     expect($result['code'])->toBe(1);
 
@@ -41,7 +41,7 @@ test('new sends POST to gateway', function () {
         return $request->url() === 'https://gateway.test/api/acme/new'
             && $request->method() === 'POST'
             && $request->hasHeader('Authorization', 'Bearer test-acme-token')
-            && $request->data()['customer'] === 'test@example.com';
+            && $request->data()['contact_email'] === 'test@example.com';
     });
 });
 

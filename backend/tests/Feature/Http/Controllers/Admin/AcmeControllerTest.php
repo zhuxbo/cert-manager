@@ -77,6 +77,7 @@ function createAcmeViaAction(User $user, Product $product, array $overrides = []
         'period' => 12,
         'purchased_standard_count' => 0,
         'purchased_wildcard_count' => 0,
+        'contact_email' => $user->email ?: 'test@example.com',
     ], $overrides);
 
     try {
@@ -163,6 +164,7 @@ test('new 成功创建订单', function () {
         'user_id' => $user->id,
         'product_id' => $product->id,
         'period' => 12,
+        'contact_email' => 'admin-buyer@example.com',
         'purchased_standard_count' => 1,
         'purchased_wildcard_count' => 0,
     ]);
@@ -175,7 +177,23 @@ test('new 成功创建订单', function () {
     expect($acme->status)->toBe(Acme::STATUS_UNPAID);
     expect($acme->user_id)->toBe($user->id);
     expect($acme->product_id)->toBe($product->id);
+    expect($acme->contact_email)->toBe('admin-buyer@example.com');
     expect($acme->channel)->toBe('admin');
+});
+
+test('new 缺少 contact_email 校验失败', function () {
+    $user = User::factory()->create(['balance' => '500.00']);
+    $product = createAcmeProduct();
+    createProductPrice($product, $user);
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/new', [
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period' => 12,
+    ])
+        ->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('errors.contact_email.0', fn ($msg) => is_string($msg));
 });
 
 // ==================== pay ====================

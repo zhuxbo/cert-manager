@@ -103,6 +103,8 @@ function createAcmeOrder($user, $product, array $overrides = []): Acme
         'period' => 12,
         'purchased_standard_count' => 1,
         'purchased_wildcard_count' => 0,
+        // contact_email 在 HTTP 层必填；单测 Action 层默认兜底到 user.email，避免每个用例显式传
+        'contact_email' => $user->email ?: 'test@example.com',
     ], $overrides);
 
     $response = expectApiSuccess(fn () => test()->service->new($params));
@@ -278,6 +280,57 @@ test('commit 成功调用 API 转 active 返回 eab 数据', function () {
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
     expect($acme->api_id)->toBe('gw-123');
+});
+
+test('commit 使用 acme.contact_email 作为 customer 传给 Gateway 并回写', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['email' => 'login@example.com', 'balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    // 订单创建时填了自选邮箱，与用户登录邮箱不同
+    $acme = createAcmeOrder($user, $product, ['contact_email' => 'acme-buyer@example.com']);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'order_id' => 'gw-contact',
+                'vendor_id' => 'v-contact',
+                'contact_email' => 'acme-buyer@example.com',
+                'eab_kid' => 'kid-contact',
+                'eab_hmac' => 'hmac-contact',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
+
+    expectApiSuccess(fn () => $this->service->commit($acme->id));
+
+    // 请求体应把 acme.contact_email 作为 customer 发给上游（而非 user.email）
+    Http::assertSent(function ($request) {
+        $body = json_decode($request->body(), true);
+
+        return ($body['contact_email'] ?? null) === 'acme-buyer@example.com';
+    });
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_ACTIVE)
+        ->and($acme->contact_email)->toBe('acme-buyer@example.com');
+});
+
+test('commit acme.contact_email 缺失直接报错（不再 fallback 用户邮箱）', function () {
+    $user = $this->createTestUser(['email' => 'login@example.com', 'balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    $acme->update(['contact_email' => null]); // 绕过 validate 模拟异常状态
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+
+    expectApiError(fn () => $this->service->commit($acme->id), 'ACME 账号邮箱缺失');
 });
 
 test('commit 非 pending 状态报错', function () {
@@ -754,6 +807,7 @@ test('newAndCommit 一步完成 new+pay+commit', function () {
     ]);
 
     $response = expectApiSuccess(fn () => $this->service->newAndCommit([
+        'contact_email' => 'test@example.com',
         'user_id' => $user->id,
         'product_id' => $product->id,
         'period' => 12,
@@ -789,6 +843,7 @@ test('commit 主路径读上游 data.order_id 写入本地 api_id', function () 
     ]);
 
     $response = expectApiSuccess(fn () => $this->service->newAndCommit([
+        'contact_email' => 'test@example.com',
         'user_id' => $user->id,
         'product_id' => $product->id,
         'period' => 12,
@@ -822,6 +877,7 @@ test('commit 上游同时返回 order_id 与 api_id 时忽略 api_id', function 
     ]);
 
     $response = expectApiSuccess(fn () => $this->service->newAndCommit([
+        'contact_email' => 'test@example.com',
         'user_id' => $user->id,
         'product_id' => $product->id,
         'period' => 12,
@@ -851,6 +907,7 @@ test('commit 上游响应缺 order_id 报错回滚', function () {
 
     expectApiError(
         fn () => $this->service->newAndCommit([
+            'contact_email' => 'test@example.com',
             'user_id' => $user->id,
             'product_id' => $product->id,
             'period' => 12,
@@ -868,6 +925,7 @@ test('newAndCommit 余额不足报错', function () {
 
     expectApiError(
         fn () => $this->service->newAndCommit([
+            'contact_email' => 'test@example.com',
             'user_id' => $user->id,
             'product_id' => $product->id,
             'period' => 12,
@@ -883,6 +941,7 @@ test('newAndCommit 产品不存在报错', function () {
 
     expectApiError(
         fn () => $this->service->newAndCommit([
+            'contact_email' => 'test@example.com',
             'user_id' => $user->id,
             'product_id' => 99999,
             'period' => 12,
@@ -1156,6 +1215,7 @@ test('TaskJob 收到 commit_acme 分发到 Acme\\Action::commit', function () {
         'product_id' => $product->id,
         'status' => 'pending',
         'amount' => '100.00',
+        'contact_email' => 'task@example.com',
     ]);
     $task = Task::create([
         'order_id' => $acme->id, 'action' => 'commit_acme',
@@ -1217,6 +1277,7 @@ test('单体 pay 默认同步提交至 active', function () {
         'product_id' => $product->id,
         'status' => 'unpaid',
         'amount' => '100.00',
+        'contact_email' => 'pay@example.com',
     ]);
 
     try {
@@ -1248,6 +1309,7 @@ test('单体 pay commit 失败保留 pending，扣费不回滚', function () {
         'product_id' => $product->id,
         'status' => 'unpaid',
         'amount' => '100.00',
+        'contact_email' => 'pay-fail@example.com',
     ]);
     $balanceBefore = (float) $user->balance;
 

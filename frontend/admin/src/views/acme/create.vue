@@ -25,6 +25,7 @@
           totalField="total"
           placeholder="请选择用户"
           :queryParams="{ status: 1 }"
+          @change="handleUserChange"
         />
       </el-form-item>
 
@@ -77,6 +78,18 @@
           style="width: 100%"
         />
       </el-form-item>
+
+      <el-form-item
+        label="账号邮箱"
+        prop="contact_email"
+        :rules="rules.contact_email"
+      >
+        <el-input
+          v-model="formData.contact_email"
+          placeholder="ACME 客户端注册账号用的邮箱"
+          clearable
+        />
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="handleClose">取消</el-button>
@@ -91,6 +104,7 @@
 import { ref, reactive, computed } from "vue";
 import { createOrder } from "@/api/acme";
 import { show as productShow } from "@/api/product";
+import { show as userShow } from "@/api/user";
 import { message } from "@shared/utils";
 import ReRemoteSelect from "@shared/components/ReRemoteSelect";
 import { periodLabels } from "@/views/system/dictionary";
@@ -118,7 +132,8 @@ const formData = reactive({
   product_id: undefined as number | undefined,
   period: "" as number | string,
   plus: 1,
-  quantity: 1
+  quantity: 1,
+  contact_email: ""
 });
 
 const periodOptions = ref<{ label: string; value: number }[]>([]);
@@ -132,8 +147,23 @@ const rules = reactive<FormRules>({
   user_id: [{ required: true, message: "请选择用户", trigger: "change" }],
   product_id: [{ required: true, message: "请选择产品", trigger: "change" }],
   period: [{ required: true, message: "请选择有效期", trigger: "change" }],
-  quantity: [{ required: true, message: "请输入数量", trigger: "blur" }]
+  quantity: [{ required: true, message: "请输入数量", trigger: "blur" }],
+  contact_email: [
+    { required: true, message: "请输入账号邮箱", trigger: "blur" },
+    { type: "email", message: "邮箱格式不正确", trigger: "blur" }
+  ]
 });
+
+const handleUserChange = (userId: number) => {
+  if (!userId) {
+    formData.contact_email = "";
+    return;
+  }
+  // admin 选中用户后自动回填该用户的邮箱，仍可手动修改
+  userShow(userId).then(({ data }) => {
+    formData.contact_email = data?.email || "";
+  });
+};
 
 const handleProductChange = (productId: number) => {
   if (!productId) return;
@@ -163,6 +193,7 @@ const handleSubmit = async () => {
     user_id: formData.user_id as number,
     product_id: formData.product_id as number,
     period: Number(formData.period),
+    contact_email: formData.contact_email,
     ...(showPlus.value ? { plus: formData.plus } : {})
   };
 

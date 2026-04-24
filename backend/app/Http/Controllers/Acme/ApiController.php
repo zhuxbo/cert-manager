@@ -29,8 +29,8 @@ class ApiController extends Controller
     /**
      * 创建 ACME 订单（一步到位：创建 + 支付 + 提交）
      *
-     * 对齐上游 /acme/new 入参语义：product_code / period / plus
-     * （域名额度由产品 standard_max / wildcard_max 自动推断，refer_id / customer 由 Manager 内部生成）
+     * 对齐上游 /acme/new 入参语义：product_code / period / plus / contact_email
+     * （域名额度由产品 standard_max / wildcard_max 自动推断，refer_id 由 Manager 内部生成）
      */
     public function new(): void
     {
@@ -38,6 +38,7 @@ class ApiController extends Controller
             'product_code' => 'required|string|max:50',
             'period' => 'sometimes|integer',
             'plus' => 'sometimes|integer|in:0,1',
+            'contact_email' => 'required|email|max:254',
         ]);
 
         $product = Product::where('code', $this->request->input('product_code'))
@@ -54,6 +55,7 @@ class ApiController extends Controller
             'product_id' => $product->id,
             'period' => (int) $this->request->input('period', $product->periods[0] ?? 12),
             'plus' => (int) $this->request->input('plus', 1),
+            'contact_email' => $this->request->input('contact_email'),
             'channel' => 'api',
         ]);
     }

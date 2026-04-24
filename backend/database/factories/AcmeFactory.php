@@ -26,6 +26,7 @@ class AcmeFactory extends Factory
             'purchased_wildcard_count' => 0,
             'eab_kid' => fake()->uuid(),
             'eab_hmac' => fake()->sha256(),
+            'contact_email' => fake()->safeEmail(),
             'status' => Acme::STATUS_PENDING,
         ];
     }

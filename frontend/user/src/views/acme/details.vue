@@ -135,6 +135,23 @@
                         </td>
                       </tr>
                       <tr>
+                        <td class="label">账号邮箱</td>
+                        <td class="content">
+                          <span class="break-all">{{
+                            acme.contact_email || "-"
+                          }}</span>
+                          <el-button
+                            v-if="acme.contact_email"
+                            link
+                            size="small"
+                            class="copy-btn"
+                            @click="handleCopy(acme.contact_email!)"
+                          >
+                            <el-icon size="14"><DocumentCopy /></el-icon>
+                          </el-button>
+                        </td>
+                      </tr>
+                      <tr>
                         <td class="label">EAB KID</td>
                         <td class="content">
                           <span class="break-all">{{

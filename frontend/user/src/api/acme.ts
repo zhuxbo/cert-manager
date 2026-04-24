@@ -25,6 +25,7 @@ export interface Acme {
   refer_id: string | null;
   api_id: string | null;
   vendor_id: string | null;
+  contact_email: string | null;
   eab_kid: string | null;
   eab_hmac: string | null;
   period_from: string | null;
@@ -65,6 +66,7 @@ export function createOrder(data: {
   product_id: number;
   period: number;
   plus?: number;
+  contact_email: string;
 }): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, typeof data>("/acme/new", { data });
 }

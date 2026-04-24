@@ -73,9 +73,10 @@ class AcmeController extends BaseController
             'product_id' => 'required|integer|exists:products,id',
             'period' => 'required|integer',
             'plus' => 'nullable|integer|in:0,1',
+            'contact_email' => 'required|email|max:254',
         ]);
 
-        $this->action->new($request->only(['user_id', 'product_id', 'period', 'plus', 'remark']) + ['channel' => 'admin']);
+        $this->action->new($request->only(['user_id', 'product_id', 'period', 'plus', 'contact_email', 'remark']) + ['channel' => 'admin']);
     }
 
     /**

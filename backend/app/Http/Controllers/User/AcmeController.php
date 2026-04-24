@@ -130,6 +130,7 @@ class AcmeController extends BaseController
             'product_id' => 'required|integer|exists:products,id',
             'period' => 'required|integer',
             'plus' => 'nullable|integer|in:0,1',
+            'contact_email' => 'required|email|max:254',
         ]);
 
         $this->action->new([
@@ -137,6 +138,7 @@ class AcmeController extends BaseController
             'product_id' => $request->input('product_id'),
             'period' => $request->input('period'),
             'plus' => (int) $request->input('plus', 1),
+            'contact_email' => $request->input('contact_email'),
             'channel' => 'web',
         ]);
     }
@@ -255,8 +257,9 @@ class AcmeController extends BaseController
             }
             $kid = $acme->makeVisible('eab_hmac')->eab_kid;
             $hmac = $acme->makeVisible('eab_hmac')->eab_hmac;
+            $email = $acme->contact_email ?? '';
 
-            return "directory_url={$dirUrls[$ca]}\neab_kid=$kid\neab_hmac=$hmac";
+            return "directory_url={$dirUrls[$ca]}\ncontact_email=$email\neab_kid=$kid\neab_hmac=$hmac";
         })->implode("\n\n");
 
         $this->success(['text' => $text, 'count' => $acmes->count()]);

@@ -72,6 +72,7 @@ function createUserAcmeViaAction(User $user, Product $product, array $overrides 
         'period' => 12,
         'purchased_standard_count' => 0,
         'purchased_wildcard_count' => 0,
+        'contact_email' => $user->email ?: 'test@example.com',
     ], $overrides);
 
     try {
@@ -178,6 +179,7 @@ test('new 成功创建订单', function () {
         ->postJson('/api/acme/new', [
             'product_id' => $product->id,
             'period' => 12,
+            'contact_email' => 'buyer@example.com',
         ])
         ->assertOk()
         ->assertJson(['code' => 1]);
@@ -194,8 +196,41 @@ test('new 成功创建订单', function () {
         ->toBe($user->id)
         ->and($acme->product_id)
         ->toBe($product->id)
+        ->and($acme->contact_email)
+        ->toBe('buyer@example.com')
         ->and($acme->channel)
         ->toBe('web');
+});
+
+test('new 缺少 contact_email 校验失败', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = createUserAcmeProduct();
+    createUserProductPrice($product, $user);
+
+    $this->actingAsUser($user)
+        ->postJson('/api/acme/new', [
+            'product_id' => $product->id,
+            'period' => 12,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('errors.contact_email.0', fn ($msg) => is_string($msg));
+});
+
+test('new 非法 contact_email 校验失败', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = createUserAcmeProduct();
+    createUserProductPrice($product, $user);
+
+    $this->actingAsUser($user)
+        ->postJson('/api/acme/new', [
+            'product_id' => $product->id,
+            'period' => 12,
+            'contact_email' => 'not-an-email',
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('errors.contact_email.0', fn ($msg) => is_string($msg));
 });
 
 // ==================== pay ====================

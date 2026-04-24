@@ -18,6 +18,7 @@ class AcmeController extends Controller
             'product_id' => 'required|integer|exists:products,id',
             'period' => 'required|integer',
             'plus' => 'nullable|integer|in:0,1',
+            'contact_email' => 'required|email|max:254',
         ]);
 
         $userId = $request->attributes->get('authenticated_user_id');
@@ -31,6 +32,7 @@ class AcmeController extends Controller
             'product_id' => $request->input('product_id'),
             'period' => $request->input('period'),
             'plus' => (int) $request->input('plus', 1),
+            'contact_email' => $request->input('contact_email'),
             'channel' => 'deploy',
         ]);
     }

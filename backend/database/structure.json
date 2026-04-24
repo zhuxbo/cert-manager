@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.0.43",
-    "generated_at": "2026-04-22 10:54:18",
+    "generated_at": "2026-04-23 23:22:28",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -102,8 +102,16 @@
                     "extra": "",
                     "comment": "CA 订单 ID"
                 },
-                "eab_kid": {
+                "contact_email": {
                     "position": 12,
+                    "type": "varchar(254)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "ACME 账号邮箱（RFC 8555 contact）"
+                },
+                "eab_kid": {
+                    "position": 13,
                     "type": "varchar(200)",
                     "nullable": true,
                     "default": null,
@@ -111,7 +119,7 @@
                     "comment": "EAB Key ID"
                 },
                 "eab_hmac": {
-                    "position": 13,
+                    "position": 14,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -119,14 +127,6 @@
                     "comment": "EAB HMAC（加密存储）"
                 },
                 "period_from": {
-                    "position": 14,
-                    "type": "timestamp",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": ""
-                },
-                "period_till": {
                     "position": 15,
                     "type": "timestamp",
                     "nullable": true,
@@ -134,7 +134,7 @@
                     "extra": "",
                     "comment": ""
                 },
-                "cancelled_at": {
+                "period_till": {
                     "position": 16,
                     "type": "timestamp",
                     "nullable": true,
@@ -142,8 +142,16 @@
                     "extra": "",
                     "comment": ""
                 },
-                "status": {
+                "cancelled_at": {
                     "position": 17,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "status": {
+                    "position": 18,
                     "type": "enum('unpaid','pending','active','cancelling','cancelled','revoked','expired')",
                     "nullable": false,
                     "default": null,
@@ -151,7 +159,7 @@
                     "comment": ""
                 },
                 "channel": {
-                    "position": 18,
+                    "position": 19,
                     "type": "varchar(20)",
                     "nullable": false,
                     "default": "web",
@@ -159,7 +167,7 @@
                     "comment": "提交通道：web\/admin\/api\/deploy\/auto"
                 },
                 "remark": {
-                    "position": 19,
+                    "position": 20,
                     "type": "varchar(255)",
                     "nullable": true,
                     "default": null,
@@ -167,7 +175,7 @@
                     "comment": ""
                 },
                 "amount": {
-                    "position": 20,
+                    "position": 21,
                     "type": "decimal(10,2)",
                     "nullable": false,
                     "default": null,
@@ -175,7 +183,7 @@
                     "comment": "订单金额"
                 },
                 "admin_remark": {
-                    "position": 21,
+                    "position": 22,
                     "type": "varchar(255)",
                     "nullable": true,
                     "default": null,
@@ -183,7 +191,7 @@
                     "comment": "管理员备注"
                 },
                 "created_at": {
-                    "position": 22,
+                    "position": 23,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -191,7 +199,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 23,
+                    "position": 24,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,

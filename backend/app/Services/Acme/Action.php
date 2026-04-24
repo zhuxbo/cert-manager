@@ -510,6 +510,10 @@ class Action
         if (isset($data['vendor_id'])) {
             $updateData['vendor_id'] = $data['vendor_id'];
         }
+        // 历史订单 contact_email 可能为空，从上游 sync 回填；已有值也以上游为准保持一致
+        if (isset($data['contact_email']) && $data['contact_email'] !== '') {
+            $updateData['contact_email'] = $data['contact_email'];
+        }
         // ACME 本地仅记录占位周期（commit 时的 now），上游是权威数据源，sync 时以上游为准覆盖
         if (isset($data['period_from'])) {
             $updateData['period_from'] = $data['period_from'];
@@ -586,6 +590,7 @@ class Action
             'purchased_standard_count' => $standardCount,
             'purchased_wildcard_count' => $wildcardCount,
             'refer_id' => bin2hex(random_bytes(16)),
+            'contact_email' => $params['contact_email'] ?? null,
             'amount' => $amount,
             'status' => Acme::STATUS_UNPAID,
             'channel' => $params['channel'] ?? 'web',
@@ -729,16 +734,17 @@ class Action
         }
 
         $product = $acme->product;
-        $user = $acme->user;
 
-        if (! $user->email) {
-            $this->error('用户邮箱缺失，无法提交 ACME 订单');
+        // 下单时已在所有入口 validate 必填，此处只做防御性断言
+        if (! $acme->contact_email) {
+            $this->error('ACME 账号邮箱缺失，无法提交订单');
         }
 
         // source 用于 Api 路由到对应 source 实现类（上游接收端会忽略多余字段）
+        // contact_email 为 RFC 8555 contact 字段，整条代理链路字段名一致
         $data = [
             'source' => $product->source,
-            'customer' => $user->email,
+            'contact_email' => $acme->contact_email,
             'product_code' => $product->code,
             'plus' => (int) $acme->plus,
             'refer_id' => $acme->refer_id,
@@ -760,6 +766,8 @@ class Action
         $acme->update([
             'api_id' => $data['order_id'],
             'vendor_id' => $data['vendor_id'] ?? null,
+            // Certum 正常返回 customer.name，Gateway 透传为 contact_email；缺失则保持本地下单时写入的值
+            'contact_email' => $data['contact_email'] ?? $acme->contact_email,
             'eab_kid' => $data['eab_kid'] ?? null,
             'eab_hmac' => $data['eab_hmac'] ?? null,
             // 上游返回订单周期则覆盖本地值，否则用本地计算（now 起算）

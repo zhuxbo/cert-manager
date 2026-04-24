@@ -72,10 +72,10 @@ skills/         # 开发规范（详细文档）
 
 ### ACME 订阅管理
 
-- **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden；`eab_kid` 建索引；`plus` 列（赠送时间 0/1）
+- **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden；`eab_kid` 建索引；`plus` 列（赠送时间 0/1）；`contact_email` 列（`VARCHAR(254) NULL`，ACME 账号邮箱 — RFC 8555 `contact`）
 - **字段映射**：上游响应 `data.order_id` → 本地 `acmes.api_id` 列（**切勿用 `api_id` 键读上游响应**，老代码踩过坑）
 - **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id, bool $autoCommit = true)`（Admin/User 入口默认"先支付独立事务，再单独事务调 commit"——commit 失败 **不回滚扣费**，订单保留 pending 可走 `commit` 接口重试；`$autoCommit=false` 仅置 pending，由 batchPay 统一入队 commit）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（**单事务原子，失败回滚**，API 入口使用）
-- **上游 `/acme/new` 入参**：`source`（路由用，上游忽略）/ `customer`（用户邮箱）/ `product_code` / `plus`（赠送时间）/ `refer_id`（幂等键），**不传** `period`/`purchased_*count`/`product_type` 等
+- **上游 `/acme/new` 入参**：`source`（路由用，上游忽略）/ `contact_email`（= `acmes.contact_email`，**所有入口必填**：User/Admin 表单 / API Token / Deploy Token；上游正常返回会覆盖回写，缺失则保持本地值）/ `product_code` / `plus`（赠送时间）/ `refer_id`（幂等键），**不传** `period`/`purchased_*count`/`product_type` 等。**字段名与多级代理链路全程对齐**；Certum 侧的 `customer` 术语仅存在于 Gateway → Certum SDK 的最后一跳
 - **directory_url 缓存**：Laravel `Cache::forever("acme_directory_url:{ca}")` 按签发 CA 聚合；commit/sync 刷新、show 缺失时回源一次性回填；不入 system_setting、不落库
 - **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
 - **撤回取消**：`revokeCancel(int $id)` 在 acme.status=cancelling 且延时任务未执行时生效 — 悲观锁回滚 status→active、清空 cancelled_at、删除 executing/stopped 的 `cancel_acme` Task（已 dispatch 的 TaskJob 唤醒后找不到任务直接跳过）

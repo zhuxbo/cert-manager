@@ -41,6 +41,7 @@ class Acme extends BaseModel
         'refer_id',
         'api_id',
         'vendor_id',
+        'contact_email',
         'eab_kid',
         'eab_hmac',
         'period_from',

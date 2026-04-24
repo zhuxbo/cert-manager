@@ -57,6 +57,18 @@
           style="width: 100%"
         />
       </el-form-item>
+
+      <el-form-item
+        label="账号邮箱"
+        prop="contact_email"
+        :rules="rules.contact_email"
+      >
+        <el-input
+          v-model="formData.contact_email"
+          placeholder="ACME 客户端注册账号用的邮箱"
+          clearable
+        />
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="handleClose">取消</el-button>
@@ -72,6 +84,7 @@ import { ref, reactive } from "vue";
 import { useRoute } from "vue-router";
 import { createOrder } from "@/api/acme";
 import { show as productShow } from "@/api/product";
+import { getProfile } from "@/api/auth";
 import { message } from "@shared/utils";
 import ReRemoteSelect from "@shared/components/ReRemoteSelect";
 import { periodLabels } from "@/views/system/dictionary";
@@ -101,7 +114,8 @@ const loading = ref(false);
 const formData = reactive({
   product_id: undefined as number | undefined,
   period: "" as number | string,
-  quantity: 1
+  quantity: 1,
+  contact_email: ""
 });
 
 const periodOptions = ref<{ label: string; value: number }[]>([]);
@@ -109,17 +123,26 @@ const periodOptions = ref<{ label: string; value: number }[]>([]);
 const rules = reactive<FormRules>({
   product_id: [{ required: true, message: "请选择产品", trigger: "change" }],
   period: [{ required: true, message: "请选择有效期", trigger: "change" }],
-  quantity: [{ required: true, message: "请输入数量", trigger: "blur" }]
+  quantity: [{ required: true, message: "请输入数量", trigger: "blur" }],
+  contact_email: [
+    { required: true, message: "请输入账号邮箱", trigger: "blur" },
+    { type: "email", message: "邮箱格式不正确", trigger: "blur" }
+  ]
 });
 
 const handleOpen = () => {
   formData.product_id = props.productId > 0 ? props.productId : undefined;
   formData.period = "";
   formData.quantity = 1;
+  formData.contact_email = "";
   periodOptions.value = [];
   if (formData.product_id) {
     handleProductChange(formData.product_id);
   }
+  // 默认填入当前用户绑定的邮箱，允许修改为任意 email
+  getProfile().then(({ data }) => {
+    if (data?.email) formData.contact_email = data.email;
+  });
 };
 
 const handleProductChange = (productId: number) => {
@@ -147,7 +170,8 @@ const handleSubmit = async () => {
   const payload = {
     product_id: formData.product_id as number,
     period: Number(formData.period),
-    plus: Number(route.query.plus ?? 1)
+    plus: Number(route.query.plus ?? 1),
+    contact_email: formData.contact_email
   };
 
   loading.value = true;
