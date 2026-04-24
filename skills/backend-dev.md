@@ -147,7 +147,7 @@ php artisan upgrade:run       # 执行升级
 php artisan upgrade:rollback  # 回滚
 php artisan db:structure --check   # 数据库结构校验
 php artisan db:structure --fix     # 自动修复结构
-php artisan queue:work --queue Task  # 队列
+php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 TaskJob / NotificationJob）
 ```
 
 ---

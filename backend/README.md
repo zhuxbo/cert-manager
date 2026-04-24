@@ -102,7 +102,7 @@ QUEUE_CONNECTION=redis
 **注意**：启用 Redis 队列后，需要运行队列处理进程：
 
 ```bash
-php artisan queue:work --tries=3
+php artisan queue:work --queue tasks,notifications --tries=3
 ```
 
 IDE 代码提示辅助工具：

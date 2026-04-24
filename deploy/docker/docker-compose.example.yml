@@ -64,7 +64,7 @@ services:
       dockerfile: Dockerfile
     container_name: ssl-manager-queue
     restart: unless-stopped
-    command: php /var/www/html/backend/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+    command: php /var/www/html/backend/artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-time=3600
     volumes:
       - ./backend:/var/www/html/backend
       - ./plugins:/var/www/html/plugins
