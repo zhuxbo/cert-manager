@@ -99,7 +99,7 @@ class DatabaseStructureService
     /**
      * 导出当前数据库结构
      */
-    protected function exportCurrentStructure(string $connection): array
+    public function exportCurrentStructure(string $connection): array
     {
         $database = Config::get("database.connections.$connection.database");
 

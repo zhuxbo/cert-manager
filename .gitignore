@@ -48,6 +48,7 @@ pnpm-debug.log*
 !/backend/bootstrap/cache/.gitkeep
 /backend/storage/upgrades/
 /backend/storage/backups/
+/backend/storage/databak/
 
 # Test coverage
 coverage/

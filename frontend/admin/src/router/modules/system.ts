@@ -67,6 +67,16 @@ export default {
         title: "系统升级",
         keepAlive: true
       }
+    },
+    {
+      path: "/database-backup",
+      name: "DatabaseBackup",
+      component: () => import("@/views/database-backup/index.vue"),
+      meta: {
+        icon: "ri:database-2-line",
+        title: "数据库备份",
+        keepAlive: true
+      }
     }
   ]
 } satisfies RouteConfigsTable;

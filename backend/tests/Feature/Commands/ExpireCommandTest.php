@@ -159,6 +159,79 @@ test('无过期证书时正常退出', function () {
     $this->artisan('schedule:expire')->assertSuccessful();
 });
 
+test('终态证书的 csr/private_key/cert 被清空', function () {
+    $user = User::factory()->create();
+    $product = Product::factory()->create();
+
+    $terminal = ['expired', 'cancelled', 'revoked', 'renewed', 'reissued', 'failed'];
+    $terminalCerts = [];
+    foreach ($terminal as $status) {
+        $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+        $terminalCerts[] = Cert::factory()->create([
+            'order_id' => $order->id,
+            'status' => $status,
+            'csr' => 'csr-'.$status,
+            'private_key' => 'pk-'.$status,
+            'cert' => 'pem-'.$status,
+        ]);
+    }
+
+    // 活跃单保留敏感字段
+    $activeOrder = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+    $activeCert = Cert::factory()->active()->create([
+        'order_id' => $activeOrder->id,
+        'expires_at' => now()->addDays(30),
+        'csr' => 'csr-active',
+        'private_key' => 'pk-active',
+        'cert' => 'pem-active',
+    ]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->zeroOrMoreTimes();
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+
+    foreach ($terminalCerts as $cert) {
+        $cert->refresh();
+        expect($cert->csr)->toBeNull()
+            ->and($cert->private_key)->toBeNull()
+            ->and($cert->cert)->toBeNull();
+    }
+
+    $activeCert->refresh();
+    expect($activeCert->csr)->toBe('csr-active')
+        ->and($activeCert->private_key)->toBe('pk-active')
+        ->and($activeCert->cert)->toBe('pem-active');
+});
+
+test('刚标记为 expired 的证书在同一次执行中也会被清理敏感字段', function () {
+    $user = User::factory()->create();
+    $product = Product::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'active',
+        'expires_at' => now()->subDay(),
+        'csr' => 'csr-just-expired',
+        'private_key' => 'pk-just-expired',
+        'cert' => 'pem-just-expired',
+    ]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->zeroOrMoreTimes();
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+
+    $cert->refresh();
+    expect($cert->status)->toBe('expired')
+        ->and($cert->csr)->toBeNull()
+        ->and($cert->private_key)->toBeNull()
+        ->and($cert->cert)->toBeNull();
+});
+
 test('多个到期时间段的证书都会触发通知', function () {
     $user = User::factory()->create(['email' => 'test@example.com']);
     $product = Product::factory()->create();

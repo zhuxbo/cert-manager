@@ -39,3 +39,10 @@ Schedule::command('schedule:auto-renew')
     ->dailyAt('00:00')
     ->name('auto-renew-certificates')
     ->description('自动续费/重签即将到期的证书');
+
+// 数据库备份任务 - 每天凌晨2点执行，保留 7 天
+Schedule::command('schedule:backup')
+    ->dailyAt('02:00')
+    ->withoutOverlapping()
+    ->name('backup-database')
+    ->description('备份数据库核心数据（剔除日志/运行时表与 certs 敏感列）');
