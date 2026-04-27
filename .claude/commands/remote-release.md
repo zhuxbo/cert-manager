@@ -84,9 +84,9 @@ git push origin dev
 ## 使用示例
 
 ```
-/cert-release 0.0.13-beta     # 预发布版（dev 通道，任意分支可发）
-/cert-release v0.0.13-beta    # 自动去除 v 前缀
-/cert-release 1.0.0           # 正式版（必须 main 分支，自动打 tag + latest）
+/remote-release 0.0.13-beta     # 预发布版（dev 通道，任意分支可发）
+/remote-release v0.0.13-beta    # 自动去除 v 前缀
+/remote-release 1.0.0           # 正式版（必须 main 分支，自动打 tag + latest）
 ```
 
 ## 注意事项
