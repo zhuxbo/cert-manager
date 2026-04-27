@@ -74,7 +74,7 @@ export default {
       component: () => import("@/views/database-backup/index.vue"),
       meta: {
         icon: "ri:database-2-line",
-        title: "数据库备份",
+        title: "数据备份",
         keepAlive: true
       }
     }
