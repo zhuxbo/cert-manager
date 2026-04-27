@@ -447,16 +447,24 @@ class UpgradeService
             }
 
             // 步骤 13: 清理缓存
+            // 重建缓存必须在全新子进程中执行：当前进程的 RouteServiceProvider/路由文件/类定义
+            // 都是文件覆盖前加载的，Artisan::call 内的 getFreshApplication() 也无法卸载已加载的 class，
+            // 会导致 routes-v7.php 内容陈旧，FPM 命中后路由 404，必须手工清缓存才生效。
             if (Config::get('upgrade.behavior.clear_cache', true)) {
                 $statusManager->startStep('clear_cache');
-                Artisan::call('optimize:clear', ['--except' => 'view']);
-                Artisan::call('config:cache');
+
+                $clearResult = $this->runArtisanInSubprocess('optimize:clear', ['--except' => 'view']);
+                Log::info('[Upgrade] optimize:clear (subprocess) exit='.$clearResult['exit_code'].' output: '.$clearResult['output']);
+
+                $configResult = $this->runArtisanInSubprocess('config:cache');
+                Log::info('[Upgrade] config:cache (subprocess) exit='.$configResult['exit_code'].' output: '.$configResult['output']);
 
                 // route:cache 可能因插件闭包路由等原因失败，不应阻断升级
-                try {
-                    Artisan::call('route:cache');
-                } catch (\Exception $e) {
-                    Log::warning("[Upgrade] route:cache 失败（不影响升级）: {$e->getMessage()}");
+                $routeResult = $this->runArtisanInSubprocess('route:cache');
+                if ($routeResult['exit_code'] !== 0) {
+                    Log::warning('[Upgrade] route:cache 失败（不影响升级）exit='.$routeResult['exit_code'].' output: '.$routeResult['output']);
+                } else {
+                    Log::info('[Upgrade] route:cache (subprocess) ok output: '.$routeResult['output']);
                 }
 
                 $statusManager->completeStep('clear_cache');
@@ -542,14 +550,18 @@ class UpgradeService
                 Log::info('[Rollback] opcache_reset called after restore');
             }
 
-            // 清理并重建缓存
-            Artisan::call('optimize:clear', ['--except' => 'view']);
-            Artisan::call('config:cache');
+            // 清理并重建缓存（必须用全新子进程，原因见 performUpgradeWithStatus 同段注释）
+            $clearResult = $this->runArtisanInSubprocess('optimize:clear', ['--except' => 'view']);
+            Log::info('[Rollback] optimize:clear (subprocess) exit='.$clearResult['exit_code'].' output: '.$clearResult['output']);
 
-            try {
-                Artisan::call('route:cache');
-            } catch (\Exception $e) {
-                Log::warning("[Rollback] route:cache 失败: {$e->getMessage()}");
+            $configResult = $this->runArtisanInSubprocess('config:cache');
+            Log::info('[Rollback] config:cache (subprocess) exit='.$configResult['exit_code'].' output: '.$configResult['output']);
+
+            $routeResult = $this->runArtisanInSubprocess('route:cache');
+            if ($routeResult['exit_code'] !== 0) {
+                Log::warning('[Rollback] route:cache 失败 exit='.$routeResult['exit_code'].' output: '.$routeResult['output']);
+            } else {
+                Log::info('[Rollback] route:cache (subprocess) ok output: '.$routeResult['output']);
             }
 
             // 最终清理 opcache
@@ -858,6 +870,91 @@ class UpgradeService
         unset($ch);
 
         return $httpCode >= 200 && $httpCode < 400;
+    }
+
+    /**
+     * 在全新子进程中运行 artisan 命令
+     *
+     * 用于升级/回滚后重建缓存。当前长驻 PHP 进程是在文件覆盖之前 bootstrap 的，
+     * Artisan::call('route:cache') 即便走 getFreshApplication() 仍可能使用 进程内已加载的旧
+     * class 定义 / CLI opcache 缓存的旧路由文件，导致 routes-v7.php 内容陈旧；
+     * FPM worker 在 opcache.validate_timestamps=0 场景下会持续返回 404。
+     * 改用全新子进程则能从干净状态读取磁盘文件构建缓存。
+     */
+    protected function runArtisanInSubprocess(string $command, array $args = []): array
+    {
+        $phpBinary = $this->findPhpBinary();
+        $artisan = base_path('artisan');
+
+        $argString = '';
+        foreach ($args as $key => $value) {
+            if ($value === true) {
+                $argString .= ' '.escapeshellarg($key);
+            } else {
+                $argString .= ' '.escapeshellarg("$key=$value");
+            }
+        }
+
+        $cmd = sprintf(
+            '%s %s %s%s 2>&1',
+            escapeshellarg($phpBinary),
+            escapeshellarg($artisan),
+            escapeshellarg($command),
+            $argString
+        );
+
+        $output = [];
+        $exitCode = 0;
+        exec($cmd, $output, $exitCode);
+
+        return [
+            'output' => implode("\n", $output),
+            'exit_code' => $exitCode,
+            'command' => $cmd,
+        ];
+    }
+
+    /**
+     * 查找 PHP CLI 二进制
+     *
+     * HTTP 入口（如回滚）下 PHP_BINARY 是 php-fpm，不能直接 exec，需要查找真实 CLI。
+     * CLI 入口（upgrade:run 子进程）下 PHP_BINARY 即 php，直接返回。
+     */
+    protected function findPhpBinary(): string
+    {
+        if (! str_contains(PHP_BINARY, 'fpm')) {
+            return PHP_BINARY;
+        }
+
+        // 从 php-fpm 路径推断 php 路径（宝塔/aapanel 通常在 open_basedir 允许范围内）
+        $phpFpmPath = PHP_BINARY;
+        $phpPath = str_replace(['php-fpm', 'sbin'], ['php', 'bin'], $phpFpmPath);
+        if ($phpPath !== $phpFpmPath && @file_exists($phpPath) && @is_executable($phpPath)) {
+            return $phpPath;
+        }
+
+        // 常见路径兜底（最低 PHP 8.3）
+        $candidates = [
+            '/www/server/php/84/bin/php',
+            '/www/server/php/83/bin/php',
+            '/usr/bin/php',
+            '/usr/local/bin/php',
+            '/opt/php/bin/php',
+        ];
+        foreach ($candidates as $path) {
+            if (@file_exists($path) && @is_executable($path)) {
+                return $path;
+            }
+        }
+
+        // PATH 中查找
+        $output = [];
+        @exec('which php 2>/dev/null', $output);
+        if (! empty($output[0]) && @file_exists($output[0])) {
+            return $output[0];
+        }
+
+        return 'php';
     }
 
     /**
