@@ -41,6 +41,9 @@ class BackupCommand extends Command
             $dumpBin = $this->backupService->ensureMysqlClient('mysqldump');
         } catch (Throwable $e) {
             $this->error($e->getMessage());
+            foreach (BackupService::installHintLines() as $line) {
+                $this->line($line);
+            }
 
             return CommandAlias::FAILURE;
         }

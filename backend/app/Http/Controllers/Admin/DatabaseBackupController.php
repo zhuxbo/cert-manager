@@ -46,7 +46,7 @@ class DatabaseBackupController extends BaseController
         try {
             $this->service->ensureMysqlClient('mysqldump');
         } catch (Throwable $e) {
-            $this->error($e->getMessage());
+            $this->error($e->getMessage(), BackupService::installHintLines());
         }
 
         $token = $this->service->newJobToken();
@@ -172,7 +172,7 @@ class DatabaseBackupController extends BaseController
             $this->service->ensureMysqlClient('mysqldump');
             $this->service->ensureMysqlClient('mysql');
         } catch (Throwable $e) {
-            $this->error($e->getMessage());
+            $this->error($e->getMessage(), BackupService::installHintLines());
         }
 
         $token = $this->service->newJobToken();

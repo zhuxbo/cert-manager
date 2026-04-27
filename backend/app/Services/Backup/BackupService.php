@@ -59,11 +59,38 @@ class BackupService
         return storage_path('databak');
     }
 
+    /** 候选 mysql 客户端二进制目录（按宝塔/Linux 发行版/macOS Homebrew 顺序） */
+    private const CANDIDATE_BIN_DIRS = [
+        // 宝塔面板默认 MySQL 安装路径（www 用户的 PATH 不含此目录，且大概率被 open_basedir 锁外）
+        '/www/server/mysql/bin',
+        // Linux 包管理器 / 自编译
+        '/usr/bin',
+        '/usr/local/bin',
+        '/usr/local/mysql/bin',
+        '/opt/mysql/bin',
+        // macOS Homebrew (Apple Silicon)
+        '/opt/homebrew/bin',
+        '/opt/homebrew/opt/mysql-client/bin',
+        '/opt/homebrew/opt/mysql/bin',
+        // macOS Homebrew (Intel)
+        '/usr/local/opt/mysql-client/bin',
+        '/usr/local/opt/mysql/bin',
+    ];
+
     /**
-     * 确认 mysql 客户端二进制可用：
-     *   - 绝对路径 → is_executable
-     *   - 相对名 → 走 PATH 查找
-     * 找不到时抛 RuntimeException，message 里附带按平台区分的安装指引。
+     * 确认 mysql 客户端二进制可用，返回真实路径。
+     *
+     * 探测策略（按顺序）：
+     *   1. 配置含路径分隔符（绝对/相对路径）→ 直接 proc_open 验证
+     *   2. 配置是相对名 → ExecutableFinder 走 PATH（成本低，先试）
+     *   3. PATH 查不到 → 遍历 CANDIDATE_BIN_DIRS，逐个 proc_open --version 探测
+     *
+     * 关键：**全程不用 is_executable / file_exists**，因为它们受 open_basedir 限制
+     * （宝塔站点默认把 /www/server/mysql/bin/ 锁在白名单外，这两个调用会静默 false）。
+     * 而 proc_open 不在 open_basedir 检查列表，可直接启动子进程探测。
+     *
+     * 找不到时抛 RuntimeException，message 仅含简短失败原因；详细安装指引由调用方
+     * 通过 {@see installHintLines()} 拼到响应 errors 字段。
      *
      * @param  string  $tool  'mysqldump' 或 'mysql'
      */
@@ -73,52 +100,108 @@ class BackupService
             ? (string) config('database.backup.mysqldump_bin', 'mysqldump')
             : (string) config('database.backup.mysql_bin', 'mysql');
 
-        // 已是绝对/相对路径 → 直接判断可执行
+        // 1. 含路径分隔符 → 视为绝对/相对路径，直接 proc_open 验证（不能用 is_executable）
         if (str_contains($configured, '/') || str_contains($configured, '\\')) {
-            if (is_executable($configured)) {
+            if (self::probeExecutable($configured)) {
                 return $configured;
             }
-            throw new RuntimeException(
-                "{$tool} 不可执行: $configured\n".self::installHint($tool)
-            );
+            throw new RuntimeException("$tool 不可执行: $configured");
         }
 
-        // 相对名 → ExecutableFinder 走 PATH + 一批常见安装目录兜底
-        // 关键：PHP-FPM / queue worker 进程的 PATH 通常只有 /usr/bin:/bin，
-        // 不会继承终端 PATH，因此 brew/MySQL 官方安装的目录必须显式列入。
-        $extraDirs = [
-            // macOS Homebrew (Apple Silicon)
-            '/opt/homebrew/bin',
-            '/opt/homebrew/opt/mysql-client/bin',
-            '/opt/homebrew/opt/mysql/bin',
-            // macOS Homebrew (Intel)
-            '/usr/local/bin',
-            '/usr/local/opt/mysql-client/bin',
-            '/usr/local/opt/mysql/bin',
-            // macOS 官方 dmg
-            '/usr/local/mysql/bin',
-            // Linux 自编译/官方 tar 常见位置
-            '/opt/mysql/bin',
-        ];
-
-        $found = (new ExecutableFinder)->find($configured, null, $extraDirs);
-        if ($found !== null) {
+        // 2. 相对名 → 先走 PATH（覆盖正常环境，几乎无成本）
+        $found = (new ExecutableFinder)->find($configured);
+        if ($found !== null && self::probeExecutable($found)) {
             return $found;
         }
 
-        throw new RuntimeException(
-            "未找到 $tool 命令（在 PATH 中查找 $configured 失败）\n".self::installHint($tool)
-        );
+        // 3. PATH 失败（多见于 open_basedir 限制）→ 遍历候选目录用 proc_open 探测
+        foreach (self::CANDIDATE_BIN_DIRS as $dir) {
+            $candidate = "$dir/$configured";
+            if (self::probeExecutable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        throw new RuntimeException("未找到 $tool 命令");
     }
 
     /**
-     * 按操作系统/容器场景给出安装命令提示。
+     * 用 proc_open 启动 `$path --version` 验证二进制是否可执行。
+     *
+     * 必须用 array 形式调用，避免 shell 解释；array 形式 PHP 内部走 execve，
+     * 不受 open_basedir 影响，且天然防注入（不会展开变量/通配符）。
+     *
+     * 返回 true 仅当：proc_open 启动成功 + 退出码 0 + stdout 含 "Distrib"/"Ver "（mysql 客户端 --version 输出特征）。
      */
-    private static function installHint(string $tool): string
+    private static function probeExecutable(string $path): bool
     {
-        $isDocker = is_file('/.dockerenv') || is_dir('/proc/1/cgroup') && @str_contains((string) @file_get_contents('/proc/1/cgroup'), 'docker');
+        $proc = @proc_open(
+            [$path, '--version'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        if (! is_resource($proc)) {
+            return false;
+        }
+        $stdout = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
 
-        $lines = ['请安装 mysql 客户端工具（提供 mysqldump 与 mysql 两个命令）后重试。'];
+        // mysql/mysqldump --version 输出特征，避免误识别同名占位文件
+        return $exit === 0 && (str_contains($stdout, 'Distrib') || str_contains($stdout, 'Ver '));
+    }
+
+    /**
+     * 按操作系统/容器场景给出安装命令提示，每行一条。
+     * 由调用方放入 ApiResponse 的 errors 数组或 console 多行输出，避免污染 msg。
+     *
+     * 检测优先级：
+     *   1. PHP 运行限制（open_basedir / disable_functions）— 宝塔/lnmp 默认配置最常见原因
+     *   2. 平台相关的 mysql-client 安装命令
+     *
+     * @return array<int, string>
+     */
+    public static function installHintLines(): array
+    {
+        $lines = [];
+
+        // 1. 优先检查 PHP 运行时限制——若 mysql 已装但被 open_basedir 拦截，
+        //    is_executable() 静默返回 false，错误现象与"没装"一致，必须显式提示。
+        $openBasedir = (string) ini_get('open_basedir');
+        if ($openBasedir !== '') {
+            $allowed = preg_split('/[:;]/', $openBasedir) ?: [];
+            $hasBin = false;
+            foreach ($allowed as $dir) {
+                $dir = rtrim(trim($dir), '/');
+                if ($dir !== '' && (str_contains($dir, '/mysql/bin') || $dir === '/usr/bin' || $dir === '/bin')) {
+                    $hasBin = true;
+                    break;
+                }
+            }
+            if (! $hasBin) {
+                $lines[] = '⚠ 检测到 PHP open_basedir 限制可能阻止访问 mysql 二进制目录。';
+                $lines[] = "  当前 open_basedir: $openBasedir";
+                $lines[] = '  解决：在站点 PHP 配置里把 mysql bin 目录加入 open_basedir。';
+                $lines[] = '  宝塔面板：网站 → 设置 → 配置文件，在 php_admin_value[open_basedir] 行末追加 ":/www/server/mysql/bin/:/tmp/"';
+                $lines[] = '  修改后重启 php-fpm 生效。';
+            }
+        }
+
+        // 2. 检查关键函数是否被禁用——宝塔默认禁 proc_open，备份/恢复完全跑不起来
+        $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+        $required = ['proc_open', 'proc_close', 'proc_get_status', 'proc_terminate'];
+        $missing = array_values(array_intersect($required, $disabled));
+        if ($missing) {
+            $lines[] = '⚠ PHP 已禁用以下函数，备份/恢复无法工作：'.implode(', ', $missing);
+            $lines[] = '  解决：在 php.ini 的 disable_functions 中移除上述函数。';
+            $lines[] = '  宝塔面板：软件商店 → PHP 管理 → 设置 → 禁用函数，删掉对应项。';
+        }
+
+        // 3. 平台相关的 mysql-client 安装命令
+        $isDocker = @is_file('/.dockerenv') || @is_dir('/proc/1/cgroup') && @str_contains((string) @file_get_contents('/proc/1/cgroup'), 'docker');
+
+        $lines[] = '请确认已安装 mysql 客户端工具（提供 mysqldump 与 mysql 两个命令）。';
 
         if ($isDocker) {
             $lines[] = '检测到运行在 Docker 容器中，请在 Dockerfile 中加入：';
@@ -132,16 +215,19 @@ class BackupService
                 $lines[] = '  Alpine:        apk add mysql-client';
                 $lines[] = '  Debian/Ubuntu: apt install default-mysql-client';
                 $lines[] = '  RHEL/CentOS:   yum install mysql';
+                $lines[] = '宝塔面板：自带 mysql-client，已将 /www/server/mysql/bin 加入查找路径。';
             } elseif ($family === 'Darwin') {
                 $lines[] = 'macOS 安装命令： brew install mysql-client';
                 $lines[] = '安装后将 mysql-client 的 bin 路径加入 PATH，或在 .env 中设置 MYSQLDUMP_BIN/MYSQL_BIN 绝对路径。';
             } else {
                 $lines[] = '请安装 MySQL 官方客户端工具，并确保 mysqldump/mysql 在 PATH 中。';
             }
-            $lines[] = '或在 .env 中显式指定路径：MYSQLDUMP_BIN=/path/to/mysqldump、MYSQL_BIN=/path/to/mysql';
+            $lines[] = '若已安装但仍报错，请在 .env 中显式指定路径：';
+            $lines[] = '  MYSQLDUMP_BIN=/path/to/mysqldump';
+            $lines[] = '  MYSQL_BIN=/path/to/mysql';
         }
 
-        return implode("\n", $lines);
+        return $lines;
     }
 
     public function ensureDirectory(): void

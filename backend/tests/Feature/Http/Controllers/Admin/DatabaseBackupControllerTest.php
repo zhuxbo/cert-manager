@@ -304,7 +304,10 @@ test('store 在 mysqldump 不可用时立即返回错误，不入队 Job', funct
     $resp = $this->actingAsAdmin($this->admin)->postJson('/api/admin/database/backups');
 
     $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('mysqldump 不可执行');
+    expect($resp->json('msg'))->toContain('mysqldump 不可执行')
+        ->and($resp->json('msg'))->not->toContain('mysql-client');
+    expect($resp->json('errors'))->toBeArray()
+        ->and(implode("\n", $resp->json('errors')))->toContain('mysql-client');
 
     Queue::assertNotPushed(CreateBackupJob::class);
 });
@@ -318,7 +321,10 @@ test('restore 在 mysql 不可用时立即返回错误，不入队 Job', functio
         ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'full']);
 
     $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('mysql 不可执行');
+    expect($resp->json('msg'))->toContain('mysql 不可执行')
+        ->and($resp->json('msg'))->not->toContain('mysql-client');
+    expect($resp->json('errors'))->toBeArray()
+        ->and(implode("\n", $resp->json('errors')))->toContain('mysql-client');
 
     Queue::assertNotPushed(RestoreBackupJob::class);
 });

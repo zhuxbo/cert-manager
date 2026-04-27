@@ -49,9 +49,9 @@ test('mysqldump/mysql 不可用时入口直接 failed，不拿锁', function () 
 });
 
 test('互斥锁被占用时写 failed 进度', function () {
-    // 让 ensureMysqlClient 通过：用 /bin/sh 假装
-    config(['database.backup.mysqldump_bin' => '/bin/sh']);
-    config(['database.backup.mysql_bin' => '/bin/sh']);
+    // 让 ensureMysqlClient 通过：fake mysql 客户端脚本（输出符合 --version 特征）
+    config(['database.backup.mysqldump_bin' => fakeMysqlClientBin('mysqldump')]);
+    config(['database.backup.mysql_bin' => fakeMysqlClientBin('mysql')]);
 
     $existing = Cache::lock(BackupService::MUTEX_LOCK_KEY, 60);
     $existing->get();
@@ -68,8 +68,8 @@ test('互斥锁被占用时写 failed 进度', function () {
 });
 
 test('备份不存在时写 failed 进度并释放锁', function () {
-    config(['database.backup.mysqldump_bin' => '/bin/sh']);
-    config(['database.backup.mysql_bin' => '/bin/sh']);
+    config(['database.backup.mysqldump_bin' => fakeMysqlClientBin('mysqldump')]);
+    config(['database.backup.mysql_bin' => fakeMysqlClientBin('mysql')]);
 
     $token = 'tok_'.uniqid();
     (new RestoreBackupJob($token, 'backup_19990101_000000', 'full', adminId: 1))
