@@ -1,0 +1,16 @@
+# MySQL standard profile (~200-300MB)
+# Suitable for: most deployments, VPS with 2-4GB RAM, 10k-100k orders
+[mysqld]
+innodb_buffer_pool_size = 128M
+innodb_log_buffer_size = 8M
+innodb_log_file_size = 64M
+key_buffer_size = 16M
+tmp_table_size = 32M
+max_heap_table_size = 32M
+max_connections = 50
+table_open_cache = 400
+thread_cache_size = 8
+sort_buffer_size = 512K
+read_buffer_size = 512K
+read_rnd_buffer_size = 512K
+join_buffer_size = 512K

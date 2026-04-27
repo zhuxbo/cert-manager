@@ -5,6 +5,7 @@ namespace App\Http\Controllers\User;
 use App\Bootstrap\ApiExceptions;
 use App\Http\Traits\PaymentConfigTrait;
 use App\Models\Fund;
+use App\Models\User;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Psr\Http\Message\ResponseInterface;
@@ -38,26 +39,40 @@ class TopUpController extends BaseController
             $this->error('请输入正确的金额');
         }
 
-        $fund = Fund::where('created_at', '>=', now()->subMinutes(10))
-            ->where([
-                'user_id' => $this->guard->id(),
-                'amount' => $amount,
-                'type' => 'addfunds',
-                'pay_method' => 'alipay',
-                'status' => 0, // processing
-            ])
-            ->first();
+        // 同一用户并发/重试双击可能同时走到 Fund::create 分支生成多条待支付记录。
+        // 用 user 行级锁串行化：同一用户同时只能有一条 addfunds 请求进入查/建逻辑。
+        $userId = $this->guard->id();
+        $fund = DB::transaction(function () use ($userId, $amount) {
+            User::where('id', $userId)->lockForUpdate()->firstOrFail();
 
-        if (! $fund) {
-            $fund = Fund::create([
-                'user_id' => $this->guard->id(),
+            $existing = Fund::where('created_at', '>=', now()->subMinutes(10))
+                ->where([
+                    'user_id' => $userId,
+                    'amount' => $amount,
+                    'type' => 'addfunds',
+                    'pay_method' => 'alipay',
+                    'status' => 0, // processing
+                ])
+                ->first();
+
+            if ($existing) {
+                return $existing;
+            }
+
+            return Fund::create([
+                'user_id' => $userId,
                 'amount' => $amount,
                 'type' => 'addfunds',
                 'pay_method' => 'alipay',
                 'status' => 0, // processing
                 'ip' => request()->ip(),
             ]);
-        } else {
+        });
+
+        // 历史已存在 fund：查一次上游确认状态；新建 fund：直接走创建扫码流程
+        $reused = $fund->wasRecentlyCreated === false;
+
+        if ($reused) {
             try {
                 $order = Pay::alipay()->query(['out_trade_no' => $fund->id]);
             } catch (Throwable $e) {
@@ -163,26 +178,37 @@ class TopUpController extends BaseController
             $this->error('请输入正确的金额');
         }
 
-        $fund = Fund::where('created_at', '>=', now()->subMinutes(10))
-            ->where([
-                'user_id' => $this->guard->id(),
-                'amount' => $amount,
-                'type' => 'addfunds',
-                'pay_method' => 'wechat',
-                'status' => 0, // processing
-            ])
-            ->first();
+        // 同一用户并发/重试双击可能同时走到 Fund::create 分支生成多条待支付记录。
+        // 用 user 行级锁串行化：同一用户同时只能有一条 addfunds 请求进入查/建逻辑。
+        $userId = $this->guard->id();
+        $fund = DB::transaction(function () use ($userId, $amount) {
+            User::where('id', $userId)->lockForUpdate()->firstOrFail();
 
-        if (! $fund) {
-            $fund = Fund::create([
-                'user_id' => $this->guard->id(),
+            $existing = Fund::where('created_at', '>=', now()->subMinutes(10))
+                ->where([
+                    'user_id' => $userId,
+                    'amount' => $amount,
+                    'type' => 'addfunds',
+                    'pay_method' => 'wechat',
+                    'status' => 0, // processing
+                ])
+                ->first();
+
+            if ($existing) {
+                return $existing;
+            }
+
+            return Fund::create([
+                'user_id' => $userId,
                 'amount' => $amount,
                 'type' => 'addfunds',
                 'pay_method' => 'wechat',
                 'status' => 0, // processing
                 'ip' => request()->ip(),
             ]);
-        } else {
+        });
+
+        if ($fund->wasRecentlyCreated === false) {
             try {
                 $order = Pay::wechat()->query(['out_trade_no' => (string) $fund->id]);
             } catch (Throwable $e) {

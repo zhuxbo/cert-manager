@@ -46,3 +46,22 @@ function something()
 {
     // ..
 }
+
+/**
+ * 造一个 shell 脚本，模拟 mysql/mysqldump 的 --version 输出，供
+ * BackupService::ensureMysqlClient 的 proc_open 探测识别为合法 mysql 客户端。
+ *
+ * 返回脚本绝对路径。注册 shutdown 时自动清理。
+ */
+function fakeMysqlClientBin(string $tool = 'mysqldump'): string
+{
+    $path = sys_get_temp_dir().'/fake_'.$tool.'_'.uniqid().'.sh';
+    file_put_contents(
+        $path,
+        "#!/bin/sh\necho '$tool  Ver 8.0.99 for Linux on x86_64 (MySQL Distrib 8.0.99)'\n"
+    );
+    chmod($path, 0755);
+    register_shutdown_function(static fn () => @unlink($path));
+
+    return $path;
+}

@@ -319,7 +319,9 @@ class ReleaseClient
 
         $args = [
             escapeshellarg($curlPath),
-            '-sL',
+            '-fsL',
+            '--connect-timeout',
+            '10',
             '--max-time',
             escapeshellarg((string) $timeout),
             '-o',

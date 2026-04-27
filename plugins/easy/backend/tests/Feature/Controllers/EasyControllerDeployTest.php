@@ -165,6 +165,23 @@ test('deploy 命令包含正确的 URL 前缀', function () {
     $deploy = $response->json('data.deploy');
     expect($deploy['deploy'])->toContain('https://test.example.com/api/deploy');
     expect($deploy['bt_deploy'])->toContain('https://test.example.com/api/deploy');
-    expect($deploy['install']['linux'])->toContain('release.cnssl.com');
-    expect($deploy['install']['windows'])->toContain('release.cnssl.com');
+    // 未配置 releaseDomain 时回落到 {siteUrl}/release
+    expect($deploy['install']['linux'])->toContain('test.example.com/release');
+    expect($deploy['install']['windows'])->toContain('test.example.com/release');
+});
+
+test('配置 releaseDomain 时 deploy 命令使用独立域名', function () {
+    setSiteSetting('releaseDomain', 'release.example.com');
+    [$user] = createActiveEasyOrder();
+
+    $response = $this->postJson('/api/easy/check', [
+        'tid' => 'TEST123',
+        'email' => $user->email,
+    ]);
+
+    $deploy = $response->json('data.deploy');
+    expect($deploy['install']['linux'])->toContain('https://release.example.com/sslctl/install.sh');
+    expect($deploy['install']['linux'])->toContain('-- release.example.com');
+    expect($deploy['install']['windows'])->toContain('-ReleaseHost release.example.com');
+    expect($deploy['iis_install']['download'])->toContain('https://release.example.com/sslctlw/');
 });

@@ -16,14 +16,11 @@ return new class extends Migration
             return;
         }
 
-        // 检查是否存在未转换的自增 ID（主键索引，性能无影响）
-        $hasAutoIncrementIds = DB::table('transactions')->where('id', '<', 4294967295)->exists();
-        if (! $hasAutoIncrementIds) {
-            return;
-        }
-
         // 1. 将存量自增 ID 替换为基于 created_at 的雪花 ID
-        $this->convertIds();
+        $hasAutoIncrementIds = DB::table('transactions')->where('id', '<', 4294967295)->exists();
+        if ($hasAutoIncrementIds) {
+            $this->convertIds();
+        }
 
         // 2. 去掉 AUTO_INCREMENT（仅在仍为自增时执行）
         $column = collect(Schema::getColumns('transactions'))->firstWhere('name', 'id');

@@ -98,12 +98,11 @@ const createForm = reactive({
   product_code: "",
   period: undefined as number | undefined,
   amount: 0,
-  pay_method: "other"
+  pay_method: "other",
+  count: 1
 });
 const createResult = ref<{
-  tid: string;
-  easy_url: string;
-  recharge_url: string;
+  items: { tid: string; easy_url: string; recharge_url: string }[];
 } | null>(null);
 
 watch(
@@ -121,6 +120,7 @@ const openCreateDialog = async () => {
   createForm.period = undefined;
   createForm.amount = 0;
   createForm.pay_method = "other";
+  createForm.count = 1;
   createDialogVisible.value = true;
   try {
     const { data } = await agisoApi.products();
@@ -144,13 +144,18 @@ const handleCreate = async () => {
     message("请选择周期", { type: "warning" });
     return;
   }
+  if (!createForm.count || createForm.count < 1 || createForm.count > 100) {
+    message("数量需在 1~100 之间", { type: "warning" });
+    return;
+  }
   createLoading.value = true;
   try {
     const { data } = await agisoApi.store({
       product_code: createForm.product_code,
       period: createForm.period,
       amount: createForm.amount,
-      pay_method: createForm.pay_method
+      pay_method: createForm.pay_method,
+      count: createForm.count
     });
     createResult.value = data;
     onSearch();
@@ -168,6 +173,12 @@ const copyText = async (text: string) => {
   } catch {
     message("复制失败", { type: "error" });
   }
+};
+
+const copyAll = (field: "tid" | "easy_url" | "recharge_url") => {
+  const items = createResult.value?.items ?? [];
+  if (!items.length) return;
+  copyText(items.map(i => i[field]).join("\n"));
 };
 
 onMounted(() => {
@@ -332,7 +343,7 @@ onMounted(() => {
     <el-dialog
       v-model="createDialogVisible"
       :title="createResult ? '创建成功' : '创建订单'"
-      width="500px"
+      :width="createResult && createResult.items.length > 1 ? '760px' : '500px'"
       destroy-on-close
     >
       <template v-if="!createResult">
@@ -366,7 +377,16 @@ onMounted(() => {
               />
             </el-select>
           </el-form-item>
-          <el-form-item label="金额">
+          <el-form-item label="数量">
+            <el-input-number
+              v-model="createForm.count"
+              :min="1"
+              :max="100"
+              :precision="0"
+              class="w-full"
+            />
+          </el-form-item>
+          <el-form-item label="单笔金额">
             <el-input-number
               v-model="createForm.amount"
               :min="0"
@@ -387,26 +407,111 @@ onMounted(() => {
         </el-form>
       </template>
       <template v-else>
-        <el-form label-width="100px">
-          <el-form-item label="简易申请链接">
-            <el-input v-model="createResult.easy_url" readonly>
+        <el-form v-if="createResult.items.length === 1" label-width="100px">
+          <el-form-item label="订单号">
+            <el-input :model-value="createResult.items[0].tid" readonly>
               <template #append>
-                <el-button @click="copyText(createResult!.easy_url)">
+                <el-button @click="copyText(createResult!.items[0].tid)">
+                  复制
+                </el-button>
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="简易申请链接">
+            <el-input :model-value="createResult.items[0].easy_url" readonly>
+              <template #append>
+                <el-button @click="copyText(createResult!.items[0].easy_url)">
                   复制
                 </el-button>
               </template>
             </el-input>
           </el-form-item>
           <el-form-item label="充值链接">
-            <el-input v-model="createResult.recharge_url" readonly>
+            <el-input
+              :model-value="createResult.items[0].recharge_url"
+              readonly
+            >
               <template #append>
-                <el-button @click="copyText(createResult!.recharge_url)">
+                <el-button
+                  @click="copyText(createResult!.items[0].recharge_url)"
+                >
                   复制
                 </el-button>
               </template>
             </el-input>
           </el-form-item>
         </el-form>
+        <div v-else>
+          <div class="mb-2 flex items-center justify-between">
+            <span>共创建 {{ createResult.items.length }} 条</span>
+            <div>
+              <el-button size="small" @click="copyAll('tid')">
+                复制全部订单号
+              </el-button>
+              <el-button size="small" @click="copyAll('easy_url')">
+                复制全部简易申请链接
+              </el-button>
+              <el-button size="small" @click="copyAll('recharge_url')">
+                复制全部充值链接
+              </el-button>
+            </div>
+          </div>
+          <el-table
+            :data="createResult.items"
+            max-height="400"
+            size="small"
+            border
+          >
+            <el-table-column type="index" label="#" width="50" />
+            <el-table-column prop="tid" label="订单号" width="180">
+              <template #default="{ row }">
+                <span class="mr-1">{{ row.tid }}</span>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="copyText(row.tid)"
+                >
+                  复制
+                </el-button>
+              </template>
+            </el-table-column>
+            <el-table-column label="简易申请链接" min-width="220">
+              <template #default="{ row }">
+                <div class="flex items-center gap-1">
+                  <el-input :model-value="row.easy_url" readonly size="small" />
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    @click="copyText(row.easy_url)"
+                  >
+                    复制
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="充值链接" min-width="220">
+              <template #default="{ row }">
+                <div class="flex items-center gap-1">
+                  <el-input
+                    :model-value="row.recharge_url"
+                    readonly
+                    size="small"
+                  />
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    @click="copyText(row.recharge_url)"
+                  >
+                    复制
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </template>
       <template #footer>
         <el-button v-if="!createResult" @click="createDialogVisible = false">

@@ -66,9 +66,9 @@ function createPaidAcme($user, $product): Acme
         $acmeId = $e->getApiResponse()['data']['order_id'];
     }
 
-    // 支付订单
+    // 支付订单（仅走扣费路径，避免同步 commit 触发上游调用）
     try {
-        $action->pay($acmeId);
+        $action->pay($acmeId, false);
     } catch (ApiResponseException $e) {
         expect($e->getApiResponse()['code'])->toBe(1);
     }
@@ -178,9 +178,9 @@ test('无 UserScope 时 Acme\Action::pay 可以访问任何用户的订单', fun
         'amount' => '100.00',
     ]);
 
-    // 不注册 UserScope，直接操作
+    // 不注册 UserScope，直接操作（仅扣费，避免同步 commit 触发上游）
     try {
-        $this->acmeAction->pay($acme->id);
+        $this->acmeAction->pay($acme->id, false);
     } catch (ApiResponseException $e) {
         expect($e->getApiResponse()['code'])->toBe(1);
     }

@@ -211,7 +211,8 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         placeholder: "请选择加密算法",
         multiple: true
       },
-      options: encryptionAlgOptions
+      options: encryptionAlgOptions,
+      hideInForm: isACME.value
     },
     {
       label: "签名摘要算法",
@@ -221,7 +222,8 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         placeholder: "请选择签名摘要算法",
         multiple: true
       },
-      options: signatureDigestAlgOptions
+      options: signatureDigestAlgOptions,
+      hideInForm: isACME.value
     },
     {
       label: "验证类型",
@@ -241,7 +243,7 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         multiple: true
       },
       options: nameTypeOptions,
-      hideInForm: !isSSL.value
+      hideInForm: !isSSL.value && !isACME.value
     },
     {
       label: "备用名称类型",
@@ -252,7 +254,7 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
         multiple: true
       },
       options: nameTypeOptions,
-      hideInForm: !isSSL.value
+      hideInForm: !isSSL.value && !isACME.value
     },
     {
       label: "验证方法",
@@ -372,13 +374,15 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       label: "续期",
       prop: "renew",
       valueType: "switch",
-      fieldProps: switchOptions
+      fieldProps: switchOptions,
+      hideInForm: isACME.value
     },
     {
       label: "重用CSR",
       prop: "reuse_csr",
       valueType: "switch",
-      fieldProps: switchOptions
+      fieldProps: switchOptions,
+      hideInForm: isACME.value
     },
     {
       label: "赠送根域名",
@@ -475,14 +479,20 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       status: [{ required: true, message: "请选择状态" }]
     };
 
-    // 所有产品类型都需要加密相关字段
+    // 所有产品类型都需要加密标准
     baseRules.encryption_standard = [
       { required: true, message: "请选择加密标准" }
     ];
-    baseRules.encryption_alg = [{ required: true, message: "请选择加密算法" }];
-    baseRules.signature_digest_alg = [
-      { required: true, message: "请选择签名摘要算法" }
-    ];
+
+    // ACME 产品不需要加密算法和签名摘要算法（由 ACME 客户端自行决定）
+    if (!isACME.value) {
+      baseRules.encryption_alg = [
+        { required: true, message: "请选择加密算法" }
+      ];
+      baseRules.signature_digest_alg = [
+        { required: true, message: "请选择签名摘要算法" }
+      ];
+    }
 
     // SSL 和 ACME 产品共用的域名数量验证规则
     if (needsDomainConfig.value) {
@@ -561,8 +571,6 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
     // 非 SSL 产品，清除不适用字段
     if (filtered.product_type && filtered.product_type !== "ssl") {
       // 清除 SSL 专用字段（非域名数量相关）
-      filtered.common_name_types = [];
-      filtered.alternative_name_types = [];
       filtered.validation_methods = [];
       filtered.add_san = 0;
       filtered.replace_san = 0;
@@ -571,8 +579,10 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       filtered.warranty_currency = "$";
       filtered.warranty = 0;
 
-      // ACME 产品保留域名数量字段，其他非 SSL 产品清零
+      // ACME 产品保留域名数量字段及名称类型（成本页据此渲染附加域名价格列），其他非 SSL 产品清零
       if (filtered.product_type !== "acme") {
+        filtered.common_name_types = [];
+        filtered.alternative_name_types = [];
         filtered.standard_min = 0;
         filtered.standard_max = 0;
         filtered.wildcard_min = 0;
@@ -585,6 +595,14 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
     // CodeSign、DocSign、ACME 不支持重签
     if (["codesign", "docsign", "acme"].includes(filtered.product_type ?? "")) {
       filtered.reissue = 0;
+    }
+
+    // ACME 以 EAB 为交付产物，这 4 个字段均由 ACME 客户端自行决定
+    if (filtered.product_type === "acme") {
+      filtered.encryption_alg = [];
+      filtered.signature_digest_alg = [];
+      filtered.renew = 0;
+      filtered.reuse_csr = 0;
     }
 
     return filtered;

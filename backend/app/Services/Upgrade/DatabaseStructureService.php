@@ -99,7 +99,7 @@ class DatabaseStructureService
     /**
      * 导出当前数据库结构
      */
-    protected function exportCurrentStructure(string $connection): array
+    public function exportCurrentStructure(string $connection): array
     {
         $database = Config::get("database.connections.$connection.database");
 
@@ -236,7 +236,7 @@ class DatabaseStructureService
     /**
      * 对比两个结构
      */
-    protected function compareStructures(array $standard, array $current): array
+    public function compareStructures(array $standard, array $current): array
     {
         $diff = [
             'missing_tables' => [],
@@ -342,8 +342,13 @@ class DatabaseStructureService
      */
     protected function isColumnDifferent(array $standard, array $current): bool
     {
-        // 基础属性必须一致
-        if ($standard['type'] !== $current['type'] ||
+        // MySQL 5.7 整型必须有显示宽度如 int(11)、bigint(20)，
+        // MySQL 8.0 废弃了显示宽度只显示 int、bigint，
+        // 标准化后忽略此差异避免跨版本检测时产生误报
+        $standardType = $this->normalizeIntegerType($standard['type']);
+        $currentType = $this->normalizeIntegerType($current['type']);
+
+        if ($standardType !== $currentType ||
             $standard['nullable'] !== $current['nullable'] ||
             $standard['default'] !== $current['default'] ||
             $standard['extra'] !== $current['extra']) {
@@ -373,11 +378,13 @@ class DatabaseStructureService
     /**
      * 描述列的具体差异
      */
-    protected function describeColumnDifferences(array $standard, array $current): string
+    public function describeColumnDifferences(array $standard, array $current): string
     {
         $differences = [];
 
-        if ($standard['type'] !== $current['type']) {
+        $standardType = $this->normalizeIntegerType($standard['type']);
+        $currentType = $this->normalizeIntegerType($current['type']);
+        if ($standardType !== $currentType) {
             $differences[] = "类型 {$current['type']} => {$standard['type']}";
         }
 
@@ -393,11 +400,28 @@ class DatabaseStructureService
             $differences[] = "默认值 $currentDefault => $standardDefault";
         }
 
+        if ($standard['extra'] !== $current['extra']) {
+            $currentExtra = $current['extra'] ?: '(无)';
+            $standardExtra = $standard['extra'] ?: '(无)';
+            $differences[] = "Extra $currentExtra => $standardExtra";
+        }
+
         if (empty($differences)) {
             return '(未知差异)';
         }
 
         return implode(', ', $differences);
+    }
+
+    /**
+     * 标准化整型类型，去除显示宽度
+     *
+     * MySQL 5.7 显示 int(11)、bigint(20) 等，MySQL 8.0 去除了显示宽度。
+     * 标准化后统一为无宽度格式以排除版本差异。
+     */
+    protected function normalizeIntegerType(string $type): string
+    {
+        return preg_replace('/^(tinyint|smallint|mediumint|int|bigint)\(\d+\)/i', '$1', $type);
     }
 
     /**
@@ -496,7 +520,7 @@ class DatabaseStructureService
     /**
      * 生成 ADD 语句
      */
-    protected function generateAddStatements(array $diff): array
+    public function generateAddStatements(array $diff, bool $skipForeignKeys = false): array
     {
         $statements = [];
         $foreignKeyStatements = [];
@@ -505,13 +529,14 @@ class DatabaseStructureService
         foreach ($diff['missing_tables'] ?? [] as $tableName => $tableSchema) {
             $statements[] = $this->generateCreateTableStatement($tableName, $tableSchema, false);
 
-            // 收集外键语句，稍后添加
-            foreach ($tableSchema['foreign_keys'] ?? [] as $fkName => $fkDef) {
-                $foreignKeyStatements[] = $this->generateAddForeignKeyStatement($tableName, $fkName, $fkDef);
+            if (! $skipForeignKeys) {
+                foreach ($tableSchema['foreign_keys'] ?? [] as $fkName => $fkDef) {
+                    $foreignKeyStatements[] = $this->generateAddForeignKeyStatement($tableName, $fkName, $fkDef);
+                }
             }
         }
 
-        // 添加缺失的列、索引
+        // 添加缺失的列、索引、外键
         foreach ($diff['table_differences'] ?? [] as $tableName => $tableDiff) {
             foreach ($tableDiff['missing_columns'] ?? [] as $columnName => $columnDef) {
                 $statements[] = $this->generateAddColumnStatement($tableName, $columnName, $columnDef);
@@ -519,6 +544,12 @@ class DatabaseStructureService
 
             foreach ($tableDiff['missing_indexes'] ?? [] as $indexName => $indexDef) {
                 $statements[] = $this->generateAddIndexStatement($tableName, $indexName, $indexDef);
+            }
+
+            if (! $skipForeignKeys) {
+                foreach ($tableDiff['missing_foreign_keys'] ?? [] as $fkName => $fkDef) {
+                    $foreignKeyStatements[] = $this->generateAddForeignKeyStatement($tableName, $fkName, $fkDef);
+                }
             }
         }
 

@@ -102,10 +102,13 @@ class FundController extends BaseController
 
     /**
      * 添加资金记录
+     *
+     * 并发安全：事务包裹 Fund::create —— status=1 会触发 createRecord 创建 Transaction，
+     * 若后续 funds INSERT 失败，外层事务回滚保证 balance/transaction/fund 三者原子。
      */
     public function store(StoreRequest $request): void
     {
-        $fund = Fund::create($request->validated());
+        $fund = DB::transaction(fn () => Fund::create($request->validated()));
 
         if (! $fund->exists) {
             $this->error('添加失败');
@@ -144,16 +147,21 @@ class FundController extends BaseController
 
     /**
      * 更新资金记录
+     *
+     * 并发安全：事务 + fund 行锁 —— 若 status 变更会触发 createRecord 创建 Transaction，
+     * 外层事务保证 balance/transaction/fund 三者原子，防止后续 UPDATE funds 失败导致的脏余额。
      */
     public function update(UpdateRequest $request, int $id): void
     {
-        $fund = Fund::find($id);
-        if (! $fund) {
-            $this->error('资金记录不存在');
-        }
+        DB::transaction(function () use ($request, $id) {
+            $fund = Fund::where('id', $id)->lockForUpdate()->first();
+            if (! $fund) {
+                $this->error('资金记录不存在');
+            }
 
-        $fund->fill($request->validated());
-        $fund->save();
+            $fund->fill($request->validated());
+            $fund->save();
+        });
 
         $this->success();
     }
@@ -191,31 +199,30 @@ class FundController extends BaseController
     /**
      * 退款
      *
+     * 并发安全：事务内持 fund 行级锁 + 锁内 status 二次校验，防止并发双退。
+     * Fund::updating 钩子基于 getOriginal() 检查 status 转移，无法察觉并发已提交的 status 变更，
+     * 必须由此处的悲观锁保证串行化。
+     *
      * @throws Throwable
      */
     public function refunds(int $id): void
     {
-        $fund = Fund::where(['id' => $id, 'type' => 'addfunds'])->first();
-        $fund || $this->error('充值记录不存在');
+        DB::transaction(function () use ($id) {
+            $fund = Fund::where(['id' => $id, 'type' => 'addfunds'])->lockForUpdate()->first();
+            $fund || $this->error('充值记录不存在');
 
-        if ($fund->status === 0) {
-            $this->error('资金处理中');
-        }
+            if ($fund->status === 0) {
+                $this->error('资金处理中');
+            }
 
-        if ($fund->status === 2) {
-            $this->error('资金已退');
-        }
+            if ($fund->status === 2) {
+                $this->error('资金已退');
+            }
 
-        DB::beginTransaction();
-        try {
             $fund->type = 'refunds';
             $fund->status = 2;
             $fund->save();
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        });
 
         $this->success();
     }
@@ -223,31 +230,28 @@ class FundController extends BaseController
     /**
      * 退回
      *
+     * 并发安全：同 refunds，fund 行级锁 + 锁内 status 校验。
+     *
      * @throws Throwable
      */
     public function reverse(int $id): void
     {
-        $fund = Fund::where(['id' => $id, 'type' => 'deduct'])->first();
-        $fund || $this->error('扣款记录不存在');
+        DB::transaction(function () use ($id) {
+            $fund = Fund::where(['id' => $id, 'type' => 'deduct'])->lockForUpdate()->first();
+            $fund || $this->error('扣款记录不存在');
 
-        if ($fund->status === 0) {
-            $this->error('扣款处理中');
-        }
+            if ($fund->status === 0) {
+                $this->error('扣款处理中');
+            }
 
-        if ($fund->status === 2) {
-            $this->error('扣款已退');
-        }
+            if ($fund->status === 2) {
+                $this->error('扣款已退');
+            }
 
-        DB::beginTransaction();
-        try {
             $fund->type = 'reverse';
             $fund->status = 2;
             $fund->save();
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        });
 
         $this->success();
     }

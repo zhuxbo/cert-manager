@@ -48,6 +48,7 @@ pnpm-debug.log*
 !/backend/bootstrap/cache/.gitkeep
 /backend/storage/upgrades/
 /backend/storage/backups/
+/backend/storage/databak/
 
 # Test coverage
 coverage/
@@ -58,3 +59,6 @@ deploy/release-server/
 
 # 版本文件（构建时生成）
 version.json
+
+# Superpowers specs/plans（本地开发文档，不入版本库）
+.superpowers/

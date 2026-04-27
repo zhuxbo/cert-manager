@@ -21,6 +21,7 @@ INSTALL_DIR="/opt/ssl-manager"
 MIRROR_REGION="auto"          # china / intl / auto
 USE_CONTAINER_DB=true
 USE_CONTAINER_REDIS=true
+MYSQL_PROFILE="standard"      # minimal / standard / performance
 WEB_PORT=80
 SSL_ENABLED=false
 SSL_PORT=443
@@ -197,7 +198,8 @@ step_mysql_config() {
         USE_CONTAINER_DB=true
         DB_HOST="mysql"
         DB_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-        log_info "自动模式：使用容器化 MySQL"
+        MYSQL_PROFILE="standard"
+        log_info "自动模式：使用容器化 MySQL（标准配置）"
         echo "  数据库: $DB_DATABASE"
         echo "  用户名: $DB_USERNAME"
         echo "  密码: (已自动生成)"
@@ -221,6 +223,23 @@ step_mysql_config() {
             echo "  数据库: $DB_DATABASE"
             echo "  用户名: $DB_USERNAME"
             echo "  密码: (已自动生成)"
+            echo ""
+
+            # 选择 MySQL 内存配置
+            echo "请选择 MySQL 内存配置："
+            echo "  1. 省内存  ~150MB（1-2G 内存服务器，万级以下订单）"
+            echo "  2. 标准    ~300MB（2-4G 内存服务器，十万级订单）"
+            echo "  3. 高性能  ~600MB（4G 以上内存服务器，大规模部署）"
+            echo ""
+
+            read -p "请选择 (1-3) [2]: " profile_choice < /dev/tty
+            profile_choice="${profile_choice:-2}"
+
+            case "$profile_choice" in
+                1) MYSQL_PROFILE="minimal"; log_info "MySQL 配置：省内存" ;;
+                3) MYSQL_PROFILE="performance"; log_info "MySQL 配置：高性能" ;;
+                *) MYSQL_PROFILE="standard"; log_info "MySQL 配置：标准" ;;
+            esac
         fi
     fi
     echo ""
@@ -515,7 +534,7 @@ show_summary() {
     echo "安装目录:    $INSTALL_DIR"
     echo "镜像源:      $([ "$MIRROR_REGION" = "china" ] && echo "中国大陆" || echo "国际")"
     echo ""
-    echo "MySQL:       $([ "$USE_CONTAINER_DB" = true ] && echo "容器化" || echo "外部 ($DB_HOST:$DB_PORT)")"
+    echo "MySQL:       $([ "$USE_CONTAINER_DB" = true ] && echo "容器化（$MYSQL_PROFILE）" || echo "外部 ($DB_HOST:$DB_PORT)")"
     echo "Redis:       $([ "$USE_CONTAINER_REDIS" = true ] && echo "容器化" || echo "外部 ($REDIS_HOST:$REDIS_PORT)")"
     echo ""
     echo "HTTP 端口:   $WEB_PORT"
@@ -527,7 +546,7 @@ show_summary() {
     echo "将部署以下服务:"
     echo "  - Nginx (Web 服务器)"
     echo "  - PHP-FPM 8.3 (应用服务器)"
-    [ "$USE_CONTAINER_DB" = true ] && echo "  - MySQL 8.0 (数据库)"
+    [ "$USE_CONTAINER_DB" = true ] && echo "  - MySQL 8.4 (数据库, $MYSQL_PROFILE)"
     [ "$USE_CONTAINER_REDIS" = true ] && echo "  - Redis 7 (缓存)"
     echo "  - Queue Worker (队列处理)"
     echo "  - Scheduler (定时任务)"
@@ -548,6 +567,9 @@ create_directories() {
     # 根目录 backups（备份、升级包）
     ensure_dir "$INSTALL_DIR/backups"
     ensure_dir "$INSTALL_DIR/backups/upgrades"
+
+    # 插件目录
+    ensure_dir "$INSTALL_DIR/plugins"
 
     # 配置目录
     ensure_dir "$INSTALL_DIR/config"
@@ -699,11 +721,26 @@ setup_docker_files() {
         sed -i '/# __COMPOSER_MIRROR__/d' "$INSTALL_DIR/Dockerfile"
     fi
 
-    # 2. 复制 Nginx 配置（先删除可能存在的旧文件/目录）
-    rm -rf "$INSTALL_DIR/config/nginx.conf" "$INSTALL_DIR/config/site.conf" "$INSTALL_DIR/config/php.ini"
+    # 2. 复制 Nginx、PHP、MySQL 配置（先删除可能存在的旧文件）
+    rm -rf "$INSTALL_DIR/config/nginx.conf" "$INSTALL_DIR/config/site.conf" "$INSTALL_DIR/config/php.ini" "$INSTALL_DIR/config/my.cnf"
     cp "$docker_template_dir/config/nginx.conf" "$INSTALL_DIR/config/nginx.conf"
     cp "$docker_template_dir/config/site.conf" "$INSTALL_DIR/config/site.conf"
     cp "$docker_template_dir/config/php.ini" "$INSTALL_DIR/config/php.ini"
+
+    # 复制 MySQL 配置（容器化 MySQL 时）
+    if [ "$USE_CONTAINER_DB" = true ]; then
+        local mysql_cnf="$docker_template_dir/config/mysql/$MYSQL_PROFILE.cnf"
+        if [ -f "$mysql_cnf" ]; then
+            cp "$mysql_cnf" "$INSTALL_DIR/config/my.cnf"
+            log_info "MySQL 配置: $MYSQL_PROFILE"
+        else
+            cp "$docker_template_dir/config/mysql/standard.cnf" "$INSTALL_DIR/config/my.cnf"
+            log_warning "未找到 $MYSQL_PROFILE 配置，使用标准配置"
+        fi
+    else
+        # 外部数据库时创建空配置，避免 docker-compose 挂载报错
+        touch "$INSTALL_DIR/config/my.cnf"
+    fi
 
     # 3. 创建 .env 文件
     cp "$docker_template_dir/.env.example" "$INSTALL_DIR/.env"
@@ -863,6 +900,9 @@ init_application() {
     $compose_cmd exec -T php mkdir -p /var/www/html/backups /var/www/html/backups/upgrades 2>/dev/null || true
     $compose_cmd exec -T php chown -R www-data:www-data /var/www/html/backups 2>/dev/null || true
     $compose_cmd exec -T php chmod -R 775 /var/www/html/backups 2>/dev/null || true
+    # plugins（插件目录，需要可写以支持在线安装插件）
+    $compose_cmd exec -T php chown -R www-data:www-data /var/www/html/plugins 2>/dev/null || true
+    $compose_cmd exec -T php chmod -R 775 /var/www/html/plugins 2>/dev/null || true
     # version.json（版本配置，需要可写以支持切换通道）
     $compose_cmd exec -T php chown www-data:www-data /var/www/html/version.json 2>/dev/null || true
     $compose_cmd exec -T php chmod 664 /var/www/html/version.json 2>/dev/null || true

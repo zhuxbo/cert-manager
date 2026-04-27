@@ -124,7 +124,10 @@ onMounted(() => {
               申请
             </el-button>
             <el-button
-              v-if="!row.alternative_name_types.length"
+              v-if="
+                row.product_type !== 'acme' &&
+                !row.alternative_name_types.length
+              "
               class="reset-margin !outline-none"
               type="primary"
               link

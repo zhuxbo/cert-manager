@@ -22,7 +22,7 @@ backend/
 │   │   └── Callback/       # 回调处理
 │   ├── Models/
 │   ├── Services/           # 业务逻辑层
-│   │   ├── Acme/          # ACME 协议服务
+│   │   ├── Acme/          # ACME 订阅管理（封装下单 + 交付 EAB，不实现 RFC 8555）
 │   │   ├── Order/         # 订单服务
 │   │   └── Upgrade/       # 升级系统
 │   ├── Jobs/               # 队列任务
@@ -48,11 +48,11 @@ backend/
 
 ### JWT 多端认证
 
-| 端 | 路由前缀 | 认证方式 |
-|----|---------|---------|
-| 用户端 | `/api/` | JWT |
-| 管理端 | `/api/admin/` | JWT |
-| API v1/v2 | `/api/V1/`, `/api/v2/` | Token |
+| 端        | 路由前缀               | 认证方式 |
+| --------- | ---------------------- | -------- |
+| 用户端    | `/api/`                | JWT      |
+| 管理端    | `/api/admin/`          | JWT      |
+| API v1/v2 | `/api/V1/`, `/api/v2/` | Token    |
 
 ---
 
@@ -60,22 +60,22 @@ backend/
 
 ### 关键服务
 
-| 服务 | 职责 |
-|------|------|
-| `UpgradeService` | 升级主逻辑，`performUpgradeWithStatus()` |
-| `UpgradeStatusManager` | 状态管理，动态步骤计算 |
-| `PackageExtractor` | 包解压和应用，权限检查 |
-| `ReleaseClient` | Release 获取，Docker 地址转换 |
-| `BackupManager` | 备份和恢复 |
-| `VersionManager` | 版本比较，环境检测 |
+| 服务                   | 职责                                     |
+| ---------------------- | ---------------------------------------- |
+| `UpgradeService`       | 升级主逻辑，`performUpgradeWithStatus()` |
+| `UpgradeStatusManager` | 状态管理，动态步骤计算                   |
+| `PackageExtractor`     | 包解压和应用，权限检查                   |
+| `ReleaseClient`        | Release 获取，Docker 地址转换            |
+| `BackupManager`        | 备份和恢复                               |
+| `VersionManager`       | 版本比较，环境检测                       |
 
 ### 升级模式
 
-| 特性 | PHP API 升级 | Shell 脚本升级 |
-|------|-------------|---------------|
-| 触发方式 | 管理后台 API | `deploy/upgrade.sh` |
-| 升级包 | `upgrade` 包 | `full` 包 |
-| 维护模式 | 自动进入/退出 | 自动进入/退出 |
+| 特性     | PHP API 升级  | Shell 脚本升级      |
+| -------- | ------------- | ------------------- |
+| 触发方式 | 管理后台 API  | `deploy/upgrade.sh` |
+| 升级包   | `upgrade` 包  | `full` 包           |
+| 维护模式 | 自动进入/退出 | 自动进入/退出       |
 
 ### 环境检测
 
@@ -85,10 +85,10 @@ backend/
 // 2. 检查 /proc/1/cgroup 包含 docker/kubepods
 ```
 
-| 环境 | Web 用户 | version.json 路径 |
-|------|---------|------------------|
+| 环境   | Web 用户 | version.json 路径                 |
+| ------ | -------- | --------------------------------- |
 | Docker | www-data | `/var/www/html/data/version.json` |
-| 宝塔 | www | 项目根目录 |
+| 宝塔   | www      | 项目根目录                        |
 
 ### 数据库结构校验
 
@@ -96,10 +96,10 @@ backend/
 
 **配置项** (`config/upgrade.php`):
 
-| 配置 | 说明 |
-|------|------|
-| `auto_structure_check` | 是否自动校验（默认 true） |
-| `auto_structure_fix` | 是否自动修复 ADD 类型差异（默认 true） |
+| 配置                   | 说明                                   |
+| ---------------------- | -------------------------------------- |
+| `auto_structure_check` | 是否自动校验（默认 true）              |
+| `auto_structure_fix`   | 是否自动修复 ADD 类型差异（默认 true） |
 
 **校验流程**:
 
@@ -147,7 +147,7 @@ php artisan upgrade:run       # 执行升级
 php artisan upgrade:rollback  # 回滚
 php artisan db:structure --check   # 数据库结构校验
 php artisan db:structure --fix     # 自动修复结构
-php artisan queue:work --queue Task  # 队列
+php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 TaskJob / NotificationJob）
 ```
 
 ---
@@ -170,10 +170,10 @@ php artisan queue:work --queue Task  # 队列
 
 ## Token 认证体系
 
-| Token 类型 | 中间件 | 路由前缀 | 用途 |
-|-----------|--------|---------|------|
-| ApiToken | `api.v1` / `api.v2` | `/api/v1/`, `/api/v2/` | 第三方 API 调用 |
-| DeployToken | `api.deploy` | `/api/deploy/` | 部署工具证书管理 |
+| Token 类型  | 中间件              | 路由前缀               | 用途             |
+| ----------- | ------------------- | ---------------------- | ---------------- |
+| ApiToken    | `api.v1` / `api.v2` | `/api/v1/`, `/api/v2/` | 第三方 API 调用  |
+| DeployToken | `api.deploy`        | `/api/deploy/`         | 部署工具证书管理 |
 
 ### 共同特性
 
@@ -187,6 +187,13 @@ php artisan queue:work --queue Task  # 队列
 - 每个用户仅一个 DeployToken（唯一约束）
 - 通过 `UserScope` 限制只能访问用户自己的 Order
 - 支持查询证书、续费/重签、部署回调
+
+### certimate URL 拉取模式
+
+- `GET /api/deploy/?order={id|domain}&field=certificate|private_key`：返回纯 PEM 文本（`Content-Type: text/plain`），适配 certimate `BizUpload` 节点 URL 源
+- `field=certificate` 返回 `cert + intermediate_cert`（fullchain）；`field=private_key` 返回私钥
+- `order` 支持单个数字 ID（跟随 renewed 链）或单个域名（按 `common_name` 精确匹配，`issued_at` 降序取最新 active 证书），续费后 certimate URL 无需变更
+- 不带 `field` 时走原 JSON 分页逻辑（向后兼容）
 
 ---
 
@@ -241,11 +248,11 @@ Schema::table('products', function (Blueprint $table) {
 
 ### 数据结构
 
-| 字段 | 位置 | 说明 |
-|------|------|------|
-| `auto_renew` | orders 表 | 订单级自动续费开关 |
-| `auto_reissue` | orders 表 | 订单级自动重签开关 |
-| `auto_settings` | users 表 | 用户级默认设置 JSON |
+| 字段            | 位置      | 说明                |
+| --------------- | --------- | ------------------- |
+| `auto_renew`    | orders 表 | 订单级自动续费开关  |
+| `auto_reissue`  | orders 表 | 订单级自动重签开关  |
+| `auto_settings` | users 表  | 用户级默认设置 JSON |
 
 ### 回落逻辑
 
@@ -314,12 +321,13 @@ Schema::table('products', function (Blueprint $table) {
 
 ### 委托前缀
 
-| 前缀 | CA | 匹配规则 |
-|------|-----|---------|
-| `_acme-challenge` | ACME | 严格子域匹配 |
-| `_dnsauth` | DigiCert、TrustAsia | 严格子域匹配 |
-| `_pki-validation` | Sectigo | 优先子域，回落根域 |
-| `_certum` | Certum | 优先子域，回落根域 |
+| 前缀              | CA                  | 匹配规则           |
+| ----------------- | ------------------- | ------------------ |
+| `_dnsauth`        | DigiCert、TrustAsia | 严格子域匹配       |
+| `_pki-validation` | Sectigo             | 优先子域，回落根域 |
+| `_certum`         | Certum              | 优先子域，回落根域 |
+
+> ACME 通道证书由客户端自行验证，不走委托体系，不使用 `_acme-challenge` 前缀。
 
 ### TXT 记录自动写入
 
@@ -335,14 +343,14 @@ Schema::table('products', function (Blueprint $table) {
 
 **validation 字段说明**：
 
-| 字段 | 说明 |
-|------|------|
-| `delegation_id` | 委托记录 ID |
-| `delegation_target` | CNAME 目标 FQDN |
-| `delegation_valid` | 委托是否有效 |
-| `delegation_zone` | 委托的根域名 |
-| `auto_txt_written` | TXT 是否已写入 |
-| `auto_txt_written_at` | 写入时间 |
+| 字段                  | 说明            |
+| --------------------- | --------------- |
+| `delegation_id`       | 委托记录 ID     |
+| `delegation_target`   | CNAME 目标 FQDN |
+| `delegation_valid`    | 委托是否有效    |
+| `delegation_zone`     | 委托的根域名    |
+| `auto_txt_written`    | TXT 是否已写入  |
+| `auto_txt_written_at` | 写入时间        |
 
 ### 即时检测
 
@@ -368,7 +376,7 @@ $cert->dcv = $this->mergeDcv($result['data']['dcv'] ?? null, $cert->dcv);
 `validation.vue` 的 `getDisplayMethod()` 根据 `dcv.is_delegate` 返回验证方法：
 
 ```javascript
-const getDisplayMethod = (dcv) => {
+const getDisplayMethod = dcv => {
   if (dcv?.is_delegate) return "delegation";
   return dcv?.method;
 };
@@ -418,11 +426,11 @@ ValidateCommand 定时验证
 
 ### 相关服务
 
-| 服务 | 文件位置 | 职责 |
-|------|---------|------|
+| 服务                     | 文件位置               | 职责                     |
+| ------------------------ | ---------------------- | ------------------------ |
 | `CnameDelegationService` | `Services/Delegation/` | 委托记录管理、有效性检测 |
-| `DelegationDnsService` | `Services/Delegation/` | DNS TXT 记录操作 |
-| `AutoDcvTxtService` | `Services/Delegation/` | 订单维度的自动 TXT 写入 |
+| `DelegationDnsService`   | `Services/Delegation/` | DNS TXT 记录操作         |
+| `AutoDcvTxtService`      | `Services/Delegation/` | 订单维度的自动 TXT 写入  |
 
 ---
 
@@ -430,32 +438,32 @@ ValidateCommand 定时验证
 
 ### 委托验证与自动续签
 
-| 文件 | 关键方法/位置 | 说明 |
-|------|--------------|------|
-| `Services/Order/Traits/ActionTrait.php` | `generateDcv()` | delegation→txt 转换，设置 is_delegate |
-| `Services/Order/Traits/ActionTrait.php` | `generateValidation()` | 委托记录查找/创建 |
-| `Services/Order/Traits/ActionTrait.php` | `writeDelegationTxtRecords()` | 订单创建时写入 TXT |
-| `Services/Order/Traits/ActionTrait.php` | `getDelegationPrefixForCa()` | CA 前缀映射 |
-| `Services/Order/Traits/ActionTrait.php` | `mergeDcv()` | API 响应合并保留委托标记 |
-| `Services/Delegation/CnameDelegationService.php` | `findDelegation()` | 智能匹配委托记录（用于即时验证场景） |
-| `Services/Delegation/CnameDelegationService.php` | `findValidDelegation()` | 智能匹配有效委托记录（已弃用） |
-| `Services/Delegation/CnameDelegationService.php` | `checkAndUpdateValidity()` | 即时检测 CNAME 并更新有效性 |
-| `Services/Delegation/DelegationDnsService.php` | `setTxtByLabel()` | 批量写入 TXT 记录 |
-| `Services/Delegation/AutoDcvTxtService.php` | `handleOrder()` | 订单级 TXT 处理 |
-| `Console/Commands/AutoRenewCommand.php` | `checkDelegationValidity()` | 发起前即时检查委托有效性 |
-| `Console/Commands/AutoRenewCommand.php` | `processOrder()` | 自动续费/重签处理 |
-| `Console/Commands/AutoRenewCommand.php` | `autoPayAndCommit()` | 自动支付提交 |
-| `Console/Commands/ValidateCommand.php` | `checkDelegationValidity()` | 验证前即时检测 |
-| `Console/Commands/DelegationCleanupCommand.php` | `handle()` | 清理非 processing 状态的 DNS 记录 |
+| 文件                                             | 关键方法/位置                 | 说明                                  |
+| ------------------------------------------------ | ----------------------------- | ------------------------------------- |
+| `Services/Order/Traits/ActionTrait.php`          | `generateDcv()`               | delegation→txt 转换，设置 is_delegate |
+| `Services/Order/Traits/ActionTrait.php`          | `generateValidation()`        | 委托记录查找/创建                     |
+| `Services/Order/Traits/ActionTrait.php`          | `writeDelegationTxtRecords()` | 订单创建时写入 TXT                    |
+| `Services/Order/Traits/ActionTrait.php`          | `getDelegationPrefixForCa()`  | CA 前缀映射                           |
+| `Services/Order/Traits/ActionTrait.php`          | `mergeDcv()`                  | API 响应合并保留委托标记              |
+| `Services/Delegation/CnameDelegationService.php` | `findDelegation()`            | 智能匹配委托记录（用于即时验证场景）  |
+| `Services/Delegation/CnameDelegationService.php` | `findValidDelegation()`       | 智能匹配有效委托记录（已弃用）        |
+| `Services/Delegation/CnameDelegationService.php` | `checkAndUpdateValidity()`    | 即时检测 CNAME 并更新有效性           |
+| `Services/Delegation/DelegationDnsService.php`   | `setTxtByLabel()`             | 批量写入 TXT 记录                     |
+| `Services/Delegation/AutoDcvTxtService.php`      | `handleOrder()`               | 订单级 TXT 处理                       |
+| `Console/Commands/AutoRenewCommand.php`          | `checkDelegationValidity()`   | 发起前即时检查委托有效性              |
+| `Console/Commands/AutoRenewCommand.php`          | `processOrder()`              | 自动续费/重签处理                     |
+| `Console/Commands/AutoRenewCommand.php`          | `autoPayAndCommit()`          | 自动支付提交                          |
+| `Console/Commands/ValidateCommand.php`           | `checkDelegationValidity()`   | 验证前即时检测                        |
+| `Console/Commands/DelegationCleanupCommand.php`  | `handle()`                    | 清理非 processing 状态的 DNS 记录     |
 
 ### 调度配置
 
-| 命令 | 调度 | 说明 |
-|------|------|------|
-| `schedule:validate` | 每分钟 | 证书验证任务 |
-| `schedule:auto-renew` | 每小时 | 自动续费/重签 |
-| `delegation:check` | 每天 05:30 | CNAME 委托健康检查 |
-| `delegation:cleanup` | 每天 06:00 | 委托 DNS 清理 |
+| 命令                  | 调度       | 说明               |
+| --------------------- | ---------- | ------------------ |
+| `schedule:validate`   | 每分钟     | 证书验证任务       |
+| `schedule:auto-renew` | 每小时     | 自动续费/重签      |
+| `delegation:check`    | 每天 05:30 | CNAME 委托健康检查 |
+| `delegation:cleanup`  | 每天 06:00 | 委托 DNS 清理      |
 
 ---
 
@@ -478,26 +486,26 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 ### 测试文件
 
-| 目录/文件 | 类型 | 说明 |
-|----------|------|------|
+| 目录/文件                                            | 类型   | 说明                  |
+| ---------------------------------------------------- | ------ | --------------------- |
 | `tests/Unit/Services/Order/Utils/DomainUtilTest.php` | 纯单元 | 域名工具类（66 测试） |
-| `tests/Unit/Services/Order/Utils/CsrUtilTest.php` | 纯单元 | CSR 工具类（39 测试） |
-| `tests/Unit/Services/Delegation/*StaticTest.php` | 纯单元 | 委托服务静态方法 |
-| `tests/Unit/Services/Delegation/*Test.php` | 集成 | 委托服务数据库操作 |
-| `tests/Unit/Services/Order/AutoRenewServiceTest.php` | 集成 | 自动续费判定逻辑 |
+| `tests/Unit/Services/Order/Utils/CsrUtilTest.php`    | 纯单元 | CSR 工具类（39 测试） |
+| `tests/Unit/Services/Delegation/*StaticTest.php`     | 纯单元 | 委托服务静态方法      |
+| `tests/Unit/Services/Delegation/*Test.php`           | 集成   | 委托服务数据库操作    |
+| `tests/Unit/Services/Order/AutoRenewServiceTest.php` | 集成   | 自动续费判定逻辑      |
 
 ### CreatesTestData Trait
 
 `tests/Traits/CreatesTestData.php` 提供测试数据创建方法：
 
-| 方法 | 说明 |
-|------|------|
-| `createTestUser()` | 创建测试用户 |
-| `createTestProduct()` | 创建测试产品（使用 Factory） |
-| `createTestOrder()` | 创建测试订单 |
-| `createTestCert()` | 创建测试证书 |
-| `createTestDelegation()` | 创建测试委托记录 |
-| `generateTestCsr()` | 生成测试 CSR |
+| 方法                     | 说明                         |
+| ------------------------ | ---------------------------- |
+| `createTestUser()`       | 创建测试用户                 |
+| `createTestProduct()`    | 创建测试产品（使用 Factory） |
+| `createTestOrder()`      | 创建测试订单                 |
+| `createTestCert()`       | 创建测试证书                 |
+| `createTestDelegation()` | 创建测试委托记录             |
+| `generateTestCsr()`      | 生成测试 CSR                 |
 
 ### 编写测试规范
 
@@ -513,10 +521,10 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 项目要求 PHP 8.3+，以下函数已废弃，不要使用：
 
-| 废弃函数 | 替代方案 | 废弃版本 |
-|---------|---------|---------|
-| `curl_close($ch)` | `unset($ch)` 或不调用（PHP 8.0 起 curl handle 是对象，自动释放） | PHP 8.4 |
-| `$reflection->setAccessible(true)` | 直接删除（PHP 8.1 起反射默认可访问） | PHP 8.4 |
+| 废弃函数                           | 替代方案                                                         | 废弃版本 |
+| ---------------------------------- | ---------------------------------------------------------------- | -------- |
+| `curl_close($ch)`                  | `unset($ch)` 或不调用（PHP 8.0 起 curl handle 是对象，自动释放） | PHP 8.4  |
+| `$reflection->setAccessible(true)` | 直接删除（PHP 8.1 起反射默认可访问）                             | PHP 8.4  |
 
 ### TencentCloud SDK
 

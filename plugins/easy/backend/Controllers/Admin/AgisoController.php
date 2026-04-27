@@ -40,6 +40,7 @@ class AgisoController extends BaseController
         $period = (int) $validated['period'];
         $amount = (float) ($validated['amount'] ?? 0);
         $payMethod = $validated['pay_method'] ?? 'other';
+        $count = (int) ($validated['count'] ?? 1);
 
         $product = Product::where('code', $productCode)
             ->where('validation_type', 'dv')
@@ -67,26 +68,37 @@ class AgisoController extends BaseController
 
         $price = $productPrice ? (string) $productPrice->price : '0.00';
 
-        $tid = 'E'.SnowFlake::generateParticle();
+        $now = now();
+        $rows = [];
+        $tids = [];
+        for ($i = 0; $i < $count; $i++) {
+            $tid = 'E'.SnowFlake::generateParticle();
+            $tids[] = $tid;
+            $rows[] = [
+                'pay_method' => $payMethod,
+                'tid' => $tid,
+                'product_code' => $product->code,
+                'period' => $period,
+                'price' => $price,
+                'amount' => (string) $amount,
+                'count' => 1,
+                'recharged' => 0,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
 
-        Agiso::create([
-            'pay_method' => $payMethod,
-            'tid' => $tid,
-            'product_code' => $product->code,
-            'period' => $period,
-            'price' => $price,
-            'amount' => (string) $amount,
-            'count' => 1,
-            'recharged' => 0,
-        ]);
+        Agiso::insert($rows);
 
         $siteUrl = rtrim(get_system_setting('site', 'url') ?? '', '/');
 
-        $this->success([
+        $items = array_map(fn ($tid) => [
             'tid' => $tid,
             'easy_url' => "$siteUrl/easy/$tid",
             'recharge_url' => "$siteUrl/tid/$tid",
-        ]);
+        ], $tids);
+
+        $this->success(['items' => $items]);
     }
 
     public function index(AgisoIndexRequest $request): void
@@ -172,7 +184,7 @@ class AgisoController extends BaseController
         ]);
     }
 
-    public function show($id): void
+    public function show(int $id): void
     {
         $agiso = Agiso::find($id);
 
@@ -195,7 +207,7 @@ class AgisoController extends BaseController
         $this->success($agiso->toArray());
     }
 
-    public function destroy($id): void
+    public function destroy(int $id): void
     {
         $agiso = Agiso::find($id);
         if (! $agiso) {

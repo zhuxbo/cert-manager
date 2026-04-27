@@ -42,12 +42,12 @@ class ToolChecker
 
         $version = $this->parseComposerVersion($output);
 
-        // 检查版本是否低于 2.8
+        // 检查版本是否低于 2.8（低版本会导致依赖解析或安装错误）
         if ($version && version_compare($version, '2.8.0', '<')) {
-            return CheckResult::warning(
+            return CheckResult::error(
                 'Composer',
                 "已安装 (版本: $version)",
-                "Composer 版本 $version 低于推荐版本 2.8，建议升级"
+                "Composer 版本 $version 过低，需要 2.8+（低版本会导致依赖安装错误），请运行 composer self-update 升级"
             );
         }
 

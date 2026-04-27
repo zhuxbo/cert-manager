@@ -14,6 +14,7 @@ services:
       - ./frontend/admin:/var/www/html/frontend/admin:ro
       - ./frontend/user:/var/www/html/frontend/user:ro
       - ./frontend/web:/var/www/html/frontend/web:ro
+      - ./plugins:/var/www/html/plugins:ro
       - ./nginx:/var/www/html/nginx:ro
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./config/site.conf:/etc/nginx/conf.d/default.conf:ro
@@ -33,6 +34,7 @@ services:
     working_dir: /var/www/html/backend
     volumes:
       - ./backend:/var/www/html/backend
+      - ./plugins:/var/www/html/plugins
       - ./backups:/var/www/html/backups
       - ./version.json:/var/www/html/version.json
       - ./config/php.ini:/usr/local/etc/php/conf.d/custom.ini:ro
@@ -62,9 +64,10 @@ services:
       dockerfile: Dockerfile
     container_name: ssl-manager-queue
     restart: unless-stopped
-    command: php /var/www/html/backend/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+    command: php /var/www/html/backend/artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-time=3600
     volumes:
       - ./backend:/var/www/html/backend
+      - ./plugins:/var/www/html/plugins
       - ./backups:/var/www/html/backups
       - ./version.json:/var/www/html/version.json
     environment:
@@ -95,6 +98,7 @@ services:
     command: sh -c "while true; do php /var/www/html/backend/artisan schedule:run --verbose --no-interaction; sleep 60; done"
     volumes:
       - ./backend:/var/www/html/backend
+      - ./plugins:/var/www/html/plugins
       - ./backups:/var/www/html/backups
       - ./version.json:/var/www/html/version.json
     environment:
@@ -115,16 +119,18 @@ services:
 
   # MySQL 数据库（可选，可使用外部数据库）
   mysql:
-    image: mysql:8.0
+    image: mysql:8.4
     container_name: ssl-manager-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      # MySQL root 密码与应用账户密码共用（仅首次初始化数据卷时使用）
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
       MYSQL_DATABASE: ${DB_DATABASE:-ssl_manager}
       MYSQL_USER: ${DB_USERNAME:-ssl_manager}
       MYSQL_PASSWORD: ${DB_PASSWORD}
     volumes:
       - ./data/mysql:/var/lib/mysql
+      - ./config/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s

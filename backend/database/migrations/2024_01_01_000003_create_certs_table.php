@@ -23,7 +23,7 @@ return new class extends Migration
                 $table->mediumText('params')->nullable()->comment('参数');
                 $table->decimal('amount', 10)->default(0)->comment('金额');
                 $table->string('common_name', 256)->index()->comment('通用名称');
-                $table->mediumText('alternative_names')->nullable()->fullText()->comment('备用名称');
+                $table->mediumText('alternative_names')->nullable()->comment('备用名称');
                 $table->string('email', 500)->nullable()->index()->comment('邮箱地址');
                 $table->integer('standard_count')->default(0)->comment('标准域名数');
                 $table->integer('wildcard_count')->default(0)->comment('通配符数');

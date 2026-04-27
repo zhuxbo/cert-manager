@@ -59,6 +59,13 @@ export function useProduct(tableRef) {
   }
 
   function handleApply(row) {
+    if (row?.product_type === "acme") {
+      router.push({
+        name: "Acme",
+        query: { product_id: row.id }
+      });
+      return;
+    }
     router.push({
       name: "Order",
       query: {

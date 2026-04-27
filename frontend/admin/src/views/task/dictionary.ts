@@ -9,7 +9,10 @@ export const actionLabels: Record<string, string> = {
   revalidate: "验证",
   cancel: "取消",
   callback: "回调",
-  delegation: "委托"
+  delegation: "委托",
+  commit_acme: "提交ACME",
+  sync_acme: "同步ACME",
+  cancel_acme: "取消ACME"
 };
 
 export const actionOptions = Object.entries(actionLabels).map(
@@ -25,6 +28,9 @@ export const actionTypes: Record<string, string> = {
   sync: "primary",
   revalidate: "primary",
   cancel: "danger",
+  commit_acme: "primary",
+  sync_acme: "primary",
+  cancel_acme: "danger",
   callback: "primary",
   delegation: "info"
 };

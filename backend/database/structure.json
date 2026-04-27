@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.0.43",
-    "generated_at": "2026-04-09 10:28:26",
+    "generated_at": "2026-04-23 23:22:28",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -54,8 +54,16 @@
                     "extra": "",
                     "comment": "有效期（月）"
                 },
-                "purchased_standard_count": {
+                "plus": {
                     "position": 6,
+                    "type": "tinyint unsigned",
+                    "nullable": false,
+                    "default": "1",
+                    "extra": "",
+                    "comment": "赠送时间"
+                },
+                "purchased_standard_count": {
+                    "position": 7,
                     "type": "int unsigned",
                     "nullable": false,
                     "default": "0",
@@ -63,7 +71,7 @@
                     "comment": "标准域名额度"
                 },
                 "purchased_wildcard_count": {
-                    "position": 7,
+                    "position": 8,
                     "type": "int unsigned",
                     "nullable": false,
                     "default": "0",
@@ -71,7 +79,7 @@
                     "comment": "通配符域名额度"
                 },
                 "refer_id": {
-                    "position": 8,
+                    "position": 9,
                     "type": "varchar(200)",
                     "nullable": true,
                     "default": null,
@@ -79,23 +87,31 @@
                     "comment": "幂等键"
                 },
                 "api_id": {
-                    "position": 9,
+                    "position": 10,
                     "type": "varchar(200)",
                     "nullable": true,
                     "default": null,
                     "extra": "",
-                    "comment": "上游订单 ID（Gateway 订单 ID）"
+                    "comment": "接口 ID"
                 },
                 "vendor_id": {
-                    "position": 10,
+                    "position": 11,
                     "type": "varchar(200)",
                     "nullable": true,
                     "default": null,
                     "extra": "",
                     "comment": "CA 订单 ID"
                 },
+                "contact_email": {
+                    "position": 12,
+                    "type": "varchar(254)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "ACME 账号邮箱（RFC 8555 contact）"
+                },
                 "eab_kid": {
-                    "position": 11,
+                    "position": 13,
                     "type": "varchar(200)",
                     "nullable": true,
                     "default": null,
@@ -103,7 +119,7 @@
                     "comment": "EAB Key ID"
                 },
                 "eab_hmac": {
-                    "position": 12,
+                    "position": 14,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -111,22 +127,6 @@
                     "comment": "EAB HMAC（加密存储）"
                 },
                 "period_from": {
-                    "position": 13,
-                    "type": "timestamp",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": ""
-                },
-                "period_till": {
-                    "position": 14,
-                    "type": "timestamp",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": ""
-                },
-                "cancelled_at": {
                     "position": 15,
                     "type": "timestamp",
                     "nullable": true,
@@ -134,16 +134,40 @@
                     "extra": "",
                     "comment": ""
                 },
-                "status": {
+                "period_till": {
                     "position": 16,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "cancelled_at": {
+                    "position": 17,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "status": {
+                    "position": 18,
                     "type": "enum('unpaid','pending','active','cancelling','cancelled','revoked','expired')",
                     "nullable": false,
                     "default": null,
                     "extra": "",
                     "comment": ""
                 },
+                "channel": {
+                    "position": 19,
+                    "type": "varchar(20)",
+                    "nullable": false,
+                    "default": "web",
+                    "extra": "",
+                    "comment": "提交通道：web\/admin\/api\/deploy\/auto"
+                },
                 "remark": {
-                    "position": 17,
+                    "position": 20,
                     "type": "varchar(255)",
                     "nullable": true,
                     "default": null,
@@ -151,7 +175,7 @@
                     "comment": ""
                 },
                 "amount": {
-                    "position": 18,
+                    "position": 21,
                     "type": "decimal(10,2)",
                     "nullable": false,
                     "default": null,
@@ -159,7 +183,7 @@
                     "comment": "订单金额"
                 },
                 "admin_remark": {
-                    "position": 19,
+                    "position": 22,
                     "type": "varchar(255)",
                     "nullable": true,
                     "default": null,
@@ -167,7 +191,7 @@
                     "comment": "管理员备注"
                 },
                 "created_at": {
-                    "position": 20,
+                    "position": 23,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -175,7 +199,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 21,
+                    "position": 24,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -184,6 +208,16 @@
                 }
             },
             "indexes": {
+                "acmes_eab_kid_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "eab_kid"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "acmes_refer_id_unique": {
                     "unique": true,
                     "type": "BTREE",
@@ -1653,16 +1687,6 @@
                 }
             },
             "indexes": {
-                "certs_alternative_names_fulltext": {
-                    "unique": false,
-                    "type": "FULLTEXT",
-                    "columns": [
-                        "alternative_names"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                },
                 "certs_api_id_index": {
                     "unique": false,
                     "type": "BTREE",

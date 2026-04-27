@@ -300,6 +300,13 @@ jobs:
           cp ssl-manager-full-${{ steps.version.outputs.version }}.zip ssl-manager-full-latest.zip
           cp ssl-manager-script-${{ steps.version.outputs.version }}.zip ssl-manager-script-latest.zip
 
+      - name: Delete existing latest release
+        if: steps.version.outputs.prerelease != 'true'
+        run: |
+          gh release delete "latest" --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Update latest tag (stable)
         if: steps.version.outputs.prerelease != 'true'
         run: |
@@ -309,16 +316,6 @@ jobs:
           git push origin :refs/tags/latest 2>/dev/null || true
           git tag latest
           git push origin latest
-
-      - name: Delete existing latest release
-        if: steps.version.outputs.prerelease != 'true'
-        run: |
-          if gh release view "latest" >/dev/null 2>&1; then
-            echo "Deleting existing latest release"
-            gh release delete "latest" --yes
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update latest release (stable)
         if: steps.version.outputs.prerelease != 'true'

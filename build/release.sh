@@ -432,24 +432,33 @@ main() {
     # 确定通道
     local channel=$(get_channel "$version")
 
-    # 正式版 + main 分支：检查未提交文件和 tag
+    # 正式版必须在 main 分支发布：强制检测分支 + 干净工作区，并打 tag
     if [ "$channel" = "main" ]; then
         local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-        if [ "$current_branch" = "main" ]; then
-            # 检查未提交修改
-            if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-                log_warning "检测到未提交的修改："
-                git status --short
-                echo ""
-                read -r -p "是否继续发布？[y/N] " confirm
-                if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-                    log_info "已取消发布"
-                    exit 0
-                fi
-            fi
-            # 确保 tag 指向当前提交
-            ensure_tag "v$version"
+        if [ "$current_branch" != "main" ]; then
+            log_error "正式版必须在 main 分支发布，当前分支：${current_branch:-未知}"
+            log_info "请先把 dev 合并到 main，并切换到 main 分支后再发布"
+            exit 1
         fi
+        # 强制要求工作区干净
+        if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+            log_error "工作区存在未提交修改，正式版发布要求干净工作区"
+            git status --short
+            exit 1
+        fi
+        # 确保 main 已与 origin/main 同步
+        git fetch origin main --quiet 2>/dev/null || true
+        local local_head=$(git rev-parse HEAD)
+        local remote_head=$(git rev-parse origin/main 2>/dev/null || echo "")
+        if [ -n "$remote_head" ] && [ "$local_head" != "$remote_head" ]; then
+            log_error "本地 main 与 origin/main 不一致，请先同步"
+            log_info "  本地: $local_head"
+            log_info "  远程: $remote_head"
+            exit 1
+        fi
+        # 打版本 tag + 同步 latest tag 到当前提交
+        ensure_tag "v$version"
+        ensure_tag "latest"
     fi
 
     log_info "版本号: $version"

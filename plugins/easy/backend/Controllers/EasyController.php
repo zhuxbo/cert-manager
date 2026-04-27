@@ -654,10 +654,20 @@ class EasyController extends Controller
         }
         $token = $deployToken->token;
 
-        $releaseDomain = rtrim((string) get_system_setting('site', 'releaseDomain', 'release.cnssl.com'), '/');
-        $releaseUrl = "https://$releaseDomain";
         $siteUrl = rtrim((string) get_system_setting('site', 'url'), '/');
         $deployUrl = "$siteUrl/api/deploy";
+        $releaseDomain = rtrim((string) get_system_setting('site', 'releaseDomain'), '/');
+
+        if ($releaseDomain) {
+            $releaseUrl = "https://$releaseDomain";
+        } else {
+            $releaseDomain = parse_url($siteUrl, PHP_URL_HOST);
+            $port = parse_url($siteUrl, PHP_URL_PORT);
+            if ($port) {
+                $releaseDomain .= ":$port";
+            }
+            $releaseUrl = "$siteUrl/release";
+        }
         $orderId = $order->order_id;
 
         return [

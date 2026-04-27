@@ -45,7 +45,7 @@ test('store 创建公告', function () {
     $response->assertOk()->assertJson(['code' => 1]);
     expect($response->json('data.title'))->toBe('测试公告');
     expect($response->json('data.position'))->toBe('order');
-    $this->assertDatabaseHas('notice_notices', ['title' => '测试公告', 'type' => 'warning', 'position' => 'order']);
+    $this->assertDatabaseHas('notices', ['title' => '测试公告', 'type' => 'warning', 'position' => 'order']);
 });
 
 test('store 验证必填字段', function () {
@@ -88,7 +88,7 @@ test('store 默认 position 为 dashboard', function () {
         ]);
 
     $response->assertOk()->assertJson(['code' => 1]);
-    $this->assertDatabaseHas('notice_notices', ['title' => '测试公告', 'position' => 'dashboard']);
+    $this->assertDatabaseHas('notices', ['title' => '测试公告', 'position' => 'dashboard']);
 });
 
 test('update 更新公告', function () {
@@ -113,7 +113,7 @@ test('destroy 删除公告', function () {
         ->deleteJson("/api/admin/notice/$notice->id");
 
     $response->assertOk();
-    $this->assertDatabaseMissing('notice_notices', ['id' => $notice->id]);
+    $this->assertDatabaseMissing('notices', ['id' => $notice->id]);
 });
 
 test('toggle 切换激活状态', function () {

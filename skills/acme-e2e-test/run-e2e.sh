@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 #
-# ACME E2E 完整流程测试
-# 流程: 环境检查 → 注册 → 申请证书 → 验证签发 → 吊销 → 取消/扣费退款指引
+# ACME E2E 完整流程测试（封装下单 + 交付 EAB 模式）
 #
-# 域名需已配置委托（CNAME 委托），Manager 在 new-order 时自动写 TXT 记录
-# certbot 使用 --manual-auth-hook "sleep 30" 等待 DNS 传播
+# 流程：
+#   1. 环境检查
+#   2. 通过 Manager Deploy API 一步到位创建订阅（new + pay + commit）→ 拿到 {order_id, eab_kid, eab_hmac, directory_url}
+#   3. certbot register → 使用 directory_url 直接向 CA 注册 ACME 账号（Manager 不经手此步）
+#   4. certbot certonly → 同样直连 CA，用户自行完成 DNS-01 验证
+#   5. certbot certificates → 验证签发结果
+#   6. certbot revoke → 吊销证书（直连 CA）
+#   7. 打印订阅取消指引（通过 Manager User/Admin API 取消）
 #
 
 set -euo pipefail
@@ -12,10 +17,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VOLUME_ETC="certbot-e2e-etc"
 VOLUME_VAR="certbot-e2e-var"
-DEFAULT_SERVER="http://host.docker.internal:5300/acme/directory"
+DEFAULT_MANAGER="http://localhost:5300"
 DEFAULT_EMAIL="test@example.com"
 
-# 颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -51,11 +55,13 @@ sql_hint() {
 }
 
 # --- 参数解析 ---
-eab_kid=""
-eab_hmac=""
+deploy_token=""
+product_id=""
+period="12"
+plus="1"
 domain=""
 email="$DEFAULT_EMAIL"
-server="$DEFAULT_SERVER"
+manager_url="$DEFAULT_MANAGER"
 do_clean=false
 
 usage() {
@@ -63,17 +69,19 @@ usage() {
 用法: $0 [选项]
 
 必填参数:
-  --eab-kid <kid>       EAB Key ID
-  --eab-hmac <hmac>     EAB HMAC Key
-  --domain <domain>     测试域名（已配置委托的域名）
+  --deploy-token <token>  Manager Deploy Token（用于调 /api/deploy/acme/*）
+  --product-id <id>       ACME 产品 ID（product_type=acme，status=1）
+  --domain <domain>       测试域名（可含通配符，如 *.test.example.com）
 
 可选参数:
-  --email <email>       注册邮箱（默认: $DEFAULT_EMAIL）
-  --server <url>        ACME server URL（默认: $DEFAULT_SERVER）
-  --clean               清理 certbot volumes 后退出
+  --period <months>       订阅时长（月），默认 12
+  --plus <0|1>            赠送时间，默认 1
+  --email <email>         certbot 注册邮箱，默认 $DEFAULT_EMAIL
+  --manager <url>         Manager URL，默认 $DEFAULT_MANAGER
+  --clean                 清理 certbot volumes 后退出
 
 示例:
-  $0 --eab-kid "abc123" --eab-hmac "def456" --domain "test.example.com"
+  $0 --deploy-token "dpl_xxx" --product-id 57 --domain "test.example.com"
   $0 --clean
 EOF
     exit 1
@@ -81,14 +89,16 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --eab-kid)   eab_kid="$2"; shift 2 ;;
-        --eab-hmac)  eab_hmac="$2"; shift 2 ;;
-        --domain)    domain="$2"; shift 2 ;;
-        --email)     email="$2"; shift 2 ;;
-        --server)    server="$2"; shift 2 ;;
-        --clean)     do_clean=true; shift ;;
-        -h|--help)   usage ;;
-        *)           echo "未知参数: $1"; usage ;;
+        --deploy-token) deploy_token="$2"; shift 2 ;;
+        --product-id)   product_id="$2"; shift 2 ;;
+        --period)       period="$2"; shift 2 ;;
+        --plus)         plus="$2"; shift 2 ;;
+        --domain)       domain="$2"; shift 2 ;;
+        --email)        email="$2"; shift 2 ;;
+        --manager)      manager_url="$2"; shift 2 ;;
+        --clean)        do_clean=true; shift ;;
+        -h|--help)      usage ;;
+        *)              echo "未知参数: $1"; usage ;;
     esac
 done
 
@@ -100,8 +110,8 @@ if [ "$do_clean" = true ]; then
 fi
 
 # --- 参数校验 ---
-if [ -z "$eab_kid" ] || [ -z "$eab_hmac" ] || [ -z "$domain" ]; then
-    echo "错误: --eab-kid, --eab-hmac, --domain 为必填参数"
+if [ -z "$deploy_token" ] || [ -z "$product_id" ] || [ -z "$domain" ]; then
+    echo "错误: --deploy-token / --product-id / --domain 为必填参数"
     echo ""
     usage
 fi
@@ -110,163 +120,165 @@ echo "========================================"
 echo "  ACME E2E 完整流程测试"
 echo "========================================"
 echo ""
-echo "  Server:  $server"
-echo "  Domain:  $domain"
-echo "  Email:   $email"
-echo "  EAB KID: $eab_kid"
+echo "  Manager:    $manager_url"
+echo "  Product ID: $product_id"
+echo "  Domain:     $domain"
+echo "  Email:      $email"
+echo "  Period:     $period 月"
+echo "  Plus:       $plus"
 
 # ============================================================
 # 步骤 1: 环境检查
 # ============================================================
 step "环境检查"
-bash "$SCRIPT_DIR/check-backend.sh"
+MANAGER_URL="$manager_url" bash "$SCRIPT_DIR/check-backend.sh"
 ok "环境检查通过"
 
 # ============================================================
-# 步骤 2: certbot 注册
+# 步骤 2: 创建订阅 — 通过 Manager Deploy API 拿 EAB + directory_url
 # ============================================================
-step "certbot 注册账户（EAB）"
+step "创建订阅（Manager Deploy API）"
+
+subscription_response=$(curl -sS --max-time 60 -X POST \
+    -H "Authorization: Bearer $deploy_token" \
+    -H "Content-Type: application/json" \
+    -d "{\"product_id\":$product_id,\"period\":$period,\"plus\":$plus}" \
+    "$manager_url/api/deploy/acme/new") || fail "创建订阅失败"
+
+echo "$subscription_response" | jq . 2>/dev/null || echo "$subscription_response"
+
+code=$(echo "$subscription_response" | jq -r '.code' 2>/dev/null || echo "")
+if [ "$code" != "1" ]; then
+    fail "订阅创建失败（code=$code），检查 Deploy Token、product_id、余额"
+fi
+
+order_id=$(echo "$subscription_response" | jq -r '.data.order_id')
+eab_kid=$(echo "$subscription_response" | jq -r '.data.eab_kid')
+eab_hmac=$(echo "$subscription_response" | jq -r '.data.eab_hmac')
+directory_url=$(echo "$subscription_response" | jq -r '.data.directory_url')
+
+[ -z "$eab_kid" ] || [ "$eab_kid" = "null" ] && fail "响应缺少 eab_kid"
+[ -z "$eab_hmac" ] || [ "$eab_hmac" = "null" ] && fail "响应缺少 eab_hmac"
+[ -z "$directory_url" ] || [ "$directory_url" = "null" ] && fail "响应缺少 directory_url（上游可能未返回，检查上游 /acme/new 实现）"
+
+ok "订阅创建成功"
+echo "  order_id:      $order_id"
+echo "  directory_url: $directory_url"
+echo "  eab_kid:       ${eab_kid:0:20}..."
+
+sql_hint "-- Manager: 检查订阅记录
+SELECT id, user_id, brand, period, plus, api_id, eab_kid, status, amount, created_at
+FROM acmes WHERE id = $order_id;
+
+-- Manager: 检查扣费交易
+SELECT id, order_id, type, amount, balance_before, balance_after, created_at
+FROM transactions WHERE order_id = $order_id AND type = 'acme_order';"
+
+# ============================================================
+# 步骤 3: certbot 注册（直连 CA，使用上游返回的 directory_url）
+# ============================================================
+step "certbot 注册账户"
 
 docker run --rm \
     -v "$VOLUME_ETC":/etc/letsencrypt \
     -v "$VOLUME_VAR":/var/lib/letsencrypt \
     certbot/certbot register \
-    --server "$server" \
+    --server "$directory_url" \
     --eab-kid "$eab_kid" \
     --eab-hmac-key "$eab_hmac" \
     --email "$email" \
     --no-eff-email \
     --agree-tos
 
-ok "账户注册成功"
-
-sql_hint "-- Manager: 检查 ACME 账户创建
-SELECT id, order_id, kid, status, created_at
-FROM acme_accounts
-ORDER BY id DESC LIMIT 5;"
+ok "certbot 账户注册成功"
 
 # ============================================================
-# 步骤 3: certbot 申请证书（委托自动验证）
+# 步骤 4: certbot 申请证书（DNS-01 手动验证，用户自行配置 DNS）
 # ============================================================
-step "certbot 申请证书（委托自动验证）"
+step "certbot 申请证书"
 
 echo "域名: $domain"
-echo "验证方式: DNS 委托自动验证（Manager 自动写 TXT）"
-echo "等待 DNS 传播: sleep 30"
+echo "验证方式: DNS-01 手动（certbot 会提示添加 TXT 记录，请自行配置后回车）"
 echo ""
 
-docker run --rm \
+docker run --rm -it \
     -v "$VOLUME_ETC":/etc/letsencrypt \
     -v "$VOLUME_VAR":/var/lib/letsencrypt \
     certbot/certbot certonly \
-    --server "$server" \
+    --server "$directory_url" \
     --manual --preferred-challenges dns \
-    --manual-auth-hook "sleep 30" \
     --key-type rsa \
+    --rsa-key-size 2048 \
     -d "$domain"
 
 ok "证书申请成功"
 
-sql_hint "-- Manager: 检查证书签发 + 扣费
-SELECT c.id, c.domain, c.status, c.channel, c.amount, c.created_at
-FROM certs c
-WHERE c.channel = 'acme'
-ORDER BY c.id DESC LIMIT 5;
-
--- Manager: 检查扣费交易
-SELECT t.id, t.type, t.amount, t.balance_before, t.balance_after, t.created_at
-FROM transactions t
-ORDER BY t.id DESC LIMIT 5;
-
--- Manager: 检查用户余额
-SELECT id, email, balance FROM users WHERE email = '$email';"
-
 # ============================================================
-# 步骤 4: 验证证书签发
+# 步骤 5: 验证签发
 # ============================================================
-step "验证证书签发结果"
+step "验证证书签发"
 
 docker run --rm \
     -v "$VOLUME_ETC":/etc/letsencrypt \
     certbot/certbot certificates
 
-ok "证书验证完成"
-
-sql_hint "-- Manager: 检查 ACME 授权状态
-SELECT aa.id, aa.domain, aa.status, aa.type, aa.created_at
-FROM acme_authorizations aa
-ORDER BY aa.id DESC LIMIT 5;"
+ok "证书列表已打印"
 
 # ============================================================
-# 步骤 5: 吊销证书
+# 步骤 6: 吊销证书
 # ============================================================
 step "吊销证书"
 
-# certbot 存储证书时去掉通配符前缀（*.example.com → example.com）
 cert_name="${domain#\*.}"
 
 docker run --rm \
     -v "$VOLUME_ETC":/etc/letsencrypt \
     -v "$VOLUME_VAR":/var/lib/letsencrypt \
     certbot/certbot revoke \
-    --server "$server" \
+    --server "$directory_url" \
     --cert-path "/etc/letsencrypt/live/$cert_name/cert.pem" \
     --non-interactive
 
-ok "证书吊销成功"
-
-sql_hint "-- Manager: 检查证书状态变为 revoked
-SELECT c.id, c.domain, c.status, c.channel, c.created_at
-FROM certs c
-WHERE c.channel = 'acme'
-ORDER BY c.id DESC LIMIT 5;"
+ok "证书已吊销（注意：吊销的是证书本身，订阅仍然有效）"
 
 # ============================================================
-# 步骤 6: 取消订单 + 扣费退款验证指引
+# 步骤 7: 取消订阅指引（手动）
 # ============================================================
-step "取消订单 + 扣费退款验证（手动操作）"
+step "取消订阅指引（手动）"
 
-echo "证书已签发并吊销，以下为取消订单的测试指引。"
-echo "需要通过 Manager 后台或 API 手动执行取消操作。"
+echo "证书吊销完成。订阅取消通过 Manager User/Admin API 进行："
 echo ""
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}通过 User API 取消（推荐：订阅归属用户）：${NC}"
+echo "  POST $manager_url/api/user/acme/commit-cancel/$order_id"
+echo "  Authorization: Bearer <user-jwt-token>"
 echo ""
-echo -e "${YELLOW}场景 A: pending 状态取消（未扣费）${NC}"
-echo "  - 创建新订阅但不提交 new-order（不触发扣费）"
-echo "  - 执行取消：DELETE /api/admin/orders/{id}"
-echo "  - 预期：快速清理，无退费"
+echo -e "${YELLOW}通过 Admin API 取消：${NC}"
+echo "  POST $manager_url/api/admin/acme/commit-cancel/$order_id"
+echo "  Authorization: Bearer <admin-jwt-token>"
 echo ""
-sql_hint "-- 验证 pending 取消: 无交易记录
-SELECT * FROM transactions WHERE order_id = <ORDER_ID>;"
+echo "预期行为："
+echo "  - 订阅状态 → cancelling"
+echo "  - 创建 Task (action=cancel_acme, 延迟 120s)"
+echo "  - TaskJob 延时 123s 后调用 Api->cancel() 通知上游取消"
+echo "  - 上游成功 → 状态 cancelled/revoked，退费（transactions type=acme_cancel）"
+echo "  - 上游失败 → 保持 cancelling，等待重试"
 
-echo ""
-echo -e "${YELLOW}场景 B: processing / approving 状态取消（已扣费）${NC}"
-echo "  - 证书正在签发过程中执行取消"
-echo "  - 执行取消：DELETE /api/admin/orders/{id}"
-echo "  - 预期：创建 cancelling 延迟任务，通知上游取消，2 分钟后退费"
-echo ""
-sql_hint "-- 验证扣费 + 退费
--- 1. 扣费记录（type=order）
-SELECT id, type, amount, balance_before, balance_after
-FROM transactions
-WHERE order_id = <ORDER_ID> AND type = 'order';
+sql_hint "-- Manager: 检查订阅状态
+SELECT id, status, cancelled_at FROM acmes WHERE id = $order_id;
 
--- 2. 退费记录（type=cancel，金额应等于扣费金额）
-SELECT id, type, amount, balance_before, balance_after
-FROM transactions
-WHERE order_id = <ORDER_ID> AND type = 'cancel';
+-- Manager: 检查延迟任务
+SELECT id, action, order_id, scheduled_at, processed_at, created_at
+FROM tasks WHERE order_id = $order_id AND action = 'cancel_acme'
+ORDER BY id DESC LIMIT 3;
 
--- 3. 用户余额恢复
-SELECT id, email, balance FROM users WHERE id = <USER_ID>;"
+-- Manager: 检查退费（type=acme_cancel）
+SELECT id, order_id, type, amount, balance_before, balance_after, created_at
+FROM transactions WHERE order_id = $order_id AND type = 'acme_cancel';
 
-echo ""
-echo -e "${YELLOW}场景 C: active 状态取消（退费周期内）${NC}"
-echo "  - 证书已签发且在退费周期内"
-echo "  - 执行取消：DELETE /api/admin/orders/{id}"
-echo "  - 预期：通知上游取消 + 退费，同场景 B"
-echo ""
-
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+-- Manager: 检查用户余额是否恢复
+SELECT u.id, u.username, u.balance
+FROM acmes a JOIN users u ON u.id = a.user_id
+WHERE a.id = $order_id;"
 
 # ============================================================
 # 完成
@@ -276,8 +288,8 @@ echo "========================================"
 echo -e "  ${GREEN}E2E 自动化流程完成${NC}"
 echo "========================================"
 echo ""
-echo "已完成: 环境检查 → 注册 → 申请证书 → 验证签发 → 吊销"
-echo "待手动: 各状态取消测试（见上方指引）"
+echo "已完成: 环境检查 → 创建订阅 → certbot 注册 → 申请证书 → 验证签发 → 吊销证书"
+echo "待手动: 调 Manager API 取消订阅（见上方指引）"
 echo ""
 echo "后续操作："
 echo "  查看证书:  docker run --rm -v $VOLUME_ETC:/etc/letsencrypt certbot/certbot certificates"

@@ -6,6 +6,8 @@ use App\Http\Requests\Order\GetIdsRequest;
 use App\Http\Requests\Order\IndexRequest;
 use App\Models\Cert;
 use App\Models\Order;
+use App\Models\Product;
+use App\Models\User;
 use App\Services\Order\Action;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -41,40 +43,39 @@ class OrderController extends BaseController
         $statusSet = $validated['statusSet'] ?? 'activating';
         // 活动中的状态（含证书到期但订单未到期）
         if ($statusSet === 'activating') {
-            $query->where(function ($q) {
-                $q->whereHas('latestCert', function ($latestCertQuery) {
-                    $latestCertQuery->whereIn('status', ['unpaid', 'pending', 'processing', 'active', 'approving', 'cancelling']);
-                })->orWhere(function ($q) {
-                    $q->whereHas('latestCert', fn ($c) => $c->where('status', 'expired'))
-                        ->where('period_till', '>', now());
-                });
+            $activeCertIds = Cert::whereIn('status', ['unpaid', 'pending', 'processing', 'active', 'approving', 'cancelling'])->select('id');
+            $expiredCertIds = Cert::where('status', 'expired')->select('id');
+            $query->where(function ($q) use ($activeCertIds, $expiredCertIds) {
+                $q->whereIn('latest_cert_id', $activeCertIds)
+                    ->orWhere(function ($q) use ($expiredCertIds) {
+                        $q->whereIn('latest_cert_id', $expiredCertIds)
+                            ->where('period_till', '>', now());
+                    });
             });
         }
         // 已存档的状态（排除证书到期但订单未到期）
         if ($statusSet === 'archived') {
-            $query->whereHas('latestCert', function ($latestCertQuery) {
-                $latestCertQuery->whereIn('status', ['cancelled', 'renewed', 'reissued', 'expired', 'revoked', 'failed']);
-            })->whereNot(function ($q) {
-                $q->whereHas('latestCert', fn ($c) => $c->where('status', 'expired'))
-                    ->where('period_till', '>', now());
-            });
+            $archivedCertIds = Cert::whereIn('status', ['cancelled', 'renewed', 'reissued', 'expired', 'revoked', 'failed'])->select('id');
+            $expiredCertIds = Cert::where('status', 'expired')->select('id');
+            $query->whereIn('latest_cert_id', $archivedCertIds)
+                ->whereNot(function ($q) use ($expiredCertIds) {
+                    $q->whereIn('latest_cert_id', $expiredCertIds)
+                        ->where('period_till', '>', now());
+                });
         }
 
         if (! empty($validated['quickSearch'])) {
-            $query->where(function ($q) use ($validated) {
-                $q->where('id', 'like', "%{$validated['quickSearch']}%")
-                    ->orWhere('admin_remark', 'like', "%{$validated['quickSearch']}%")
-                    ->orWhere('remark', 'like', "%{$validated['quickSearch']}%")
-                    ->orWhereHas('user', function ($userQuery) use ($validated) {
-                        $userQuery->where('username', 'like', "%{$validated['quickSearch']}%");
-                    })
-                    ->orWhereHas('product', function ($productQuery) use ($validated) {
-                        $productQuery->where('name', 'like', "%{$validated['quickSearch']}%");
-                    })
-                    ->orWhereHas('latestCert', function ($latestCertQuery) use ($validated) {
-                        $latestCertQuery->where('common_name', 'like', "%{$validated['quickSearch']}%")
-                            ->orWhere('alternative_names', 'like', "%{$validated['quickSearch']}%");
-                    });
+            $keyword = $validated['quickSearch'];
+            $query->where(function ($q) use ($keyword) {
+                $q->where('id', 'like', "%$keyword%")
+                    ->orWhere('admin_remark', 'like', "%$keyword%")
+                    ->orWhere('remark', 'like', "%$keyword%")
+                    ->orWhereIn('user_id', User::where('username', 'like', "%$keyword%")->select('id'))
+                    ->orWhereIn('product_id', Product::where('name', 'like', "%$keyword%")->select('id'))
+                    ->orWhereIn('latest_cert_id', Cert::where(function ($cq) use ($keyword) {
+                        $cq->where('common_name', 'like', "%$keyword%")
+                            ->orWhere('alternative_names', 'like', "%$keyword%");
+                    })->select('id'));
             });
         }
         if (! empty($validated['id'])) {
@@ -99,42 +100,29 @@ class OrderController extends BaseController
             $query->where('user_id', $validated['user_id']);
         }
         if (! empty($validated['username'])) {
-            $query->whereHas('user', function ($userQuery) use ($validated) {
-                $userQuery->where('username', $validated['username']);
-            });
+            $matchedUserId = User::where('username', $validated['username'])->value('id');
+            $query->where('user_id', $matchedUserId ?? 0);
         }
         if (! empty($validated['product_name'])) {
-            $query->whereHas('product', function ($productQuery) use ($validated) {
-                $productQuery->where('name', 'like', "%{$validated['product_name']}%");
-            });
+            $query->whereIn('product_id', Product::where('name', 'like', "%{$validated['product_name']}%")->select('id'));
         }
         if (! empty($validated['domain'])) {
-            $query->whereHas('latestCert', function ($latestCertQuery) use ($validated) {
-                $latestCertQuery->where(function ($q) use ($validated) {
-                    $q->where('common_name', 'like', "%{$validated['domain']}%")
-                        ->orWhere('alternative_names', 'like', "%{$validated['domain']}%");
-                });
-            });
+            $query->whereIn('latest_cert_id', Cert::where(function ($cq) use ($validated) {
+                $cq->where('common_name', 'like', "%{$validated['domain']}%")
+                    ->orWhere('alternative_names', 'like', "%{$validated['domain']}%");
+            })->select('id'));
         }
         if (! empty($validated['channel'])) {
-            $query->whereHas('latestCert', function ($latestCertQuery) use ($validated) {
-                $latestCertQuery->where('channel', $validated['channel']);
-            });
+            $query->whereIn('latest_cert_id', Cert::where('channel', $validated['channel'])->select('id'));
         }
         if (! empty($validated['action'])) {
-            $query->whereHas('latestCert', function ($latestCertQuery) use ($validated) {
-                $latestCertQuery->where('action', $validated['action']);
-            });
+            $query->whereIn('latest_cert_id', Cert::where('action', $validated['action'])->select('id'));
         }
         if (! empty($validated['expires_at'])) {
-            $query->whereHas('latestCert', function ($latestCertQuery) use ($validated) {
-                $latestCertQuery->whereBetween('expires_at', $validated['expires_at']);
-            });
+            $query->whereIn('latest_cert_id', Cert::whereBetween('expires_at', $validated['expires_at'])->select('id'));
         }
         if (! empty($validated['status'])) {
-            $query->whereHas('latestCert', function ($latestCertQuery) use ($validated) {
-                $latestCertQuery->where('status', $validated['status']);
-            });
+            $query->whereIn('latest_cert_id', Cert::where('status', $validated['status'])->select('id'));
         }
 
         $total = $query->count();

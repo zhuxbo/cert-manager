@@ -28,14 +28,17 @@ class ApiController extends Controller
 
     /**
      * 创建 ACME 订单（一步到位：创建 + 支付 + 提交）
+     *
+     * 对齐上游 /acme/new 入参语义：product_code / period / plus / contact_email
+     * （域名额度由产品 standard_max / wildcard_max 自动推断，refer_id 由 Manager 内部生成）
      */
     public function new(): void
     {
         $this->request->validate([
             'product_code' => 'required|string|max:50',
             'period' => 'sometimes|integer',
-            'purchased_standard_count' => 'sometimes|integer|min:0',
-            'purchased_wildcard_count' => 'sometimes|integer|min:0',
+            'plus' => 'sometimes|integer|in:0,1',
+            'contact_email' => 'required|email|max:254',
         ]);
 
         $product = Product::where('code', $this->request->input('product_code'))
@@ -51,13 +54,14 @@ class ApiController extends Controller
             'user_id' => $this->user_id,
             'product_id' => $product->id,
             'period' => (int) $this->request->input('period', $product->periods[0] ?? 12),
-            'purchased_standard_count' => (int) $this->request->input('purchased_standard_count', 0),
-            'purchased_wildcard_count' => (int) $this->request->input('purchased_wildcard_count', 0),
+            'plus' => (int) $this->request->input('plus', 1),
+            'contact_email' => $this->request->input('contact_email'),
+            'channel' => 'api',
         ]);
     }
 
     /**
-     * 获取订单详情（含 EAB）
+     * 获取订单详情（含 EAB + directory_url）
      */
     public function get(): void
     {
@@ -65,26 +69,29 @@ class ApiController extends Controller
 
         $id = (int) $this->request->input('order_id');
 
-        // 先同步上游最新状态
+        // 先同步上游最新状态（同时刷新 directory_url 缓存）
         app(Action::class)->sync($id, true);
 
-        $acme = Acme::find($id);
+        $acme = Acme::with('product')->find($id);
 
         if (! $acme) {
             $this->error('Order not found');
         }
 
-        $this->success($acme->makeVisible('eab_hmac')->toArray());
+        $data = $acme->makeVisible('eab_hmac')->toArray();
+        $data['directory_url'] = app(Action::class)->syncDirectoryUrl($acme);
+
+        $this->success($data);
     }
 
     /**
-     * 取消订单
+     * 取消订单 — 立即取消，不走延时任务
      */
     public function cancel(): void
     {
         $this->request->validate(['order_id' => 'required|integer|min:1']);
 
-        app(Action::class)->commitCancel((int) $this->request->input('order_id'));
+        app(Action::class)->cancelNow((int) $this->request->input('order_id'));
     }
 
     /**

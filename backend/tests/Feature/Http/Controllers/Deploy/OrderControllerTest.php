@@ -455,6 +455,135 @@ test('query processing 状态含 file 验证信息', function () {
 });
 
 // ========================================
+// query() — field 参数（certimate URL 拉取）
+// ========================================
+
+function deployGetRaw(DeployToken $token, string $query): \Illuminate\Testing\TestResponse
+{
+    return test()->withHeaders(['Authorization' => "Bearer $token->token"])
+        ->get("/api/deploy/?$query");
+}
+
+test('query field=certificate 返回 fullchain PEM 纯文本', function () {
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'active', [
+        'cert' => "-----BEGIN CERTIFICATE-----\nCERT_BODY\n-----END CERTIFICATE-----",
+        'intermediate_cert' => "-----BEGIN CERTIFICATE-----\nCA_BODY\n-----END CERTIFICATE-----",
+    ]);
+
+    $response = deployGetRaw($token, "order=$order->id&field=certificate")->assertOk();
+
+    expect($response->headers->get('Content-Type'))->toContain('text/plain');
+    expect($response->getContent())->toBe(
+        rtrim($cert->cert)."\n".$cert->intermediate_cert
+    );
+});
+
+test('query field=private_key 返回私钥 PEM 纯文本', function () {
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nKEY_BODY\n-----END PRIVATE KEY-----",
+    ]);
+
+    $response = deployGetRaw($token, "order=$order->id&field=private_key")->assertOk();
+
+    expect($response->headers->get('Content-Type'))->toContain('text/plain');
+    expect($response->getContent())->toBe($cert->private_key);
+});
+
+test('query field 非法取值返回验证错误', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    deployGetRaw($token, "order=$order->id&field=invalid")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
+test('query field 要求 order 为单值（ID 或域名）', function () {
+    [$user, $token] = createDeployAuth();
+
+    deployGetRaw($token, 'field=certificate')->assertStatus(400);
+    deployGetRaw($token, 'order=1,2&field=certificate')->assertStatus(400);
+});
+
+test('query field 订单不存在返回 404', function () {
+    [, $token] = createDeployAuth();
+
+    deployGetRaw($token, 'order=99999&field=certificate')->assertStatus(404);
+    deployGetRaw($token, 'order=no-such.example.com&field=certificate')->assertStatus(404);
+});
+
+test('query field 域名模式按 common_name 返回最新 active 证书', function () {
+    [$user, $token] = createDeployAuth();
+    [, $oldCert] = createDeployOrder($user, 'active', [
+        'common_name' => 'site.example.com',
+        'issued_at' => now()->subYears(1),
+        'cert' => "-----BEGIN CERTIFICATE-----\nOLD_CERT\n-----END CERTIFICATE-----",
+        'intermediate_cert' => "-----BEGIN CERTIFICATE-----\nOLD_CA\n-----END CERTIFICATE-----",
+    ]);
+    [, $newCert] = createDeployOrder($user, 'active', [
+        'common_name' => 'site.example.com',
+        'issued_at' => now()->subDays(1),
+        'cert' => "-----BEGIN CERTIFICATE-----\nNEW_CERT\n-----END CERTIFICATE-----",
+        'intermediate_cert' => "-----BEGIN CERTIFICATE-----\nNEW_CA\n-----END CERTIFICATE-----",
+    ]);
+
+    $response = deployGetRaw($token, 'order=site.example.com&field=certificate')->assertOk();
+
+    expect($response->getContent())->toBe(
+        rtrim($newCert->cert)."\n".$newCert->intermediate_cert
+    );
+    expect($response->getContent())->not->toContain('OLD_CERT');
+});
+
+test('query field 域名模式忽略非 active 证书', function () {
+    [$user, $token] = createDeployAuth();
+    createDeployOrder($user, 'pending', ['common_name' => 'pend.example.com']);
+
+    deployGetRaw($token, 'order=pend.example.com&field=certificate')->assertStatus(404);
+});
+
+test('query field 域名模式 UserScope 隔离', function () {
+    [, $tokenA] = createDeployAuth();
+    [$userB] = createDeployAuth();
+    createDeployOrder($userB, 'active', ['common_name' => 'private.example.com']);
+
+    deployGetRaw($tokenA, 'order=private.example.com&field=certificate')->assertStatus(404);
+});
+
+test('query field 非 active 状态返回 400', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'pending');
+
+    deployGetRaw($token, "order=$order->id&field=certificate")->assertStatus(400);
+});
+
+test('query field 已续费订单追踪到新订单的证书', function () {
+    [$user, $token] = createDeployAuth();
+    [$oldOrder, $oldCert] = createDeployOrder($user, 'renewed');
+    [, $newCert] = createDeployOrder($user, 'active', [
+        'last_cert_id' => $oldCert->id,
+        'cert' => "-----BEGIN CERTIFICATE-----\nNEW_CERT\n-----END CERTIFICATE-----",
+        'intermediate_cert' => "-----BEGIN CERTIFICATE-----\nNEW_CA\n-----END CERTIFICATE-----",
+    ]);
+
+    $response = deployGetRaw($token, "order=$oldOrder->id&field=certificate")->assertOk();
+
+    expect($response->getContent())->toBe(
+        rtrim($newCert->cert)."\n".$newCert->intermediate_cert
+    );
+});
+
+test('query field UserScope 隔离', function () {
+    [, $tokenA] = createDeployAuth();
+    [$userB] = createDeployAuth();
+    [$orderB] = createDeployOrder($userB, 'active');
+
+    deployGetRaw($tokenA, "order=$orderB->id&field=certificate")->assertStatus(404);
+});
+
+// ========================================
 // callback() 测试
 // ========================================
 

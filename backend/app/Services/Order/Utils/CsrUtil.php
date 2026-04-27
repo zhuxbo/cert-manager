@@ -213,6 +213,7 @@ class CsrUtil
     {
         $info = self::parseCsr($csr);
 
+        ! isset($info['commonName']) && self::error('CSR does not contain a Common Name (CN)');
         ($info['commonName'] != $domain) && self::error('CSR Common Name does not match the Cert Common Name');
     }
 

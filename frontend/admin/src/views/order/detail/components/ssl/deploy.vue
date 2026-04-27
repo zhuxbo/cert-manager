@@ -165,6 +165,55 @@
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="URL" name="url">
+        <div class="deploy-step">
+          <div class="step-title">证书</div>
+          <div class="command-block">
+            <div class="command-label">
+              <span
+                >GET 请求返回 PEM 全链证书（cert + intermediate），适配
+                certimate 等支持 URL 拉取的部署工具</span
+              >
+              <el-radio-group
+                v-model="urlIdentifier"
+                size="small"
+                style="margin-left: 12px"
+              >
+                <el-radio-button value="domain">域名</el-radio-button>
+                <el-radio-button value="id">ID</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div class="command-line">
+              <code>{{ certUrl }}</code>
+              <el-button
+                type="primary"
+                link
+                size="small"
+                :disabled="!isActive"
+                @click="copy(certUrl)"
+                >复制</el-button
+              >
+            </div>
+          </div>
+        </div>
+        <div class="deploy-step">
+          <div class="step-title">私钥</div>
+          <div class="command-block">
+            <div class="command-label">GET 请求返回 PEM 私钥</div>
+            <div class="command-line">
+              <code>{{ keyUrl }}</code>
+              <el-button
+                type="primary"
+                link
+                size="small"
+                :disabled="!isActive"
+                @click="copy(keyUrl)"
+                >复制</el-button
+              >
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -180,6 +229,7 @@ const cert = inject("cert") as any;
 const commands = ref<any>({});
 const activeTab = ref("bt");
 const winVersion = ref("2019");
+const urlIdentifier = ref<"domain" | "id">("domain");
 
 const isActive = computed(() => cert.value?.status === "active");
 
@@ -195,6 +245,18 @@ const iisWindowsInstallCmd = computed(() => {
   const base = commands.value.iis_install?.windows || "";
   return winVersion.value === "2016" ? `${tls12Prefix}\n${base}` : base;
 });
+
+const certUrl = computed(() =>
+  urlIdentifier.value === "domain"
+    ? commands.value.cert_url_domain || commands.value.cert_url_id
+    : commands.value.cert_url_id
+);
+
+const keyUrl = computed(() =>
+  urlIdentifier.value === "domain"
+    ? commands.value.key_url_domain || commands.value.key_url_id
+    : commands.value.key_url_id
+);
 
 watch(
   isActive,

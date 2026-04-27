@@ -35,3 +35,40 @@ export const statusOptions: { label: string; value: string }[] = [
   { label: "已吊销", value: "revoked" },
   { label: "已过期", value: "expired" }
 ];
+
+export const statusSet: { [key: string]: string } = {
+  all: "全部",
+  activating: "活动中",
+  archived: "已归档"
+};
+
+export const statusSetOptions: { label: string; value: string }[] = [
+  { label: "全部", value: "all" },
+  { label: "活动中", value: "activating" },
+  { label: "已归档", value: "archived" }
+];
+
+export const ActivatingStatusOptions: { label: string; value: string }[] = [
+  { label: "待支付", value: "unpaid" },
+  { label: "待提交", value: "pending" },
+  { label: "已激活", value: "active" },
+  { label: "待取消", value: "cancelling" }
+];
+
+export const ArchivedStatusOptions: { label: string; value: string }[] = [
+  { label: "已取消", value: "cancelled" },
+  { label: "已吊销", value: "revoked" },
+  { label: "已过期", value: "expired" }
+];
+
+/** 提交通道 */
+export const channelLabels: Record<string, string> = {
+  web: "网页",
+  admin: "管理员",
+  api: "API",
+  deploy: "Deploy",
+  auto: "自动"
+};
+
+export const getChannelLabel = (code: string): string =>
+  channelLabels[code] || code;

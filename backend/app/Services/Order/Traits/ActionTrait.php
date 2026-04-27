@@ -818,7 +818,12 @@ trait ActionTrait
         DB::beginTransaction();
         try {
             // 查询订单并加锁 不查询产品 避免锁定产品
-            $order = Order::with(['user', 'latestCert'])
+            // user 关系用闭包 FOR UPDATE：同一用户跨订单并发支付时序列化余额校验，
+            // 否则 Transaction::creating 只锁 user 扣款不再校验 credit_limit，双笔订单会突破信用额度
+            $order = Order::with([
+                'user' => fn ($q) => $q->lockForUpdate(),
+                'latestCert',
+            ])
                 ->whereHas('user')
                 ->whereHas('latestCert')
                 ->lock()
@@ -980,20 +985,40 @@ trait ActionTrait
     /**
      * 取消待提交订单
      *
+     * 并发安全：事务内持 order 行级锁，与 commitCancel / batchCommitCancel /
+     * V1 / V2 四个调用方通用；锁内重取 order + 二次校验状态，避免双重退费。
+     *
      * @throws Throwable
      */
     public function cancelPending(int $order_id): void
     {
-        $order = Order::with(['latestCert'])->whereHas('latestCert')->find($order_id);
-
-        if (! $order) {
-            $this->error('订单或相关数据不存在');
-        }
-
-        $cert = $order->latestCert;
-
         DB::beginTransaction();
         try {
+            // task → order 锁顺序：先锁 commit task 再锁 order 行，与
+            // revokeCancel / commitCancel / TaskJob::handle 的锁顺序统一防死锁
+            Task::where('order_id', $order_id)
+                ->where('action', 'commit')
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
+
+            $order = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($order_id);
+
+            if (! $order) {
+                $this->error('订单或相关数据不存在');
+            }
+
+            $cert = $order->latestCert;
+
+            // 锁内二次校验状态：并发 cancelPending/commitCancel 时第二个请求拿到锁后
+            // 必须看到最新 status，否则仍会走退款分支产生第二条 cancel 交易
+            if ($cert->status !== 'pending') {
+                $this->error('订单状态不是待提交');
+            }
+
             if ($cert->action === 'reissue') {
                 if ($cert->amount > 0) {
                     $last_transaction = Transaction::where('transaction_id', $order_id)->orderBy('id', 'desc')->first();
@@ -1051,13 +1076,15 @@ trait ActionTrait
                 $cert->update(['status' => 'cancelled']);
                 $order->update(['cancelled_at' => now()]);
             }
+
+            // 事务内、task 锁保护下 DELETE，避免与 TaskJob::handle 竞争
+            $this->deleteTask($order_id, 'commit');
+
             DB::commit();
         } catch (Throwable $e) {
             DB::rollback();
             throw $e;
         }
-
-        $this->deleteTask($order_id, 'commit');
     }
 
     /**
@@ -1088,11 +1115,13 @@ trait ActionTrait
 
             $data['order_id'] = $orderId;
             $task = Task::create($data);
+            // afterCommit 防止 worker 在外层事务提交前消费 job 导致 task 查无记录静默丢失
+            // （默认 after_commit=false，配合 Redis 队列会让 revokeCancel/batchRevokeCancel 的 sync 任务丢失）
             if ($later > 0) {
                 // 队列定时比可执行时间多3秒 避免任务在可执行时间之前执行
-                TaskJob::dispatch(['id' => $task->id])->delay(now()->addSeconds($later + 3))->onQueue(config('queue.names.tasks'));
+                TaskJob::dispatch(['id' => $task->id])->afterCommit()->delay(now()->addSeconds($later + 3))->onQueue(config('queue.names.tasks'));
             } else {
-                TaskJob::dispatch(['id' => $task->id])->onQueue(config('queue.names.tasks'));
+                TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
             }
         }
     }

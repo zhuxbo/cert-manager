@@ -140,14 +140,27 @@ class OrderUtil
 
         $remark = self::composeOrderRemark($order, $latestCert, $product);
 
-        // transaction 记录本次实际购买的域名数量（不减去min）
-        $standardCount = (int) $latestCert['standard_count'];
-        $wildcardCount = (int) $latestCert['wildcard_count'];
+        $productType = $product['product_type'] ?? 'ssl';
+
         $orderPurchasedStandardCount = (int) ($order['purchased_standard_count'] ?? 0);
         $orderPurchasedWildcardCount = (int) ($order['purchased_wildcard_count'] ?? 0);
 
-        $purchasedStandardCount = max($standardCount - $orderPurchasedStandardCount, 0);
-        $purchasedWildcardCount = max($wildcardCount - $orderPurchasedWildcardCount, 0);
+        // transaction 记录本次实际购买的域名数量：
+        // - SSL 用 cert.standard_count/wildcard_count 减去订单已购基线
+        // - ACME 直接取 acme.purchased_*（无 Cert 且全量计费）
+        // - SMIME / CodeSign / DocSign 无 SAN，固定 0
+        if ($productType === 'acme') {
+            $purchasedStandardCount = $orderPurchasedStandardCount;
+            $purchasedWildcardCount = $orderPurchasedWildcardCount;
+        } elseif ($productType === 'ssl') {
+            $standardCount = (int) ($latestCert['standard_count'] ?? 0);
+            $wildcardCount = (int) ($latestCert['wildcard_count'] ?? 0);
+            $purchasedStandardCount = max($standardCount - $orderPurchasedStandardCount, 0);
+            $purchasedWildcardCount = max($wildcardCount - $orderPurchasedWildcardCount, 0);
+        } else {
+            $purchasedStandardCount = 0;
+            $purchasedWildcardCount = 0;
+        }
 
         return [
             'user_id' => $order['user_id'],
@@ -302,14 +315,31 @@ class OrderUtil
 
         $action = $latestCert['action'] ?? 'new';
 
+        $productType = $product['product_type'] ?? 'ssl';
+
         $userId = (int) $order['user_id'];
         $productId = (int) $order['product_id'];
         $period = (int) $order['period'];
         $orderPurchasedStandardCount = (int) ($order['purchased_standard_count'] ?? 0);
         $orderPurchasedWildcardCount = (int) ($order['purchased_wildcard_count'] ?? 0);
 
-        $standardCount = (int) $latestCert['standard_count'];
-        $wildcardCount = (int) $latestCert['wildcard_count'];
+        // SAN 数量来源按产品类型路由：
+        // - SSL 来自 cert.standard_count / wildcard_count
+        // - ACME 来自 acme.purchased_standard_count / purchased_wildcard_count（无 Cert 模型）
+        //   ACME 为全量计费，不需减去已购基线，故把"已购"视为 0
+        // - SMIME / CodeSign / DocSign 无 SAN，固定 0
+        if ($productType === 'acme') {
+            $standardCount = $orderPurchasedStandardCount;
+            $wildcardCount = $orderPurchasedWildcardCount;
+            $orderPurchasedStandardCount = 0;
+            $orderPurchasedWildcardCount = 0;
+        } elseif ($productType === 'ssl') {
+            $standardCount = (int) ($latestCert['standard_count'] ?? 0);
+            $wildcardCount = (int) ($latestCert['wildcard_count'] ?? 0);
+        } else {
+            $standardCount = 0;
+            $wildcardCount = 0;
+        }
 
         $standardMin = (int) $product['standard_min'];
         $wildcardMin = (int) $product['wildcard_min'];

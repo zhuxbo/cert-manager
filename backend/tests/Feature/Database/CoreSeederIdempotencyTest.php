@@ -83,14 +83,15 @@ dataset('core_seeders', [
             $siteGroup = SettingGroup::where('name', 'site')->first();
             expect($siteGroup)->not->toBeNull();
 
-            $sourceLevel = Setting::where('group_id', $siteGroup->id)
-                ->where('key', 'sourceLevel')
+            $delegation = Setting::where('group_id', $siteGroup->id)
+                ->where('key', 'delegation')
                 ->first();
 
-            expect($sourceLevel)->not->toBeNull();
-            expect($sourceLevel->value)->toBe([
-                'source1' => 'platinum',
-                'source2' => 'platinum',
+            expect($delegation)->not->toBeNull();
+            expect($delegation->value)->toBe([
+                'proxyZone' => '',
+                'secretId' => '',
+                'secretKey' => '',
             ]);
         },
         function (): void {
@@ -101,12 +102,12 @@ dataset('core_seeders', [
 
             Setting::create([
                 'group_id' => $siteGroup->id,
-                'key' => 'sourceLevel',
+                'key' => 'delegation',
                 'type' => 'array',
                 'options' => null,
                 'is_multiple' => 0,
-                'value' => ['legacy_source' => 'partner'],
-                'description' => '历史来源等级',
+                'value' => ['proxyZone' => 'custom.zone', 'secretId' => 'id123', 'secretKey' => 'key456'],
+                'description' => '自定义委托',
                 'weight' => 99,
             ]);
         },
@@ -114,37 +115,37 @@ dataset('core_seeders', [
             $siteGroup = SettingGroup::where('name', 'site')->first();
             expect($siteGroup)->not->toBeNull();
 
-            $sourceLevel = Setting::where('group_id', $siteGroup->id)
-                ->where('key', 'sourceLevel')
+            $delegation = Setting::where('group_id', $siteGroup->id)
+                ->where('key', 'delegation')
                 ->first();
 
-            expect($sourceLevel)->not->toBeNull();
-            expect(Setting::where('group_id', $siteGroup->id)->where('key', 'sourceLevel')->count())->toBe(1);
-            expect($sourceLevel->value)->toBe(['legacy_source' => 'partner']);
-            expect((string) $sourceLevel->description)->toBe('历史来源等级');
-            expect((int) $sourceLevel->weight)->toBe(99);
+            expect($delegation)->not->toBeNull();
+            expect(Setting::where('group_id', $siteGroup->id)->where('key', 'delegation')->count())->toBe(1);
+            expect($delegation->value)->toBe(['proxyZone' => 'custom.zone', 'secretId' => 'id123', 'secretKey' => 'key456']);
+            expect((string) $delegation->description)->toBe('自定义委托');
+            expect((int) $delegation->weight)->toBe(99);
         },
         function (): array {
             $siteGroup = SettingGroup::where('name', 'site')->first();
-            $sourceLevel = null;
-            $sourceLevelCount = 0;
+            $delegation = null;
+            $delegationCount = 0;
             if ($siteGroup) {
-                $sourceLevelCount = Setting::where('group_id', $siteGroup->id)
-                    ->where('key', 'sourceLevel')
+                $delegationCount = Setting::where('group_id', $siteGroup->id)
+                    ->where('key', 'delegation')
                     ->count();
 
-                $sourceLevel = Setting::where('group_id', $siteGroup->id)
-                    ->where('key', 'sourceLevel')
+                $delegation = Setting::where('group_id', $siteGroup->id)
+                    ->where('key', 'delegation')
                     ->first();
             }
 
             return [
                 'groups_count' => SettingGroup::count(),
                 'settings_count' => Setting::count(),
-                'source_level_count' => $sourceLevelCount,
-                'source_level_value' => $sourceLevel?->value,
-                'source_level_description' => $sourceLevel?->description,
-                'source_level_weight' => $sourceLevel?->weight,
+                'delegation_count' => $delegationCount,
+                'delegation_value' => $delegation?->value,
+                'delegation_description' => $delegation?->description,
+                'delegation_weight' => $delegation?->weight,
             ];
         },
     ],

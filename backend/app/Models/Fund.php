@@ -8,8 +8,6 @@ use Exception;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Facades\DB;
-use Throwable;
 
 class Fund extends BaseModel
 {
@@ -124,22 +122,21 @@ class Fund extends BaseModel
     }
 
     /**
-     * @throws Throwable
+     * 创建 transaction 记录
+     *
+     * 契约：调用方（Fund::saving 钩子触发路径）必须处于 DB::transaction 内，
+     * 否则 Transaction::create 修改的 user.balance + transactions INSERT 与外层 funds INSERT/UPDATE
+     * 无法原子提交 —— 后续 funds 插入失败会留下"余额与 transaction 已落库，funds 记录缺失"的脏状态。
+     * 本方法不再开自己的内层事务/savepoint，让错误冒泡给外层事务统一回滚。
+     * Transaction::creating 钩子会在 transactionLevel=0 时抛异常兜底。
      */
     private static function createRecord(Model $model): void
     {
-        DB::beginTransaction();
-        try {
-            /** @var \App\Models\Fund $model */
-            $transaction['transaction_id'] = $model->id;
-            $transaction = self::getTypeAmount($model, $transaction);
+        /** @var \App\Models\Fund $model */
+        $transaction['transaction_id'] = $model->id;
+        $transaction = self::getTypeAmount($model, $transaction);
 
-            Transaction::create($transaction);
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        Transaction::create($transaction);
     }
 
     private static function getTypeAmount($model, array $data): array

@@ -200,18 +200,35 @@ check_redis() {
     fi
 }
 
-# 检测 Composer
+# 检测 Composer（版本 < 2.8 会导致依赖安装错误）
 check_composer() {
     log_step "检测 Composer"
 
-    if command -v composer &> /dev/null; then
-        local version=$(composer --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-        log_success "Composer $version 已安装"
-        return 0
-    else
-        log_info "Composer 未安装，将在安装时自动安装"
+    if ! command -v composer &> /dev/null; then
+        log_info "Composer 未安装，将在安装时自动安装（最新版）"
         return 0
     fi
+
+    local version=$(composer --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+
+    if [ -z "$version" ]; then
+        log_warning "无法解析 Composer 版本"
+        return 0
+    fi
+
+    # 比对版本号是否 >= 2.8.0
+    local major=$(echo "$version" | cut -d. -f1)
+    local minor=$(echo "$version" | cut -d. -f2)
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 8 ]; }; then
+        log_warning "Composer $version 版本过低，需要 2.8+"
+        NEED_MANUAL_ACTION=true
+        MANUAL_ACTIONS+=("Composer 版本 $version 过低（低版本会导致依赖安装错误）")
+        MANUAL_ACTIONS+=("请运行: composer self-update")
+        return 1
+    fi
+
+    log_success "Composer $version 已安装"
+    return 0
 }
 
 # 显示手工操作提示

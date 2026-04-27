@@ -1,0 +1,17 @@
+# MySQL minimal profile (~150-200MB)
+# Suitable for: small deployments, VPS with 1-2GB RAM, under 10k orders
+[mysqld]
+innodb_buffer_pool_size = 32M
+innodb_log_buffer_size = 4M
+innodb_log_file_size = 32M
+key_buffer_size = 8M
+tmp_table_size = 16M
+max_heap_table_size = 16M
+max_connections = 20
+table_open_cache = 200
+thread_cache_size = 4
+sort_buffer_size = 256K
+read_buffer_size = 256K
+read_rnd_buffer_size = 256K
+join_buffer_size = 256K
+performance_schema = OFF

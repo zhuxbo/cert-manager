@@ -425,12 +425,27 @@ download_release_file() {
     log_info "下载: $filename (版本: $version)"
     log_info "URL: $url"
 
-    if curl -fsSL --connect-timeout 10 --max-time 300 -o "$save_path" "$url" 2>/dev/null; then
+    local curl_output=""
+    local curl_exit=0
+    curl_output=$(curl -fsSL --connect-timeout 10 --max-time 300 -o "$save_path" "$url" 2>&1) || curl_exit=$?
+
+    if [ $curl_exit -eq 0 ]; then
         log_success "下载成功"
         return 0
     fi
 
-    log_error "下载失败: $filename"
+    # 清理可能的部分下载
+    [ -f "$save_path" ] && rm -f "$save_path"
+
+    log_error "下载失败: $filename (curl exit code: $curl_exit)"
+    [ -n "$curl_output" ] && log_error "$curl_output"
+    case $curl_exit in
+        6)  log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
+        7)  log_info "提示: 无法连接服务器" ;;
+        22) log_info "提示: 服务器返回错误（文件可能不存在）" ;;
+        28) log_info "提示: 下载超时" ;;
+        35|51|60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
+    esac
     return 1
 }
 

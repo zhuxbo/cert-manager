@@ -58,6 +58,7 @@ export function store(data: {
   period: number;
   amount?: number;
   pay_method?: string;
+  count?: number;
 }): Promise<any> {
   return http.post("/agiso", data);
 }

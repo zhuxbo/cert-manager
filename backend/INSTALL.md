@@ -2,36 +2,15 @@
 
 ## 系统要求
 
-- PHP 8.3 或更高版本
+- PHP 8.3+
 - MySQL 5.7+
-- Redis 服务器
-- Composer 2.8+
-- **JRE (Java Runtime Environment) 17 或更高版本**
-  - 用于生成 JKS 格式证书功能，需要 `keytool` 工具
-  - 详细安装指南请参阅 [JRE_INSTALL.md](./JRE_INSTALL.md)
-  - 注意：只需要 keytool 工具，安装 JRE 即可，无需完整的 JDK
-- 以下 PHP 扩展必须启用：
-  - bcmath
-  - calendar
-  - fileinfo
-  - gd
-  - iconv
-  - intl
-  - json
-  - openssl
-  - pcntl
-  - pdo
-  - redis
-  - zip
-  - mbstring
-- **必须启用 PHP `exec`、`putenv` 和 `pcntl_signal` 函数**：
-  - `exec` 函数用于执行外部程序，对于系统运行必不可少
-  - `putenv` 函数用于设置环境变量，Laravel 应用配置需要此函数
-  - `pcntl_signal` 函数用于队列工作进程的信号处理，系统队列功能必需
-  - `pcntl_alarm` 函数用于队列工作进程的超时处理，系统队列功能必需
-- **推荐启用 PHP `proc_open` 函数**：
-  - `proc_open` 函数用于提升 Composer 性能，支持原生 unzip 和 7z 解压
-  - 禁用时会影响 Composer 性能，但不阻止系统基本运行
+- Redis
+- Composer **2.8+**（低版本可能出现依赖安装错误）
+- **JRE 17+**（可选，用于生成 JKS 格式证书，详见 [JRE_INSTALL.md](./JRE_INSTALL.md)）
+
+**PHP 扩展**：宝塔默认 PHP 已包含大部分扩展，通常需要在面板额外安装的是 `redis`、`fileinfo`、`calendar`、`mbstring`。完整扩展清单由 Web 安装向导自动检测，按提示处理即可。
+
+**PHP 函数**：宝塔默认禁用的 `exec`、`putenv`、`pcntl_signal`、`pcntl_alarm` 必须启用；`proc_open` 强烈建议启用（禁用会导致 Composer 解压异常）。`deploy/scripts/bt-deps.sh` 会自动解除常见禁用函数；也可在宝塔面板 PHP 管理 → 禁用函数 中手工处理。
 
 ## 安装步骤
 
@@ -104,8 +83,8 @@ php artisan jwt:secret
 
 - **首次安装**: 使用上述命令生成密钥
 - **生产环境**: 密钥生成后**绝对不要**重新生成，否则会导致：
-  - `APP_KEY` 重新生成：所有加密数据无法解密，现有会话失效
-  - `JWT_SECRET` 重新生成：所有用户 token 失效，需要重新登录
+    - `APP_KEY` 重新生成：所有加密数据无法解密，现有会话失效
+    - `JWT_SECRET` 重新生成：所有用户 token 失效，需要重新登录
 - **如果必须重新生成密钥** (如密钥泄露)：
 
     ```bash
@@ -133,18 +112,13 @@ REDIS_PORT=6379
 # 设置允许跨域的源 支持通配符
 ALLOWED_ORIGINS=localhost
 
-### 4. 数据库迁移
+### 4. 数据库迁移与初始化
+
+> Web 安装向导会自动执行迁移和种子初始化，通常无需手工运行以下命令。以下仅用于故障排查。
 
 ```bash
 php artisan migrate
-````
-
-### 5. 生成后台初始管理员及会员基础级别
-
-- 管理员初始账号 admin 密码 123456
-
-```bash
-php artisan db:seed
+php artisan db:seed   # 生成管理员（admin / 123456）和会员基础级别
 ```
 
 ### 6. 启动应用
@@ -177,18 +151,9 @@ php artisan serve
 
 ## PHP 特殊设置
 
-- 确保 PHP 的内存限制足够大，建议至少设置为 128M：`memory_limit=128M`
-- 确保 PHP-FPM 或 Nginx 的工作进程数配置合理，以处理并发请求
-- **确保启用了 PHP `exec`、`putenv`、`pcntl_signal`、`pcntl_alarm` 和 `proc_open` 函数**，在 php.ini 中设置：
-
-    ```txt
-    disable_functions = ... # 确保此列表中不包含exec、putenv、pcntl_signal、pcntl_alarm和proc_open
-    ```
-
-    或在宝塔面板 PHP 设置中的"禁用函数"列表中移除 exec、putenv、pcntl_signal、pcntl_alarm 和 proc_open
-
-    **重要**: `exec`、`putenv`、`pcntl_signal`、`pcntl_alarm` 函数是系统必需的，被禁用会导致安装失败
-    **注意**: `proc_open` 函数主要用于提升 Composer 性能，如果无法启用也不会阻止系统运行
+- 内存限制建议至少 `memory_limit=128M`
+- PHP-FPM/Nginx 工作进程数根据并发合理配置
+- 禁用函数处理见"系统要求"章节，Web 安装向导会逐项检测并报错
 
 ## 开发调试工具
 
@@ -235,11 +200,11 @@ exit;
 
 ### 配置队列
 
-1. 确保`.env`文件中设置了`QUEUE_CONNECTION=redis`
+1. 确保 `.env` 文件中 `QUEUE_CONNECTION=redis`
 2. 启动队列工作进程：
 
 ```bash
-php artisan queue:work --queue Task
+php artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-time 3600
 ```
 
 **注意：** 队列进程需要 www 用户运行（宝塔面板）
@@ -262,16 +227,16 @@ cd /path-to-your-project && php artisan schedule:run
 
 ## 文件权限设置
 
-请确保以下目录可写：
+脚本部署（`bt-install.sh` / `docker-install.sh`）会自动处理权限。手工部署时：
 
 ```bash
 chmod -R 775 storage bootstrap/cache
-```
 
-如果使用的是 Linux 服务器，还需确保目录的用户组设置正确：
+# 宝塔面板
+chown -R www:www storage bootstrap/cache
 
-```bash
-chown -R $USER:www-data storage bootstrap/cache
+# Docker（Alpine PHP-FPM）
+chown -R www-data:www-data storage bootstrap/cache
 ```
 
 ## 常见问题排查
@@ -303,18 +268,15 @@ chown -R $USER:www-data storage bootstrap/cache
 
 6. **PHP 函数被禁用问题**
 
-    - **必须启用的函数**: `exec`、`putenv`、`pcntl_signal`、`pcntl_alarm`
-        - `exec`: 错误信息：`Call to undefined function exec()`，用于执行外部程序
-        - `putenv`: 错误信息：`Call to undefined function putenv()`，用于设置环境变量
-        - `pcntl_signal`: 错误信息：`Call to undefined function pcntl_signal()`，用于队列工作进程的信号处理
-        - `pcntl_alarm`: 错误信息：`Call to undefined function pcntl_alarm()`，用于队列工作进程的超时处理
-        - 这些函数被禁用会导致安装失败
-    - **推荐启用的函数**: `proc_open`
-        - `proc_open`: 被禁用时 Composer 会显示警告，但不会阻止安装，可能导致解压性能下降和文件权限丢失
-    - **解决方案**:
-        - 在 PHP 配置文件中检查 `disable_functions` 设置
-        - 对于宝塔面板，在 PHP 管理中检查"禁用函数"列表
-        - 使用 Docker 部署时，已预配置启用这些函数
+    Web 安装向导会逐项报错（`Call to undefined function xxx()`）并给出处理建议。
+
+    - 宝塔：运行 `deploy/scripts/bt-deps.sh` 自动解除禁用（会备份 `php.ini` / `php-cli.ini`）
+    - 手工：在宝塔 PHP 管理 → 禁用函数 中移除对应函数
+    - Docker：镜像已预配置启用
+
+7. **Composer 版本过低**
+
+    版本低于 2.8 可能出现依赖解析或安装错误。升级命令：`composer self-update`
 
 ## JRE 安装 (可选)
 

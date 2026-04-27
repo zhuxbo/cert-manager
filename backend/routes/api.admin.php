@@ -9,6 +9,7 @@ use App\Http\Controllers\Admin\CertController;
 use App\Http\Controllers\Admin\ChainController;
 use App\Http\Controllers\Admin\ContactController;
 use App\Http\Controllers\Admin\DashboardController;
+use App\Http\Controllers\Admin\DatabaseBackupController;
 use App\Http\Controllers\Admin\DelegationController;
 use App\Http\Controllers\Admin\DeployTokenController;
 use App\Http\Controllers\Admin\FundController;
@@ -38,6 +39,12 @@ Route::prefix('admin')->group(function () {
 // 刷新Token
 Route::prefix('admin')->middleware('api.admin.refresh')->group(function () {
     Route::post('refresh-token', [AuthController::class, 'refreshToken']);
+});
+
+// 数据库备份的下载端点 — 由一次性 token 鉴权，不走 admin 中间件
+// 目的：浏览器原生流式下载，避免前端把整文件读进 blob
+Route::prefix('admin/database')->group(function () {
+    Route::get('backups/download', [DatabaseBackupController::class, 'download']);
 });
 
 // 需要认证的路由
@@ -193,7 +200,14 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('commit/{id}', [AcmeController::class, 'commit'])->where('id', '[0-9]+');
         Route::post('sync/{id}', [AcmeController::class, 'sync'])->where('id', '[0-9]+');
         Route::post('commit-cancel/{id}', [AcmeController::class, 'commitCancel'])->where('id', '[0-9]+');
+        Route::post('revoke-cancel/{id}', [AcmeController::class, 'revokeCancel'])->where('id', '[0-9]+');
         Route::post('remark/{id}', [AcmeController::class, 'remark'])->where('id', '[0-9]+');
+        Route::post('batch-pay', [AcmeController::class, 'batchPay']);
+        Route::post('batch-commit', [AcmeController::class, 'batchCommit']);
+        Route::post('batch-sync', [AcmeController::class, 'batchSync']);
+        Route::post('batch-commit-cancel', [AcmeController::class, 'batchCommitCancel']);
+        Route::post('batch-revoke-cancel', [AcmeController::class, 'batchRevokeCancel']);
+        Route::post('batch-copy-eab', [AcmeController::class, 'batchCopyEab']);
     });
 
     // CNAME 委托管理路由
@@ -218,6 +232,21 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('install', [PluginController::class, 'install']);
         Route::post('update', [PluginController::class, 'update']);
         Route::post('uninstall', [PluginController::class, 'uninstall']);
+    });
+
+    // 数据库备份管理
+    Route::prefix('database')->group(function () {
+        Route::get('backups', [DatabaseBackupController::class, 'index']);
+        Route::post('backups', [DatabaseBackupController::class, 'store']);
+        Route::delete('backups/{id}', [DatabaseBackupController::class, 'destroy'])
+            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::get('backups/{id}/schema-diff', [DatabaseBackupController::class, 'schemaDiff'])
+            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::post('backups/{id}/restore', [DatabaseBackupController::class, 'restore'])
+            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::post('backups/{id}/download-token', [DatabaseBackupController::class, 'downloadToken'])
+            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::get('jobs/{token}', [DatabaseBackupController::class, 'jobStatus']);
     });
 
     // 系统升级管理

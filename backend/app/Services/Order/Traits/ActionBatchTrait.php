@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Services\Order\Traits;
 
+use App\Exceptions\ApiResponseException;
 use App\Models\Order;
 use App\Models\Task;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 trait ActionBatchTrait
@@ -119,12 +121,38 @@ trait ActionBatchTrait
             if ($order->latestCert->status === 'unpaid') {
                 $this->delete($order->id);
             } elseif ($order->latestCert->status === 'pending') {
+                // cancelPending 自带事务 + 行锁 + 锁内 status 校验
                 $this->cancelPending($order->id);
             } else {
-                // 2分钟后取消
-                $order->latestCert->update(['status' => 'cancelling']);
-                $this->deleteTask($order->id, 'commit,sync,revalidate');
-                $this->createTask($order->id, 'cancel');
+                // processing/approving/active 分支：事务 + 行锁 + 锁内 status 二次校验，
+                // 与单体 commitCancel 的 active 分支同构，防止与 cancel TaskJob/revokeCancel 竞态
+                DB::transaction(function () use ($order) {
+                    // 锁顺序 1：先锁 commit/sync/revalidate task（与 TaskJob::handle 的 task→order 顺序一致）
+                    Task::where('order_id', $order->id)
+                        ->whereIn('action', ['commit', 'sync', 'revalidate'])
+                        ->whereIn('status', ['executing', 'stopped'])
+                        ->lockForUpdate()
+                        ->get();
+
+                    // 锁顺序 2：再锁 order
+                    $locked = Order::with(['latestCert'])
+                        ->whereHas('latestCert')
+                        ->lock()
+                        ->find($order->id);
+
+                    if (! $locked) {
+                        return;
+                    }
+
+                    if (! in_array($locked->latestCert->status, ['processing', 'approving', 'active'])) {
+                        // 锁内发现状态已变，静默跳过（批量场景不让单条状态漂移破坏全批）
+                        return;
+                    }
+
+                    $locked->latestCert->update(['status' => 'cancelling']);
+                    $this->deleteTask($locked->id, 'commit,sync,revalidate');
+                    $this->createTask($locked->id, 'cancel');
+                });
             }
         }
 
@@ -133,25 +161,39 @@ trait ActionBatchTrait
 
     /**
      * 批量撤销取消订单
+     *
+     * 并发安全：逐条委托 revokeCancel，每条独立事务 + 行级锁。
+     * 保持 Order 既有 all-or-nothing 语义（与 ACME batch 部分成功模式不同），
+     * 前端依赖此语义 — 首个失败即冒泡中断整个批量，不返回 success_count/errors。
      */
     public function batchRevokeCancel(int|string|array $orderIds): void
     {
         $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
         $orderIds = array_map('intval', $orderIds);
 
-        $orders = Order::with(['latestCert'])
+        // 前置过滤：只保留 cancelling 状态的订单，避免对非 cancelling 订单触发报错
+        // 锁内二次校验由 revokeCancel 自身兜住（处理并发竞争）
+        $filteredIds = Order::with(['latestCert'])
             ->whereHas('latestCert', fn ($query) => $query->where('status', 'cancelling'))
             ->whereIn('id', $orderIds)
-            ->get();
+            ->pluck('id')
+            ->all();
 
-        if ($orders->isEmpty()) {
+        if (empty($filteredIds)) {
             $this->error('没有可以撤销的订单');
         }
 
-        foreach ($orders as $order) {
-            $this->deleteTask($order->id, 'cancel');
-            $order->latestCert->update(['status' => 'approving']);
-            $this->createTask($order->id, 'sync');
+        foreach ($filteredIds as $id) {
+            try {
+                $this->revokeCancel($id);
+            } catch (ApiResponseException $e) {
+                $res = $e->getApiResponse();
+                if (($res['code'] ?? 0) !== 1) {
+                    // 非成功一律向上抛，中断批量（all-or-nothing）
+                    throw $e;
+                }
+                // code=1 是成功，继续下一条
+            }
         }
 
         $this->success();

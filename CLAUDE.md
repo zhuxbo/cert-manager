@@ -72,20 +72,35 @@ skills/         # 开发规范（详细文档）
 
 ### ACME 订阅管理
 
-- **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden
-- **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id)`（pending/待提交）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（事务保护，失败回滚）
-- **取消流程**：`commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费），与传统订单共用 Task + TaskJob 机制
+- **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden；`eab_kid` 建索引；`plus` 列（赠送时间 0/1）；`contact_email` 列（`VARCHAR(254) NULL`，ACME 账号邮箱 — RFC 8555 `contact`）
+- **字段映射**：上游响应 `data.order_id` → 本地 `acmes.api_id` 列（**切勿用 `api_id` 键读上游响应**，老代码踩过坑）
+- **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id, bool $autoCommit = true)`（Admin/User 入口默认"先支付独立事务，再单独事务调 commit"——commit 失败 **不回滚扣费**，订单保留 pending 可走 `commit` 接口重试；`$autoCommit=false` 仅置 pending，由 batchPay 统一入队 commit）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（**单事务原子，失败回滚**，API 入口使用）
+- **上游 `/acme/new` 入参**：`source`（路由用，上游忽略）/ `contact_email`（= `acmes.contact_email`，**所有入口必填**：User/Admin 表单 / API Token / Deploy Token；上游正常返回会覆盖回写，缺失则保持本地值）/ `product_code` / `plus`（赠送时间）/ `refer_id`（幂等键），**不传** `period`/`purchased_*count`/`product_type` 等。**字段名与多级代理链路全程对齐**；Certum 侧的 `customer` 术语仅存在于 Gateway → Certum SDK 的最后一跳
+- **directory_url 缓存**：Laravel `Cache::forever("acme_directory_url:{ca}")` 按签发 CA 聚合；commit/sync 刷新、show 缺失时回源一次性回填；不入 system_setting、不落库
+- **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
+- **撤回取消**：`revokeCancel(int $id)` 在 acme.status=cancelling 且延时任务未执行时生效 — 悲观锁回滚 status→active、清空 cancelled_at、删除 executing/stopped 的 `cancel_acme` Task（已 dispatch 的 TaskJob 唤醒后找不到任务直接跳过）
 - **Transaction 类型**：`acme_order`/`acme_cancel`
 - **产品标识**：`products.product_type = 'acme'`
 - **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由，仅 `default` 源（和 Order 一致），`AcmeSourceApiInterface` 统一 `new`/`get`/`cancel`/`getProducts` 接口，`default/Sdk` 通过系统设置 `ca.acme_url`/`ca.acme_token`（回落到 `ca.url`/`ca.token`）调用 上游系统 `/api/acme/*` 端点
 - **产品导入**：`Order\Action::importProduct()` 同时查询 Order 和 ACME 两端产品，合并后按 `api_id` 去重
 - **控制器路由**：
     - API：`/api/acme/` — new, get, cancel, get-products（对下游代理，与 上游系统 对齐）
-    - Admin：`/api/admin/acme/` — index, show, new, pay, commit, sync, commit-cancel, remark
-    - User：`/api/user/acme/` — index, show, new, pay, commit, commit-cancel（限当前用户）
-    - Deploy：`/api/deploy/acme/` — new（一步到位：创建+支付+提交）, get（含 EAB）
+    - Admin：`/api/admin/acme/` — index, show, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
+    - User：`/api/user/acme/` — index, show, new, pay, commit, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
+    - Deploy：`/api/deploy/acme/` — new（一步到位：创建+支付+提交）, get（含 EAB + directory_url）
+- **搜索**：Admin/User 控制器 `index` 支持 quickSearch / id / status / brand / period / **eab_kid 前缀匹配（走索引）** / amount 范围 / product_name / created_at / period_till 范围；Admin 额外 user_id/username
 - **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
 - **传统流程完全隔离**：ACME 通过独立控制器、服务和前端模块处理，与传统订单无交集；V2 API `new` 和 `Order\Action::initParams` 拒绝 ACME 产品
+- **批量操作**：列表页 6 个批量按钮
+    - `POST /api/{admin,user}/acme/batch-pay` — 同步逐条扣费（pay autoCommit=false），成功的 id 批量入队 `commit_acme`；状态限 unpaid，返回 `{success_count, commit_count, errors}`
+    - `POST /api/{admin,user}/acme/batch-commit` — 创建 `commit_acme` Task 立即入队，状态限 pending；`checkRepeat` 存在 executing 任务时整体报错
+    - `POST /api/{admin,user}/acme/batch-sync` — 创建 `sync_acme` Task 立即入队，状态限 active/cancelling（必须有 api_id），pending/unpaid 无 api_id 无法同步
+    - `POST /api/{admin,user}/acme/batch-commit-cancel` — 同步逐条调单体 commitCancel（混合直接退费 + 延时 Task），状态限 unpaid/pending/active；单体 commitCancel 已扩展支持 unpaid（未扣费无需 refund）
+    - `POST /api/{admin,user}/acme/batch-revoke-cancel` — 同步逐条调单体 revokeCancel，状态限 cancelling
+    - `POST /api/{admin,user}/acme/batch-copy-eab` — 纯读返回 EAB 文本（`directory_url\neab_kid\neab_hmac`，条目间空行），**Admin 端跨用户拒绝**；User 端 UserScope 自动限制
+- **TaskJob 分发**：`commit_acme / sync_acme / cancel_acme` 统一去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`；其余 action 走 `Order\Action`
+- **User 端同步**：`POST /api/user/acme/sync/{id}`（与 Admin 对齐）
+- **checkRepeat 并发限制**：与 Order 相同，`checkRepeat` 和 `createTasks` 之间无事务锁，并发情况下可能产生双份 executing Task；沿用 Order 设计，属已知限制
 
 ## 系统架构约定
 
@@ -96,6 +111,10 @@ skills/         # 开发规范（详细文档）
 - **ACME 取消策略**：未提交上游（无 api_id）的 pending 订单直接退费取消；已提交上游的订单通过延时任务调 Api->cancel() 后退费
 - **Action 无 userId 构造参数**：`Acme\Action` 和 `Order\Action` 均无 `userId` 构造参数，通过 `app(Action::class)` 获取实例。用户隔离由 UserScope 全局作用域保证（`Authenticate`/`ApiAuthenticate` 中间件注册 Acme、ApiToken、Callback、CnameDelegation、Order、Fund、Transaction、Organization、Contact、OrderDocument），控制器在创建方法的 params 中传入 `user_id`。UserScope `apply()` 无条件执行 `where('user_id', ...)`，不做零值跳过
 - **ACME Action 统一封装上游 API 调用**：所有上游 API 调用（new/get/cancel 等）必须通过 `Services/Acme/Action`，不允许控制器直接调 `Api`。操作方法接收 ID（int），创建方法接收参数数组。内部负责模型查询、参数过滤、返回值校正、重复提交防护、状态入库。控制器仅做请求验证 + 一行调用 Action
+- **资金/状态变更必须在事务 + 行锁内**：任何涉及 `Transaction::create`/余额变动/状态机变更的路径都要 `DB::transaction` + 目标行 `lock()`/`lockForUpdate()`，且**状态检查放在锁内**（锁外校验会被并发绕过）。Order 走 `Order::with(['latestCert'])->whereHas('latestCert')->lock()` 约定锁 + 所有变更走 `$order->latestCert->update()` 路径；ACME 走 `Acme::lock()` 直接锁 status 所在行。`$this->success()` 必须放在事务闭包**外**（它抛 `ApiResponseException` 会触发回滚）；`$this->error()` 放闭包内正好触发回滚。unpaid 等无资金流水的状态清理路径可免锁（双击第二次自然报错无资金损害）。TaskJob::handle 必须整体包 `DB::transaction`，否则 `lockForUpdate` 在自动提交模式下是"假锁"（SELECT 返回即释放）。**支付路径必须同时锁 user 行**（否则同一用户跨订单并发支付会绕过 credit_limit 校验）：ACME `User::lockForUpdate()`，Order `with(['user' => fn ($q) => $q->lockForUpdate(), 'latestCert'])`。**ACME commit 也需要锁内调用上游**：与 commitCancel 串行化防止"上游已建单 + 本地被改 cancelled 后又被 commit 覆盖回 active"的资金错乱。
+- **事务内 dispatch Job 必须加 `->afterCommit()`**：`config/queue.php` 所有连接默认 `after_commit=false`，事务内 dispatch 的 Job 会立即入队，worker 可能在事务提交前消费 Job，读不到事务内新建的行/状态导致任务静默丢失。`createTask`/`createTasks` 等所有 TaskJob::dispatch 调用都已加 `->afterCommit()`，新增 Job dispatch 点也要跟进。
+- **统一锁顺序 task→order/acme 防死锁**：`TaskJob::handle` 是 task→order/acme 顺序（先锁 task，action 内再锁业务行）；所有 DELETE/修改 task 的业务路径（Order `revokeCancel`/`commitCancel(active)`/`batchCommitCancel`、ACME `revokeCancel` 等）都必须按同一顺序，先 `Task::where(...)->lockForUpdate()->get()` 拿 task 锁再锁业务行，再做 DELETE。否则 InnoDB 会周期性触发死锁回滚，用户看到随机失败。
+- **Transaction::create 必须在 DB::transaction 内调用**：Transaction::creating 钩子内不再开自己的嵌套事务/savepoint——直接使用外层事务保证 balance 修改与 INSERT 的原子性。非事务内调用会抛异常提示。Fund::updating 同理。
 
 ### Certum 验证文档上传
 
@@ -129,6 +148,6 @@ skills/         # 开发规范（详细文档）
 - **Commands**（9 文件 55 用例）：AutoRenew、Expire、DelegationCheck、DelegationCleanup、Validate、Purge、ResetAdminPassword、ClearAllCache、UserData
 - **Models**（14 文件）：Order、User、Cert、Admin、Product、Notification、NotificationTemplate、Contact、Organization、Fund、Transaction、CnameDelegation、ApiToken、Task
 - **Middleware**（8 文件）：AdminAuthenticate、UserAuthenticate、ApiAuthenticate、DeployAuthenticate、LogOperation、RateLimiter、LoginRateLimiter、FlushLogs
-- **ACME**：Unit/Services/Acme/ActionTest（27 用例）、Feature/Controllers/Admin/AcmeControllerTest（11 用例）、Feature/Controllers/User/AcmeControllerTest（9 用例）、Feature/Controllers/Deploy/AcmeControllerTest（5 用例）
+- **ACME**：Unit/Services/Acme/ActionTest（32 用例）、Feature/Controllers/Admin/AcmeControllerTest（13 用例）、Feature/Controllers/User/AcmeControllerTest（11 用例）、Feature/Controllers/Deploy/AcmeControllerTest（5 用例）
 - **Deploy**：Feature/Controllers/Deploy/OrderControllerTest（39 用例）：query（21）、callback（7）、update（8）、认证（2）、数据结构（1）
 - 已有 Unit/Models 测试（DeployToken、OrderAutoFields、UserAutoSettings）不重复覆盖

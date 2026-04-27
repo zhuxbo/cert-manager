@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 class ExpireCommand extends Command
 {
@@ -82,6 +83,41 @@ class ExpireCommand extends Command
                 ));
                 $this->info("User $user->id email $user->email certificate expiration notification task created");
             }
+        }
+
+        // 清理终态证书的敏感材料：已到期/吊销/取消/被续期重签/失败的 CSR、私钥、证书串
+        // 业务已无保留价值，提前清理可缩小备份脱敏成本与泄露面
+        $this->purgeTerminalCertMaterial();
+    }
+
+    /**
+     * 对终态证书清空 csr/private_key/cert 三列；已清过的行由第二个条件过滤掉，重跑零开销。
+     */
+    private function purgeTerminalCertMaterial(): void
+    {
+        $terminalStatuses = ['expired', 'cancelled', 'revoked', 'renewed', 'reissued', 'failed'];
+        $totalCleared = 0;
+
+        do {
+            $affected = DB::table('certs')
+                ->whereIn('status', $terminalStatuses)
+                ->where(function ($q) {
+                    $q->whereNotNull('csr')
+                        ->orWhereNotNull('private_key')
+                        ->orWhereNotNull('cert');
+                })
+                ->limit(1000)
+                ->update([
+                    'csr' => null,
+                    'private_key' => null,
+                    'cert' => null,
+                ]);
+
+            $totalCleared += $affected;
+        } while ($affected > 0);
+
+        if ($totalCleared > 0) {
+            $this->info("Cleared csr/private_key/cert on $totalCleared terminal certs");
         }
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Upgrade\DatabaseStructureService;
 use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
@@ -54,6 +55,12 @@ class DatabaseStructureCommand extends Command
      * 备份原始 log 连接配置，避免迁移期改写后未恢复导致后续访问临时库
      */
     private ?array $originalLogConfig = null;
+
+    public function __construct(
+        private DatabaseStructureService $structureService
+    ) {
+        parent::__construct();
+    }
 
     /**
      * Execute the console command.
@@ -184,7 +191,7 @@ class DatabaseStructureCommand extends Command
         $current = $this->exportStructureToJson($database);
 
         // 3. 对比差异
-        $diff = $this->compareStructures($standard, $current);
+        $diff = $this->structureService->compareStructures($standard, $current);
 
         // 4. 显示报告
         $this->displayDiffReport($diff);
@@ -213,10 +220,10 @@ class DatabaseStructureCommand extends Command
         $standard = json_decode(File::get($standardPath), true);
         $database = $this->option('database') ?: 'mysql';
         $current = $this->exportStructureToJson($database);
-        $diff = $this->compareStructures($standard, $current);
+        $diff = $this->structureService->compareStructures($standard, $current);
 
         // 2. 生成 ADD 语句
-        $addStatements = $this->generateAddStatements($diff);
+        $addStatements = $this->structureService->generateAddStatements($diff, (bool) $this->option('skip-foreign-keys'));
 
         if (empty($addStatements)) {
             $this->line('没有需要添加的结构');
@@ -577,133 +584,6 @@ class DatabaseStructureCommand extends Command
     }
 
     /**
-     * 对比两个结构
-     */
-    private function compareStructures(array $standard, array $current): array
-    {
-        $diff = [
-            'missing_tables' => [],
-            'extra_tables' => [],
-            'table_differences' => [],
-        ];
-
-        $standardTables = $standard['tables'] ?? [];
-        $currentTables = $current['tables'] ?? [];
-
-        // 找出缺失的表
-        foreach ($standardTables as $tableName => $tableSchema) {
-            if (! isset($currentTables[$tableName])) {
-                $diff['missing_tables'][$tableName] = $tableSchema;
-            } else {
-                // 对比表内部结构
-                $tableDiff = $this->compareTableStructure($tableSchema, $currentTables[$tableName]);
-                if (! empty($tableDiff)) {
-                    $diff['table_differences'][$tableName] = $tableDiff;
-                }
-            }
-        }
-
-        // 找出多余的表
-        foreach ($currentTables as $tableName => $tableSchema) {
-            if (! isset($standardTables[$tableName])) {
-                $diff['extra_tables'][$tableName] = $tableSchema;
-            }
-        }
-
-        return $diff;
-    }
-
-    /**
-     * 对比表结构
-     */
-    private function compareTableStructure(array $standard, array $current): array
-    {
-        $diff = [
-            'missing_columns' => [],
-            'extra_columns' => [],
-            'modified_columns' => [],
-            'missing_indexes' => [],
-            'extra_indexes' => [],
-            'missing_foreign_keys' => [],
-            'extra_foreign_keys' => [],
-        ];
-
-        // 对比列
-        foreach ($standard['columns'] as $columnName => $columnDef) {
-            if (! isset($current['columns'][$columnName])) {
-                $diff['missing_columns'][$columnName] = $columnDef;
-            } elseif ($this->isColumnDifferent($columnDef, $current['columns'][$columnName])) {
-                $diff['modified_columns'][$columnName] = [
-                    'standard' => $columnDef,
-                    'current' => $current['columns'][$columnName],
-                ];
-            }
-        }
-
-        foreach ($current['columns'] as $columnName => $columnDef) {
-            if (! isset($standard['columns'][$columnName])) {
-                $diff['extra_columns'][$columnName] = $columnDef;
-            }
-        }
-
-        // 对比索引
-        foreach ($standard['indexes'] as $indexName => $indexDef) {
-            if (! isset($current['indexes'][$indexName])) {
-                $diff['missing_indexes'][$indexName] = $indexDef;
-            }
-        }
-
-        foreach ($current['indexes'] as $indexName => $indexDef) {
-            if (! isset($standard['indexes'][$indexName])) {
-                $diff['extra_indexes'][$indexName] = $indexDef;
-            }
-        }
-
-        // 对比外键
-        foreach ($standard['foreign_keys'] as $fkName => $fkDef) {
-            if (! isset($current['foreign_keys'][$fkName])) {
-                $diff['missing_foreign_keys'][$fkName] = $fkDef;
-            }
-        }
-
-        foreach ($current['foreign_keys'] as $fkName => $fkDef) {
-            if (! isset($standard['foreign_keys'][$fkName])) {
-                $diff['extra_foreign_keys'][$fkName] = $fkDef;
-            }
-        }
-
-        // 清除空数组
-        return array_filter($diff);
-    }
-
-    /**
-     * 判断列是否不同
-     */
-    private function isColumnDifferent(array $standard, array $current): bool
-    {
-        // MySQL 5.7 整型必须有显示宽度如 int(11)、bigint(20)，
-        // MySQL 8.0 废弃了显示宽度只显示 int、bigint，
-        // 标准化后忽略此差异避免跨版本检测时产生误报
-        $standardType = $this->normalizeIntegerType($standard['type']);
-        $currentType = $this->normalizeIntegerType($current['type']);
-
-        return $standardType !== $currentType ||
-               $standard['nullable'] !== $current['nullable'] ||
-               $standard['default'] !== $current['default'];
-    }
-
-    /**
-     * 标准化整型类型，去除显示宽度
-     *
-     * MySQL 5.7 显示 int(11)、bigint(20) 等，MySQL 8.0 去除了显示宽度。
-     * 标准化后统一为无宽度格式以排除版本差异。
-     */
-    private function normalizeIntegerType(string $type): string
-    {
-        return preg_replace('/^(tinyint|smallint|mediumint|int|bigint)\(\d+\)/i', '$1', $type);
-    }
-
-    /**
      * 显示差异报告
      */
     private function displayDiffReport(array $diff): void
@@ -770,7 +650,7 @@ class DatabaseStructureCommand extends Command
                     $this->warn('[WARNING]  需手动处理（MODIFY）:');
                 }
                 foreach ($tableDiff['modified_columns'] as $columnName => $columnDiff) {
-                    $differences = $this->describeColumnDifferences($columnDiff['standard'], $columnDiff['current']);
+                    $differences = $this->structureService->describeColumnDifferences($columnDiff['standard'], $columnDiff['current']);
                     $this->line(sprintf(
                         '  - 列 <comment>%s.%s</comment>: %s',
                         $tableName,
@@ -848,204 +728,6 @@ class DatabaseStructureCommand extends Command
         return ! empty($diff['missing_tables']) ||
                ! empty($diff['extra_tables']) ||
                ! empty($diff['table_differences']);
-    }
-
-    /**
-     * 生成 ADD 语句
-     */
-    private function generateAddStatements(array $diff): array
-    {
-        $statements = [];
-
-        // 创建缺失的表
-        foreach ($diff['missing_tables'] ?? [] as $tableName => $tableSchema) {
-            $statements[] = $this->generateCreateTableStatement($tableName, $tableSchema);
-        }
-
-        // 添加缺失的列、索引、外键
-        foreach ($diff['table_differences'] ?? [] as $tableName => $tableDiff) {
-            // 添加列
-            foreach ($tableDiff['missing_columns'] ?? [] as $columnName => $columnDef) {
-                $statements[] = $this->generateAddColumnStatement($tableName, $columnName, $columnDef);
-            }
-
-            // 添加索引
-            foreach ($tableDiff['missing_indexes'] ?? [] as $indexName => $indexDef) {
-                $statements[] = $this->generateAddIndexStatement($tableName, $indexName, $indexDef);
-            }
-
-            // 添加外键（仅在未跳过时）
-            if (! $this->option('skip-foreign-keys')) {
-                foreach ($tableDiff['missing_foreign_keys'] ?? [] as $fkName => $fkDef) {
-                    $statements[] = $this->generateAddForeignKeyStatement($tableName, $fkName, $fkDef);
-                }
-            }
-        }
-
-        return $statements;
-    }
-
-    /**
-     * 生成 CREATE TABLE 语句
-     *
-     * @noinspection DuplicatedCode
-     */
-    private function generateCreateTableStatement(string $tableName, array $tableSchema): string
-    {
-        $lines = ["CREATE TABLE `$tableName` ("];
-        $columnLines = [];
-
-        // 列定义
-        foreach ($tableSchema['columns'] as $columnName => $columnDef) {
-            $line = "  `$columnName` {$columnDef['type']}";
-            $line .= $columnDef['nullable'] ? ' NULL' : ' NOT NULL';
-
-            if ($columnDef['default'] !== null) {
-                // 支持 CURRENT_TIMESTAMP(n) 的正则匹配
-                if (preg_match('/^current_timestamp(\(\d+\))?$/i', $columnDef['default'])) {
-                    $line .= " DEFAULT {$columnDef['default']}";
-                } else {
-                    $line .= " DEFAULT '{$columnDef['default']}'";
-                }
-            }
-
-            if ($columnDef['extra']) {
-                $line .= " {$columnDef['extra']}";
-            }
-
-            if ($columnDef['comment']) {
-                $line .= " COMMENT '{$columnDef['comment']}'";
-            }
-
-            $columnLines[] = $line;
-        }
-
-        // 索引
-        foreach ($tableSchema['indexes'] as $indexName => $indexDef) {
-            if ($indexName === 'PRIMARY') {
-                // 处理主键
-                $columnParts = [];
-                foreach ($indexDef['columns'] as $i => $column) {
-                    $subPart = $indexDef['sub_parts'][$i] ?? null;
-                    if ($subPart) {
-                        $columnParts[] = "`$column`($subPart)";
-                    } else {
-                        $columnParts[] = "`$column`";
-                    }
-                }
-                $columns = implode(', ', $columnParts);
-                $columnLines[] = "  PRIMARY KEY ($columns)";
-            } else {
-                // 处理其他索引
-                $indexType = '';
-                if ($indexDef['type'] === 'FULLTEXT') {
-                    $indexType = 'FULLTEXT ';
-                } elseif ($indexDef['type'] === 'SPATIAL') {
-                    $indexType = 'SPATIAL ';
-                } elseif ($indexDef['unique']) {
-                    $indexType = 'UNIQUE ';
-                }
-
-                $columnParts = [];
-                foreach ($indexDef['columns'] as $i => $column) {
-                    $subPart = $indexDef['sub_parts'][$i] ?? null;
-                    if ($subPart) {
-                        $columnParts[] = "`$column`($subPart)";
-                    } else {
-                        $columnParts[] = "`$column`";
-                    }
-                }
-                $columns = implode(', ', $columnParts);
-                $columnLines[] = "  {$indexType}KEY `$indexName` ($columns)";
-            }
-        }
-
-        // 外键
-        foreach ($tableSchema['foreign_keys'] ?? [] as $fkName => $fkDef) {
-            $columns = implode('`, `', $fkDef['columns']);
-            $refColumns = implode('`, `', $fkDef['references']['columns']);
-            $columnLines[] = "  CONSTRAINT `$fkName` FOREIGN KEY (`$columns`) REFERENCES `{$fkDef['references']['table']}` (`$refColumns`) ON DELETE {$fkDef['on_delete']} ON UPDATE {$fkDef['on_update']}";
-        }
-
-        $lines[] = implode(",\n", $columnLines);
-        // 仅指定引擎，不指定字符集和排序规则，由目标数据库决定（不同 MySQL 版本默认值不同）
-        $engine = $tableSchema['engine'] ?? 'InnoDB';
-        $lines[] = ") ENGINE=$engine;";
-
-        return implode("\n", $lines);
-    }
-
-    /**
-     * 生成 ADD COLUMN 语句
-     *
-     * @noinspection DuplicatedCode
-     */
-    private function generateAddColumnStatement(string $tableName, string $columnName, array $columnDef): string
-    {
-        $sql = "ALTER TABLE `$tableName` ADD COLUMN `$columnName` {$columnDef['type']}";
-        $sql .= $columnDef['nullable'] ? ' NULL' : ' NOT NULL';
-
-        if ($columnDef['default'] !== null) {
-            // 支持 CURRENT_TIMESTAMP(n) 的正则匹配
-            if (preg_match('/^current_timestamp(\(\d+\))?$/i', $columnDef['default'])) {
-                $sql .= " DEFAULT {$columnDef['default']}";
-            } else {
-                $sql .= " DEFAULT '{$columnDef['default']}'";
-            }
-        }
-
-        if ($columnDef['extra']) {
-            $sql .= " {$columnDef['extra']}";
-        }
-
-        if ($columnDef['comment']) {
-            $sql .= " COMMENT '{$columnDef['comment']}'";
-        }
-
-        return $sql.';';
-    }
-
-    /**
-     * 生成 ADD INDEX 语句
-     *
-     * @noinspection DuplicatedCode
-     */
-    private function generateAddIndexStatement(string $tableName, string $indexName, array $indexDef): string
-    {
-        // 处理索引类型
-        $indexType = '';
-        if ($indexDef['type'] === 'FULLTEXT') {
-            $indexType = 'FULLTEXT ';
-        } elseif ($indexDef['type'] === 'SPATIAL') {
-            $indexType = 'SPATIAL ';
-        } elseif ($indexDef['unique']) {
-            $indexType = 'UNIQUE ';
-        }
-
-        // 处理列和前缀长度
-        $columnParts = [];
-        foreach ($indexDef['columns'] as $i => $column) {
-            $subPart = $indexDef['sub_parts'][$i] ?? null;
-            if ($subPart) {
-                $columnParts[] = "`$column`($subPart)";
-            } else {
-                $columnParts[] = "`$column`";
-            }
-        }
-        $columns = implode(', ', $columnParts);
-
-        return "ALTER TABLE `$tableName` ADD {$indexType}INDEX `$indexName` ($columns);";
-    }
-
-    /**
-     * 生成 ADD FOREIGN KEY 语句
-     */
-    private function generateAddForeignKeyStatement(string $tableName, string $fkName, array $fkDef): string
-    {
-        $columns = implode('`, `', $fkDef['columns']);
-        $refColumns = implode('`, `', $fkDef['references']['columns']);
-
-        return "ALTER TABLE `$tableName` ADD CONSTRAINT `$fkName` FOREIGN KEY (`$columns`) REFERENCES `{$fkDef['references']['table']}` (`$refColumns`) ON DELETE {$fkDef['on_delete']} ON UPDATE {$fkDef['on_update']};";
     }
 
     /**
@@ -1207,37 +889,5 @@ class DatabaseStructureCommand extends Command
                 }
             }
         }
-    }
-
-    /**
-     * 描述列的具体差异
-     */
-    private function describeColumnDifferences(array $standard, array $current): string
-    {
-        $differences = [];
-
-        $standardType = $this->normalizeIntegerType($standard['type']);
-        $currentType = $this->normalizeIntegerType($current['type']);
-        if ($standardType !== $currentType) {
-            $differences[] = "类型 {$current['type']} => {$standard['type']}";
-        }
-
-        if ($standard['nullable'] !== $current['nullable']) {
-            $currentNull = $current['nullable'] ? 'NULL' : 'NOT NULL';
-            $standardNull = $standard['nullable'] ? 'NULL' : 'NOT NULL';
-            $differences[] = "$currentNull => $standardNull";
-        }
-
-        if ($standard['default'] !== $current['default']) {
-            $currentDefault = $current['default'] === null ? 'NULL' : "'{$current['default']}'";
-            $standardDefault = $standard['default'] === null ? 'NULL' : "'{$standard['default']}'";
-            $differences[] = "默认值 $currentDefault => $standardDefault";
-        }
-
-        if (empty($differences)) {
-            return '(未知差异)';
-        }
-
-        return implode(', ', $differences);
     }
 }

@@ -15,6 +15,7 @@ RUN apk add --no-cache \
     curl-dev \
     openssl-dev \
     linux-headers \
+    mysql-client \
     $PHPIZE_DEPS
 
 # 安装 PHP 扩展

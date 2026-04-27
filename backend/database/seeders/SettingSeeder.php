@@ -42,8 +42,6 @@ class SettingSeeder extends Seeder
                 ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '站点名称', 'weight' => 2],
                 ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
                 ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
-                ['key' => 'sourceLevel', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['source1' => 'platinum', 'source2' => 'platinum'], 'description' => '用户来源对应级别', 'weight' => 8],
-                ['key' => 'releaseDomain', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '发布服务域名', 'weight' => 9],
             ],
             'ca' => [
                 ['key' => 'sources', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['default' => 'Default'], 'description' => '来源', 'weight' => 1],
