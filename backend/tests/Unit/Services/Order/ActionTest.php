@@ -253,6 +253,76 @@ test('cancelPending pending + action=reissue + cert.amount>0：退费交易 + pu
     expect($lastCert->fresh()->status)->toBe('active');
 });
 
+test('cancelPending pending + action=renew + cert.amount>0：退费交易 + last_cert_id 清空（释放 UNIQUE 槽位）+ 上个证书恢复 active', function () {
+    Queue::fake();
+
+    // 源订单 A 与源证书 X（用户首次申请的证书，处于 renewed 状态——已被续费）
+    $sourceOrder = Order::factory()->create([
+        'user_id' => $this->user->id,
+        'product_id' => $this->product->id,
+    ]);
+    $sourceCert = Cert::factory()->create([
+        'order_id' => $sourceOrder->id,
+        'status' => 'renewed',
+        'action' => 'new',
+    ]);
+    $sourceOrder->update(['latest_cert_id' => $sourceCert->id]);
+
+    // 续费订单 B 与续费证书 X'（pending、已扣费、last_cert_id 指向源证书）
+    $renewOrder = Order::factory()->create([
+        'user_id' => $this->user->id,
+        'product_id' => $this->product->id,
+        'amount' => '40.00',
+    ]);
+    $renewCert = Cert::factory()->create([
+        'order_id' => $renewOrder->id,
+        'status' => 'pending',
+        'action' => 'renew',
+        'amount' => '40.00',
+        'last_cert_id' => $sourceCert->id,
+    ]);
+    $renewOrder->update(['latest_cert_id' => $renewCert->id]);
+
+    // 续费扣费 transaction（amount=-40，让 getCancelTransaction 配对）
+    Transaction::create([
+        'user_id' => $this->user->id,
+        'type' => 'order',
+        'transaction_id' => $renewOrder->id,
+        'amount' => '-40.00',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+
+    $this->service->cancelPending($renewOrder->id);
+
+    // 续费 cert 标记为 cancelled
+    expect($renewCert->fresh()->status)->toBe('cancelled');
+
+    // 关键断言：last_cert_id 必须被清空，否则源证书无法再次续费（撞 UNIQUE）
+    expect($renewCert->fresh()->last_cert_id)->toBeNull();
+
+    // 源证书恢复 active
+    expect($sourceCert->fresh()->status)->toBe('active');
+
+    // 退款交易已创建
+    $cancelTx = Transaction::where('transaction_id', $renewOrder->id)->where('type', 'cancel')->first();
+    expect($cancelTx)->not->toBeNull();
+    expect((float) $cancelTx->amount)->toBe(40.0);
+
+    // 回归：源证书可以再次发起续费而不撞 UNIQUE
+    $secondRenewOrder = Order::factory()->create([
+        'user_id' => $this->user->id,
+        'product_id' => $this->product->id,
+    ]);
+    $secondRenewCert = Cert::factory()->create([
+        'order_id' => $secondRenewOrder->id,
+        'status' => 'pending',
+        'action' => 'renew',
+        'last_cert_id' => $sourceCert->id,
+    ]);
+    expect($secondRenewCert->id)->not->toBeNull();
+});
+
 test('cancelPending 非 pending 状态报错：锁内二次校验拦住并发退款（回归 P1 审查）', function () {
     Queue::fake();
     // 构造一个已 cancelled 的订单（模拟并发场景下第一个请求完成后的状态）

@@ -1064,8 +1064,9 @@ trait ActionTrait
                 // 获取交易信息并创建取消记录
                 $transaction = OrderUtil::getCancelTransaction($order->toArray());
                 Transaction::create($transaction);
-                // 标记证书为 cancelled，保留 order 和 cert
-                $cert->update(['status' => 'cancelled']);
+                // 标记证书为 cancelled，保留 order 和 cert；
+                // last_cert_id 置 null 释放 UNIQUE 槽位，否则源证书无法再次发起续费
+                $cert->update(['status' => 'cancelled', 'last_cert_id' => null]);
             } else {
                 // 获取交易信息
                 $transaction = OrderUtil::getCancelTransaction($order->toArray());
