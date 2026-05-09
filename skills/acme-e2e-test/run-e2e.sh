@@ -89,16 +89,43 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --deploy-token) deploy_token="$2"; shift 2 ;;
-        --product-id)   product_id="$2"; shift 2 ;;
-        --period)       period="$2"; shift 2 ;;
-        --plus)         plus="$2"; shift 2 ;;
-        --domain)       domain="$2"; shift 2 ;;
-        --email)        email="$2"; shift 2 ;;
-        --manager)      manager_url="$2"; shift 2 ;;
-        --clean)        do_clean=true; shift ;;
-        -h|--help)      usage ;;
-        *)              echo "未知参数: $1"; usage ;;
+        --deploy-token)
+            deploy_token="$2"
+            shift 2
+            ;;
+        --product-id)
+            product_id="$2"
+            shift 2
+            ;;
+        --period)
+            period="$2"
+            shift 2
+            ;;
+        --plus)
+            plus="$2"
+            shift 2
+            ;;
+        --domain)
+            domain="$2"
+            shift 2
+            ;;
+        --email)
+            email="$2"
+            shift 2
+            ;;
+        --manager)
+            manager_url="$2"
+            shift 2
+            ;;
+        --clean)
+            do_clean=true
+            shift
+            ;;
+        -h | --help) usage ;;
+        *)
+            echo "未知参数: $1"
+            usage
+            ;;
     esac
 done
 

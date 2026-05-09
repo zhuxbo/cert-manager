@@ -1,14 +1,16 @@
 # SSL 后端安装手册
 
+> 大多数用户不需要本文档。生产部署请用 [项目根 README](../README.md#安装) 的宝塔一键安装脚本。本文仅作为：手工调试 backend 时的备忘、`bt-install.sh` 之外的兜底命令清单。
+
 ## 系统要求
 
 - PHP 8.3+
-- MySQL 5.7+
-- Redis
+- 数据库：**MySQL 5.7+** 或 **MariaDB**
+- Redis（可选；默认文件缓存 + 同步队列即可运行）
 - Composer **2.8+**（低版本可能出现依赖安装错误）
 - **JRE 17+**（可选，用于生成 JKS 格式证书，详见 [JRE_INSTALL.md](./JRE_INSTALL.md)）
 
-**PHP 扩展**：宝塔默认 PHP 已包含大部分扩展，通常需要在面板额外安装的是 `redis`、`fileinfo`、`calendar`、`mbstring`。完整扩展清单由 Web 安装向导自动检测，按提示处理即可。
+**PHP 扩展**：宝塔默认 PHP 已包含大部分扩展，通常需要额外确认 `pdo_mysql`、`fileinfo`、`calendar`、`intl`，按需启用 `redis`。`deploy/scripts/bt-deps.sh` 会尽量自动安装或给出手工处理提示。
 
 **PHP 函数**：宝塔默认禁用的 `exec`、`putenv`、`pcntl_signal`、`pcntl_alarm` 必须启用；`proc_open` 强烈建议启用（禁用会导致 Composer 解压异常）。`deploy/scripts/bt-deps.sh` 会自动解除常见禁用函数；也可在宝塔面板 PHP 管理 → 禁用函数 中手工处理。
 
@@ -48,7 +50,7 @@ composer install --no-dev --optimize-autoloader --no-interaction --no-scripts
 composer dump-autoload --optimize --classmap-authoritative
 ```
 
-**注意：** 自动安装向导已默认使用生产模式安装 Composer 依赖，无需手动执行上述命令。
+**注意：** 一键安装脚本已默认使用生产模式安装 Composer 依赖，无需手动执行上述命令。
 
 **生产环境安装参数说明：**
 
@@ -97,7 +99,7 @@ php artisan jwt:secret
 
 完成自动配置后，您仍需编辑 `.env` 文件，配置数据库和其他必要设置：
 
-````env
+```env
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -105,16 +107,17 @@ DB_DATABASE=你的数据库名
 DB_USERNAME=你的数据库用户名
 DB_PASSWORD=你的数据库密码
 
-# 设置Redis
+# Redis（可选；不配置时使用文件缓存 + 同步队列）
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 
-# 设置允许跨域的源 支持通配符
+# 允许跨域的源 支持通配符
 ALLOWED_ORIGINS=localhost
+```
 
-### 4. 数据库迁移与初始化
+### 5. 数据库迁移与初始化
 
-> Web 安装向导会自动执行迁移和种子初始化，通常无需手工运行以下命令。以下仅用于故障排查。
+> 一键安装脚本会自动执行迁移和种子初始化，通常无需手工运行以下命令。以下仅用于故障排查。
 
 ```bash
 php artisan migrate
@@ -143,17 +146,11 @@ php artisan serve
     }
     ```
 
-#### Docker 部署（推荐）
-
-项目提供了完整的 Docker 部署方案，使用 Docker 可以快速部署并减少环境配置问题。
-
-生产部署请使用项目根目录的一键安装脚本，详见 [主 README](../README.md#安装)
-
 ## PHP 特殊设置
 
 - 内存限制建议至少 `memory_limit=128M`
 - PHP-FPM/Nginx 工作进程数根据并发合理配置
-- 禁用函数处理见"系统要求"章节，Web 安装向导会逐项检测并报错
+- 禁用函数处理见"系统要求"章节；宝塔脚本会自动解除常见禁用函数，手工部署时需自行确认
 
 ## 开发调试工具
 
@@ -223,56 +220,43 @@ php artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-tim
 cd /path-to-your-project && php artisan schedule:run
 ```
 
-注意：如果使用 Docker 部署，队列和计划任务会自动配置和启动，无需手动设置。
 
 ## 文件权限设置
 
-脚本部署（`bt-install.sh` / `docker-install.sh`）会自动处理权限。手工部署时：
+脚本部署（`bt-install.sh`）会自动处理权限。手工部署时：
 
 ```bash
 chmod -R 775 storage bootstrap/cache
 
 # 宝塔面板
 chown -R www:www storage bootstrap/cache
-
-# Docker（Alpine PHP-FPM）
-chown -R www-data:www-data storage bootstrap/cache
 ```
 
 ## 常见问题排查
 
 1. **500 服务器错误**
-
     - 检查 `storage/logs` 下的日志文件获取详细错误信息
     - 确保所有必需的 PHP 扩展已安装
 
 2. **数据库连接问题**
-
     - 验证`.env`文件中的数据库凭据
     - 确保数据库服务正在运行
 
 3. **Redis 连接失败**
-
     - 检查 Redis 服务是否正在运行
     - 验证`.env`中的 Redis 配置是否正确
 
 4. **权限问题**
-
     - 确保`storage`和`bootstrap/cache`目录可写
     - 检查 web 服务器用户是否有适当的权限
 
 5. **JWT 相关问题**
-
     - 项目已预先配置好 JWT，现在 `composer install` 会自动运行 `jwt:secret` 命令生成密钥
     - 如果遇到 JWT 相关错误，确认`.env`文件中存在有效的`JWT_SECRET`
 
 6. **PHP 函数被禁用问题**
-
-    Web 安装向导会逐项报错（`Call to undefined function xxx()`）并给出处理建议。
-
     - 宝塔：运行 `deploy/scripts/bt-deps.sh` 自动解除禁用（会备份 `php.ini` / `php-cli.ini`）
     - 手工：在宝塔 PHP 管理 → 禁用函数 中移除对应函数
-    - Docker：镜像已预配置启用
 
 7. **Composer 版本过低**
 

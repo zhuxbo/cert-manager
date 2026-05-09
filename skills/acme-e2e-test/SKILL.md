@@ -20,6 +20,7 @@ Certum ACME Server
 ```
 
 **关键事实**：
+
 - Manager 不再实现 RFC 8555 服务端，不提供 `/acme/directory` 端点
 - `directory_url` 由上游返回（如 `https://acme.test.certum.pl/directory/`）
 - certbot 拿到 EAB + directory_url 后**直接与 CA 通信**，Manager 不参与证书签发 / 吊销过程
@@ -31,13 +32,13 @@ Certum ACME Server
 
 `system_settings` 表 `group='ca'`：
 
-| key | 说明 |
-|-----|------|
-| `certumRestUrl` | Certum REST API 地址 |
-| `certumOauthUrl` | Certum OAuth 地址 |
-| `certumClientId` | OAuth 客户端 ID |
-| `certumUsername` | OAuth 用户名 |
-| `certumPassword` | OAuth 密码 |
+| key              | 说明                 |
+| ---------------- | -------------------- |
+| `certumRestUrl`  | Certum REST API 地址 |
+| `certumOauthUrl` | Certum OAuth 地址    |
+| `certumClientId` | OAuth 客户端 ID      |
+| `certumUsername` | OAuth 用户名         |
+| `certumPassword` | OAuth 密码           |
 
 `users` 表需有 API 用户，其 `api_token` 供 Manager 调用。
 `products` 表需有 `product_type='acme'` 且 `status=1` 的 ACME 产品。
@@ -46,12 +47,13 @@ Certum ACME Server
 
 `system_settings` 表 `group='ca'`：
 
-| key | 说明 |
-|-----|------|
-| `acme_url` | 上游系统 ACME API 地址（如 `http://upstream-backend:8000/api/acme`），可回落 `url` 字段自动替换路径 |
-| `acme_token` | 上游系统 API Token（回落 `token` 字段） |
+| key          | 说明                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| `acme_url`   | 上游系统 ACME API 地址（如 `http://upstream-backend:8000/api/acme`），可回落 `url` 字段自动替换路径 |
+| `acme_token` | 上游系统 API Token（回落 `token` 字段）                                                             |
 
 Manager 还需要：
+
 - `products` 表有 `product_type='acme'` 且 `status=1` 的 ACME 产品
 - 用户有足够余额
 - 有一个 Deploy Token（`deploy_tokens` 表），用于调用 `/api/deploy/acme/*`
@@ -78,6 +80,7 @@ MANAGER_URL=http://localhost:5301 UPSTREAM_URL=http://localhost:6301 \
 ```
 
 检查项：
+
 1. Docker 可用
 2. Manager 可达（任意路由 HTTP 状态码非 000）
 3. 上游系统可达
@@ -86,16 +89,16 @@ MANAGER_URL=http://localhost:5301 UPSTREAM_URL=http://localhost:6301 \
 
 **参数**：
 
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `--deploy-token` | 是 | Manager Deploy Token |
-| `--product-id` | 是 | ACME 产品 ID（`products.id` where `product_type='acme'`） |
-| `--domain` | 是 | 测试域名（如 `test.example.com` 或 `*.test.example.com`） |
-| `--period` | 否 | 订阅时长（月），默认 12 |
-| `--plus` | 否 | 赠送时间 0/1，默认 1 |
-| `--email` | 否 | certbot 注册邮箱，默认 test@example.com |
-| `--manager` | 否 | Manager URL，默认 http://localhost:5300 |
-| `--clean` | 否 | 清理 certbot volumes 后退出 |
+| 参数             | 必填 | 说明                                                      |
+| ---------------- | ---- | --------------------------------------------------------- |
+| `--deploy-token` | 是   | Manager Deploy Token                                      |
+| `--product-id`   | 是   | ACME 产品 ID（`products.id` where `product_type='acme'`） |
+| `--domain`       | 是   | 测试域名（如 `test.example.com` 或 `*.test.example.com`） |
+| `--period`       | 否   | 订阅时长（月），默认 12                                   |
+| `--plus`         | 否   | 赠送时间 0/1，默认 1                                      |
+| `--email`        | 否   | certbot 注册邮箱，默认 test@example.com                   |
+| `--manager`      | 否   | Manager URL，默认 http://localhost:5300                   |
+| `--clean`        | 否   | 清理 certbot volumes 后退出                               |
 
 **使用**：
 
@@ -111,6 +114,7 @@ bash manager/skills/acme-e2e-test/run-e2e.sh --clean
 ```
 
 **自动化步骤**：
+
 1. 环境检查（调 check-backend.sh）
 2. 调 `POST /api/deploy/acme/new` 一步到位创建订阅，拿到 `{order_id, eab_kid, eab_hmac, directory_url}`
 3. `certbot register` — 用 `directory_url` + EAB 直接向 CA 注册账号（Manager 不经手）
@@ -135,6 +139,7 @@ curl -sS -X POST http://localhost:5300/api/deploy/acme/new \
 ```
 
 返回：
+
 ```json
 {
   "code": 1,
@@ -227,6 +232,7 @@ curl -X POST http://localhost:5300/api/admin/acme/commit-cancel/<order_id> \
 ```
 
 取消流程：
+
 - 无 `api_id` 的 pending → 直接退费 + cancelled
 - 有 `api_id` → 标记 cancelling + 创建 Task（延迟 120s）+ TaskJob（延迟 123s）
 - TaskJob 调 `Api->cancel()` 通知上游，成功后退费（type=acme_cancel）
@@ -263,29 +269,29 @@ docker volume rm certbot-e2e-etc certbot-e2e-var
 
 ## 常见问题
 
-| 问题 | 排查 |
-|------|------|
-| 订阅创建返回 `CA 认证失败` | 上游 Certum OAuth 凭据错误，清 Redis 缓存后重试 |
-| 订阅创建返回 `用户邮箱缺失` | 订阅用户的 `users.email` 为空，ACME 需要 email 注册账号 |
-| 订阅创建后 `api_id=null` | **关键 bug**：上游响应是 `data.order_id`（不是 `data.api_id`），`commitOrder` 已修正映射，出现该问题请检查代码是否回退 |
-| certbot 连不上 CA | `directory_url` 指向公网 CA，需要 Docker 容器能访问公网；测试环境可能需要 VPN |
-| `Unsupported key algorithm` | Certum 测试不支持 ECDSA，加 `--key-type rsa --rsa-key-size 2048` |
-| `directory_url` 响应为 null | 上游 `/acme/new` 响应未返回，检查上游是否已适配；本地缓存被清理会触发一次回源刷新 |
-| 取消订阅不退费 | 仅当上游 cancel 成功返回时才退费；失败保持 cancelling，等待下次重试 |
+| 问题                        | 排查                                                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 订阅创建返回 `CA 认证失败`  | 上游 Certum OAuth 凭据错误，清 Redis 缓存后重试                                                                        |
+| 订阅创建返回 `用户邮箱缺失` | 订阅用户的 `users.email` 为空，ACME 需要 email 注册账号                                                                |
+| 订阅创建后 `api_id=null`    | **关键 bug**：上游响应是 `data.order_id`（不是 `data.api_id`），`commitOrder` 已修正映射，出现该问题请检查代码是否回退 |
+| certbot 连不上 CA           | `directory_url` 指向公网 CA，需要 Docker 容器能访问公网；测试环境可能需要 VPN                                          |
+| `Unsupported key algorithm` | Certum 测试不支持 ECDSA，加 `--key-type rsa --rsa-key-size 2048`                                                       |
+| `directory_url` 响应为 null | 上游 `/acme/new` 响应未返回，检查上游是否已适配；本地缓存被清理会触发一次回源刷新                                      |
+| 取消订阅不退费              | 仅当上游 cancel 成功返回时才退费；失败保持 cancelling，等待下次重试                                                    |
 
 ## 端口映射
 
-| 服务 | 端口 |
-|------|------|
-| Manager backend | 5300 |
+| 服务             | 端口 |
+| ---------------- | ---- |
+| Manager backend  | 5300 |
 | 上游系统 backend | 6300 |
 
 ## 字段映射速查
 
-| Manager `acmes` | 上游 `/acme/new` 响应 |
-|-----|-----|
-| `api_id` | `data.order_id` ← **不是 `data.api_id`** |
-| `vendor_id` | `data.vendor_id` |
-| `eab_kid` | `data.eab_kid` |
-| `eab_hmac` | `data.eab_hmac` |
-| (Cache) `acme_directory_url:{ca}` | `data.directory_url` |
+| Manager `acmes`                   | 上游 `/acme/new` 响应                    |
+| --------------------------------- | ---------------------------------------- |
+| `api_id`                          | `data.order_id` ← **不是 `data.api_id`** |
+| `vendor_id`                       | `data.vendor_id`                         |
+| `eab_kid`                         | `data.eab_kid`                           |
+| `eab_hmac`                        | `data.eab_hmac`                          |
+| (Cache) `acme_directory_url:{ca}` | `data.directory_url`                     |

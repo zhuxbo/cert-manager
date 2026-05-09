@@ -11,7 +11,7 @@ build/
 ├── scripts/
 │   ├── release-common.sh
 │   ├── package.sh
-│   ├── sync-to-production.sh
+│   ├── collect-artifacts.sh
 │   └── container-build.sh
 ├── nginx/
 ├── web/
@@ -66,17 +66,62 @@ bash build/build.sh --clear-cache
 
 ### 输出文件
 
-| 文件 | 说明 |
-|------|------|
-| `ssl-manager-full-{version}.zip` | 完整安装包 |
-| `ssl-manager-upgrade-{version}.zip` | 升级包 |
-| `ssl-manager-script-{version}.zip` | 部署脚本包 |
-| `manifest.json` | 包清单 |
+| 文件                                | 说明                                                         |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor；宝塔脚本会运行 `composer install`） |
+| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级时保留现有 `backend/vendor`）       |
+| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）             |
+
+> 包内 `manifest.json` 已弃用。包清单与 sha256 由 `release.sh` 上传时写入 release 站根目录的 `releases.json`（GitHub Release API 风格 + `assets[].sha256` 字段），install/upgrade 链路统一从该文件强校验。
+
+### releases.json 字段（唯一真相源）
+
+```json
+{
+  "releases": [
+    {
+      "tag_name": "v1.0.0",
+      "name": "v1.0.0",
+      "prerelease": false,
+      "created_at": "2026-05-02T00:00:00+00:00",
+      "published_at": "2026-05-02T00:00:00+00:00",
+      "assets": [
+        {
+          "name": "ssl-manager-full-1.0.0.zip",
+          "sha256": "...",
+          "size": 57000000,
+          "browser_download_url": "main/v1.0.0/ssl-manager-full-1.0.0.zip"
+        },
+        {
+          "name": "ssl-manager-upgrade-1.0.0.zip",
+          "sha256": "...",
+          "size": 5500000,
+          "browser_download_url": "main/v1.0.0/ssl-manager-upgrade-1.0.0.zip"
+        },
+        {
+          "name": "ssl-manager-script-1.0.0.zip",
+          "sha256": "...",
+          "size": 32000,
+          "browser_download_url": "main/v1.0.0/ssl-manager-script-1.0.0.zip"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
 
 ### 手动打包
 
+手动打包必须使用完整构建后的 `build/temp/production-code`。`package.sh` 会在打包前校验后端、前端和 nginx 关键产物，缺失时直接失败并清理半成品 zip。
+
 ```bash
+# 使用默认 build/temp/production-code
 ./build/scripts/package.sh
+
+# 指定生产代码目录和输出目录
+./build/scripts/package.sh --source build/temp/production-code --output build/temp/packages
 ```
 
 ---
@@ -87,10 +132,10 @@ bash build/build.sh --clear-cache
 
 ### 版本获取优先级
 
-| 场景 | 优先级 |
-|------|--------|
+| 场景       | 优先级                 |
+| ---------- | ---------------------- |
 | release.sh | 命令行参数（必须指定） |
-| GitHub CI | git tag |
+| GitHub CI  | git tag                |
 
 ### 本地开发
 
@@ -151,10 +196,10 @@ bash build/release.sh --test
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| version | 当前版本号 |
-| channel | main（正式）或 dev（开发） |
+| 字段        | 说明                             |
+| ----------- | -------------------------------- |
+| version     | 当前版本号                       |
+| channel     | main（正式）或 dev（开发）       |
 | release_url | 自定义 release URL（升级时保留） |
 
 ---
@@ -163,10 +208,10 @@ bash build/release.sh --test
 
 ### GitHub Actions
 
-| Workflow | 触发条件 | 功能 |
-|----------|---------|------|
-| release.yml | 推送 v* tag | 构建、打包、创建 Release |
-| ci.yml | PR/push | 代码检查、构建测试 |
+| Workflow    | 触发条件     | 功能                     |
+| ----------- | ------------ | ------------------------ |
+| release.yml | 推送 v\* tag | 构建、打包、创建 Release |
+| ci.yml      | PR/push      | 代码检查、构建测试       |
 
 GitHub Release 仅用于代码存档，实际部署使用自建 release 服务。
 
@@ -210,11 +255,8 @@ git add . && git commit -m "feat: 功能描述" && git push
 `structure.json` 是主系统数据库标准结构，升级时用于校验和修复。
 
 ```bash
-# 使用 Docker 容器导出（推荐，环境干净）
+# 通过当前 .env 配置的 MySQL 连接导出
 cd backend && php artisan db:structure --export
-
-# 使用本地 MySQL 导出（需要数据库连接）
-cd backend && php artisan db:structure --export --use-local
 ```
 
 - 导出命令自动排除插件迁移（`--path=database/migrations` 限制）

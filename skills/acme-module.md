@@ -22,7 +22,7 @@ Manager 作为 ACME 订阅管理平台，通过 REST API 连接 上游系统，�
 - `contact_email`（`VARCHAR(254) NULL`）：ACME 账号邮箱（RFC 8555 `contact`）。下单表单必填，user 端默认填当前用户绑定邮箱、admin 端选中用户后自动回填该用户邮箱；用户可改为任意 email。`commit` 时作为 `customer` 传给上游，且以上游回写为权威值
 - `plus`：赠送时间开关（0/1），UI 默认 1；仅在产品 brand ∈ `certum/positive/sectigo/ssltrus` 时展示
 - `products.product_type = 'acme'`（`Product::TYPE_ACME`）标识 ACME 产品
-- Transaction 类型：`acme_order`（下单扣费）/ `acme_cancel`（取消退费）
+- Transaction 类型：`acme_order`（下单扣费）/ `acme_cancel`（取消退费）。**一对一防重**：禁止重复 `transaction_id`，由 `Transaction.php` creating 钩子 + DB 部分唯一索引 `transactions(type, transaction_id) WHERE type != 'order'` 双层兜底；只有传统 `order` 因证书重签增域名场景允许重复
 - **字段映射**：上游 `/acme/new` 响应 `data.order_id` → 本地 `acmes.api_id` 列（**务必以 `order_id` 键读取**；误用 `api_id` 键会静默写入 null，导致后续 sync/get/cancel 全部失败）
 - **ACME 产品不使用的字段**：`encryption_alg`/`signature_digest_alg`/`renew`/`reuse_csr`。EAB 由 ACME 客户端自行签发，这些属性无意义。管理端表单对 ACME 隐藏，后端 `setAcmeDefaults` 强制置空数组/0
 - **产品形态限制**：当前仅保留"单域名"（`standard_max=1, wildcard_max=0`）与"单通配符"（`standard_max=0, wildcard_max=1`）两种；多域名 mixed 产品暂不提供
@@ -52,6 +52,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 3. **`commit`**（提交 上游系统 → active）：调 `Api->new()`，成功后写入 `api_id`/`eab_kid`/`eab_hmac`/`period_from`/`period_till`，状态 → active。**失败保持 pending，不退费**（用户可重试或取消）
 
 **`commitOrder` 对上游发送的参数**（与上游系统 `/acme/new` 接口对齐）：
+
 - `source`（Manager 用于路由到对应 source 类，上游会忽略）
 - `contact_email`（= `acmes.contact_email`，**所有下单入口都必填**：User/Admin 表单 / API Token / Deploy Token。上游正常返回会覆盖回写，缺失则保持本地值。**HTTP 字段名全链路统一为 `contact_email`**，Certum REST 契约层的 `customer` 只存在 Gateway → Certum SDK 这一跳内部）
 - `product_code`（Manager Product.code，上游用该 code 查自身 Product 并映射到 CA 产品代码）
@@ -60,6 +61,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 - **不再传** `product_api_id`、`period`、`purchased_*count`、`product_type` 等（上游不关心）
 
 **`commitOrder` 处理上游响应**（字段映射极易踩坑）：
+
 - 上游返回 `data.order_id` / `eab_kid` / `eab_hmac` / `vendor_id` / `directory_url`
 - 本地写入：`api_id = data.order_id`（**不是 `data.api_id`**）、`eab_kid`、`eab_hmac`、`vendor_id`、`period_from/till`、`status=active`
 - 顺带用 `directory_url` 刷新 Cache `acme_directory_url:{ca}`
@@ -88,13 +90,13 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 `acmes.channel` 记录订单来源通道，由创建入口决定：
 
-| 入口 | 通道 |
-|------|------|
-| `/api/user/acme/new`（Web 用户下单） | `web`（默认） |
-| `/api/admin/acme/new`（管理员代下单） | `admin` |
-| `/api/acme/new`（API Token 下单） | `api` |
-| `/api/deploy/acme/new`（Deploy Token 下单） | `deploy` |
-| `AutoRenewCommand` 自动续费（如未来支持 ACME） | `auto` |
+| 入口                                           | 通道          |
+| ---------------------------------------------- | ------------- |
+| `/api/user/acme/new`（Web 用户下单）           | `web`（默认） |
+| `/api/admin/acme/new`（管理员代下单）          | `admin`       |
+| `/api/acme/new`（API Token 下单）              | `api`         |
+| `/api/deploy/acme/new`（Deploy Token 下单）    | `deploy`      |
+| `AutoRenewCommand` 自动续费（如未来支持 ACME） | `auto`        |
 
 前端 `Admin/acme/details.vue` 显示"来源"一列（`cancelled_at/api_id/vendor_id` 为空时自动隐藏）。
 
@@ -107,6 +109,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 统一接口 `AcmeSourceApiInterface`：`new`/`get`/`cancel`/`getProducts`
 
 上游系统 端点（RPC 风格，通过 `order_id` 传参）：
+
 - `POST /api/acme/new` — 创建订单（入参：customer/product_code/plus/refer_id）
 - `GET /api/acme/get?order_id=` — 查询订单（响应含 directory_url）
 - `POST /api/acme/cancel` — 取消订单
@@ -117,11 +120,13 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 每个签发 CA 对应一个固定的 ACME directory URL（ACME 客户端 `--server` 参数）。
 
 **数据模型**：
+
 - **权威源**：上游系统（CA 维护方）
 - **本地长期缓存**：Laravel Cache，key `acme_directory_url:{ca}`（小写 CA 名，如 `certum`、`letsencrypt`），`Cache::forever` 写入；**不使用 system_setting**（不需要后台配置项）
 - **按 `Product.ca`（签发机构）聚合**，而非 source（source 是 Manager→上游的路由属性，多 source 可共用同一 CA）
 
 **同步流程**（`Services/Acme/Action`）：
+
 - `commit` / `newAndCommit`：调上游 `/acme/new` 成功后，将响应 `directory_url` 写入/刷新 Cache；响应 payload 通过 `syncDirectoryUrl($acme)` 返回，此时缓存已命中
 - `sync`：调上游 `/acme/get`，顺便用响应中的 `directory_url` 刷新 Cache
 - `show` / `get`（Admin/User/Deploy）：调 `syncDirectoryUrl($acme)` —— 先读 Cache 命中直接返回；Cache 空且有 `api_id` 时回源上游 `get` 拉取并写 Cache（**一次性回填**，后续命中）；上游暂不可达静默降级为 null
@@ -133,17 +138,17 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 ### Admin（`/api/admin/acme/`）
 
-| 方法 | 端点 | 功能 |
-|------|------|------|
-| GET | `/acme` | 列表（见"搜索"章节，UserScope 以外无隔离） |
-| GET | `/acme/{id}` | 详情（含 EAB + directory_url） |
-| POST | `/acme/new` | 创建订单（`plus` 可选；`contact_email` 必填） |
-| POST | `/acme/pay/{id}` | 支付 |
-| POST | `/acme/commit/{id}` | 提交上游系统 |
-| POST | `/acme/sync/{id}` | 同步状态（status 白名单校验，顺带刷 directory_url） |
-| POST | `/acme/commit-cancel/{id}` | 取消 |
-| POST | `/acme/revoke-cancel/{id}` | 撤回取消（仅 cancelling 状态，清理延时任务） |
-| POST | `/acme/remark/{id}` | 管理员备注（写 `admin_remark`） |
+| 方法 | 端点                       | 功能                                                |
+| ---- | -------------------------- | --------------------------------------------------- |
+| GET  | `/acme`                    | 列表（见"搜索"章节，UserScope 以外无隔离）          |
+| GET  | `/acme/{id}`               | 详情（含 EAB + directory_url）                      |
+| POST | `/acme/new`                | 创建订单（`plus` 可选；`contact_email` 必填）       |
+| POST | `/acme/pay/{id}`           | 支付                                                |
+| POST | `/acme/commit/{id}`        | 提交上游系统                                        |
+| POST | `/acme/sync/{id}`          | 同步状态（status 白名单校验，顺带刷 directory_url） |
+| POST | `/acme/commit-cancel/{id}` | 取消                                                |
+| POST | `/acme/revoke-cancel/{id}` | 撤回取消（仅 cancelling 状态，清理延时任务）        |
+| POST | `/acme/remark/{id}`        | 管理员备注（写 `admin_remark`）                     |
 
 ### User（`/api/user/acme/`）
 
@@ -175,14 +180,14 @@ Admin/User `index()` 复用同套过滤器，对齐传统订单搜索：
 
 ### 状态过滤规则
 
-| 接口 | 允许状态 | 备注 |
-|------|----------|------|
-| `batch-pay` | `unpaid` | 同步逐条执行，返回 `{success_count, errors}` |
-| `batch-commit` | `pending` | 创建 `commit_acme` Task 立即入队；`checkRepeat` 存在 executing 任务时整体报错 |
-| `batch-sync` | `active` / `cancelling` | 必须有 `api_id`；pending/unpaid 无 api_id 无法同步 |
-| `batch-commit-cancel` | `unpaid` / `pending` / `active` | 同步逐条调单体 `commitCancel`；unpaid 无需 refund，pending 无 api_id 直接退费，active 走延时 Task |
-| `batch-revoke-cancel` | `cancelling` | 同步逐条调单体 `revokeCancel` |
-| `batch-copy-eab` | 任意（纯读） | 返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行）；**Admin 端跨用户请求拒绝**，User 端由 UserScope 自动限制 |
+| 接口                  | 允许状态                        | 备注                                                                                                                                     |
+| --------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch-pay`           | `unpaid`                        | 同步逐条执行，返回 `{success_count, errors}`                                                                                             |
+| `batch-commit`        | `pending`                       | 创建 `commit_acme` Task 立即入队；`checkRepeat` 存在 executing 任务时整体报错                                                            |
+| `batch-sync`          | `active` / `cancelling`         | 必须有 `api_id`；pending/unpaid 无 api_id 无法同步                                                                                       |
+| `batch-commit-cancel` | `unpaid` / `pending` / `active` | 同步逐条调单体 `commitCancel`；unpaid 无需 refund，pending 无 api_id 直接退费，active 走延时 Task                                        |
+| `batch-revoke-cancel` | `cancelling`                    | 同步逐条调单体 `revokeCancel`                                                                                                            |
+| `batch-copy-eab`      | 任意（纯读）                    | 返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行）；**Admin 端跨用户请求拒绝**，User 端由 UserScope 自动限制 |
 
 ### checkRepeat 语义
 

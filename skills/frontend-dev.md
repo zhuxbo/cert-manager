@@ -47,11 +47,30 @@ import * as directives from "@shared/directives";
 
 ### 可用模块
 
-| 别名 | 内容 |
-|------|------|
-| `@shared/components` | ReIcon, ReDialog, Auth, Perms, PureTableBar 等 |
-| `@shared/utils` | http, auth, message 等 |
-| `@shared/directives` | auth, perms, copy 等 |
+| 别名                 | 内容                                                     |
+| -------------------- | -------------------------------------------------------- |
+| `@shared/components` | ReIcon, ReDialog, Auth, Perms, PureTableBar 等           |
+| `@shared/utils`      | http, auth, message, fetchMeta, renderChannelDisabled 等 |
+| `@shared/directives` | auth, perms, copy 等                                     |
+
+### 启动期 Channel 检测
+
+admin / user 应用启动时调 `/api/meta` 检测后端 channel 开关。channel 关闭时不挂载主应用，渲染 inline HTML 降级页：
+
+```ts
+import { fetchMeta, renderChannelDisabled } from "@shared/utils";
+
+getPlatformConfig(app).then(async config => {
+  const meta = await fetchMeta();
+  if (meta && meta.channels.admin === false) {
+    renderChannelDisabled("admin"); // 替换 #app innerHTML
+    return; // 不走主应用初始化
+  }
+  // ... 原 setupStore / loadPlugins / mount 流程
+});
+```
+
+`fetchMeta` 用原生 `fetch`（不依赖 `setupSharedModules`，避免循环初始化）。`/api/meta` 是匿名公开端点，返回 channels（4 项布尔）+ plugins（name/version 精简）+ version。失败（网络错 / 老版本无端点）→ 返回 null，调用方按"channels=true"默认放行。
 
 ### 依赖注入初始化
 
@@ -110,6 +129,29 @@ pnpm lint             # 全部检查
 pnpm typecheck        # 类型检查
 ```
 
+### Markdown 格式化
+
+Prettier 原生支持 markdown（无需额外插件，解析器列表里有 `markdown|mdx`）。
+项目根 `.prettierrc.js` 对所有 md 生效，prettier 装在 `frontend/admin/`。
+
+```bash
+# 仅本次 PR 改过的 md（推荐，避免修历史格式问题污染 PR）
+git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --write
+
+# 单个 md 文件
+npx --prefix frontend/admin prettier --write README.md
+
+# 检查（不修改，只列报错文件）
+npx --prefix frontend/admin prettier --check "**/*.md" --ignore-path .gitignore
+```
+
+Prettier 对 markdown 的处理：
+
+- 表格列宽对齐（管道符纵向对齐）
+- JSON 代码块多行展开（每属性一行）
+- 编号列表项之间不留空行
+- **不修改代码块内部**（fenced ` ``` ` / 缩进式 code block 保持原样；shell 脚本用 `shfmt` 单独处理，详见 CLAUDE.md "提交前格式化"）
+
 ---
 
 ## 配置
@@ -119,14 +161,24 @@ pnpm typecheck        # 类型检查
 `public/platform-config.json` 核心配置：
 
 **管理端 (admin)**:
+
 ```json
 {
   "BaseUrlApi": "http://localhost:5300/admin",
-  "Brands": ["certum", "gogetssl", "positive", "geotrust", "digicert", "ssltrus", "trustasia"]
+  "Brands": [
+    "certum",
+    "gogetssl",
+    "positive",
+    "geotrust",
+    "digicert",
+    "ssltrus",
+    "trustasia"
+  ]
 }
 ```
 
 **用户端 (user)**:
+
 ```json
 {
   "BaseUrlApi": "http://localhost:5300",
