@@ -19,9 +19,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
-            ]) : [],
+            // SSL/TLS 连接（连云数据库时才用；本地 / 单机部署留空，不要加 options 配置）
         ],
     ],
 
