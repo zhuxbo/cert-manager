@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
 use Illuminate\Bus\Queueable;
@@ -22,17 +23,17 @@ use Throwable;
  * 数据库恢复异步任务。
  *
  * 流程：
- *  1. 获取全局互斥锁
- *  2. 先拍一个 pre_restore 保险备份（永不自动清理）
- *  3. artisan down 进入维护模式
- *  4. 按模式执行恢复：
- *     - full        — mysql 直接吞 .sql.gz（包含 DROP/CREATE/INSERT）
- *     - incremental — IncrementalSqlFilter 剥 DROP/CREATE + INSERT IGNORE 后 mysql 执行
- *  5. artisan up 退出维护模式
+ * 1. 获取全局互斥锁
+ * 2. 先拍一个 pre_restore 保险备份（永不自动清理）
+ * 3. artisan down 进入维护模式
+ * 4. 按模式执行恢复：
+ * - full — mysql 直接吞 .sql.gz（包含 DROP/CREATE/INSERT）
+ * - incremental — IncrementalSqlFilter 剥 DROP/CREATE + INSERT IGNORE 后 mysql 执行
+ * 5. artisan up 退出维护模式
  */
 class RestoreBackupJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $timeout = 3600;
 
@@ -47,6 +48,15 @@ class RestoreBackupJob implements ShouldQueue
 
     public function handle(BackupService $service, IncrementalSqlFilter $filter): void
     {
+        // driver 守门：仅支持 MySQL/MariaDB
+        $driver = (string) config('database.default');
+        $driverName = (string) config("database.connections.$driver.driver", $driver);
+        if (! in_array($driverName, ['mysql', 'mariadb'], true)) {
+            $this->progress($service, 'failed', 'init', "当前数据库驱动 [$driverName] 暂不支持在线恢复，请手工恢复 $this->backupId");
+
+            return;
+        }
+
         // 二进制缺失时入口直接失败，避免拿锁后才发现
         try {
             $service->ensureMysqlClient('mysqldump');
@@ -75,6 +85,7 @@ class RestoreBackupJob implements ShouldQueue
 
         $downEntered = false;
         $tmpSql = null;
+        $tmpDecrypted = null;
 
         try {
             // 1. 拍保险备份
@@ -86,20 +97,29 @@ class RestoreBackupJob implements ShouldQueue
             Artisan::call('down', ['--retry' => 60]);
             $downEntered = true;
 
-            // 3. 执行恢复
+            // 3. 解密（如有需要）— 6-1 默认加密产物 *.sql.gz.enc，旧 *.sql.gz 直读
+            $sqlGzPath = $backup['sql'];
+            if (! empty($backup['encrypted'])) {
+                $this->progress($service, 'running', 'decrypting', '解密备份...');
+                $tmpDecrypted = tempnam(sys_get_temp_dir(), 'restore_dec_').'.sql.gz';
+                $service->decryptBackup($backup['sql'], $tmpDecrypted);
+                $sqlGzPath = $tmpDecrypted;
+            }
+
+            // 4. 执行恢复
             if ($this->mode === 'incremental') {
                 $this->progress($service, 'running', 'filtering', '生成增量 SQL...');
                 $tmpSql = tempnam(sys_get_temp_dir(), 'restore_').'.sql';
-                $stats = $filter->filter($backup['sql'], $tmpSql);
+                $stats = $filter->filter($sqlGzPath, $tmpSql);
                 $this->progress($service, 'running', 'restoring',
                     "执行增量恢复（{$stats['rewritten_insert']} 条 INSERT IGNORE）...");
                 $this->runMysqlFromFile($tmpSql);
             } else {
                 $this->progress($service, 'running', 'restoring', '执行全量恢复（覆盖当前库）...');
-                $this->runMysqlFromGzip($backup['sql']);
+                $this->runMysqlFromGzip($sqlGzPath);
             }
 
-            // 4. 退出维护
+            // 5. 退出维护
             Artisan::call('up');
             $downEntered = false;
 
@@ -117,6 +137,9 @@ class RestoreBackupJob implements ShouldQueue
             }
             if ($tmpSql !== null && is_file($tmpSql)) {
                 @unlink($tmpSql);
+            }
+            if ($tmpDecrypted !== null && is_file($tmpDecrypted)) {
+                @unlink($tmpDecrypted);
             }
             $lock->release();
         }
@@ -227,11 +250,11 @@ class RestoreBackupJob implements ShouldQueue
         $escape = fn (string $v) => str_replace(['\\', '"'], ['\\\\', '\\"'], $v);
 
         $content = "[client]\n"
-            .'host='.($cfg['host'] ?? '127.0.0.1')."\n"
-            .'port='.($cfg['port'] ?? '3306')."\n"
-            .'user='.($cfg['username'] ?? '')."\n"
-            .'password="'.$escape((string) ($cfg['password'] ?? '')).'"'."\n"
-            .'default-character-set='.($cfg['charset'] ?? 'utf8mb4')."\n";
+        .'host='.($cfg['host'] ?? '127.0.0.1')."\n"
+        .'port='.($cfg['port'] ?? '3306')."\n"
+        .'user='.($cfg['username'] ?? '')."\n"
+        .'password="'.$escape((string) ($cfg['password'] ?? '')).'"'."\n"
+        .'default-character-set='.($cfg['charset'] ?? 'utf8mb4')."\n";
 
         file_put_contents($path, $content);
         chmod($path, 0600);

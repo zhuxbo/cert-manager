@@ -19,13 +19,34 @@ class DatabaseStructureService
     protected string $structurePath = 'database/structure.json';
 
     /**
+     * 解析连接名：null 时回落到当前默认连接
+     */
+    protected function resolveConnection(?string $connection): string
+    {
+        return $connection ?: (string) Config::get('database.default');
+    }
+
+    /**
      * 检测数据库结构差异
      *
-     * @param  string  $connection  数据库连接名
+     * @param  string|null  $connection  数据库连接名（null 用 default 连接）
      * @return array{has_diff: bool, diff: array, summary: array}
      */
-    public function check(string $connection = 'mysql'): array
+    public function check(?string $connection = null): array
     {
+        $connection = $this->resolveConnection($connection);
+
+        // 非 mysql driver 跳过（仅支持 mysql；mariadb 走 mysql 路径）
+        $driver = (string) Config::get("database.connections.$connection.driver");
+        if (! in_array($driver, ['mysql', 'mariadb'], true)) {
+            Log::info('[DatabaseStructure] 非 mysql driver，跳过结构校验', ['driver' => $driver]);
+
+            return [
+                'has_diff' => false,
+                'diff' => [],
+                'summary' => ['skipped' => true, 'driver' => $driver],
+            ];
+        }
         $standardPath = base_path($this->structurePath);
 
         if (! File::exists($standardPath)) {
@@ -53,11 +74,12 @@ class DatabaseStructureService
     /**
      * 自动修复缺失的结构（仅 ADD 操作）
      *
-     * @param  string  $connection  数据库连接名
+     * @param  string|null  $connection  数据库连接名（null 用 default 连接）
      * @return array{success: bool, executed: array, errors: array}
      */
-    public function fix(string $connection = 'mysql'): array
+    public function fix(?string $connection = null): array
     {
+        $connection = $this->resolveConnection($connection);
         $result = $this->check($connection);
 
         if (! $result['has_diff']) {
@@ -97,9 +119,22 @@ class DatabaseStructureService
     }
 
     /**
-     * 导出当前数据库结构
+     * 导出当前数据库结构（仅 mysql）。
      */
     public function exportCurrentStructure(string $connection): array
+    {
+        $driver = (string) Config::get("database.connections.$connection.driver");
+
+        return match ($driver) {
+            'mysql', 'mariadb' => $this->exportMysqlStructure($connection),
+            default => throw new \RuntimeException("不支持的 driver: {$driver}（仅支持 mysql）"),
+        };
+    }
+
+    /**
+     * MySQL 完整结构导出（保留原行为，structure.json 比对逻辑依赖此格式）。
+     */
+    protected function exportMysqlStructure(string $connection): array
     {
         $database = Config::get("database.connections.$connection.database");
 
@@ -109,8 +144,8 @@ class DatabaseStructureService
 
         $tables = DB::connection($connection)
             ->select('SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, AUTO_INCREMENT
-                     FROM information_schema.TABLES
-                     WHERE TABLE_SCHEMA = ?', [$database]);
+ FROM information_schema.TABLES
+ WHERE TABLE_SCHEMA = ?', [$database]);
 
         $excludeTables = Config::get('upgrade.exclude_tables', [
             'migrations', 'failed_jobs', 'password_reset_tokens', 'personal_access_tokens',
@@ -145,8 +180,8 @@ class DatabaseStructureService
     {
         $columns = DB::connection($connection)
             ->select('SELECT * FROM information_schema.COLUMNS
-                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-                     ORDER BY ORDINAL_POSITION', [$database, $table]);
+ WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+ ORDER BY ORDINAL_POSITION', [$database, $table]);
 
         $result = [];
         foreach ($columns as $column) {
@@ -170,8 +205,8 @@ class DatabaseStructureService
     {
         $indexes = DB::connection($connection)
             ->select('SELECT * FROM information_schema.STATISTICS
-                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-                     ORDER BY INDEX_NAME, SEQ_IN_INDEX', [$database, $table]);
+ WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+ ORDER BY INDEX_NAME, SEQ_IN_INDEX', [$database, $table]);
 
         $result = [];
         foreach ($indexes as $index) {
@@ -200,15 +235,15 @@ class DatabaseStructureService
     {
         $foreignKeys = DB::connection($connection)
             ->select('SELECT kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME,
-                            kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME,
-                            rc.UPDATE_RULE, rc.DELETE_RULE
-                     FROM information_schema.KEY_COLUMN_USAGE kcu
-                     JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
-                          ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
-                          AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
-                     WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ?
-                          AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-                     ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION', [$database, $table]);
+ kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME,
+ rc.UPDATE_RULE, rc.DELETE_RULE
+ FROM information_schema.KEY_COLUMN_USAGE kcu
+ JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
+ ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
+ AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
+ WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ?
+ AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+ ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION', [$database, $table]);
 
         $result = [];
         foreach ($foreignKeys as $fk) {
@@ -349,15 +384,15 @@ class DatabaseStructureService
         $currentType = $this->normalizeIntegerType($current['type']);
 
         if ($standardType !== $currentType ||
-            $standard['nullable'] !== $current['nullable'] ||
-            $standard['default'] !== $current['default'] ||
-            $standard['extra'] !== $current['extra']) {
+        $standard['nullable'] !== $current['nullable'] ||
+        $standard['default'] !== $current['default'] ||
+        $standard['extra'] !== $current['extra']) {
             return true;
         }
 
         // 注释比对可配置
         if (Config::get('upgrade.behavior.strict_comment_check', false) &&
-            $standard['comment'] !== $current['comment']) {
+        $standard['comment'] !== $current['comment']) {
             return true;
         }
 
@@ -370,9 +405,9 @@ class DatabaseStructureService
     protected function isIndexDifferent(array $standard, array $current): bool
     {
         return $standard['unique'] !== $current['unique'] ||
-               $standard['type'] !== $current['type'] ||
-               $standard['columns'] !== $current['columns'] ||
-               $standard['sub_parts'] !== $current['sub_parts'];
+        $standard['type'] !== $current['type'] ||
+        $standard['columns'] !== $current['columns'] ||
+        $standard['sub_parts'] !== $current['sub_parts'];
     }
 
     /**
@@ -438,7 +473,7 @@ class DatabaseStructureService
     protected function hasDifferences(array $diff): bool
     {
         return ! empty($diff['missing_tables']) ||
-               ! empty($diff['table_differences']);
+        ! empty($diff['table_differences']);
     }
 
     /**
@@ -570,7 +605,7 @@ class DatabaseStructureService
         $columnLines = [];
 
         foreach ($tableSchema['columns'] as $columnName => $columnDef) {
-            $line = "  `$columnName` {$columnDef['type']}";
+            $line = " `$columnName` {$columnDef['type']}";
             $line .= $columnDef['nullable'] ? ' NULL' : ' NOT NULL';
 
             if ($columnDef['default'] !== null) {
@@ -600,7 +635,7 @@ class DatabaseStructureService
                     $columnParts[] = $subPart ? "`$column`($subPart)" : "`$column`";
                 }
                 $columns = implode(', ', $columnParts);
-                $columnLines[] = "  PRIMARY KEY ($columns)";
+                $columnLines[] = " PRIMARY KEY ($columns)";
             } else {
                 $indexType = '';
                 if ($indexDef['type'] === 'FULLTEXT') {
@@ -617,7 +652,7 @@ class DatabaseStructureService
                     $columnParts[] = $subPart ? "`$column`($subPart)" : "`$column`";
                 }
                 $columns = implode(', ', $columnParts);
-                $columnLines[] = "  {$indexType}KEY `$indexName` ($columns)";
+                $columnLines[] = " {$indexType}KEY `$indexName` ($columns)";
             }
         }
 
@@ -629,7 +664,7 @@ class DatabaseStructureService
                 $refColumns = implode(', ', array_map(fn ($c) => "`$c`", $fkDef['references']['columns']));
                 $onDelete = $fkDef['on_delete'] ?? 'NO ACTION';
                 $onUpdate = $fkDef['on_update'] ?? 'NO ACTION';
-                $columnLines[] = "  CONSTRAINT `$fkName` FOREIGN KEY ($columns) REFERENCES `$refTable` ($refColumns) ON DELETE $onDelete ON UPDATE $onUpdate";
+                $columnLines[] = " CONSTRAINT `$fkName` FOREIGN KEY ($columns) REFERENCES `$refTable` ($refColumns) ON DELETE $onDelete ON UPDATE $onUpdate";
             }
         }
 

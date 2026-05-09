@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use App\Bootstrap\ApiExceptions;
+use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Services\Notification\Builders\NotificationBuilderInterface;
@@ -23,7 +24,7 @@ use Throwable;
 
 class NotificationJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
     public function __construct(
         protected string $notifiableType,

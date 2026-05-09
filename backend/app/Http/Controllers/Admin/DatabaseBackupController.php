@@ -248,11 +248,16 @@ class DatabaseBackupController extends BaseController
             abort(404);
         }
 
+        // .enc 加密产物用 octet-stream（避免浏览器误识别为 gzip 自动解压）；旧 .sql.gz 保持 gzip
+        $contentType = ! empty($backup['encrypted'])
+            ? 'application/octet-stream'
+            : 'application/gzip';
+
         return response()->download(
             $backup['sql'],
             basename($backup['sql']),
             [
-                'Content-Type' => 'application/gzip',
+                'Content-Type' => $contentType,
                 'Cache-Control' => 'no-store',
             ]
         );

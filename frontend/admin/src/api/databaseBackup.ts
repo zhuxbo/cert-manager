@@ -6,6 +6,7 @@ export interface BackupItem {
   filename: string;
   path: string;
   size: number;
+  encrypted: boolean; // 6-1：是否为 AES-256-CBC 加密产物（true=*.sql.gz.enc，false=*.sql.gz）
   created_at: string;
   has_schema: boolean;
   schema_size: number;

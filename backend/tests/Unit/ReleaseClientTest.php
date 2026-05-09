@@ -103,7 +103,7 @@ test('find upgrade package url', function () {
         'assets' => [
             ['name' => 'ssl-manager-full-1.0.0.zip', 'browser_download_url' => 'https://example.com/full.zip'],
             ['name' => 'ssl-manager-upgrade-1.0.0.zip', 'browser_download_url' => 'https://example.com/upgrade.zip'],
-            ['name' => 'ssl-manager-docker-1.0.0.zip', 'browser_download_url' => 'https://example.com/docker.zip'],
+            ['name' => 'ssl-manager-script-1.0.0.zip', 'browser_download_url' => 'https://example.com/script.zip'],
         ],
     ];
 

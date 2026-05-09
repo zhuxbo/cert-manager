@@ -24,52 +24,8 @@ class ReleaseClient
         $releaseUrl = $versionManager->getReleaseUrl();
 
         if ($releaseUrl) {
-            // Docker 环境下，将 localhost/127.0.0.1 转换为宿主机可访问地址
-            if ($versionManager->isDockerEnvironment()) {
-                $releaseUrl = $this->convertLocalhostForDocker($releaseUrl);
-            }
             $this->baseUrl = rtrim($releaseUrl, '/');
         }
-    }
-
-    /**
-     * Docker 环境下转换 localhost 地址为宿主机可访问地址
-     */
-    protected function convertLocalhostForDocker(string $url): string
-    {
-        // 替换 localhost 或 127.0.0.1 为 Docker 宿主机网关
-        $patterns = [
-            '/^(https?:\/\/)localhost(:\d+)?/i',
-            '/^(https?:\/\/)127\.0\.0\.1(:\d+)?/i',
-        ];
-
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $url)) {
-                $dockerHost = $this->getDockerHostAddress();
-
-                return preg_replace($pattern, '${1}'.$dockerHost.'${2}', $url);
-            }
-        }
-
-        return $url;
-    }
-
-    /**
-     * 获取 Docker 宿主机地址
-     * 优先尝试 host.docker.internal，回退到默认网关
-     */
-    protected function getDockerHostAddress(): string
-    {
-        // 检查 /etc/hosts 是否有 host.docker.internal 条目（Docker Desktop 会添加）
-        if (file_exists('/etc/hosts')) {
-            $hosts = @file_get_contents('/etc/hosts');
-            if ($hosts && preg_match('/^\s*[\d.]+\s+host\.docker\.internal\b/m', $hosts)) {
-                return 'host.docker.internal';
-            }
-        }
-
-        // Linux Docker 使用默认网关 172.17.0.1
-        return '172.17.0.1';
     }
 
     /**

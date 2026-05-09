@@ -40,6 +40,7 @@ return new class extends Migration
         }
 
         // 修改 status 枚举，移除 'revoking'
+        // mysql 下 column 类型字符串包含 enum 选项，根据是否含 'revoking' 决定是否需要迁移（幂等）
         $statusCol = collect(Schema::getColumns('certs'))->firstWhere('name', 'status');
         if ($statusCol && str_contains($statusCol['type'], "'revoking'")) {
             DB::table('certs')->where('status', 'revoking')->update(['status' => 'cancelling']);
@@ -59,12 +60,16 @@ return new class extends Migration
         $channelCol = collect(Schema::getColumns('certs'))->firstWhere('name', 'channel');
         if ($channelCol && (str_contains($channelCol['type'], "'acme'") || ! str_contains($channelCol['type'], "'auto'"))) {
             Schema::table('certs', function (Blueprint $table) {
-                $table->enum('channel', ['admin', 'web', 'api', 'deploy', 'auto'])->comment('渠道')->change();
+                $table->enum('channel', ['admin', 'web', 'api', 'deploy', 'auto'])
+                    ->comment('渠道')
+                    ->change();
             });
         }
 
-        // delegation dcv 数据迁移 — 复用原 2026_01_28_100000 的逻辑
-        $certs = Cert::where('params->validation_method', 'delegation')->get();
+        // delegation dcv 数据迁移 — 复用原 2026_01_28_100000 的逻辑（params 列在 schema 里是 mediumText，全表扫即可）
+        $certs = Cert::all()->filter(function ($cert) {
+            return is_array($cert->params) && ($cert->params['validation_method'] ?? null) === 'delegation';
+        });
 
         foreach ($certs as $cert) {
             $dcv = $cert->dcv;
