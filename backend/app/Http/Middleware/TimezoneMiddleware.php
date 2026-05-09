@@ -2,7 +2,6 @@
 
 namespace App\Http\Middleware;
 
-use Carbon\Carbon;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -10,23 +9,18 @@ use Symfony\Component\HttpFoundation\Response;
 class TimezoneMiddleware
 {
     /**
-     * Handle an incoming request.
+     * 仅修改 app.timezone 配置（影响 serializeDate 输出按用户时区），
+     * 不再调 date_default_timezone_set —— 写入侧由系统时区固定，跨时区部署一致。
      *
      * @param  Closure(Request): (Response)  $next
      */
     public function handle(Request $request, Closure $next): Response
     {
-        // 从请求头获取时区，如果没有则使用默认时区Asia/Shanghai
-        $timezone = $request->header('X-Timezone', 'Asia/Shanghai');
+        $timezone = $request->header('X-Timezone');
 
-        // 设置PHP的时区
-        date_default_timezone_set($timezone);
-
-        // 设置Laravel的时区
-        config(['app.timezone' => $timezone]);
-
-        // 设置Carbon的时区
-        Carbon::setLocale(config('app.locale', 'zh_CN'));
+        if ($timezone && $timezone !== config('app.timezone')) {
+            config(['app.timezone' => $timezone]);
+        }
 
         return $next($request);
     }

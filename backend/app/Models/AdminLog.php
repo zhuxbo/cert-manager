@@ -9,6 +9,7 @@ class AdminLog extends BaseModel
     const null UPDATED_AT = null;
 
     protected $fillable = [
+        'correlation_id',
         'admin_id',
         'module',
         'action',
