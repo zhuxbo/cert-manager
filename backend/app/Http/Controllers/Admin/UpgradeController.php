@@ -2,11 +2,15 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Services\Upgrade\SmokeChecker;
 use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\UpgradeStatusManager;
 use App\Services\Upgrade\VersionManager;
+use App\Utils\UpgradeFreezeLock;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpFoundation\Response;
 
 class UpgradeController extends BaseController
 {
@@ -219,6 +223,124 @@ class UpgradeController extends BaseController
         } else {
             $this->error('切换通道失败');
         }
+    }
+
+    /**
+     * 写入升级冻结锁（HTTP 维护态生效）
+     *
+     * 由升级流程在切代码 / 跑 migrate 之前调用：
+     * 1. 写文件 storage/framework/upgrade.lock
+     * 2. MaintenanceMode 中间件下次命中即返回 503（白名单除外）
+     * 3. LogOperation 短路不再写日志
+     *
+     * 入参均可选，调用方一般传 version_from / version_to / ttl_seconds 三项。
+     */
+    public function freeze(Request $request): void
+    {
+        $request->validate([
+            'version_from' => 'nullable|string|max:64',
+            'version_to' => 'nullable|string|max:64',
+            'ttl_seconds' => 'nullable|integer|min:60|max:7200',
+        ]);
+
+        $ok = UpgradeFreezeLock::freeze(
+            $request->input('version_from'),
+            $request->input('version_to'),
+            (int) $request->input('ttl_seconds', 7200),
+        );
+
+        if (! $ok) {
+            // 写锁失败（磁盘 / 权限 / json_encode）—— 必须返回错误，避免升级流程误判 freeze 已激活
+            // ApiResponse::error 仅接收 (msg, errors) 二参；HTTP 状态由 ExceptionHandler 通过 code=0 的约定渲染
+            $this->error('写入升级锁失败，请检查 storage/framework 目录权限和磁盘空间');
+        }
+
+        $this->success(UpgradeFreezeLock::info());
+    }
+
+    /**
+     * 删除升级冻结锁（HTTP 维护态解除）
+     *
+     * 升级流程在新版本 smoke test 通过后调用：
+     * 1. 删除 storage/framework/upgrade.lock
+     * 2. MaintenanceMode 中间件下次命中即放行
+     * 3. LogOperation 恢复正常写日志
+     */
+    public function unfreeze(): void
+    {
+        UpgradeFreezeLock::unfreeze();
+
+        $this->success();
+    }
+
+    /**
+     * opcache 重置
+     *
+     * 升级期切代码后由管理员调用：
+     * 1. 临时 ini_set('opcache.validate_timestamps', '1')，让 fpm worker 命中文件 mtime 重编
+     * 2. 调 opcache_reset() 清 SHM 缓存
+     *
+     * opcache 扩展未加载时返回 status=skipped；调用方据此决定是否走宝塔 php_reload 兜底。
+     */
+    public function opcacheReset(): void
+    {
+        if (! function_exists('opcache_reset')) {
+            $this->success([
+                'status' => 'skipped',
+                'reason' => 'opcache_extension_not_loaded',
+            ]);
+        } else {
+            @ini_set('opcache.validate_timestamps', '1');
+            $ok = opcache_reset();
+
+            $opcacheStatus = null;
+            if (function_exists('opcache_get_status')) {
+                // false 参数省略 scripts，避免大数组返回
+                $status = opcache_get_status(false);
+                if (is_array($status)) {
+                    $opcacheStatus = array_intersect_key(
+                        $status,
+                        array_flip(['opcache_enabled', 'cache_full'])
+                    );
+                }
+            }
+
+            $this->success([
+                'status' => $ok ? 'ok' : 'failed',
+                'opcache_status' => $opcacheStatus,
+            ]);
+        }
+    }
+
+    /**
+     * 升级 freeze 内部 smoke test
+     *
+     * 由 upgrade.sh / 后台覆盖式升级流程在切完代码 / migrate 后、unfreeze 前调用：
+     * - DB ping
+     * - jobs 表可读
+     * - 关键路由已注册
+     *
+     * 任一 check 失败返回 503 + {status: failed, checks}，调用方据此决定回滚链路。
+     */
+    public function smoke(SmokeChecker $checker): JsonResponse
+    {
+        $result = $checker->run();
+
+        $payload = [
+            'code' => $result['ok'] ? 1 : 0,
+            'data' => [
+                'status' => $result['ok'] ? 'ok' : 'failed',
+                'checks' => $result['checks'],
+            ],
+        ];
+
+        if (! $result['ok']) {
+            $payload['msg'] = 'smoke test failed';
+
+            return new JsonResponse($payload, Response::HTTP_SERVICE_UNAVAILABLE);
+        }
+
+        return new JsonResponse($payload);
     }
 
     /**

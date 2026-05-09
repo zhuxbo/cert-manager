@@ -14,6 +14,7 @@ use App\Http\Controllers\Admin\DelegationController;
 use App\Http\Controllers\Admin\DeployTokenController;
 use App\Http\Controllers\Admin\FundController;
 use App\Http\Controllers\Admin\LogsController;
+use App\Http\Controllers\Admin\MetricsController;
 use App\Http\Controllers\Admin\NotificationController;
 use App\Http\Controllers\Admin\NotificationTemplateController;
 use App\Http\Controllers\Admin\OrderController;
@@ -66,6 +67,9 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::get('finance-overview', [DashboardController::class, 'financeOverview']);
         Route::post('clear-cache', [DashboardController::class, 'clearCache']);
     });
+
+    // 系统运维指标：admin 后台"系统状态"页面消费，只返回数据，不参与 503 判定
+    Route::get('metrics', [MetricsController::class, 'index'])->name('admin.metrics');
 
     // 使用工具类注册标准资源路由
     RouteHelper::registerResourceRoutes('admin', AdminController::class);
@@ -260,5 +264,9 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('rollback', [UpgradeController::class, 'rollback']);
         Route::delete('backup', [UpgradeController::class, 'deleteBackup']);
         Route::post('channel', [UpgradeController::class, 'setChannel']);
+        Route::post('freeze', [UpgradeController::class, 'freeze']);
+        Route::post('unfreeze', [UpgradeController::class, 'unfreeze']);
+        Route::post('opcache-reset', [UpgradeController::class, 'opcacheReset']);
+        Route::post('smoke', [UpgradeController::class, 'smoke']);
     });
 });

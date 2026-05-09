@@ -40,6 +40,15 @@ export type {
   RequestMethods
 } from "./http";
 
+// Manager meta（前端编排：channels / plugins / version）
+export {
+  fetchMeta,
+  getCachedMeta,
+  clearMetaCache,
+  renderChannelDisabled
+} from "./meta";
+export type { ManagerChannels, ManagerPluginInfo, ManagerMeta } from "./meta";
+
 // 其他工具
 export * from "./tree";
 export * from "./print";
