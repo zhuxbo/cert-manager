@@ -1,0 +1,20 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\NotificationControllerTest::__pest_evaluable_管理员可以重发通知",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/notification/{id}/resend",
+            "request_keys": [
+                "channels"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "queued": "boolean"
+                }
+            }
+        }
+    ]
+}

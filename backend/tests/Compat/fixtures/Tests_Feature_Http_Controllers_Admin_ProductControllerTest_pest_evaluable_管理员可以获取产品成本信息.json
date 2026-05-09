@@ -1,0 +1,33 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ProductControllerTest::__pest_evaluable_管理员可以获取产品成本信息",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/product/cost/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "periods": "array<integer>",
+                    "alternative_name_types": "array<string>",
+                    "cost": {
+                        "price": {
+                            "12": "integer",
+                            "24": "integer"
+                        },
+                        "alternative_standard_price": {
+                            "12": "integer",
+                            "24": "integer"
+                        },
+                        "alternative_wildcard_price": {
+                            "12": "integer",
+                            "24": "integer"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

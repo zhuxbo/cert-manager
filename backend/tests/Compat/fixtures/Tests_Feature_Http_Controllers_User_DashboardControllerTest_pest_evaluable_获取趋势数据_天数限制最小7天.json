@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_获取趋势数据_天数限制最小7天",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/trend",
+            "request_keys": [
+                "days"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "date": "string",
+                        "orders": "integer",
+                        "consumption": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

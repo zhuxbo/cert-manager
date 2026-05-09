@@ -1,0 +1,36 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\TaskControllerTest::__pest_evaluable_管理员可以按状态筛选任务",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/task",
+            "request_keys": [
+                "status"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "order_id": "integer",
+                            "action": "string",
+                            "attempts": "integer",
+                            "source": "string",
+                            "weight": "integer",
+                            "status": "string",
+                            "started_at": "string",
+                            "last_execute_at": "string",
+                            "created_at": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_管理员可以获取当前版本信息",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/upgrade/version",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "version": "string",
+                    "channel": "string"
+                }
+            }
+        }
+    ]
+}

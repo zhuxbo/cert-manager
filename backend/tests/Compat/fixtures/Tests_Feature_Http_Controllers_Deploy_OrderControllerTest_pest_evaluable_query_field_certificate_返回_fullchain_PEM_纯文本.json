@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_field_certificate_返回_fullchain_PEM_纯文本",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "field",
+                "order"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}

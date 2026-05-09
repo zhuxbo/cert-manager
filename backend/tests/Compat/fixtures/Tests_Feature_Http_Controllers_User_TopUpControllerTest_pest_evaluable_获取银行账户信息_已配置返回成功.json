@@ -1,0 +1,20 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\TopUpControllerTest::__pest_evaluable_获取银行账户信息_已配置返回成功",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/top-up/get-bank-account",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "bank_name": "string",
+                    "account_name": "string",
+                    "account_no": "string"
+                }
+            }
+        }
+    ]
+}

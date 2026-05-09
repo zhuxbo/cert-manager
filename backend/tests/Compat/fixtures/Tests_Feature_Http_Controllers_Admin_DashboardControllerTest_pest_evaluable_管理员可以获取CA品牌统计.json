@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_管理员可以获取CA品牌统计",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/brand-stats",
+            "request_keys": [
+                "days"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": "array<unknown>"
+            }
+        }
+    ]
+}

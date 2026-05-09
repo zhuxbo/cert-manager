@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_管理员可以获取备份列表",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/upgrade/backups",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "backups": {
+                        "__list_of__": {
+                            "id": "string",
+                            "size": "integer"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

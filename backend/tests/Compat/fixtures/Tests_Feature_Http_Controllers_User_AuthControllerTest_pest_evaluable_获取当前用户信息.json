@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AuthControllerTest::__pest_evaluable_获取当前用户信息",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/me",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "username": "string",
+                    "email": "string",
+                    "mobile": "string",
+                    "balance": "string",
+                    "last_login_at": "null",
+                    "last_login_ip": "null"
+                }
+            }
+        }
+    ]
+}

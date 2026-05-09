@@ -422,6 +422,33 @@ test('commitCancel unpaid：委派 delete（订单 + 证书被删除）', functi
     expect(Cert::where('id', $cert->id)->exists())->toBeFalse();
 });
 
+/**
+ * delete 锁内 status 校验守门：模拟"另一个并发请求"已 charge 把 cert.status 从 unpaid 改为 pending，
+ * 此时 delete 必须拒绝并保留订单/证书。
+ *
+ * 守门范围（最低保障）：
+ * - 防止"完全删掉 status 校验"导致已扣费订单被误删
+ * - 单线程顺序模拟：外部 update 先于 delete 调用，锁外/锁内读都看到 pending
+ * - **不能区分**"锁内 vs 锁外校验"——真竞态守门要 fork 双进程，参见 tests/Feature/Concurrent/
+ */
+test('delete 锁内 status 校验拦住已被并发改成非 unpaid 的订单（守门）', function () {
+    Queue::fake();
+    [$order, $cert] = createOrderWithCertForAction('unpaid', [], ['action' => 'new']);
+
+    // 模拟另一个并发请求（charge 路径）把 cert.status 从 unpaid 改为 pending
+    Cert::where('id', $cert->id)->update(['status' => 'pending']);
+
+    // delete 必须拒绝（commitCancel 走 unpaid 分支但内部 delete 锁内校验失败）
+    expectOrderApiError(
+        fn () => $this->service->delete($order->id),
+        '只有待支付状态的证书可以删除'
+    );
+
+    // 订单/证书仍存在
+    expect(Order::where('id', $order->id)->exists())->toBeTrue();
+    expect(Cert::where('id', $cert->id)->exists())->toBeTrue();
+});
+
 test('commitCancel active 串行化回归：第二次 commitCancel 被锁内 status 校验拦住', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);

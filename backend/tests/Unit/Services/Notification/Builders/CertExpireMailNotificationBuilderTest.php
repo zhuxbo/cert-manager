@@ -9,6 +9,9 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
 use App\Services\Order\AutoRenewService;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
+use Mockery\MockInterface;
 
 uses(Tests\TestCase::class);
 
@@ -16,7 +19,7 @@ afterEach(function () {
     Mockery::close();
 });
 
-function buildMockOrder(array $certData = [], array $productData = []): Order
+function buildMockOrder(array $certData = [], array $productData = []): Order&MockInterface
 {
     $cert = Mockery::mock(Cert::class)->makePartial();
     $cert->shouldReceive('getAttribute')->with('status')->andReturn($certData['status'] ?? 'active');
@@ -24,7 +27,7 @@ function buildMockOrder(array $certData = [], array $productData = []): Order
         $certData['expires_at'] ?? now()->addDays(7)
     );
     $cert->shouldReceive('getAttribute')->with('common_name')->andReturn($certData['common_name'] ?? 'example.com');
-    $cert->shouldReceive('getAttribute')->with('alternative_names')->andReturn($certData['alternative_names'] ?? ['example.com']);
+    $cert->shouldReceive('getAttribute')->with('alternative_names')->andReturn($certData['alternative_names'] ?? 'example.com');
     $cert->shouldReceive('getAttribute')->with('channel')->andReturn($certData['channel'] ?? 'api');
 
     $product = Mockery::mock(Product::class)->makePartial();
@@ -38,41 +41,41 @@ function buildMockOrder(array $certData = [], array $productData = []): Order
     return $order;
 }
 
-test('构建正确的过期通知载荷', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
-    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
-    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
-
+function buildMockUser(?string $email = 'user@example.com'): User&MockInterface
+{
     $user = Mockery::mock(User::class)->makePartial();
     $user->shouldReceive('getAttribute')->with('id')->andReturn(1);
-    $user->shouldReceive('getAttribute')->with('email')->andReturn('user@example.com');
+    $user->shouldReceive('getAttribute')->with('email')->andReturn($email);
     $user->shouldReceive('getAttribute')->with('username')->andReturn('testuser');
 
-    // Mock Order 查询
-    $order = buildMockOrder([
-        'common_name' => 'test.com',
-        'expires_at' => now()->addDays(7),
-    ]);
+    return $user;
+}
 
-    $orders = new Collection([$order]);
-
-    $builder = Mockery::mock(CertExpireMailNotificationBuilder::class, [$autoRenewService])
+function buildPartialBuilder(AutoRenewService $svc, Collection $orders): CertExpireMailNotificationBuilder&MockInterface
+{
+    $builder = Mockery::mock(CertExpireMailNotificationBuilder::class, [$svc])
         ->makePartial()
         ->shouldAllowMockingProtectedMethods();
+    $builder->shouldReceive('fetchExpiringOrders')->andReturn($orders);
 
-    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+    // build() 顶部调 get_system_setting('site', ...)，预填 cache 短路真实查询，避免依赖 setting_groups 表
+    Cache::put(
+        'setting:group_name:site',
+        ['url' => 'https://ssl.test/', 'name' => 'SSL证书管理系统'],
+        3600
+    );
 
-    // 由于 build 内部调用 Order::with()... 进行数据库查询，
-    // 这里直接测试 builder 的基本属性验证逻辑
-    expect($builder)->toBeInstanceOf(CertExpireMailNotificationBuilder::class);
-});
+    return $builder;
+}
 
 test('接收者非 User 时抛出异常', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class);
 
     $builder = new CertExpireMailNotificationBuilder($autoRenewService);
     $intent = new NotificationIntent('cert_expire', 'user', 1);
-    $notifiable = Mockery::mock(\Illuminate\Database\Eloquent\Model::class);
+
+    /** @var Model $notifiable */
+    $notifiable = Mockery::mock(Model::class);
 
     $builder->build($intent, $notifiable);
 })->throws(RuntimeException::class, '通知接收者必须为用户');
@@ -83,30 +86,92 @@ test('邮箱为空时抛出异常', function () {
     $builder = new CertExpireMailNotificationBuilder($autoRenewService);
     $intent = new NotificationIntent('cert_expire', 'user', 1);
 
-    $user = Mockery::mock(User::class)->makePartial();
-    $user->shouldReceive('getAttribute')->with('email')->andReturn(null);
-
-    $builder->build($intent, $user);
+    $builder->build($intent, buildMockUser(email: null));
 })->throws(RuntimeException::class, '邮箱为空');
 
-test('检查委托有效性 - 自动续费且委托有效时跳过证书', function () {
+test('orders 为空 → 返回 null', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class);
+
+    $builder = buildPartialBuilder($autoRenewService, new Collection);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    expect($builder->build($intent, buildMockUser()))->toBeNull();
+});
+
+test('委托有效（自动任务会执行 + 委托 OK）→ 全部 skip 返回 null', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class);
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
     $autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
-    $user = Mockery::mock(User::class)->makePartial();
-    $user->shouldReceive('getAttribute')->with('id')->andReturn(1);
-    $user->shouldReceive('getAttribute')->with('email')->andReturn('user@example.com');
-    $user->shouldReceive('getAttribute')->with('username')->andReturn('testuser');
-
-    $builder = new CertExpireMailNotificationBuilder($autoRenewService);
+    $orders = new Collection([buildMockOrder(['common_name' => 'a.com'])]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
     $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
 
-    // 由于 build 方法内部有 Order::with()... 数据库查询，
-    // 如果所有证书都因委托有效被跳过，返回 null 表示无需发送
-    $result = $builder->build($intent, $user);
-    expect($result)->toBeNull();
+    expect($builder->build($intent, buildMockUser()))->toBeNull();
+});
+
+test('委托无效（自动任务会执行但委托 fail）→ has_delegation_issue=true', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+    $autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(false);
+
+    $orders = new Collection([buildMockOrder([
+        'common_name' => 'invalid.com',
+        'expires_at' => now()->addDays(7),
+    ])]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, buildMockUser());
+
+    expect($result)->toBeInstanceOf(NotificationPayload::class);
+    expect($result->channels)->toBe(['mail']);
+    expect($result->data['has_delegation_issue'])->toBeTrue();
+    expect($result->data['certificates'])->toHaveCount(1);
+    expect($result->data['certificates'][0]['domain'])->toBe('invalid.com');
+    expect($result->data['certificates'][0]['delegation_status'])->toBe('invalid');
+    expect($result->data['site_name'])->toBe('SSL证书管理系统');
+    expect($result->data['email'])->toBe('user@example.com');
+    expect($result->data['username'])->toBe('testuser');
+});
+
+test('自动任务不会执行 → 加入通知列表，delegation_status=need_renew', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+
+    $orders = new Collection([buildMockOrder([
+        'common_name' => 'manual.com',
+        'expires_at' => now()->addDays(3),
+    ])]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, buildMockUser());
+
+    expect($result)->toBeInstanceOf(NotificationPayload::class);
+    expect($result->data['has_delegation_issue'])->toBeFalse();
+    expect($result->data['certificates'])->toHaveCount(1);
+    expect($result->data['certificates'][0]['domain'])->toBe('manual.com');
+    expect($result->data['certificates'][0]['delegation_status'])->toBe('need_renew');
+});
+
+test('intent.context.email 为空时回落 notifiable.email', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+
+    $orders = new Collection([buildMockOrder()]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+
+    // 不传 context.email，让 builder 走 fallback 取 notifiable->email
+    $intent = new NotificationIntent('cert_expire', 'user', 1);
+
+    $result = $builder->build($intent, buildMockUser());
+
+    expect($result->data['email'])->toBe('user@example.com');
 });
 
 test('NotificationPayload 正确构造', function () {

@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AuthControllerTest::__pest_evaluable_已认证管理员可以获取个人信息",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/me",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "username": "string",
+                    "email": "string",
+                    "mobile": "string",
+                    "last_login_at": "string",
+                    "last_login_ip": "string"
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,37 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\ProductControllerTest::__pest_evaluable_获取产品列表_只展示上架产品",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/product",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "name": "string",
+                            "product_type": "string",
+                            "brand": "string",
+                            "ca": "string",
+                            "periods": "array<integer>",
+                            "encryption_standard": "string",
+                            "validation_type": "string",
+                            "common_name_types": "array<string>",
+                            "alternative_name_types": "array<string>",
+                            "weight": "integer",
+                            "remark": "string",
+                            "refund_period": "integer"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

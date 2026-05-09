@@ -1,0 +1,35 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_获取仪表盘总览",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/overview",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "user_info": {
+                        "username": "string",
+                        "email": "string",
+                        "mobile": "string"
+                    },
+                    "assets": {
+                        "balance": "integer"
+                    },
+                    "orders": {
+                        "total_orders": "integer",
+                        "active_orders": "integer",
+                        "expiring_7_days": "integer",
+                        "expiring_30_days": "integer",
+                        "cancelled_orders": "integer",
+                        "status_distribution": "array<unknown>",
+                        "monthly_orders": "integer",
+                        "monthly_consumption": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

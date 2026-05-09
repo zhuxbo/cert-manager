@@ -95,10 +95,11 @@ class DashboardController extends Controller
         $trends = Cache::remember($cacheKey, $cacheMinutes * 60, function () use ($userId, $days) {
             $startDate = now()->subDays($days - 1)->startOfDay();
 
+            $dateExpr = 'DATE(created_at)';
             $rows = Order::where('user_id', $userId)
                 ->where('created_at', '>=', $startDate)
-                ->selectRaw('DATE(created_at) as date, COUNT(*) as orders, COALESCE(SUM(amount), 0) as consumption')
-                ->groupBy('date')
+                ->selectRaw("$dateExpr as date, COUNT(*) as orders, COALESCE(SUM(amount), 0) as consumption")
+                ->groupByRaw($dateExpr)
                 ->get()
                 ->keyBy('date');
 
@@ -134,10 +135,11 @@ class DashboardController extends Controller
             $currentMonth = now()->startOfMonth();
             $lastMonth = $currentMonth->copy()->subMonth();
 
+            $monthExpr = "DATE_FORMAT(created_at, '%Y-%m')";
             $rows = Order::where('user_id', $userId)
                 ->where('created_at', '>=', $lastMonth)
-                ->selectRaw('DATE_FORMAT(created_at, "%Y-%m") as month, COUNT(*) as orders, COALESCE(SUM(amount), 0) as consumption')
-                ->groupBy('month')
+                ->selectRaw("$monthExpr as month, COUNT(*) as orders, COALESCE(SUM(amount), 0) as consumption")
+                ->groupByRaw($monthExpr)
                 ->get()
                 ->keyBy('month');
 

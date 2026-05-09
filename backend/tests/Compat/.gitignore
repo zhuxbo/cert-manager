@@ -1,0 +1,2 @@
+# 失败时累积的 diff 报告（CI 上传 artifact），不进 git
+diff-report.md

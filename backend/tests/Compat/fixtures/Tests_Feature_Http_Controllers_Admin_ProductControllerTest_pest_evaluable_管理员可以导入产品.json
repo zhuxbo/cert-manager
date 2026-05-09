@@ -1,0 +1,17 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ProductControllerTest::__pest_evaluable_管理员可以导入产品",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/product/import",
+            "request_keys": [
+                "brand",
+                "source",
+                "type"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}

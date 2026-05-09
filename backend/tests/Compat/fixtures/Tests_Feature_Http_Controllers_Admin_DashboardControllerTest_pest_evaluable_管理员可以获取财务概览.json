@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_管理员可以获取财务概览",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/finance-overview",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "total_balance": "integer",
+                    "positive_count": "integer",
+                    "total_debt": "integer",
+                    "negative_count": "integer"
+                }
+            }
+        }
+    ]
+}

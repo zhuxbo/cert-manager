@@ -10,6 +10,7 @@ use App\Services\Notification\DTOs\NotificationPayload;
 use App\Services\Order\AutoRenewService;
 use DateMalformedStringException;
 use DateTime;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use RuntimeException;
 
@@ -33,15 +34,7 @@ class CertExpireMailNotificationBuilder implements NotificationBuilderInterface
         $siteUrl = get_system_setting('site', 'url', '/');
         $siteName = get_system_setting('site', 'name', 'SSL证书管理系统');
 
-        $orders = Order::with(['product', 'latestCert', 'user'])
-            ->whereHas('product')
-            ->whereHas('latestCert', function ($query) {
-                $query->where('status', 'active')
-                    ->whereBetween('expires_at', [now(), now()->addDays(14)])
-                    ->orderBy('expires_at');
-            })
-            ->where('user_id', $notifiable->id)
-            ->get();
+        $orders = $this->fetchExpiringOrders($notifiable);
 
         $certificates = [];
         $hasDelegationIssue = false;
@@ -104,5 +97,24 @@ class CertExpireMailNotificationBuilder implements NotificationBuilderInterface
         ];
 
         return new NotificationPayload($data, ['mail']);
+    }
+
+    /**
+     * 拉取该用户 14 天内到期的活跃证书订单。
+     * 抽出为可覆盖方法以便 Unit 测试 mock，避免在 builder 内嵌静态 Eloquent 查询。
+     *
+     * @return Collection<int, Order>
+     */
+    protected function fetchExpiringOrders(User $user): Collection
+    {
+        return Order::with(['product', 'latestCert', 'user'])
+            ->whereHas('product')
+            ->whereHas('latestCert', function ($query) {
+                $query->where('status', 'active')
+                    ->whereBetween('expires_at', [now(), now()->addDays(14)])
+                    ->orderBy('expires_at');
+            })
+            ->where('user_id', $user->id)
+            ->get();
     }
 }

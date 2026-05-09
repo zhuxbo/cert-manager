@@ -1,0 +1,28 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrganizationControllerTest::__pest_evaluable_获取组织详情",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/organization/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "name": "string",
+                    "registration_number": "string",
+                    "country": "string",
+                    "state": "string",
+                    "city": "string",
+                    "address": "string",
+                    "postcode": "string",
+                    "phone": "string",
+                    "created_at": "string",
+                    "updated_at": "string"
+                }
+            }
+        }
+    ]
+}

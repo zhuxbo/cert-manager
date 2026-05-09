@@ -1,0 +1,36 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\CertControllerTest::__pest_evaluable_管理员可以按订单ID筛选证书",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/cert",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "order_id": "integer",
+                            "action": "string",
+                            "channel": "string",
+                            "common_name": "string",
+                            "amount": "string",
+                            "status": "string",
+                            "issued_at": "null",
+                            "expires_at": "null",
+                            "intermediate_cert": "null"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

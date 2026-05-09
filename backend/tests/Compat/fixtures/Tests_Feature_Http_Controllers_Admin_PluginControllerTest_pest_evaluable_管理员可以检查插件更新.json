@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_管理员可以检查插件更新",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/plugin/check-updates",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "updates": {
+                        "__list_of__": {
+                            "name": "string",
+                            "latest": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

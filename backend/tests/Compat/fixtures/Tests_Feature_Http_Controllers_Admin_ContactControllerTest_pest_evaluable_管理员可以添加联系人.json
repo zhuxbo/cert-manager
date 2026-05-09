@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ContactControllerTest::__pest_evaluable_管理员可以添加联系人",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/contact",
+            "request_keys": [
+                "email",
+                "first_name",
+                "last_name",
+                "phone",
+                "title",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrganizationControllerTest::__pest_evaluable_获取组织列表",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/organization",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "name": "string",
+                            "registration_number": "string",
+                            "country": "string",
+                            "phone": "string",
+                            "created_at": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

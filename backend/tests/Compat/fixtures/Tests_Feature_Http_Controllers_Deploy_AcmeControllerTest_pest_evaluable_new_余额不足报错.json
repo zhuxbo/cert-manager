@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\AcmeControllerTest::__pest_evaluable_new_余额不足报错",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy/acme/new",
+            "request_keys": [
+                "period",
+                "product_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "contact_email": "array<string>"
+                }
+            }
+        }
+    ]
+}

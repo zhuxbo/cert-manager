@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\AcmeControllerTest::__pest_evaluable_new_支持自选_contact__email_并透传给_Gateway",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy/acme/new",
+            "request_keys": [
+                "contact_email",
+                "period",
+                "product_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "eab_kid": "string",
+                    "eab_hmac": "string",
+                    "status": "string",
+                    "directory_url": "null"
+                }
+            }
+        }
+    ]
+}

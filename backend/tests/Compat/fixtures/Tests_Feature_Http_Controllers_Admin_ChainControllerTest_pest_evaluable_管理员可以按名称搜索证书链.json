@@ -1,0 +1,30 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ChainControllerTest::__pest_evaluable_管理员可以按名称搜索证书链",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/chain",
+            "request_keys": [
+                "common_name"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "common_name": "string",
+                            "created_at": "string",
+                            "updated_at": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

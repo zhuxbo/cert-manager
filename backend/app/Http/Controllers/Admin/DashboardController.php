@@ -186,28 +186,32 @@ class DashboardController extends Controller
         $trends = Cache::remember($cacheKey, $cacheMinutes * 60, function () use ($days) {
             $startDate = now()->subDays($days - 1)->startOfDay();
 
+            $dateExpr = 'DATE(created_at)';
+
             // 用户趋势（GROUP BY 聚合）
             $userCounts = User::where('created_at', '>=', $startDate)
-                ->selectRaw('DATE(created_at) as date, COUNT(*) as cnt')
-                ->groupByRaw('DATE(created_at)')
+                ->selectRaw("$dateExpr as date, COUNT(*) as cnt")
+                ->groupByRaw($dateExpr)
                 ->pluck('cnt', 'date');
 
             // 订单趋势（GROUP BY 聚合）
             $orderCounts = Order::where('created_at', '>=', $startDate)
-                ->selectRaw('DATE(created_at) as date, COUNT(*) as cnt')
-                ->groupByRaw('DATE(created_at)')
+                ->selectRaw("$dateExpr as date, COUNT(*) as cnt")
+                ->groupByRaw($dateExpr)
                 ->pluck('cnt', 'date');
 
             // 充值和消费趋势（一条 SQL 查出所有天数）
-            $financeRows = DB::select("
-                SELECT
-                    DATE(created_at) as date,
-                    COALESCE(SUM(CASE WHEN type IN ('addfunds', 'refunds') THEN amount ELSE 0 END), 0) AS recharge,
-                    COALESCE(ABS(SUM(CASE WHEN type IN ('order', 'cancel', 'deduct', 'reverse') THEN amount ELSE 0 END)), 0) AS consumption
-                FROM transactions
-                WHERE created_at >= ?
-                GROUP BY DATE(created_at)
-            ", [$startDate]);
+            // 用 Query Builder 而非裸 DB::select：Grammar 层处理 PG 下的 `::date` 语法，避开 PDO
+            // 对 `::` 的命名参数前缀解析风险（部分 PDO 版本会误判为参数）。
+            $financeRows = DB::table('transactions')
+                ->where('created_at', '>=', $startDate)
+                ->selectRaw(
+                    "$dateExpr as date, ".
+                    "COALESCE(SUM(CASE WHEN type IN ('addfunds', 'refunds') THEN amount ELSE 0 END), 0) AS recharge, ".
+                    "COALESCE(ABS(SUM(CASE WHEN type IN ('order', 'cancel', 'deduct', 'reverse') THEN amount ELSE 0 END)), 0) AS consumption"
+                )
+                ->groupByRaw($dateExpr)
+                ->get();
 
             $financeMap = [];
             foreach ($financeRows as $row) {

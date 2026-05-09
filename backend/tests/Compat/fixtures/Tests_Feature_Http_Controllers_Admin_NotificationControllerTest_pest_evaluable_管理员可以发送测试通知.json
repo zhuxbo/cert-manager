@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\NotificationControllerTest::__pest_evaluable_管理员可以发送测试通知",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/notification/test-send",
+            "request_keys": [
+                "channels",
+                "notifiable_id",
+                "notifiable_type",
+                "template_type"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "queued": "boolean"
+                }
+            }
+        }
+    ]
+}

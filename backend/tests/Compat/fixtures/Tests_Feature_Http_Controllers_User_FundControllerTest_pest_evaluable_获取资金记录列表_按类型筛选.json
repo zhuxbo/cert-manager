@@ -1,0 +1,34 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\FundControllerTest::__pest_evaluable_获取资金记录列表_按类型筛选",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/fund",
+            "request_keys": [
+                "type"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "amount": "string",
+                            "type": "string",
+                            "pay_method": "string",
+                            "pay_sn": "string",
+                            "status": "integer",
+                            "remark": "string",
+                            "created_at": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

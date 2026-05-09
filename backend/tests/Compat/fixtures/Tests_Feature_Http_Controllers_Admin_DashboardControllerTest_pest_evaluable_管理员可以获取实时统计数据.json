@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_管理员可以获取实时统计数据",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/realtime",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "online_users": "integer",
+                    "today": {
+                        "processing_orders": "integer",
+                        "new_orders": "integer",
+                        "new_users": "integer"
+                    },
+                    "alerts": {
+                        "expiring_7_days": "integer",
+                        "expiring_30_days": "integer",
+                        "issued_7_days": "integer",
+                        "issued_30_days": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

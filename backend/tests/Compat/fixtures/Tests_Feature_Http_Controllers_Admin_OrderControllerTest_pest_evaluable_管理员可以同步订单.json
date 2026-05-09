@@ -1,0 +1,13 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员可以同步订单",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/order/sync/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}

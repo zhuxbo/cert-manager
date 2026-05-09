@@ -1,0 +1,89 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\NotificationControllerTest::__pest_evaluable_管理员可以按用户筛选通知",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/notification",
+            "request_keys": [
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "notifiable_type": "string",
+                            "notifiable_id": "integer",
+                            "template_id": "integer",
+                            "data": {
+                                "title": "string",
+                                "content": "string"
+                            },
+                            "read_at": "null",
+                            "sent_at": "null",
+                            "status": "string",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "template": {
+                                "id": "integer",
+                                "name": "string",
+                                "code": "string",
+                                "channels": "array<string>",
+                                "content": "string",
+                                "variables": "array<string>",
+                                "example": "string",
+                                "status": "integer",
+                                "created_at": "string",
+                                "updated_at": "string"
+                            },
+                            "notifiable": {
+                                "id": "integer",
+                                "username": "string",
+                                "email": "string",
+                                "mobile": "string",
+                                "balance": "string",
+                                "level_code": "string",
+                                "custom_level_code": "null",
+                                "credit_limit": "string",
+                                "last_login_at": "null",
+                                "last_login_ip": "null",
+                                "join_ip": "string",
+                                "join_at": "string",
+                                "source": "string",
+                                "token_version": "integer",
+                                "logout_at": "null",
+                                "email_verified_at": "string",
+                                "mobile_verified_at": "null",
+                                "notification_settings": {
+                                    "mail": {
+                                        "cert_issued": "boolean",
+                                        "cert_expire": "boolean",
+                                        "security": "boolean"
+                                    },
+                                    "sms": {
+                                        "cert_issued": "boolean",
+                                        "cert_expire": "boolean",
+                                        "security": "boolean"
+                                    }
+                                },
+                                "auto_settings": {
+                                    "auto_renew": "boolean",
+                                    "auto_reissue": "boolean"
+                                },
+                                "status": "integer",
+                                "created_at": "string",
+                                "updated_at": "string"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

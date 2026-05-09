@@ -1,0 +1,30 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_列表返回所有备份及配套_schema_标记",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/database/backups",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "string",
+                            "prefix": "string",
+                            "filename": "string",
+                            "path": "string",
+                            "size": "integer",
+                            "created_at": "string",
+                            "has_schema": "boolean",
+                            "schema_size": "integer"
+                        }
+                    },
+                    "total": "integer"
+                }
+            }
+        }
+    ]
+}

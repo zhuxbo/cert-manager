@@ -1,0 +1,31 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_续费通过_period_验证",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "exception_type": "string",
+                    "exception_trace": {
+                        "__list_of__": {
+                            "file": "string",
+                            "line": "integer",
+                            "function": "string",
+                            "args": "array<null>",
+                            "class": "string",
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,42 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserControllerTest::__pest_evaluable_管理员可以通过快速搜索筛选用户",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/user",
+            "request_keys": [
+                "quickSearch"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "username": "string",
+                            "email": "string",
+                            "mobile": "string",
+                            "balance": "string",
+                            "credit_limit": "string",
+                            "last_login_at": "null",
+                            "status": "integer",
+                            "created_at": "string",
+                            "level_code": "string",
+                            "custom_level_code": "null",
+                            "level": {
+                                "code": "string",
+                                "name": "string"
+                            },
+                            "custom_level": "null"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

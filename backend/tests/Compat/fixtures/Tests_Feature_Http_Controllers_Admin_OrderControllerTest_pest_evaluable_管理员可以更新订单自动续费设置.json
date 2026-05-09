@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员可以更新订单自动续费设置",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/order/auto-settings/{id}",
+            "request_keys": [
+                "auto_reissue",
+                "auto_renew"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "auto_renew": "boolean",
+                    "auto_reissue": "boolean"
+                }
+            }
+        }
+    ]
+}

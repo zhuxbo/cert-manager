@@ -23,7 +23,9 @@ class ProductFactory extends Factory
             'brand' => 'Test Brand',
             'ca' => 'Test CA',
             'warranty_currency' => 'USD',
-            'warranty' => '10000.00',
+            // warranty 列在 migration 里是 unsignedInteger；MySQL 容忍 '10000.00' 字符串截断成 10000，
+            // PG 严格类型抛 "invalid input syntax for type integer"。统一用整数。
+            'warranty' => 10000,
             'server' => 1,
             'encryption_standard' => 'international',
             'encryption_alg' => ['RSA-2048', 'RSA-4096'],
