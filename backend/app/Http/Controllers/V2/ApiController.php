@@ -56,7 +56,8 @@ class ApiController extends Controller
         $code = $this->request->input('code', '');
 
         $where = [];
-        $brand && $where[] = ['brand', '=', $brand];
+        // brand 统一小写匹配（saving 钩子小写化；兼容 case-sensitive driver）
+        $brand && $where[] = ['brand', '=', strtolower((string) $brand)];
         $code && $where[] = ['code', 'like', '%'.$code.'%'];
         $where[] = ['status', '=', 1];
         $where[] = ['product_type', '!=', Product::TYPE_ACME];

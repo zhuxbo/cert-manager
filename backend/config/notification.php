@@ -7,6 +7,7 @@ use App\Services\Notification\Builders\CertExpireSmsNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedMailNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedSmsNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
+use App\Services\Notification\Builders\FinanceAuditAlertMailNotificationBuilder;
 use App\Services\Notification\Builders\TaskFailedMailNotificationBuilder;
 use App\Services\Notification\Guards\BuilderChannelGuard;
 use App\Services\Notification\Guards\ContactChannelGuard;
@@ -44,6 +45,7 @@ return [
         'cert_expire.mail' => CertExpireMailNotificationBuilder::class,
         'cert_expire.sms' => CertExpireSmsNotificationBuilder::class,
         'task_failed.mail' => TaskFailedMailNotificationBuilder::class,
+        'finance_audit_alert.mail' => FinanceAuditAlertMailNotificationBuilder::class,
     ],
 
     'default_builder' => DefaultNotificationBuilder::class,

@@ -125,6 +125,25 @@ test('非 order 类型不允许重复交易记录', function () {
     ]))->toThrow(Exception::class, '交易记录已存在');
 });
 
+test('acme_order 不允许重复 transaction_id', function () {
+    $user = User::factory()->withBalance('10000.00')->create();
+    $transactionId = fake()->unique()->randomNumber(8);
+
+    Transaction::create([
+        'user_id' => $user->id,
+        'type' => 'acme_order',
+        'transaction_id' => $transactionId,
+        'amount' => '-100.00',
+    ]);
+
+    expect(fn () => Transaction::create([
+        'user_id' => $user->id,
+        'type' => 'acme_order',
+        'transaction_id' => $transactionId,
+        'amount' => '-200.00',
+    ]))->toThrow(Exception::class, '交易记录已存在');
+});
+
 test('order 类型允许重复 transaction_id', function () {
     $user = User::factory()->withBalance('10000.00')->create();
     $transactionId = fake()->unique()->randomNumber(8);

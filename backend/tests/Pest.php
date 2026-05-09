@@ -11,10 +11,62 @@
 |
 */
 
-uses(
-    Tests\TestCase::class,
-    Illuminate\Foundation\Testing\RefreshDatabase::class,
-)->in('Feature');
+uses(Tests\TestCase::class)->in('Feature');
+
+require_once __DIR__.'/Support/FundAuditGuard.php';
+
+// 仅 mysql：所有 Feature 测试统一走 RefreshDatabase；下方列出的子目录精确控制
+// 哪些用真实 DB（其它如 Feature/Compat 用 mock 或不跑 DB）。
+uses(Illuminate\Foundation\Testing\RefreshDatabase::class)->in(
+    'Feature/Commands',
+    'Feature/Console',
+    'Feature/Database',
+    'Feature/Factories',
+    'Feature/FundAudit',
+    'Feature/Http',
+    'Feature/Jobs',
+    'Feature/Middleware',
+    'Feature/Models',
+    'Feature/Services',
+    'Feature/Timezone',
+);
+
+/*
+|--------------------------------------------------------------------------
+| 资金审计 afterEach 守门
+|--------------------------------------------------------------------------
+|
+| 动了 funds / transactions / users.balance 的测试，afterEach 时自动跑
+| FundInvariants 4 条 SQL 校验，任一违反即 fail，暴露漏写 transaction /
+| 金额不匹配等隐患。afterEach 在 RefreshDatabase rollback 之前跑，能看到
+| 测试期间的全部变更。
+*/
+uses()->afterEach(function () {
+    $violations = app(\App\Services\FundAudit\FundInvariants::class)->all();
+    if (! empty($violations)) {
+        $msg = '资金审计破：'.collect($violations)
+            ->map(fn ($v) => $v['layer'].' '.$v['message'])
+            ->implode('; ');
+        test()->fail($msg);
+    }
+})->in(...fundAuditGuardedTestPaths());
+
+/*
+|--------------------------------------------------------------------------
+| API 兼容性快照对照
+|--------------------------------------------------------------------------
+|
+| 钩子安装在 Tests\TestCase::setUp / tearDown，仅在 COMPAT_CAPTURE / COMPAT_COMPARE
+| 环境变量启用时激活。
+|
+| - capture 模式：监听 RequestHandled 事件 + 把响应 schema 写到 tests/Compat/fixtures/
+| - compare 模式：实时对比 fixture，差异在 tearDown 时断言失败
+|
+| 不修改任何业务测试用例，对默认 CI 完全透明（两个 env 都不开时零开销）。
+*/
+
+require_once __DIR__.'/Compat/Helpers.php';
+require_once __DIR__.'/Compat/GlobalFunctions.php';
 
 /*
 |--------------------------------------------------------------------------
@@ -58,7 +110,7 @@ function fakeMysqlClientBin(string $tool = 'mysqldump'): string
     $path = sys_get_temp_dir().'/fake_'.$tool.'_'.uniqid().'.sh';
     file_put_contents(
         $path,
-        "#!/bin/sh\necho '$tool  Ver 8.0.99 for Linux on x86_64 (MySQL Distrib 8.0.99)'\n"
+        "#!/bin/sh\necho '$tool Ver 8.0.99 for Linux on x86_64 (MySQL Distrib 8.0.99)'\n"
     );
     chmod($path, 0755);
     register_shutdown_function(static fn () => @unlink($path));

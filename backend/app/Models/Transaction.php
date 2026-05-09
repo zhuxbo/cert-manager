@@ -50,11 +50,7 @@ class Transaction extends BaseModel
     {
         parent::boot();
 
-        // 创建前事件
-        //
-        // 契约：调用方必须在 DB::transaction 内调用 Transaction::create()，
-        // 否则 balance 修改与 transactions INSERT 之间无原子性保证（INSERT 失败会留下脏余额）。
-        // 本钩子不再开自己的内层事务/savepoint —— 让错误冒泡给外层事务统一回滚。
+        // 创建前：必须在 DB::transaction 内（balance 修改 + INSERT 原子化）
         static::creating(function ($model) {
             if (bccomp((string) $model->amount, '0.00', 2) === 0) {
                 return false;
@@ -64,8 +60,8 @@ class Transaction extends BaseModel
                 throw new Exception('Transaction::create 必须在 DB::transaction 内调用（防止 balance 修改与 INSERT 非原子）');
             }
 
-            // order 和 acme_order 允许重复 transaction_id（重签增加域名会再次扣费）
-            if (! in_array($model->type, ['order', 'acme_order'])) {
+            // 仅 order 允许重复 transaction_id（证书重签增加域名会再次扣费）
+            if ($model->type !== 'order') {
                 $exists = self::where(['type' => $model->type, 'transaction_id' => $model->transaction_id])->exists();
                 if ($exists) {
                     throw new Exception('交易记录已存在');

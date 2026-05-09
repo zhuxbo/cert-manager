@@ -88,6 +88,19 @@ class NotificationTemplateSeeder extends Seeder
                 'example' => null,
                 'channels' => ['sms'],
             ],
+            // 资金审计告警 - 邮件版（finance:audit 命令每天 03:00 触发）
+            [
+                'code' => 'finance_audit_alert',
+                'name' => '资金审计告警',
+                'content' => $this->getFinanceAuditAlertHtml(),
+                'variables' => [
+                    'violation_count',
+                    'violations',
+                    'detected_at',
+                ],
+                'example' => null,
+                'channels' => ['mail'],
+            ],
         ];
 
         foreach ($templates as $template) {
@@ -554,6 +567,115 @@ HTML;
                                     <div style="font-weight: bold; margin-bottom: 5px; color: #555;">Result:</div>
                                     <pre style="margin: 0; white-space: pre-wrap; word-break: break-all; font-family: 'Menlo', 'Consolas', monospace; font-size: 12px; color: #4b5563;">{{ $result }}</pre>
                                 </div>
+
+                            </td>
+                        </tr>
+                    </table>
+
+                </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * @noinspection CssRedundantUnit
+     * @noinspection HtmlDeprecatedTag
+     * @noinspection HtmlDeprecatedAttribute
+     * @noinspection XmlDeprecatedElement
+     * @noinspection CssReplaceWithShorthandSafely
+     */
+    private function getFinanceAuditAlertHtml(): string
+    {
+        return <<<'HTML'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>资金审计告警</title>
+    <style>
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        table { border-collapse: collapse !important; }
+        body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; background-color: #f4f6f8; }
+
+        @media screen and (max-width: 600px) {
+            .email-container { width: 100% !important; margin: auto !important; }
+            .mobile-padding { padding-left: 20px !important; padding-right: 20px !important; }
+            .wrapper-padding { padding-top: 30px !important; padding-bottom: 30px !important; }
+        }
+        @media (prefers-color-scheme: dark) {
+            body, .outer-wrapper { background-color: #2d2d2d !important; }
+            .white-card { background-color: #1f1f1f !important; border: 1px solid #333333 !important; }
+            h1, h2, h3, p, span, div { color: #e1e1e1 !important; }
+            .code-block { background-color: #111 !important; border: 1px solid #333 !important; color: #fca5a5 !important; }
+            .layer-badge { background-color: #3b1818 !important; color: #f87171 !important; }
+            .summary-box { background-color: #3b1818 !important; border-left-color: #dc2626 !important; }
+            .summary-text { color: #fca5a5 !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f8;">
+
+    <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
+        资金审计校验发现 {{ $violation_count }} 项违反，请立即排查。
+    </div>
+
+    <center style="width: 100%; background-color: #f4f6f8;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="outer-wrapper" style="background-color: #f4f6f8;">
+            <tr>
+                <td align="center" class="wrapper-padding" style="padding-top: 50px; padding-bottom: 50px; padding-left: 10px; padding-right: 10px;">
+
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="white-card" style="max-width: 680px; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: left;">
+
+                        <tr>
+                            <td style="background-color: #dc2626; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+
+                                <h1 style="margin: 0 0 10px 0; font-size: 22px; line-height: 30px; color: #dc2626; font-weight: 700;">
+                                    🚨 资金审计告警
+                                </h1>
+
+                                <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 22px; color: #888888;">
+                                    检测时间：{{ $detected_at }}
+                                </p>
+
+                                <div class="summary-box" style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 28px;">
+                                    <p class="summary-text" style="margin: 0; font-size: 15px; line-height: 24px; color: #991b1b;">
+                                        <strong>共发现 {{ $violation_count }} 项不变式违反。</strong><br>
+                                        请立即排查 funds / transactions / users.balance 相关数据，并在控制台运行 <code>php artisan finance:audit</code> 复核。
+                                    </p>
+                                </div>
+
+                                @foreach ($violations as $v)
+                                <div style="margin-bottom: 24px; padding: 16px; border: 1px solid #fecaca; border-radius: 6px; background-color: #fffafa;">
+                                    <div style="margin-bottom: 10px;">
+                                        <span class="layer-badge" style="display: inline-block; background-color: #fee2e2; color: #991b1b; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; font-family: monospace;">
+                                            {{ $v['layer'] ?? '?' }}
+                                        </span>
+                                        <span style="margin-left: 8px; font-size: 14px; color: #444444;">{{ $v['message'] ?? '' }}</span>
+                                    </div>
+
+                                    @if (! empty($v['rows']))
+                                    <div class="code-block" style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 4px; padding: 12px; margin-top: 8px;">
+                                        <pre style="margin: 0; white-space: pre-wrap; word-break: break-all; font-family: 'Menlo', 'Consolas', monospace; font-size: 12px; line-height: 1.6; color: #4b5563;">{{ json_encode($v['rows'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</pre>
+                                    </div>
+                                    @endif
+
+                                    @if (! empty($v['rows_total']) && $v['rows_total'] > count($v['rows'] ?? []))
+                                    <p style="margin: 8px 0 0 0; font-size: 12px; color: #888888;">
+                                        共 {{ $v['rows_total'] }} 行，仅显示前 {{ count($v['rows']) }} 行。
+                                    </p>
+                                    @endif
+                                </div>
+                                @endforeach
 
                             </td>
                         </tr>

@@ -101,10 +101,7 @@ class FundController extends BaseController
     }
 
     /**
-     * 添加资金记录
-     *
-     * 并发安全：事务包裹 Fund::create —— status=1 会触发 createRecord 创建 Transaction，
-     * 若后续 funds INSERT 失败，外层事务回滚保证 balance/transaction/fund 三者原子。
+     * 添加资金记录（仅 type ∈ {addfunds, deduct}，refunds/reverse 走 UPDATE 同行接口）。
      */
     public function store(StoreRequest $request): void
     {
@@ -147,9 +144,6 @@ class FundController extends BaseController
 
     /**
      * 更新资金记录
-     *
-     * 并发安全：事务 + fund 行锁 —— 若 status 变更会触发 createRecord 创建 Transaction，
-     * 外层事务保证 balance/transaction/fund 三者原子，防止后续 UPDATE funds 失败导致的脏余额。
      */
     public function update(UpdateRequest $request, int $id): void
     {
@@ -167,41 +161,58 @@ class FundController extends BaseController
     }
 
     /**
-     * 删除资金记录
+     * 删除资金记录（lockForUpdate + 锁内重读 status，防止并发回调入账后被误删）
      */
     public function destroy(int $id): void
     {
-        $fund = Fund::find($id);
-        if (! $fund) {
-            $this->error('资金记录不存在');
-        }
+        DB::transaction(function () use ($id) {
+            $fund = Fund::where('id', $id)->lockForUpdate()->first();
+            if (! $fund) {
+                $this->error('资金记录不存在');
+            }
 
-        $fund->delete();
+            if ($fund->status !== 0) {
+                $this->error('只能删除处理中的记录');
+            }
+            if (strtotime($fund->created_at) > strtotime('-2 hours')) {
+                $this->error('处理中订单 2 小时内不允许删除');
+            }
+
+            $fund->delete();
+        });
+
         $this->success();
     }
 
     /**
-     * 批量删除资金记录
+     * 批量删除资金记录（同 destroy 校验语义，失败的 id 跳过）
      */
     public function batchDestroy(GetIdsRequest $request): void
     {
         $ids = $request->validated('ids');
 
-        $funds = Fund::whereIn('id', $ids)->get();
-        if ($funds->isEmpty()) {
-            $this->error('资金记录不存在');
-        }
+        DB::transaction(function () use ($ids) {
+            $funds = Fund::whereIn('id', $ids)->lockForUpdate()->get();
+            if ($funds->isEmpty()) {
+                $this->error('资金记录不存在');
+            }
 
-        Fund::destroy($ids);
+            foreach ($funds as $fund) {
+                if ($fund->status !== 0) {
+                    continue;
+                }
+                if (strtotime($fund->created_at) > strtotime('-2 hours')) {
+                    continue;
+                }
+                $fund->delete();
+            }
+        });
+
         $this->success();
     }
 
     /**
-     * 退款
-     *
-     * 并发安全：事务内持 fund 行级锁 + 锁内 status 二次校验，防止并发双退。
-     * Fund::updating 钩子基于 getOriginal() 检查 status 转移，无法察觉并发已提交的 status 变更，
-     * 必须由此处的悲观锁保证串行化。
+     * 退款（lockForUpdate + 锁内 status 二次校验，防止并发双退）
      *
      * @throws Throwable
      */
@@ -228,9 +239,7 @@ class FundController extends BaseController
     }
 
     /**
-     * 退回
-     *
-     * 并发安全：同 refunds，fund 行级锁 + 锁内 status 校验。
+     * 退回（同 refunds 锁语义）
      *
      * @throws Throwable
      */
@@ -299,28 +308,33 @@ class FundController extends BaseController
     }
 
     /**
-     * 充值成功 使用事务 防止重复
-     *
-     * @throws Throwable
+     * 充值成功（admin 主动 check 用本地 fund 字段做 best-effort 校验，
+     * 真正的金额/支付方式校验在 User\TopUpController 的回调路径）。
      */
     protected function addfundsSuccessful(string $id, int|string $pay_sn): void
     {
-        DB::beginTransaction();
         try {
-            $fund = Fund::where([
-                'id' => $id,
-                'type' => 'addfunds',
-                'status' => 0, // processing
-            ])->lockForUpdate()->first();
+            DB::transaction(function () use ($id, $pay_sn) {
+                $fund = Fund::where([
+                    'id' => $id,
+                    'type' => 'addfunds',
+                    'status' => 0, // processing
+                ])->first();
 
-            if ($fund) {
-                $fund->status = 1; // successful
-                $fund->pay_sn = $pay_sn;
-                $fund->save();
-                DB::commit();
-            }
+                if (! $fund) {
+                    return;
+                }
+
+                Fund::transitionToSuccessful(
+                    (string) $id,
+                    (string) $fund->amount,
+                    'addfunds',
+                    (string) $fund->pay_method,
+                    (string) $pay_sn,
+                );
+            });
         } catch (Throwable) {
-            DB::rollback();
+            // 与原逻辑一致：admin check 入口异常时静默
         }
     }
 }

@@ -22,7 +22,12 @@ return new class extends Migration
             $this->convertIds();
         }
 
-        // 2. 去掉 AUTO_INCREMENT（仅在仍为自增时执行）
+        // 2. 去掉 AUTO_INCREMENT（仅 mysql；mariadb 走相同路径）
+        $driver = Schema::getConnection()->getDriverName();
+        if (! in_array($driver, ['mysql', 'mariadb'], true)) {
+            return;
+        }
+
         $column = collect(Schema::getColumns('transactions'))->firstWhere('name', 'id');
         if ($column && $column['auto_increment']) {
             DB::statement('ALTER TABLE `transactions` MODIFY `id` BIGINT UNSIGNED NOT NULL');
