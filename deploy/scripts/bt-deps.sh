@@ -121,6 +121,190 @@ check_disabled_functions() {
     log_success "PHP 函数配置已更新"
 }
 
+# 解析 BT API key
+# 优先级：env BT_KEY > /www/server/panel/config/api.json 的 token_crypt 字段
+# 写入全局：BT_KEY、BT_PANEL_PORT
+_resolve_bt_api_key() {
+    if [ -n "${BT_KEY:-}" ]; then
+        return 0
+    fi
+    local api_json="/www/server/panel/config/api.json"
+    if [ -r "$api_json" ]; then
+        # token_crypt 是 BT 11.x 对外 API key（用于 MD5 签名）
+        BT_KEY=$(awk -F'"' '/"token_crypt"/{for(i=1;i<=NF;i++) if($i=="token_crypt"){print $(i+2); exit}}' "$api_json" 2>/dev/null)
+    fi
+    # 默认面板端口（BT 11.x 自定义端口存在 /www/server/panel/data/port.pl）
+    BT_PANEL_PORT="${BT_PANEL_PORT:-}"
+    if [ -z "$BT_PANEL_PORT" ] && [ -r "/www/server/panel/data/port.pl" ]; then
+        BT_PANEL_PORT=$(tr -d '[:space:]' </www/server/panel/data/port.pl)
+    fi
+    # BT 11.x 安装时会随机生成端口写入 port.pl；fallback 用 BT 老版默认端口 8888
+    BT_PANEL_PORT="${BT_PANEL_PORT:-8888}"
+    [ -n "$BT_KEY" ]
+}
+
+# 通过 BT 11.x API 安装 PHP 扩展
+# 端点：POST /files?action=InstallSoft, name=<ext>&version=<phpv>&type=1（type=1 表示 PHP 扩展）
+# 用法：bt_install_so_via_api <ext_name>
+# 返回：0=已就绪（异步任务+php -m 验证）；非 0=失败
+bt_install_so_via_api() {
+    local ext="$1"
+    if ! _resolve_bt_api_key; then
+        return 1
+    fi
+
+    local key_md5
+    key_md5=$(printf %s "$BT_KEY" | md5sum | awk '{print $1}')
+    local now
+    now=$(date +%s)
+    local token
+    token=$(printf %s "${now}${key_md5}" | md5sum | awk '{print $1}')
+
+    local resp
+    resp=$(curl -sk -X POST "https://127.0.0.1:${BT_PANEL_PORT}/files?action=InstallSoft" \
+        -d "request_time=${now}&request_token=${token}&name=${ext}&version=${PHP_VERSION}&type=1" \
+        -m 30 2>/dev/null)
+
+    if ! echo "$resp" | grep -q '"status":[[:space:]]*true'; then
+        log_warning "BT API 返回未成功: $(echo "$resp" | head -c 200)"
+        return 1
+    fi
+    log_info "  → BT 装扩展任务已入队: $ext"
+
+    # 轮询验证就绪（最多 120s；BT 编译扩展可能慢）
+    local i=0
+    while [ "$i" -lt 60 ]; do
+        if "$PHP_CMD" -m 2>/dev/null | grep -qi "^${ext}$"; then
+            return 0
+        fi
+        sleep 2
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# 自动安装缺失扩展
+# 用法：./bt-deps.sh auto_install_ext [extra_ext1 extra_ext2 ...]
+# - base 扩展：fileinfo / intl / mbstring / calendar（Laravel 11 必备 + cal_days_in_month）
+# - extra 参数：额外扩展（bt-install.sh 在调用时显式追加 pdo_mysql）
+# - 优先用 BT 11.x API（/files?action=InstallSoft）
+# - fallback 1: 老版 BT install.sh 路径（向后兼容）
+# - fallback 2: 已编译 .so 直接 sed 启用 php.ini（PHP 内置扩展如 calendar 已随 BT 编译进 extension_dir，
+#                BT API 不可用时直接 enable 即可生效）
+# 失败的扩展回填 MANUAL_ACTIONS
+# 注：redis 不在 base 列表（项目默认 CACHE_DRIVER=file；BT 11.x 装 phpredis 还要先装 igbinary 依赖链复杂）
+auto_install_ext() {
+    local extra_exts=("$@")
+    local target_extensions=("fileinfo" "intl" "mbstring" "calendar" "${extra_exts[@]}")
+
+    log_step "尝试自动安装缺失的 PHP 扩展: ${target_extensions[*]}"
+
+    if [ -z "$PHP_VERSION" ] || [ -z "$PHP_CMD" ]; then
+        log_error "PHP 版本未检测，请先运行 detect_php_version"
+        return 1
+    fi
+
+    # fallback 老版 BT install.sh 路径
+    local legacy_install_cmd=""
+    for candidate in \
+        "/www/server/php/$PHP_VERSION/install.sh" \
+        "/www/server/php/$PHP_VERSION/install_ext.sh"; do
+        if [ -x "$candidate" ] || [ -f "$candidate" ]; then
+            legacy_install_cmd="$candidate"
+            break
+        fi
+    done
+
+    # PHP 扩展目录（用于检测 .so 是否已随 BT 编译）
+    local php_ext_dir
+    php_ext_dir=$("$PHP_CMD" -r 'echo ini_get("extension_dir");' 2>/dev/null)
+
+    local installed_any=false
+    local failed_ext=()
+    local skipped_ext=()
+
+    for ext in "${target_extensions[@]}"; do
+        # 已装则跳过
+        if $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
+            skipped_ext+=("$ext")
+            continue
+        fi
+
+        log_info "正在安装扩展: $ext"
+        local installed=false
+
+        # 路径 1：BT 11.x API（首选）
+        if bt_install_so_via_api "$ext"; then
+            log_success "扩展安装成功: $ext (via BT API)"
+            installed=true
+            installed_any=true
+        fi
+
+        # 路径 2：老版 BT install.sh fallback
+        if [ "$installed" = false ] && [ -n "$legacy_install_cmd" ]; then
+            if timeout 120 bash "$legacy_install_cmd" install "$ext" >/dev/null 2>&1 ||
+                timeout 120 bash "$legacy_install_cmd" "$ext" >/dev/null 2>&1; then
+                sleep 1
+                if $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
+                    log_success "扩展安装成功: $ext (via legacy script)"
+                    installed=true
+                    installed_any=true
+                fi
+            fi
+        fi
+
+        # 路径 3：.so 已存在但 ini 未启用（PHP 内置扩展如 calendar 常见）
+        # 检测 extension_dir/<ext>.so 是否存在 → 写 cli + fpm 两份 ini → 验证生效
+        if [ "$installed" = false ] && [ -n "$php_ext_dir" ] && [ -f "$php_ext_dir/${ext}.so" ]; then
+            log_info "  → 检测到 ${ext}.so 已编译于 $php_ext_dir，启用 ini"
+            local ini_dir="/www/server/php/$PHP_VERSION/etc"
+            for ini_file in "$ini_dir/php.ini" "$ini_dir/php-cli.ini"; do
+                if [ -f "$ini_file" ] && ! grep -qE "^[[:space:]]*extension[[:space:]]*=[[:space:]]*${ext}\.so" "$ini_file"; then
+                    echo "extension = ${ext}.so" >>"$ini_file"
+                fi
+            done
+            sleep 1
+            if $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
+                log_success "扩展启用成功: $ext (via php.ini 直写)"
+                installed=true
+                installed_any=true
+            fi
+        fi
+
+        if [ "$installed" = false ]; then
+            log_warning "扩展自动安装失败: $ext"
+            failed_ext+=("$ext")
+        fi
+    done
+
+    if [ ${#skipped_ext[@]} -gt 0 ]; then
+        log_info "已装跳过: ${skipped_ext[*]}"
+    fi
+
+    if [ "$installed_any" = "true" ]; then
+        log_info "重启 PHP-FPM 让新扩展生效"
+        if [ -f "/etc/init.d/php-fpm-$PHP_VERSION" ]; then
+            /etc/init.d/php-fpm-$PHP_VERSION restart >/dev/null 2>&1 || true
+        elif systemctl is-active --quiet "php-fpm-$PHP_VERSION" 2>/dev/null; then
+            systemctl restart "php-fpm-$PHP_VERSION" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [ ${#failed_ext[@]} -gt 0 ]; then
+        log_warning "以下扩展自动安装失败: ${failed_ext[*]}"
+        log_info "请到宝塔面板 → 软件商店 → PHP 8.${PHP_VERSION: -1} → 设置 → 安装扩展 手工安装"
+        NEED_MANUAL_ACTION=true
+        MANUAL_ACTIONS+=("以下扩展自动安装失败，请在宝塔面板手工安装:")
+        for ext in "${failed_ext[@]}"; do
+            MANUAL_ACTIONS+=("  - $ext")
+        done
+        return 1
+    fi
+
+    log_success "所有目标扩展处理完成"
+    return 0
+}
+
 # 检测 PHP 扩展
 check_php_extensions() {
     log_step "检测 PHP 扩展"
@@ -128,10 +312,17 @@ check_php_extensions() {
     # 必要扩展分类
     # - 可自动安装：宝塔面板可直接安装
     # - 需手工处理：某些版本需要手工编译或特殊处理
-    local required_ext=("pdo_mysql" "redis" "gd" "zip" "bcmath" "pcntl" "intl" "fileinfo" "openssl" "mbstring" "curl" "xml")
+    # - pdo_mysql：Laravel 连 MySQL 必备；bt-install.sh check_dependencies 调用时
+    #   通过 auto_install_ext 显式装上，缺它会让 artisan migrate 直接失败
+    # - 不含 redis：项目默认 CACHE_DRIVER=file，redis 是可选优化
+    #   而非 Laravel 11 必备；用户切到 redis driver 时再装。BT 11.x 装 phpredis 还要先装
+    #   igbinary 依赖链复杂，硬性要求会卡住绝大多数无 redis 需求的部署
+    # - calendar：composer.json require ext-calendar（cal_days_in_month 在 Date.php 用）；
+    #   PHP 内置扩展，BT 编译时已生成 calendar.so，仅需在 ini 启用（auto_install_ext 走 path 3）
+    local required_ext=("gd" "zip" "bcmath" "pcntl" "intl" "fileinfo" "openssl" "mbstring" "curl" "xml" "calendar" "pdo_mysql")
 
     # 需要手工在宝塔面板安装的扩展（无法自动安装）
-    local manual_ext=("redis" "fileinfo" "intl")
+    local manual_ext=("fileinfo" "intl")
 
     local missing_ext=()
     local missing_manual=()
@@ -174,7 +365,7 @@ check_php_extensions() {
 check_mysql() {
     log_step "检测 MySQL"
 
-    if [ -d "/www/server/mysql" ] || command -v mysql &> /dev/null; then
+    if [ -d "/www/server/mysql" ] || command -v mysql &>/dev/null; then
         log_success "MySQL 已安装"
         return 0
     else
@@ -185,26 +376,24 @@ check_mysql() {
     fi
 }
 
-# 检测 Redis
+# 检测 Redis（可选；项目默认 CACHE_DRIVER=file，redis 仅在 .env 改 driver 时才需要）
 check_redis() {
-    log_step "检测 Redis"
+    log_step "检测 Redis（可选）"
 
-    if [ -d "/www/server/redis" ] || command -v redis-server &> /dev/null; then
+    if [ -d "/www/server/redis" ] || command -v redis-server &>/dev/null; then
         log_success "Redis 已安装"
-        return 0
     else
-        log_warning "未检测到 Redis"
-        NEED_MANUAL_ACTION=true
-        MANUAL_ACTIONS+=("请在宝塔面板中安装 Redis")
-        return 1
+        log_info "未检测到 Redis（可选；项目默认 CACHE_DRIVER=file，无 Redis 不影响安装）"
+        log_info "如需切换到 Redis cache/session/queue，请在宝塔面板软件商店安装 Redis 后改 .env"
     fi
+    return 0
 }
 
 # 检测 Composer（版本 < 2.8 会导致依赖安装错误）
 check_composer() {
     log_step "检测 Composer"
 
-    if ! command -v composer &> /dev/null; then
+    if ! command -v composer &>/dev/null; then
         log_info "Composer 未安装，将在安装时自动安装（最新版）"
         return 0
     fi
@@ -293,4 +482,28 @@ main() {
     log_info "依赖检测完成"
 }
 
-main "$@"
+# 子命令派发
+# - 不带参数：原 main 流程（检测 + 提示）
+# - auto_install_ext：先 detect_php_version，再调 auto_install_ext
+case "${1:-}" in
+    auto_install_ext)
+        log_step "检测 PHP 环境"
+        if ! detect_php_version; then
+            log_error "未找到 PHP 8.3+"
+            exit 1
+        fi
+        log_success "PHP 8.${PHP_VERSION: -1}: $($PHP_CMD -v | head -1)"
+        auto_install_ext
+        exit $?
+        ;;
+    "")
+        main "$@"
+        ;;
+    *)
+        echo "未知子命令: $1"
+        echo "用法:"
+        echo "  $0                  # 检测依赖（默认）"
+        echo "  $0 auto_install_ext # 自动安装缺失 PHP 扩展（fileinfo/intl/redis）"
+        exit 1
+        ;;
+esac

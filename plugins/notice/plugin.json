@@ -3,6 +3,7 @@
   "requires": ">=0.4.2",
   "description": "公告系统插件",
   "provider": "NoticeServiceProvider",
+  "php_ext": [],
   "admin_bundle": "frontend/admin/notice-plugin.iife.js",
   "user_bundle": "frontend/user/notice-plugin.iife.js",
   "user_css": "frontend/user/notice-plugin-user.css"

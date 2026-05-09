@@ -134,8 +134,8 @@ class PluginManager
         // 获取远程版本信息
         $releases = $this->fetchRemoteReleases($resolvedUrl);
         $release = $version
-            ? $this->findReleaseByVersion($releases, $version)
-            : $this->findLatestRelease($releases);
+        ? $this->findReleaseByVersion($releases, $version)
+        : $this->findLatestRelease($releases);
 
         if (! $release) {
             throw new RuntimeException($version ? "未找到版本 $version" : '未找到可用版本');
@@ -273,8 +273,8 @@ class PluginManager
         // 获取远程版本
         $releases = $this->fetchRemoteReleases($releaseUrl);
         $release = $version
-            ? $this->findReleaseByVersion($releases, $version)
-            : $this->findLatestRelease($releases);
+        ? $this->findReleaseByVersion($releases, $version)
+        : $this->findLatestRelease($releases);
 
         if (! $release) {
             throw new RuntimeException($version ? "未找到版本 $version" : '未找到可用版本');
@@ -586,6 +586,27 @@ class PluginManager
             throw new RuntimeException("插件名不匹配：期望 {$expectedName}，实际 {$manifest['name']}");
         }
 
+        // php_ext 扩展校验（插件可声明依赖的 PHP 扩展）
+        // 空数组 / 缺字段 → 不强制要求扩展；非空数组 → 逐项 extension_loaded 校验
+        if (isset($manifest['php_ext'])) {
+            if (! is_array($manifest['php_ext'])) {
+                throw new RuntimeException('plugin.json php_ext 字段必须是数组（如 ["redis", "intl"]）');
+            }
+            $missing = [];
+            foreach ($manifest['php_ext'] as $ext) {
+                if (! is_string($ext) || $ext === '') {
+                    continue;
+                }
+                if (! extension_loaded($ext)) {
+                    $missing[] = $ext;
+                }
+            }
+            if (! empty($missing)) {
+                $list = implode(', ', $missing);
+                throw new RuntimeException("插件依赖的 PHP 扩展未加载: $list — 请联系运维启用扩展后再安装");
+            }
+        }
+
         // realpath 防路径遍历
         $realPath = realpath($path);
         $realDownloadPath = realpath($this->downloadPath) ?: $this->downloadPath;
@@ -819,15 +840,10 @@ class PluginManager
     }
 
     /**
-     * 获取项目根目录
+     * 获取项目根目录（仅支持宝塔部署）
      */
     protected function getProjectRoot(): string
     {
-        $dockerCompose = base_path('../docker-compose.yml');
-        if (File::exists($dockerCompose)) {
-            return '/var/www/html';
-        }
-
         return dirname(base_path());
     }
 

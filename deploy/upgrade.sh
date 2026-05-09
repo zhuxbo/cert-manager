@@ -2,9 +2,9 @@
 
 # SSL Manager 在线升级脚本
 # 用法:
-#   ./upgrade.sh --url http://release.example.com
-#   ./upgrade.sh --url http://release.example.com --version 0.0.11-beta
-#   ./upgrade.sh --dir /www/wwwroot/mysite  # 从 version.json 读取 release_url
+# ./upgrade.sh --url http://release.example.com
+# ./upgrade.sh --url http://release.example.com --version 0.0.11-beta
+# ./upgrade.sh --dir /www/wwwroot/mysite # 从 version.json 读取 release_url
 
 set -e
 
@@ -70,15 +70,15 @@ confirm() {
     fi
 
     if [ "$default" = "y" ]; then
-        read -p "$message [Y/n]: " choice < /dev/tty
+        read -p "$message [Y/n]: " choice </dev/tty
         case "$choice" in
-            n|N) return 1 ;;
+            n | N) return 1 ;;
             *) return 0 ;;
         esac
     else
-        read -p "$message [y/N]: " choice < /dev/tty
+        read -p "$message [y/N]: " choice </dev/tty
         case "$choice" in
-            y|Y) return 0 ;;
+            y | Y) return 0 ;;
             *) return 1 ;;
         esac
     fi
@@ -86,13 +86,64 @@ confirm() {
 
 file_sha256() {
     local file="$1"
-    if command -v sha256sum &> /dev/null; then
+    if command -v sha256sum &>/dev/null; then
         sha256sum "$file" | cut -d' ' -f1
-    elif command -v shasum &> /dev/null; then
+    elif command -v shasum &>/dev/null; then
         shasum -a 256 "$file" | cut -d' ' -f1
     else
         openssl dgst -sha256 "$file" | awk '{print $NF}'
     fi
+}
+
+# 把 latest/dev 占位符解析成具体版本号（与 install.sh _resolve_version 对齐）
+# 用法：_resolve_version <releases.json file> <input_version: latest|dev|X.Y.Z[-beta]>
+# 返回：解析后的具体版本号（如 0.4.23-beta）
+#
+# 实现：用 `{`/`}` 计数维护深度（depth），在 depth 1→≥2 时进入 release 块、≥2→1 时退出并判定。
+# 旧实现（仅匹配 `^[[:space:]]*\{[[:space:]]*$/` 行作为块边界）会被 `assets` 内嵌的 `{`
+# 误触发块重置，导致 indent=2 格式（json.dump 默认）下第一个 release 永远解析失败。
+_resolve_version() {
+    local releases_file="$1"
+    local input="$2"
+    if [[ "$input" != "latest" ]] && [[ "$input" != "dev" ]]; then
+        echo "$input"
+        return 0
+    fi
+    awk -v target="$input" '
+        BEGIN { depth = 0; tag = ""; pre = "" }
+        {
+            line = $0
+            n_open = 0; n_close = 0
+            s = line; len = length(s)
+            for (i = 1; i <= len; i++) {
+                c = substr(s, i, 1)
+                if (c == "{") n_open++
+                else if (c == "}") n_close++
+            }
+            new_depth = depth + n_open - n_close
+
+            if (depth == 1 && new_depth >= 2) { tag = ""; pre = "" }
+
+            if (new_depth >= 2 || depth >= 2) {
+                if (match(line, /"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"/)) {
+                    t = substr(line, RSTART, RLENGTH)
+                    gsub(/.*"tag_name"[[:space:]]*:[[:space:]]*"v/, "", t)
+                    gsub(/".*/, "", t)
+                    tag = t
+                }
+ if (match(line, /"prerelease"[[:space:]]*:[[:space:]]*true/)) pre = "true"
+                if (match(line, /"prerelease"[[:space:]]*:[[:space:]]*false/)) pre = "false"
+            }
+
+            if (depth >= 2 && new_depth == 1) {
+                if (tag != "") {
+                    if (target == "latest" && pre == "false") { print tag; exit }
+ if (target == "dev" && pre == "true" ) { print tag; exit }
+                }
+            }
+            depth = new_depth
+        }
+    ' "$releases_file"
 }
 
 is_china_server() {
@@ -116,17 +167,6 @@ is_china_server() {
     return 1
 }
 
-check_docker_compose() {
-    if command -v docker-compose &> /dev/null; then
-        echo "docker-compose"
-        return 0
-    elif docker compose version &> /dev/null; then
-        echo "docker compose"
-        return 0
-    fi
-    return 1
-}
-
 # 版本比较（v1 > v2 返回 0）
 version_gt() {
     local v1=$(echo "$1" | sed 's/^v//' | sed 's/-.*//')
@@ -144,17 +184,23 @@ version_gt() {
 # 检测函数
 # ========================================
 
-# 检测安装目录和部署模式
+# 检测安装目录（仅支持宝塔部署，DEPLOY_MODE 固定为 bt）
 detect_install() {
-    # 如果已手动指定目录，验证并检测模式
+    # 老 docker 部署的拒绝（兼容性提示）
+    _reject_legacy_docker() {
+        if [ -f "$1/docker-compose.yml" ]; then
+            log_error "检测到 Docker 部署目录: $1"
+            log_error "已移除 Docker 部署支持。请迁移到宝塔部署后再运行 upgrade.sh。"
+            return 1
+        fi
+        return 0
+    }
+
+    # 如果已手动指定目录
     if [ -n "$INSTALL_DIR" ]; then
-        # 优先检测 .ssl-manager 标记文件，回退到 artisan
         if [ -f "$INSTALL_DIR/backend/.ssl-manager" ] || [ -f "$INSTALL_DIR/backend/artisan" ]; then
-            if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-                DEPLOY_MODE="docker"
-            else
-                DEPLOY_MODE="bt"
-            fi
+            _reject_legacy_docker "$INSTALL_DIR" || return 1
+            DEPLOY_MODE="bt"
             return 0
         fi
         log_error "指定目录无效: $INSTALL_DIR"
@@ -169,12 +215,11 @@ detect_install() {
 
     # 预设目录快速检测
     local preset_dirs=(
-        "/opt/ssl-manager"
         "/www/wwwroot/ssl-manager"
+        "/opt/ssl-manager"
     )
 
     for dir in "${preset_dirs[@]}"; do
-        # 优先检测 .ssl-manager，回退到 artisan
         if [ -f "$dir/backend/.ssl-manager" ] || [ -f "$dir/backend/artisan" ]; then
             found_dirs+=("$dir")
         fi
@@ -184,7 +229,6 @@ detect_install() {
     while IFS= read -r marker; do
         [ -z "$marker" ] && continue
         local dir=$(dirname "$marker" | xargs dirname)
-        # 避免重复
         local already_found=false
         for fd in "${found_dirs[@]}"; do
             [ "$fd" = "$dir" ] && already_found=true && break
@@ -192,28 +236,25 @@ detect_install() {
         $already_found || found_dirs+=("$dir")
     done < <(find /opt /www/wwwroot /home -maxdepth 4 -name ".ssl-manager" -path "*/backend/*" 2>/dev/null)
 
-    # 根据找到的数量处理
     if [ ${#found_dirs[@]} -eq 0 ]; then
         return 1
     elif [ ${#found_dirs[@]} -eq 1 ]; then
         INSTALL_DIR="${found_dirs[0]}"
-        [ -f "$INSTALL_DIR/docker-compose.yml" ] && DEPLOY_MODE="docker" || DEPLOY_MODE="bt"
+        _reject_legacy_docker "$INSTALL_DIR" || return 1
+        DEPLOY_MODE="bt"
         return 0
     else
-        # 多个安装，让用户选择
         log_info "检测到多个 SSL Manager 安装："
         for i in "${!found_dirs[@]}"; do
-            local dir="${found_dirs[$i]}"
-            local mode="宝塔"
-            [ -f "$dir/docker-compose.yml" ] && mode="Docker"
-            echo "  $((i+1)). $dir [$mode]"
+            echo " $((i + 1)). ${found_dirs[$i]}"
         done
 
         while true; do
-            read -p "请选择 (1-${#found_dirs[@]}): " choice < /dev/tty
+            read -p "请选择 (1-${#found_dirs[@]}): " choice </dev/tty
             if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#found_dirs[@]} ]; then
-                INSTALL_DIR="${found_dirs[$((choice-1))]}"
-                [ -f "$INSTALL_DIR/docker-compose.yml" ] && DEPLOY_MODE="docker" || DEPLOY_MODE="bt"
+                INSTALL_DIR="${found_dirs[$((choice - 1))]}"
+                _reject_legacy_docker "$INSTALL_DIR" || return 1
+                DEPLOY_MODE="bt"
                 return 0
             fi
             log_error "无效选择"
@@ -235,7 +276,7 @@ get_current_version() {
         fi
     fi
 
-    # 回退到 backend 目录（Docker 环境）
+    # 回退到 backend 目录（兼容旧版本路径）
     if [ -f "$backend_version" ]; then
         local ver=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$backend_version" | head -1 | cut -d'"' -f4)
         if [ -n "$ver" ]; then
@@ -314,7 +355,7 @@ download_upgrade_package() {
         return 1
     fi
 
-    local base_url="${CUSTOM_RELEASE_URL%/}"  # 移除末尾斜杠
+    local base_url="${CUSTOM_RELEASE_URL%/}" # 移除末尾斜杠
     local url=""
 
     # 构建 URL
@@ -348,11 +389,11 @@ download_upgrade_package() {
     log_error "下载失败 (curl exit code: $curl_exit)"
     [ -n "$curl_output" ] && log_error "$curl_output"
     case $curl_exit in
-        6)  log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
-        7)  log_info "提示: 无法连接服务器" ;;
+        6) log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
+        7) log_info "提示: 无法连接服务器" ;;
         22) log_info "提示: 服务器返回错误（文件可能不存在）" ;;
         28) log_info "提示: 下载超时" ;;
-        35|51|60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
+        35 | 51 | 60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
     esac
     return 1
 }
@@ -421,7 +462,7 @@ create_backup() {
     fi
 
     # 记录备份信息（与 PHP BackupManager 格式一致）
-    cat > "$backup_path/backup.json" << EOF
+    cat >"$backup_path/backup.json" <<EOF
 {
     "id": "$backup_id",
     "version": "$current_version",
@@ -463,14 +504,8 @@ perform_upgrade() {
 
     # 3. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        local compose_cmd=$(check_docker_compose)
-        cd "$INSTALL_DIR"
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan down --retry=60" || true
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan down --retry=60 || true
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan down --retry=60 || true
 
     # 4. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."
@@ -583,12 +618,8 @@ perform_upgrade() {
 
         # 替换 __PROJECT_ROOT__ 占位符
         local project_root
-        if [ "$DEPLOY_MODE" = "docker" ]; then
-            project_root="/var/www/html"
-        else
-            # 宝塔环境使用实际安装目录
-            project_root="$INSTALL_DIR"
-        fi
+        # 宝塔环境使用实际安装目录
+        project_root="$INSTALL_DIR"
 
         if [ -f "$INSTALL_DIR/nginx/manager.conf" ]; then
             sed -i "s|__PROJECT_ROOT__|$project_root|g" "$INSTALL_DIR/nginx/manager.conf"
@@ -599,11 +630,7 @@ perform_upgrade() {
     # 替换 web.conf 中的占位符
     if [ -f "$INSTALL_DIR/frontend/web/web.conf" ]; then
         local project_root
-        if [ "$DEPLOY_MODE" = "docker" ]; then
-            project_root="/var/www/html"
-        else
-            project_root="$INSTALL_DIR"
-        fi
+        project_root="$INSTALL_DIR"
         sed -i "s|__PROJECT_ROOT__|$project_root|g" "$INSTALL_DIR/frontend/web/web.conf"
         log_info "已替换 web.conf 中的路径占位符"
     fi
@@ -614,7 +641,7 @@ perform_upgrade() {
         local old_version_json="$INSTALL_DIR/version.json"
 
         # 使用 Python 读取旧的 release_url（正确处理 JSON 转义）
-        if [ -f "$old_version_json" ] && command -v python3 &> /dev/null; then
+        if [ -f "$old_version_json" ] && command -v python3 &>/dev/null; then
             old_release_url=$(python3 -c "
 import json
 try:
@@ -632,7 +659,7 @@ except:
         # 如果存在旧的 release_url，合并到新的 version.json
         if [ -n "$old_release_url" ]; then
             # 使用 Python 处理 JSON 合并（管理员手工运行，变量来自可信的本地文件）
-            python3 << PYEOF
+            python3 <<PYEOF
 import json
 with open("$INSTALL_DIR/version.json", "r") as f:
     data = json.load(f)
@@ -697,34 +724,14 @@ PYEOF
     done
     mkdir -p "$backups_dir" "$backups_dir/upgrades" 2>/dev/null || true
 
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        # 在容器内执行权限修复（宿主机可能没有 www-data 用户）
-        cd "$INSTALL_DIR"
-        # backend/storage
-        $compose_cmd exec -T php chown -R www-data:www-data /var/www/html/backend/storage 2>/dev/null || true
-        $compose_cmd exec -T php chmod -R 775 /var/www/html/backend/storage 2>/dev/null || true
-        # 根目录 backups
-        $compose_cmd exec -T php chown -R www-data:www-data /var/www/html/backups 2>/dev/null || true
-        $compose_cmd exec -T php chmod -R 775 /var/www/html/backups 2>/dev/null || true
-        # version.json（版本配置，需要可写以支持切换通道）
-        $compose_cmd exec -T php chown www-data:www-data /var/www/html/version.json 2>/dev/null || true
-        $compose_cmd exec -T php chmod 664 /var/www/html/version.json 2>/dev/null || true
-        # .env 文件（让 www-data 可读，用于升级时备份）
-        $compose_cmd exec -T php chown www-data:www-data /var/www/html/backend/.env 2>/dev/null || true
-        $compose_cmd exec -T php chmod 600 /var/www/html/backend/.env 2>/dev/null || true
-        # frontend 目录（宿主机上设置，让 www-data 可读以支持备份）
-        chown -R 82:82 "$INSTALL_DIR/frontend" 2>/dev/null || true
-        chmod -R 755 "$INSTALL_DIR/frontend" 2>/dev/null || true
-    else
-        # 宝塔模式
-        chown -R www:www "$backend_storage" 2>/dev/null || true
-        chmod -R 775 "$backend_storage" 2>/dev/null || true
-        chown -R www:www "$backups_dir" 2>/dev/null || true
-        chmod -R 775 "$backups_dir" 2>/dev/null || true
-        [ -f "$version_file" ] && chown www:www "$version_file" && chmod 664 "$version_file"
-        # .env 文件（让 www 可读，用于升级时备份）
-        [ -f "$INSTALL_DIR/backend/.env" ] && chown www:www "$INSTALL_DIR/backend/.env" && chmod 600 "$INSTALL_DIR/backend/.env"
-    fi
+    # 宝塔模式
+    chown -R www:www "$backend_storage" 2>/dev/null || true
+    chmod -R 775 "$backend_storage" 2>/dev/null || true
+    chown -R www:www "$backups_dir" 2>/dev/null || true
+    chmod -R 775 "$backups_dir" 2>/dev/null || true
+    [ -f "$version_file" ] && chown www:www "$version_file" && chmod 664 "$version_file"
+    # .env 文件（让 www 可读，用于升级时备份）
+    [ -f "$INSTALL_DIR/backend/.env" ] && chown www:www "$INSTALL_DIR/backend/.env" && chmod 600 "$INSTALL_DIR/backend/.env"
 
     # 9. 检测依赖变化，决定是否运行 composer install
     log_step "检测依赖变化..."
@@ -765,102 +772,54 @@ PYEOF
         fi
 
         # 执行 composer install
-        if [ "$DEPLOY_MODE" = "docker" ]; then
-            cd "$INSTALL_DIR"
-            if [ "$use_china_mirror" = true ]; then
-                $compose_cmd exec -T php composer config repo.packagist composer https://mirrors.aliyun.com/composer/
-            fi
-            $compose_cmd exec -T php composer install --no-dev --optimize-autoloader
-        else
-            cd "$INSTALL_DIR/backend"
-            if [ "$use_china_mirror" = true ]; then
-                composer config repo.packagist composer https://mirrors.aliyun.com/composer/
-            fi
-            COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
+        cd "$INSTALL_DIR/backend"
+        if [ "$use_china_mirror" = true ]; then
+            composer config repo.packagist composer https://mirrors.aliyun.com/composer/
         fi
+        COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
     fi
 
     # 10. 运行数据库迁移
     log_step "运行数据库迁移..."
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        cd "$INSTALL_DIR"
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan migrate --force"
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan migrate --force
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan migrate --force
 
     # 10.1 初始化/更新数据
     log_step "更新数据..."
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        cd "$INSTALL_DIR"
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan db:seed --force" || true
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan db:seed --force || true
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan db:seed --force || true
 
     # 10.2 数据库结构校验
     log_step "数据库结构校验..."
     local structure_check_result=0
     local structure_output=""
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        cd "$INSTALL_DIR"
-        # 检查结构差异
-        structure_output=$($compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan db:structure --check" 2>&1) || true
-        if echo "$structure_output" | grep -q "数据库结构完全一致"; then
-            log_success "数据库结构校验通过"
-        else
-            log_warning "检测到数据库结构差异："
-            echo "$structure_output" | head -50
-            echo ""
-            log_warning "尝试自动修复（仅 ADD 操作）..."
-            if $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan db:structure --fix --skip-foreign-keys" 2>&1; then
-                log_success "数据库结构自动修复完成"
-            else
-                log_warning "部分结构差异需要手动处理"
-                structure_check_result=1
-            fi
-            echo ""
-            echo -e "${YELLOW}提示: 使用以下命令查看和修复结构差异：${NC}"
-            echo "  php artisan db:structure --check  # 查看差异"
-            echo "  php artisan db:structure --fix    # 自动修复"
-        fi
+    cd "$INSTALL_DIR/backend"
+    # 检查结构差异
+    structure_output=$(php artisan db:structure --check 2>&1) || true
+    if echo "$structure_output" | grep -q "数据库结构完全一致"; then
+        log_success "数据库结构校验通过"
     else
-        cd "$INSTALL_DIR/backend"
-        # 检查结构差异
-        structure_output=$(php artisan db:structure --check 2>&1) || true
-        if echo "$structure_output" | grep -q "数据库结构完全一致"; then
-            log_success "数据库结构校验通过"
+        log_warning "检测到数据库结构差异："
+        echo "$structure_output" | head -50
+        echo ""
+        log_warning "尝试自动修复（仅 ADD 操作）..."
+        if php artisan db:structure --fix --skip-foreign-keys 2>&1; then
+            log_success "数据库结构自动修复完成"
         else
-            log_warning "检测到数据库结构差异："
-            echo "$structure_output" | head -50
-            echo ""
-            log_warning "尝试自动修复（仅 ADD 操作）..."
-            if php artisan db:structure --fix --skip-foreign-keys 2>&1; then
-                log_success "数据库结构自动修复完成"
-            else
-                log_warning "部分结构差异需要手动处理"
-                structure_check_result=1
-            fi
-            echo ""
-            echo -e "${YELLOW}提示: 使用以下命令查看和修复结构差异：${NC}"
-            echo "  php artisan db:structure --check  # 查看差异"
-            echo "  php artisan db:structure --fix    # 自动修复"
+            log_warning "部分结构差异需要手动处理"
+            structure_check_result=1
         fi
+        echo ""
+        echo -e "${YELLOW}提示: 使用以下命令查看和修复结构差异：${NC}"
+        echo " php artisan db:structure --check # 查看差异"
+        echo " php artisan db:structure --fix # 自动修复"
     fi
 
     # 11. 清理缓存
     log_step "清理缓存..."
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        cd "$INSTALL_DIR"
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan config:cache" || true
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan route:cache" || true
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan config:cache || true
-        php artisan route:cache || true
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan config:cache || true
+    php artisan route:cache || true
 
     # 12. 完整性校验
     log_step "完整性校验..."
@@ -889,66 +848,33 @@ PYEOF
 
     # 13. 退出维护模式
     log_step "退出维护模式..."
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        cd "$INSTALL_DIR"
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan up"
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan up
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan up
 
     # 最终权限检查
     log_step "确认文件权限..."
 
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        # Docker 模式：在容器内执行权限修复
-        cd "$INSTALL_DIR"
-        # backend 整个目录需要 www-data 可写以支持在线升级
-        $compose_cmd exec -T php chown -R www-data:www-data /var/www/html/backend 2>/dev/null || true
-        $compose_cmd exec -T php chmod -R 755 /var/www/html/backend 2>/dev/null || true
-        $compose_cmd exec -T php chmod -R 775 /var/www/html/backend/storage 2>/dev/null || true
-        # 根目录 backups
-        $compose_cmd exec -T php chown -R www-data:www-data /var/www/html/backups 2>/dev/null || true
-        $compose_cmd exec -T php chmod -R 775 /var/www/html/backups 2>/dev/null || true
-        # version.json（版本配置，需要可写以支持切换通道）
-        $compose_cmd exec -T php chown www-data:www-data /var/www/html/version.json 2>/dev/null || true
-        $compose_cmd exec -T php chmod 664 /var/www/html/version.json 2>/dev/null || true
-        # .env 文件（让 www-data 可读，用于升级时备份）
-        $compose_cmd exec -T php chown www-data:www-data /var/www/html/backend/.env 2>/dev/null || true
-        $compose_cmd exec -T php chmod 600 /var/www/html/backend/.env 2>/dev/null || true
-        # frontend 目录（宿主机上设置，让 www-data 可读以支持备份）
-        chown -R 82:82 "$INSTALL_DIR/frontend" 2>/dev/null || true
-        chmod -R 755 "$INSTALL_DIR/frontend" 2>/dev/null || true
-    else
-        # 宝塔模式：设置整个安装目录的权限
-        chown -R www:www "$INSTALL_DIR" 2>/dev/null || true
-        # 确保关键目录可写
-        chmod -R 775 "$INSTALL_DIR/backend/storage" 2>/dev/null || true
-        chmod -R 775 "$INSTALL_DIR/backups" 2>/dev/null || true
-        [ -f "$INSTALL_DIR/version.json" ] && chmod 664 "$INSTALL_DIR/version.json"
-        # .env 文件（让 www 可读，用于升级时备份）
-        [ -f "$INSTALL_DIR/backend/.env" ] && chown www:www "$INSTALL_DIR/backend/.env" && chmod 600 "$INSTALL_DIR/backend/.env"
-    fi
+    # 宝塔模式：设置整个安装目录的权限
+    chown -R www:www "$INSTALL_DIR" 2>/dev/null || true
+    # 确保关键目录可写
+    chmod -R 775 "$INSTALL_DIR/backend/storage" 2>/dev/null || true
+    chmod -R 775 "$INSTALL_DIR/backups" 2>/dev/null || true
+    [ -f "$INSTALL_DIR/version.json" ] && chmod 664 "$INSTALL_DIR/version.json"
+    # .env 文件（让 www 可读，用于升级时备份）
+    [ -f "$INSTALL_DIR/backend/.env" ] && chown www:www "$INSTALL_DIR/backend/.env" && chmod 600 "$INSTALL_DIR/backend/.env"
 
     # .env 文件敏感信息保护（root 和 web 用户可读）
     [ -f "$INSTALL_DIR/.env" ] && chmod 640 "$INSTALL_DIR/.env"
 
     # 重启服务以加载新配置
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        log_step "重启服务..."
-        cd "$INSTALL_DIR"
-        $compose_cmd restart nginx php queue scheduler 2>/dev/null || true
-        log_info "服务已重启"
+    # 宝塔环境：reload Nginx 以加载更新后的 manager.conf
+    log_step "重载 Nginx 配置..."
+    if command -v nginx &>/dev/null; then
+        nginx -t 2>/dev/null && nginx -s reload 2>/dev/null && log_info "Nginx 已重载" || log_warning "Nginx 重载失败，请手动执行: nginx -s reload"
+    elif [ -f /etc/init.d/nginx ]; then
+        /etc/init.d/nginx reload 2>/dev/null && log_info "Nginx 已重载" || log_warning "Nginx 重载失败"
     else
-        # 宝塔环境：reload Nginx 以加载更新后的 manager.conf
-        log_step "重载 Nginx 配置..."
-        if command -v nginx &> /dev/null; then
-            nginx -t 2>/dev/null && nginx -s reload 2>/dev/null && log_info "Nginx 已重载" || log_warning "Nginx 重载失败，请手动执行: nginx -s reload"
-        elif [ -f /etc/init.d/nginx ]; then
-            /etc/init.d/nginx reload 2>/dev/null && log_info "Nginx 已重载" || log_warning "Nginx 重载失败"
-        else
-            log_warning "未找到 Nginx，请手动重载 Nginx 配置"
-        fi
+        log_warning "未找到 Nginx，请手动重载 Nginx 配置"
     fi
 
     log_success "升级完成！版本: $target_version"
@@ -983,14 +909,8 @@ rollback() {
     fi
 
     # 进入维护模式
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        local compose_cmd=$(check_docker_compose)
-        cd "$INSTALL_DIR"
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan down" || true
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan down || true
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan down || true
 
     # 恢复文件（支持新旧两种备份格式）
     log_info "恢复文件..."
@@ -1048,12 +968,8 @@ rollback() {
     fi
 
     # 退出维护模式
-    if [ "$DEPLOY_MODE" = "docker" ]; then
-        $compose_cmd exec -T php sh -c "cd /var/www/html/backend && php artisan up"
-    else
-        cd "$INSTALL_DIR/backend"
-        php artisan up
-    fi
+    cd "$INSTALL_DIR/backend"
+    php artisan up
 
     log_success "回滚完成"
 }
@@ -1068,27 +984,27 @@ SSL Manager 在线升级脚本
 用法: $0 [选项]
 
 选项:
-  --url URL              指定 release 服务 URL（覆盖 version.json 配置）
-  --version, -v VERSION  指定升级版本
-                         latest   最新稳定版（默认）
-                         dev      最新开发版
-                         x.x.x    指定版本号
-  --file FILE            使用本地升级包（跳过下载）
-  --dir DIR              指定安装目录（默认自动检测）
-  -y, --yes              自动确认，非交互模式
-  check                  仅检查更新
-  rollback               回滚到上一版本
-  -h, --help             显示帮助
+ --url URL 指定 release 服务 URL（覆盖 version.json 配置）
+ --version, -v VERSION 指定升级版本
+ latest 最新稳定版（默认）
+ dev 最新开发版
+ x.x.x 指定版本号
+ --file FILE 使用本地升级包（跳过下载）
+ --dir DIR 指定安装目录（默认自动检测）
+ -y, --yes 自动确认，非交互模式
+ check 仅检查更新
+ rollback 回滚到上一版本
+ -h, --help 显示帮助
 
 环境变量:
-  FORCE_CHINA_MIRROR=1   强制使用国内镜像
+ FORCE_CHINA_MIRROR=1 强制使用国内镜像
 
 示例:
-  $0 --url http://release.example.com              # 升级到最新稳定版
-  $0 --url http://release.example.com -v 1.0.0     # 升级到指定版本
-  $0 --dir /www/wwwroot/mysite                     # 从 version.json 读取 release_url
-  $0 --file /path/to/pkg.zip                       # 使用本地包升级
-  $0 rollback                                      # 回滚
+ $0 --url http://release.example.com # 升级到最新稳定版
+ $0 --url http://release.example.com -v 1.0.0 # 升级到指定版本
+ $0 --dir /www/wwwroot/mysite # 从 version.json 读取 release_url
+ $0 --file /path/to/pkg.zip # 使用本地包升级
+ $0 rollback # 回滚
 
 注意: release 服务 URL 必须通过 --url 参数指定，或在 version.json 中配置 release_url
 
@@ -1102,7 +1018,7 @@ EOF
 show_banner() {
     echo ""
     echo -e "${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║${NC}           ${GREEN}SSL Manager 在线升级程序${NC}                        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${GREEN}SSL Manager 在线升级程序${NC} ${CYAN}║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -1118,7 +1034,7 @@ main() {
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --version|-v)
+            --version | -v)
                 target_version="$2"
                 shift 2
                 ;;
@@ -1134,7 +1050,7 @@ main() {
                 INSTALL_DIR="$2"
                 shift 2
                 ;;
-            -y|--yes)
+            -y | --yes)
                 AUTO_YES=true
                 shift
                 ;;
@@ -1146,7 +1062,7 @@ main() {
                 action="rollback"
                 shift
                 ;;
-            -h|--help)
+            -h | --help)
                 show_help
                 ;;
             *)
@@ -1209,12 +1125,75 @@ main() {
 
             # 如果没有指定本地包，则下载
             if [ -z "$upgrade_file" ]; then
+                # 完整性校验链：先下 releases.json + 解析 latest/dev 占位符为具体版本
+                # 让后续下载用具体版本路径（与 install.sh 设计对齐），sha256 校验可拿到 asset.sha256
+                local releases_file="$TEMP_DIR/releases.json"
+                local base_url="${CUSTOM_RELEASE_URL%/}"
+                log_step "下载 releases.json 索引..."
+                if ! curl -fsSL --connect-timeout 10 --max-time 30 \
+                    -o "$releases_file" "$base_url/releases.json" 2>/dev/null; then
+                    log_error "下载 releases.json 失败（$base_url/releases.json）"
+                    log_info "请检查 release 服务可达性，或用 --file 指定本地升级包跳过下载"
+                    exit 1
+                fi
+
+                # 解析 latest/dev → 具体版本（_resolve_version 对非占位符输入透传）
+                local resolved_version
+                resolved_version=$(_resolve_version "$releases_file" "$target_version")
+                if [ -z "$resolved_version" ]; then
+                    log_error "无法从 releases.json 解析 $target_version 对应的具体版本"
+                    log_info "可能原因：releases.json 缺少 prerelease=$([ \"$target_version\" = dev ] && echo true || echo false) 的条目"
+                    exit 1
+                fi
+                if [ "$resolved_version" != "$target_version" ]; then
+                    log_info "$target_version → v$resolved_version"
+                    target_version="$resolved_version"
+                fi
+
                 log_step "下载升级包..."
                 upgrade_file="$TEMP_DIR/ssl-manager-upgrade.zip"
                 if ! download_upgrade_package "$target_version" "$upgrade_file"; then
                     log_error "无法下载升级包"
                     exit 1
                 fi
+
+                # 完整性校验链：sha256 强校验（覆盖所有版本，不再跳过 latest/dev）
+                log_step "校验升级包 sha256..."
+                local asset_name="ssl-manager-upgrade-${target_version}.zip"
+                local expected_sha
+                expected_sha=$(awk -v ver="v$target_version" -v aname="$asset_name" '
+                    BEGIN { in_rel = 0; in_asset = 0 }
+                    match($0, /"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"/) {
+                        s = substr($0, RSTART, RLENGTH)
+                        gsub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", s); gsub(/".*/, "", s)
+                        in_rel = (s == ver) ? 1 : 0; in_asset = 0; next
+                    }
+                    in_rel && match($0, /"name"[[:space:]]*:[[:space:]]*"[^"]+\.zip"/) {
+                        s = substr($0, RSTART, RLENGTH)
+                        gsub(/.*"name"[[:space:]]*:[[:space:]]*"/, "", s); gsub(/".*/, "", s)
+                        in_asset = (s == aname) ? 1 : 0; next
+                    }
+                    in_rel && in_asset && match($0, /"sha256"[[:space:]]*:[[:space:]]*"[^"]+"/) {
+                        s = substr($0, RSTART, RLENGTH)
+                        gsub(/.*"sha256"[[:space:]]*:[[:space:]]*"/, "", s); gsub(/".*/, "", s)
+                        print s; exit
+                    }
+                ' "$releases_file")
+
+                if [ -z "$expected_sha" ]; then
+                    log_error "releases.json 缺失 v$target_version $asset_name sha256"
+                    exit 1
+                fi
+                local actual_sha=$(file_sha256 "$upgrade_file")
+                expected_sha=$(echo "$expected_sha" | tr 'A-Z' 'a-z')
+                actual_sha=$(echo "$actual_sha" | tr 'A-Z' 'a-z')
+                if [ "$actual_sha" != "$expected_sha" ]; then
+                    log_error "升级包 SHA256 校验失败"
+                    log_error " 期望: $expected_sha"
+                    log_error " 实际: $actual_sha"
+                    exit 1
+                fi
+                log_success "升级包 sha256 校验通过"
             fi
 
             # 验证升级包
