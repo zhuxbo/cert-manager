@@ -32,6 +32,7 @@
       ".env.local",
       ".env.production",
       ".env.prod",
+      ".env.testing",
       ".phpunit.cache/",
       ".phpunit.result.cache",
       ".phpstorm.meta.php",
@@ -39,13 +40,13 @@
       "_ide_helper_models.php",
       "storage/debugbar/",
       "tests/",
+      "scripts/",
       "phpunit.xml",
       "phpstan.neon",
       "*.log",
       "README.md",
       "LICENSE",
       "INSTALL.md",
-      "DATABASE_SYNC.md",
       "JRE_INSTALL.md"
     ]
   },
@@ -57,6 +58,8 @@
         "backend/storage/backups/",
         "backend/storage/logs/*.log",
         "backend/storage/framework/cache/*",
+        "frontend/easy/",
+        "manifest.json",
         "/config.json"
       ]
     },
@@ -71,9 +74,11 @@
         "backend/public/install-assets/",
         "frontend/admin/logo.svg",
         "frontend/admin/platform-config.json",
+        "frontend/easy/",
         "frontend/user/logo.svg",
         "frontend/user/platform-config.json",
-        "frontend/user/qrcode.png"
+        "frontend/user/qrcode.png",
+        "manifest.json"
       ]
     }
   }

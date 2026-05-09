@@ -72,7 +72,7 @@ if [ "$NEED_INSTALL" = true ]; then
         --prefer-dist \
         --optimize-autoloader
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "$CURRENT_HASH" > "$HASH_FILE"
+    echo "$CURRENT_HASH" >"$HASH_FILE"
 fi
 
 # 清理开发环境的包发现缓存，避免带入生产环境
