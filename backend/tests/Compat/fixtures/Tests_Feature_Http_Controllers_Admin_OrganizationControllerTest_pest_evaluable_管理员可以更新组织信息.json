@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrganizationControllerTest::__pest_evaluable_管理员可以更新组织信息",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/organization/{id}",
+            "request_keys": [
+                "address",
+                "city",
+                "country",
+                "name",
+                "phone",
+                "postcode",
+                "registration_number",
+                "state",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

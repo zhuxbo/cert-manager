@@ -1,0 +1,59 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_管理员可以获取系统概览统计",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/system-overview",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "monthly": {
+                        "total_users": "integer",
+                        "total_orders": "integer",
+                        "active_orders": "integer",
+                        "expiring_orders": "integer"
+                    },
+                    "daily": {
+                        "api_calls": "integer",
+                        "api_errors": "integer",
+                        "error_rate": "integer",
+                        "version_stats": "array<unknown>"
+                    },
+                    "finance": {
+                        "daily": {
+                            "recharge": "integer",
+                            "consumption": "integer",
+                            "prev_recharge": "integer",
+                            "prev_consumption": "integer"
+                        },
+                        "weekly": {
+                            "recharge": "integer",
+                            "consumption": "integer",
+                            "prev_recharge": "integer",
+                            "prev_consumption": "integer"
+                        },
+                        "monthly": {
+                            "recharge": "integer",
+                            "consumption": "integer",
+                            "prev_recharge": "integer",
+                            "prev_consumption": "integer"
+                        }
+                    },
+                    "new_users": {
+                        "daily": "integer",
+                        "weekly": "integer",
+                        "monthly": "integer"
+                    },
+                    "new_orders": {
+                        "daily": "integer",
+                        "weekly": "integer",
+                        "monthly": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

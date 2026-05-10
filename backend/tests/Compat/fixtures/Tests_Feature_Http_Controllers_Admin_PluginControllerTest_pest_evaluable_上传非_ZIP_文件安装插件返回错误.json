@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_上传非_ZIP_文件安装插件返回错误",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/plugin/install",
+            "request_keys": [
+                "file"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

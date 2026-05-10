@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AuthControllerTest::__pest_evaluable_管理员使用错误密码登录失败",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/login",
+            "request_keys": [
+                "account",
+                "password"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

@@ -1,0 +1,20 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserControllerTest::__pest_evaluable_管理员可以更新用户信息",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/user/{id}",
+            "request_keys": [
+                "email",
+                "level_code",
+                "status",
+                "username"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

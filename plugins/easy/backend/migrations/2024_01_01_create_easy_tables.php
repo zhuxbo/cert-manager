@@ -14,7 +14,7 @@ return new class extends Migration
                 $table->string('pay_method', 50)->nullable();
                 $table->string('sign', 100)->nullable();
                 $table->integer('type')->nullable();
-                $table->json('data')->nullable();
+                $table->text('data')->nullable();
                 $table->string('tid', 100)->nullable()->index();
                 $table->string('refund_id', 100)->nullable();
                 $table->string('status', 50)->nullable();
@@ -35,8 +35,8 @@ return new class extends Migration
                 $table->id();
                 $table->string('method', 10)->nullable();
                 $table->text('url')->nullable();
-                $table->json('params')->nullable();
-                $table->json('response')->nullable();
+                $table->text('params')->nullable();
+                $table->text('response')->nullable();
                 $table->string('ip', 50)->nullable();
                 $table->tinyInteger('status')->default(0);
                 $table->timestamp('created_at')->nullable();

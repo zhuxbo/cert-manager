@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_成功记录部署时间",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy/callback",
+            "request_keys": [
+                "order_id",
+                "status"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "status": "string",
+                    "recorded": "boolean",
+                    "renew_before_days": "integer"
+                }
+            }
+        }
+    ]
+}

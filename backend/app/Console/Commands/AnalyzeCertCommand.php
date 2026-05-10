@@ -102,7 +102,7 @@ class AnalyzeCertCommand extends Command
         // 问题1: orders.latest_cert_id 与 certs.order_id 不匹配
         $latestCertErrors = DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->count();
@@ -197,7 +197,7 @@ class AnalyzeCertCommand extends Command
 
         $errors = DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->select(

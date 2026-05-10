@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrganizationControllerTest::__pest_evaluable_管理员可以添加组织",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/organization",
+            "request_keys": [
+                "address",
+                "city",
+                "country",
+                "name",
+                "phone",
+                "postcode",
+                "registration_number",
+                "state",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

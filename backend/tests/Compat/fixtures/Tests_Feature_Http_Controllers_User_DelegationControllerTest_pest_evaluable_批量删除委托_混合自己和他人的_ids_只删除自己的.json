@@ -1,0 +1,17 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DelegationControllerTest::__pest_evaluable_批量删除委托_混合自己和他人的_ids_只删除自己的",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/delegation/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

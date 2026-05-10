@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_revokeCancel_撤回取消恢复_active",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/commit-cancel/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/revoke-cancel/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

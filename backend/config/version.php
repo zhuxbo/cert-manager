@@ -10,7 +10,7 @@
 $versionJson = [];
 $versionPaths = [
     dirname(__DIR__, 2).'/version.json',  // 项目根目录（标准部署）
-    dirname(__DIR__).'/version.json',     // backend 目录（Docker）
+    dirname(__DIR__).'/version.json',     // backend 目录（兼容旧版本路径）
 ];
 
 foreach ($versionPaths as $versionPath) {

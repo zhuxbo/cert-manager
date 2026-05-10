@@ -23,9 +23,9 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
 # 配置文件路径
 CONFIG_FILE="/build/config.json"
-CUSTOM_DIR="/build/custom"              # 定制目录（可选挂载）
-SOURCE_DIR="/source"                    # monorepo 根目录（只读挂载）
-WORKSPACE_DIR="/workspace"              # 工作目录（可写）
+CUSTOM_DIR="/build/custom" # 定制目录（可选挂载）
+SOURCE_DIR="/source"       # monorepo 根目录（只读挂载）
+WORKSPACE_DIR="/workspace" # 工作目录（可写）
 PRODUCTION_DIR="/workspace/production-code"
 
 # 解析环境变量
@@ -75,7 +75,7 @@ if [ -f "$CUSTOM_DIR/config.json" ]; then
     log_info "检测到 custom/config.json，合并配置..."
     # 使用 jq 合并：custom 的 build 覆盖默认的 build
     jq -s '.[0] * {build: (.[0].build * .[1].build)}' \
-        "$CONFIG_FILE" "$CUSTOM_DIR/config.json" > "$MERGED_CONFIG"
+        "$CONFIG_FILE" "$CUSTOM_DIR/config.json" >"$MERGED_CONFIG"
     CONFIG_FILE="$MERGED_CONFIG"
     log_success "配置已合并"
 fi
@@ -170,7 +170,6 @@ if [ "$BUILD_ADMIN" = "true" ] || [ "$BUILD_USER" = "true" ]; then
             log_success "已覆盖 user logo.svg"
         fi
     fi
-
 
     # 覆盖 qrcode.png（如果 custom 中存在，仅 user）
     if [ -f "$CUSTOM_DIR/qrcode.png" ]; then

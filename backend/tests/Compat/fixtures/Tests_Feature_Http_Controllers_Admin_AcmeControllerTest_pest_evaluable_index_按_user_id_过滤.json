@@ -1,0 +1,140 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AcmeControllerTest::__pest_evaluable_index_按_user__id_过滤",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/acme",
+            "request_keys": [
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "user_id": "integer",
+                            "product_id": "integer",
+                            "brand": "string",
+                            "period": "integer",
+                            "plus": "integer",
+                            "purchased_standard_count": "integer",
+                            "purchased_wildcard_count": "integer",
+                            "refer_id": "null",
+                            "api_id": "null",
+                            "vendor_id": "null",
+                            "contact_email": "string",
+                            "eab_kid": "string",
+                            "period_from": "null",
+                            "period_till": "null",
+                            "cancelled_at": "null",
+                            "status": "string",
+                            "channel": "string",
+                            "remark": "null",
+                            "amount": "string",
+                            "admin_remark": "null",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "user": {
+                                "id": "integer",
+                                "username": "string",
+                                "email": "string",
+                                "mobile": "string",
+                                "balance": "string",
+                                "level_code": "string",
+                                "custom_level_code": "null",
+                                "credit_limit": "string",
+                                "last_login_at": "null",
+                                "last_login_ip": "null",
+                                "join_ip": "string",
+                                "join_at": "string",
+                                "source": "string",
+                                "token_version": "integer",
+                                "logout_at": "null",
+                                "email_verified_at": "string",
+                                "mobile_verified_at": "null",
+                                "notification_settings": {
+                                    "mail": {
+                                        "cert_issued": "boolean",
+                                        "cert_expire": "boolean",
+                                        "security": "boolean"
+                                    },
+                                    "sms": {
+                                        "cert_issued": "boolean",
+                                        "cert_expire": "boolean",
+                                        "security": "boolean"
+                                    }
+                                },
+                                "auto_settings": {
+                                    "auto_renew": "boolean",
+                                    "auto_reissue": "boolean"
+                                },
+                                "status": "integer",
+                                "created_at": "string",
+                                "updated_at": "string"
+                            },
+                            "product": {
+                                "id": "integer",
+                                "name": "string",
+                                "code": "string",
+                                "api_id": "string",
+                                "source": "string",
+                                "product_type": "string",
+                                "brand": "string",
+                                "ca": "string",
+                                "warranty_currency": "string",
+                                "warranty": "string",
+                                "server": "integer",
+                                "encryption_standard": "string",
+                                "encryption_alg": "array<string>",
+                                "signature_digest_alg": "array<string>",
+                                "validation_type": "string",
+                                "common_name_types": "array<string>",
+                                "alternative_name_types": "array<string>",
+                                "validation_methods": "array<string>",
+                                "periods": "array<integer>",
+                                "standard_min": "integer",
+                                "standard_max": "integer",
+                                "wildcard_min": "integer",
+                                "wildcard_max": "integer",
+                                "total_min": "integer",
+                                "total_max": "integer",
+                                "add_san": "integer",
+                                "replace_san": "integer",
+                                "reissue": "integer",
+                                "renew": "integer",
+                                "reuse_csr": "integer",
+                                "gift_root_domain": "integer",
+                                "refund_period": "integer",
+                                "remark": "string",
+                                "weight": "integer",
+                                "cost": {
+                                    "price": {
+                                        "12": "integer",
+                                        "24": "integer"
+                                    },
+                                    "alternative_standard_price": {
+                                        "12": "integer",
+                                        "24": "integer"
+                                    },
+                                    "alternative_wildcard_price": {
+                                        "12": "integer",
+                                        "24": "integer"
+                                    }
+                                },
+                                "status": "integer",
+                                "created_at": "string",
+                                "updated_at": "string"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

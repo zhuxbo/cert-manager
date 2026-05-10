@@ -36,32 +36,9 @@ get_timestamp() {
 
 # 检测宝塔面板环境
 check_bt_panel() {
-    if [ -f "/www/server/panel/BT-Panel" ] || \
-       [ -f "/www/server/panel/class/panelPlugin.py" ] || \
-       ([ -d "/www/server/panel" ] && [ -f "/www/server/panel/data/port.pl" ]); then
-        return 0
-    fi
-    return 1
-}
-
-# 检测 Docker 环境
-check_docker() {
-    if ! command -v docker &> /dev/null; then
-        return 1
-    fi
-    if ! docker info &> /dev/null; then
-        return 2  # Docker 服务未运行
-    fi
-    return 0
-}
-
-# 检测 docker-compose
-check_docker_compose() {
-    if command -v docker-compose &> /dev/null; then
-        echo "docker-compose"
-        return 0
-    elif docker compose version &> /dev/null; then
-        echo "docker compose"
+    if [ -f "/www/server/panel/BT-Panel" ] ||
+        [ -f "/www/server/panel/class/panelPlugin.py" ] ||
+        ([ -d "/www/server/panel" ] && [ -f "/www/server/panel/data/port.pl" ]); then
         return 0
     fi
     return 1
@@ -70,9 +47,9 @@ check_docker_compose() {
 # 检测端口是否被占用
 check_port() {
     local port="$1"
-    if command -v netstat &> /dev/null; then
+    if command -v netstat &>/dev/null; then
         netstat -tuln 2>/dev/null | grep -q ":$port "
-    elif command -v ss &> /dev/null; then
+    elif command -v ss &>/dev/null; then
         ss -tuln 2>/dev/null | grep -q ":$port "
     else
         # 尝试直接连接
@@ -104,16 +81,16 @@ test_mysql_connection() {
     local pass="$4"
     local db="$5"
 
-    if command -v mysql &> /dev/null; then
-        mysql -h "$host" -P "$port" -u "$user" -p"$pass" -e "SELECT 1" "$db" &> /dev/null
+    if command -v mysql &>/dev/null; then
+        mysql -h "$host" -P "$port" -u "$user" -p"$pass" -e "SELECT 1" "$db" &>/dev/null
         return $?
-    elif command -v mysqladmin &> /dev/null; then
-        mysqladmin -h "$host" -P "$port" -u "$user" -p"$pass" ping &> /dev/null
+    elif command -v mysqladmin &>/dev/null; then
+        mysqladmin -h "$host" -P "$port" -u "$user" -p"$pass" ping &>/dev/null
         return $?
     else
         # 使用 nc 测试端口连通性
-        if command -v nc &> /dev/null; then
-            nc -z -w 3 "$host" "$port" &> /dev/null
+        if command -v nc &>/dev/null; then
+            nc -z -w 3 "$host" "$port" &>/dev/null
             return $?
         fi
         # 使用 bash 内置测试
@@ -128,7 +105,7 @@ test_redis_connection() {
     local port="${2:-6379}"
     local pass="$3"
 
-    if command -v redis-cli &> /dev/null; then
+    if command -v redis-cli &>/dev/null; then
         if [ -n "$pass" ]; then
             redis-cli -h "$host" -p "$port" -a "$pass" ping 2>/dev/null | grep -q "PONG"
         else
@@ -137,8 +114,8 @@ test_redis_connection() {
         return $?
     else
         # 使用 nc 测试端口连通性
-        if command -v nc &> /dev/null; then
-            nc -z -w 3 "$host" "$port" &> /dev/null
+        if command -v nc &>/dev/null; then
+            nc -z -w 3 "$host" "$port" &>/dev/null
             return $?
         fi
         (echo >/dev/tcp/$host/$port) 2>/dev/null
@@ -220,7 +197,7 @@ version_compare() {
     version1=$(echo "$version1" | sed 's/^v//' | sed 's/-.*//')
     version2=$(echo "$version2" | sed 's/^v//' | sed 's/-.*//')
 
-    if command -v sort &> /dev/null; then
+    if command -v sort &>/dev/null; then
         local sorted_versions=$(printf '%s\n%s' "$version1" "$version2" | sort -V)
         local lowest=$(echo "$sorted_versions" | head -n1)
         [ "$lowest" = "$version2" ] && return 0 || return 1
@@ -266,10 +243,10 @@ set_env_var() {
         if grep -q "^$key=" "$file"; then
             sed -i "s|^$key=.*|$key=$value|" "$file"
         else
-            echo "$key=$value" >> "$file"
+            echo "$key=$value" >>"$file"
         fi
     else
-        echo "$key=$value" > "$file"
+        echo "$key=$value" >"$file"
     fi
 }
 
@@ -279,15 +256,15 @@ confirm() {
     local default="${2:-n}"
 
     if [ "$default" = "y" ]; then
-        read -p "$message [Y/n]: " choice < /dev/tty
+        read -p "$message [Y/n]: " choice </dev/tty
         case "$choice" in
-            n|N) return 1 ;;
+            n | N) return 1 ;;
             *) return 0 ;;
         esac
     else
-        read -p "$message [y/N]: " choice < /dev/tty
+        read -p "$message [y/N]: " choice </dev/tty
         case "$choice" in
-            y|Y) return 0 ;;
+            y | Y) return 0 ;;
             *) return 1 ;;
         esac
     fi
@@ -301,13 +278,13 @@ select_menu() {
 
     echo "$prompt"
     for i in "${!options[@]}"; do
-        echo "  $((i+1)). ${options[$i]}"
+        echo "  $((i + 1)). ${options[$i]}"
     done
 
     while true; do
-        read -p "请选择 (1-${#options[@]}): " choice < /dev/tty
+        read -p "请选择 (1-${#options[@]}): " choice </dev/tty
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#options[@]} ]; then
-            echo "$((choice-1))"
+            echo "$((choice - 1))"
             return 0
         fi
         log_error "无效选择，请输入 1-${#options[@]} 之间的数字"
@@ -319,7 +296,7 @@ require_command() {
     local cmd="$1"
     local install_hint="$2"
 
-    if ! command -v "$cmd" &> /dev/null; then
+    if ! command -v "$cmd" &>/dev/null; then
         log_error "未找到命令: $cmd"
         if [ -n "$install_hint" ]; then
             log_info "安装提示: $install_hint"
@@ -353,13 +330,102 @@ backup_file() {
 # 获取文件的 SHA256 校验和
 file_sha256() {
     local file="$1"
-    if command -v sha256sum &> /dev/null; then
+    if command -v sha256sum &>/dev/null; then
         sha256sum "$file" | cut -d' ' -f1
-    elif command -v shasum &> /dev/null; then
+    elif command -v shasum &>/dev/null; then
         shasum -a 256 "$file" | cut -d' ' -f1
-    else
+    elif command -v openssl &>/dev/null; then
         openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
+        return 1
     fi
+}
+
+# 校验文件 SHA256（强校验，完整性校验）
+# 用法: verify_sha256 <file> <expected_sha256>
+# expected 大小写无关；不匹配/缺失工具 → return 1 + log_error
+verify_sha256() {
+    local file="$1"
+    local expected="$2"
+
+    if [ ! -f "$file" ]; then
+        log_error "SHA256 校验失败：文件不存在 $file"
+        return 1
+    fi
+    if [ -z "$expected" ]; then
+        log_error "SHA256 校验失败：未提供期望 SHA256"
+        return 1
+    fi
+
+    local actual
+    actual=$(file_sha256 "$file") || {
+        log_error "SHA256 校验失败：缺少 sha256sum/shasum/openssl 工具"
+        return 1
+    }
+    actual=$(echo "$actual" | tr 'A-Z' 'a-z')
+    expected=$(echo "$expected" | tr 'A-Z' 'a-z')
+
+    if [ "$actual" != "$expected" ]; then
+        log_error "SHA256 校验不匹配:"
+        log_error "  文件: $file"
+        log_error "  期望: $expected"
+        log_error "  实际: $actual"
+        return 1
+    fi
+
+    return 0
+}
+
+# 从 releases.json 提取指定 version + asset 的 sha256
+# 用法: release_sha256 <releases_file> <version> <asset_filename>
+#   version: 0.4.22-beta（不含 v 前缀）
+#   asset_filename: ssl-manager-{full|script|upgrade}-<version>.zip
+# 不依赖 jq；兼容紧凑/展开两种 JSON 布局
+# 找不到字段 → 输出空 + return 1
+release_sha256() {
+    local releases_file="$1"
+    local version="$2"
+    local asset_name="$3"
+
+    if [ ! -f "$releases_file" ]; then
+        return 1
+    fi
+
+    local sha
+    sha=$(awk -v ver="v$version" -v aname="$asset_name" '
+        BEGIN { in_target_release = 0; in_target_asset = 0 }
+        # 进入 release 块时检查 tag_name（同行）
+        match($0, /"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"/) {
+            s = substr($0, RSTART, RLENGTH)
+            gsub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", s)
+            gsub(/".*/, "", s)
+            in_target_release = (s == ver) ? 1 : 0
+            in_target_asset = 0
+            next
+        }
+        # 在目标 release 内：检查 asset 的 name（同行）
+        in_target_release && match($0, /"name"[[:space:]]*:[[:space:]]*"[^"]+\.zip"/) {
+            s = substr($0, RSTART, RLENGTH)
+            gsub(/.*"name"[[:space:]]*:[[:space:]]*"/, "", s)
+            gsub(/".*/, "", s)
+            in_target_asset = (s == aname) ? 1 : 0
+            next
+        }
+        # 在目标 asset 块内：找 sha256
+        in_target_release && in_target_asset && match($0, /"sha256"[[:space:]]*:[[:space:]]*"[^"]+"/) {
+            s = substr($0, RSTART, RLENGTH)
+            gsub(/.*"sha256"[[:space:]]*:[[:space:]]*"/, "", s)
+            gsub(/".*/, "", s)
+            print s
+            exit
+        }
+    ' "$releases_file")
+
+    if [ -z "$sha" ]; then
+        return 1
+    fi
+    echo "$sha"
+    return 0
 }
 
 # ========================================
@@ -374,10 +440,10 @@ resolve_version_tag() {
 
     case "$version" in
         latest)
-            echo "latest"  # main 分支的 latest tag
+            echo "latest" # main 分支的 latest tag
             ;;
         dev)
-            echo "dev-latest"  # dev 分支的 latest tag
+            echo "dev-latest" # dev 分支的 latest tag
             ;;
         *)
             # 指定版本号，返回原始值
@@ -402,7 +468,7 @@ download_release_file() {
         return 1
     fi
 
-    local base_url="${CUSTOM_RELEASE_URL%/}"  # 移除末尾斜杠
+    local base_url="${CUSTOM_RELEASE_URL%/}" # 移除末尾斜杠
     local url=""
 
     # 处理特殊版本标识
@@ -440,13 +506,33 @@ download_release_file() {
     log_error "下载失败: $filename (curl exit code: $curl_exit)"
     [ -n "$curl_output" ] && log_error "$curl_output"
     case $curl_exit in
-        6)  log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
-        7)  log_info "提示: 无法连接服务器" ;;
+        6) log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
+        7) log_info "提示: 无法连接服务器" ;;
         22) log_info "提示: 服务器返回错误（文件可能不存在）" ;;
         28) log_info "提示: 下载超时" ;;
-        35|51|60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
+        35 | 51 | 60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
     esac
     return 1
+}
+
+# 下载 releases.json（全局唯一真相源，含所有版本 + 每个 asset 的 sha256）
+# install.sh / upgrade.sh / bt-install 强校验从此读 sha256
+# 用法: download_releases_json <save_path>
+download_releases_json() {
+    local save_path="$1"
+    if [ -z "$CUSTOM_RELEASE_URL" ]; then
+        log_error "未配置 release 服务 URL"
+        return 1
+    fi
+    local base_url="${CUSTOM_RELEASE_URL%/}"
+    local url="$base_url/releases.json"
+    log_info "下载 releases.json: $url"
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 -o "$save_path" "$url" 2>/dev/null; then
+        log_error "releases.json 下载失败"
+        log_error "  URL: $url"
+        return 1
+    fi
+    return 0
 }
 
 # 下载脚本包并解压
@@ -461,7 +547,7 @@ download_and_extract_scripts() {
     local filename
     case "$version" in
         latest) filename="ssl-manager-script-latest.zip" ;;
-        dev) filename="ssl-manager-script-latest.zip" ;;  # dev 分支也使用 latest 文件名
+        dev) filename="ssl-manager-script-latest.zip" ;; # dev 分支也使用 latest 文件名
         *) filename="ssl-manager-script-$version.zip" ;;
     esac
 
@@ -487,7 +573,7 @@ download_and_extract_full() {
     local filename
     case "$version" in
         latest) filename="ssl-manager-full-latest.zip" ;;
-        dev) filename="ssl-manager-full-latest.zip" ;;  # dev 分支也使用 latest 文件名
+        dev) filename="ssl-manager-full-latest.zip" ;; # dev 分支也使用 latest 文件名
         *) filename="ssl-manager-full-$version.zip" ;;
     esac
 
@@ -502,71 +588,8 @@ download_and_extract_full() {
 }
 
 # ========================================
-# Docker 镜像源配置
+# Composer 镜像源配置
 # ========================================
-
-# Docker 镜像源
-DOCKER_MIRRORS_CHINA=(
-    "https://docker.m.daocloud.io"
-    "https://hub-mirror.c.163.com"
-)
-
-# 配置 Docker 镜像加速
-configure_docker_mirror() {
-    local region="${1:-auto}"  # china / intl / auto
-
-    if [ "$region" = "auto" ]; then
-        if is_china_server; then
-            region="china"
-        else
-            region="intl"
-        fi
-    fi
-
-    if [ "$region" != "china" ]; then
-        log_info "使用国际 Docker 镜像源"
-        return 0
-    fi
-
-    log_info "配置 Docker 中国镜像加速..."
-
-    local daemon_json="/etc/docker/daemon.json"
-    ensure_dir "$(dirname "$daemon_json")"
-
-    cat > "$daemon_json" << 'EOF'
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://hub-mirror.c.163.com"
-  ]
-}
-EOF
-
-    if systemctl is-active --quiet docker; then
-        systemctl daemon-reload
-        systemctl restart docker
-        log_success "Docker 镜像加速配置完成"
-    fi
-}
-
-# 获取 Alpine 镜像源配置命令
-get_alpine_mirror_cmd() {
-    local region="${1:-auto}"
-
-    if [ "$region" = "auto" ]; then
-        if is_china_server; then
-            region="china"
-        else
-            region="intl"
-        fi
-    fi
-
-    if [ "$region" = "china" ]; then
-        echo "sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories"
-    else
-        echo "# Using default Alpine mirrors"
-    fi
-}
 
 # 获取 Composer 镜像源配置命令
 get_composer_mirror_cmd() {
@@ -587,61 +610,23 @@ get_composer_mirror_cmd() {
     fi
 }
 
-# 安装 Docker
-install_docker() {
-    local region="${1:-auto}"
-
-    if [ "$region" = "auto" ]; then
-        if is_china_server; then
-            region="china"
-        else
-            region="intl"
-        fi
-    fi
-
-    if command -v docker &> /dev/null; then
-        log_info "Docker 已安装"
-        docker --version
-        return 0
-    fi
-
-    log_step "安装 Docker..."
-
-    if [ "$region" = "china" ]; then
-        log_info "使用阿里云镜像安装 Docker"
-        curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
-    else
-        log_info "使用官方源安装 Docker"
-        curl -fsSL https://get.docker.com | bash
-    fi
-
-    # 启动 Docker 服务
-    systemctl enable docker
-    systemctl start docker
-
-    # 配置镜像加速
-    configure_docker_mirror "$region"
-
-    log_success "Docker 安装完成"
-}
-
 # 检测端口占用并显示详情
 check_port_with_details() {
     local port="$1"
 
     if ! check_port "$port"; then
-        return 1  # 端口未被占用
+        return 1 # 端口未被占用
     fi
 
     # 获取占用端口的进程信息
     local process_info=""
-    if command -v lsof &> /dev/null; then
+    if command -v lsof &>/dev/null; then
         process_info=$(lsof -i ":$port" -t 2>/dev/null | head -1)
         if [ -n "$process_info" ]; then
             local pname=$(ps -p "$process_info" -o comm= 2>/dev/null)
             log_warning "端口 $port 被进程 $pname (PID: $process_info) 占用"
         fi
-    elif command -v ss &> /dev/null; then
+    elif command -v ss &>/dev/null; then
         process_info=$(ss -tlnp "sport = :$port" 2>/dev/null | tail -1)
         if [ -n "$process_info" ]; then
             log_warning "端口 $port 已被占用: $process_info"
@@ -650,5 +635,5 @@ check_port_with_details() {
         log_warning "端口 $port 已被占用"
     fi
 
-    return 0  # 端口被占用
+    return 0 # 端口被占用
 }

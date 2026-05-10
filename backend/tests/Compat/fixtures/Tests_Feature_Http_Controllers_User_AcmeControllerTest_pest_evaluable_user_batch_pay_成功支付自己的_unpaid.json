@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_user_batch_pay_成功支付自己的_unpaid",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/batch-pay",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "success_count": "integer",
+                    "commit_count": "integer",
+                    "errors": "array<unknown>"
+                }
+            }
+        }
+    ]
+}

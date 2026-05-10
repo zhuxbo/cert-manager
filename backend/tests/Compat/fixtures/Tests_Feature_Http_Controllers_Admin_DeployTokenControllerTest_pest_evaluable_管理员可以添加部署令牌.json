@@ -1,0 +1,20 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DeployTokenControllerTest::__pest_evaluable_管理员可以添加部署令牌",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/deploy-token",
+            "request_keys": [
+                "rate_limit",
+                "status",
+                "token",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

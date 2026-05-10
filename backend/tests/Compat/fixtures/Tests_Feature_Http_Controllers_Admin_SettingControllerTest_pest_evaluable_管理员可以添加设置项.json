@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingControllerTest::__pest_evaluable_管理员可以添加设置项",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/setting",
+            "request_keys": [
+                "description",
+                "group_id",
+                "is_multiple",
+                "key",
+                "options",
+                "type",
+                "value"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer"
+                }
+            }
+        }
+    ]
+}

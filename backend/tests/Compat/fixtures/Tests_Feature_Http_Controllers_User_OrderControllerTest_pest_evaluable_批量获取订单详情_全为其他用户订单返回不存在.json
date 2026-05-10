@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderControllerTest::__pest_evaluable_批量获取订单详情_全为其他用户订单返回不存在",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

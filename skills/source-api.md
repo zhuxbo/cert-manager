@@ -6,10 +6,10 @@ description: Source API 接入 - 新增上游来源的开发指南。修改 Orde
 
 Manager 通过两套 Source API 分发层与上游交互，均按 `product.source` 字段路由：
 
-| 命名空间 | 职责 | 当前来源 |
-|---|---|---|
+| 命名空间        | 职责                                                     | 当前来源  |
+| --------------- | -------------------------------------------------------- | --------- |
 | `Order\Api\Api` | 传统订单 CRUD（new/renew/reissue/get/cancel/revalidate） | `default` |
-| `Acme\Api\Api` | ACME 流程（创建/验证/签发/吊销），调上游 REST API | `default` |
+| `Acme\Api\Api`  | ACME 流程（创建/验证/签发/吊销），调上游 REST API        | `default` |
 
 两套独立运作，新增来源时两套都需要实现。
 
@@ -34,11 +34,11 @@ backend/app/Services/
 
 ## 两套 Api.php 的架构差异（设计意图）
 
-| | `Acme\Api\Api` | `Order\Api\Api` |
-|--|--|--|
-| 定位 | 纯工厂，只返回 source 实例 | 门面（Facade），代理所有业务方法 |
-| 业务逻辑 | 由 `OrderService` 统一编排 | 内置 `findOrder` + `handleResult` |
-| 原因 | ACME 协议标准化，source 间差异小 | 传统 API 各家差异大，需在 source 内处理后提供统一调用 |
+|          | `Acme\Api\Api`                   | `Order\Api\Api`                                       |
+| -------- | -------------------------------- | ----------------------------------------------------- |
+| 定位     | 纯工厂，只返回 source 实例       | 门面（Facade），代理所有业务方法                      |
+| 业务逻辑 | 由 `OrderService` 统一编排       | 内置 `findOrder` + `handleResult`                     |
+| 原因     | ACME 协议标准化，source 间差异小 | 传统 API 各家差异大，需在 source 内处理后提供统一调用 |
 
 这是有意的设计，不需要统一。
 

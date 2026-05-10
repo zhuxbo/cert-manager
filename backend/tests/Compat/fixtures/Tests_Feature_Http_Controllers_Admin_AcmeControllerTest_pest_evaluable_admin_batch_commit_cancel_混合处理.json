@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AcmeControllerTest::__pest_evaluable_admin_batch_commit_cancel_混合处理",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/acme/batch-commit-cancel",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "success_count": "integer",
+                    "errors": "array<unknown>"
+                }
+            }
+        }
+    ]
+}

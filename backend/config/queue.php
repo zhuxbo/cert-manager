@@ -39,7 +39,10 @@ return [
             'connection' => env('DB_CONNECTION', 'mysql'),
             'table' => 'jobs',
             'queue' => 'default',
-            'retry_after' => 90,
+            // 300s：覆盖 ACME commit / Order commit 等"事务内调上游"最坏 30s
+            // + worker 调度延迟。3 倍冗余，避免极端情况下 worker 业务超 90s
+            // 触发 job 重派、第二个 worker 误报 failed 通知 Admin。
+            'retry_after' => 300,
             'block_for' => null,
             'after_commit' => false,
         ],
@@ -48,7 +51,7 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => 90,
+            'retry_after' => 300,
             'block_for' => null,
             'after_commit' => false,
         ],
@@ -87,7 +90,7 @@ return [
     */
 
     'batching' => [
-        'database' => env('DB_CONNECTION', 'sqlite'),
+        'database' => env('DB_CONNECTION', 'mysql'),
         'table' => 'job_batches',
     ],
 

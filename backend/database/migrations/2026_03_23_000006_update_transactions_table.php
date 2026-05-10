@@ -19,7 +19,9 @@ return new class extends Migration
         $typeCol = collect(Schema::getColumns('transactions'))->firstWhere('name', 'type');
         if ($typeCol && ! str_contains($typeCol['type'], "'acme_order'")) {
             Schema::table('transactions', function (Blueprint $table) {
-                $table->enum('type', ['order', 'cancel', 'addfunds', 'refunds', 'deduct', 'reverse', 'acme_order', 'acme_cancel'])->comment('交易类型')->change();
+                $table->enum('type', [
+                    'order', 'cancel', 'addfunds', 'refunds', 'deduct', 'reverse', 'acme_order', 'acme_cancel',
+                ])->comment('交易类型')->change();
             });
         }
     }

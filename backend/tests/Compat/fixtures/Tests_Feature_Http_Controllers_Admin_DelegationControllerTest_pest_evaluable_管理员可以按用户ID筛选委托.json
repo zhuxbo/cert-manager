@@ -1,0 +1,48 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DelegationControllerTest::__pest_evaluable_管理员可以按用户ID筛选委托",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/delegation",
+            "request_keys": [
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "user_id": "integer",
+                            "zone": "string",
+                            "prefix": "string",
+                            "label": "string",
+                            "valid": "boolean",
+                            "last_checked_at": "null",
+                            "fail_count": "integer",
+                            "last_error": "string",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "proxy_zone": "string",
+                            "target_fqdn": "string",
+                            "user": {
+                                "id": "integer",
+                                "email": "string",
+                                "username": "string"
+                            },
+                            "cname_to": {
+                                "host": "string",
+                                "value": "string"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

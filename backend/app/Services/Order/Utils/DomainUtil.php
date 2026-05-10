@@ -142,6 +142,10 @@ class DomainUtil
      */
     public static function convertToAscii(string $domain): string
     {
+        if ($domain === '') {
+            return '';
+        }
+
         if (function_exists('idn_to_ascii')) {
             $asciiDomain = idn_to_ascii($domain);
 
@@ -163,6 +167,10 @@ class DomainUtil
      */
     public static function convertToUnicode(string $domain): string
     {
+        if ($domain === '') {
+            return '';
+        }
+
         if (function_exists('idn_to_utf8')) {
             $unicodeDomain = idn_to_utf8($domain);
 

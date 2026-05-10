@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_获取月度统计对比",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/monthly-comparison",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "current_month": {
+                        "orders": "integer",
+                        "consumption": "integer"
+                    },
+                    "last_month": {
+                        "orders": "integer",
+                        "consumption": "integer"
+                    },
+                    "growth": {
+                        "orders": "integer",
+                        "consumption": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

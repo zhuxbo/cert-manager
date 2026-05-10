@@ -59,35 +59,40 @@ class PackageExtractor
 
     /**
      * 验证升级包结构
+     *
+     * 注意：manifest.json 已弃用（build/scripts/package.sh 注释修订改用 release
+     * 站 releases.json），版本/SHA256 来自 release 站；包内只保留 version.json 用于
+     * applyUpgrade 的 updateVersionJsonWithPreservedFields。
      */
     public function validatePackage(string $extractedPath): bool
     {
-        // 检查是否有 manifest.json
-        $manifestFile = $this->findManifest($extractedPath);
-        if (! $manifestFile) {
-            throw new RuntimeException('升级包无效：缺少 manifest.json');
-        }
-
-        $manifest = json_decode(File::get($manifestFile), true);
-        if (! $manifest) {
-            throw new RuntimeException('升级包无效：manifest.json 格式错误');
-        }
-
-        // 验证必要字段
-        if (empty($manifest['version'])) {
-            throw new RuntimeException('升级包无效：缺少版本信息');
-        }
-
-        // 验证后端目录结构
+        // 1. 必须能定位 backend 目录（升级核心载荷）
         $backendDir = $this->findBackendDir($extractedPath);
-        if ($backendDir) {
-            // 检查关键目录
-            $requiredDirs = ['app', 'config'];
-            foreach ($requiredDirs as $dir) {
-                if (! File::isDirectory("$backendDir/$dir")) {
-                    throw new RuntimeException("升级包无效：缺少 $dir 目录");
-                }
+        if (! $backendDir) {
+            throw new RuntimeException('升级包无效：缺少 backend 目录');
+        }
+
+        // 2. backend 关键子目录齐全
+        $requiredDirs = ['app', 'config'];
+        foreach ($requiredDirs as $dir) {
+            if (! File::isDirectory("$backendDir/$dir")) {
+                throw new RuntimeException("升级包无效：缺少 backend/$dir 目录");
             }
+        }
+
+        // 3. version.json 必须存在且含 version 字段（applyUpgrade 依赖）
+        $versionFile = $this->findVersionConfig($extractedPath);
+        if (! $versionFile) {
+            throw new RuntimeException('升级包无效：缺少 version.json');
+        }
+
+        $versionConfig = json_decode(File::get($versionFile), true);
+        if (! $versionConfig) {
+            throw new RuntimeException('升级包无效：version.json 格式错误');
+        }
+
+        if (empty($versionConfig['version'])) {
+            throw new RuntimeException('升级包无效：version.json 缺少 version 字段');
         }
 
         return true;
@@ -426,27 +431,12 @@ class PackageExtractor
 
     /**
      * 获取项目根目录路径（用于 nginx 配置占位符替换）
+     *
+     * 仅支持宝塔部署，使用实际安装目录（backend 的上级目录）。
      */
     protected function getProjectRoot(): string
     {
-        // Docker 环境使用固定路径
-        if ($this->isDockerEnvironment()) {
-            return '/var/www/html';
-        }
-
-        // 宝塔环境使用实际安装目录（backend 的上级目录）
         return dirname(base_path());
-    }
-
-    /**
-     * 检测是否为 Docker 环境
-     */
-    protected function isDockerEnvironment(): bool
-    {
-        // 检查 docker-compose.yml 是否存在
-        $dockerCompose = base_path('../docker-compose.yml');
-
-        return File::exists($dockerCompose);
     }
 
     /**
@@ -537,29 +527,6 @@ class PackageExtractor
         exec('which rsync 2>/dev/null', $output, $returnCode);
 
         return $returnCode === 0;
-    }
-
-    /**
-     * 查找 manifest.json
-     */
-    protected function findManifest(string $extractedPath): ?string
-    {
-        // 直接在解压目录下
-        $file = "$extractedPath/manifest.json";
-        if (File::exists($file)) {
-            return $file;
-        }
-
-        // 可能在子目录下（压缩包包含根目录）
-        $dirs = File::directories($extractedPath);
-        foreach ($dirs as $dir) {
-            $file = "$dir/manifest.json";
-            if (File::exists($file)) {
-                return $file;
-            }
-        }
-
-        return null;
     }
 
     /**

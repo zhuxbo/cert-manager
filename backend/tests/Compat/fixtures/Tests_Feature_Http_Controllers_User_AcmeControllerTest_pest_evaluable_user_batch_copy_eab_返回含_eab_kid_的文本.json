@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_user_batch_copy_eab_返回含_eab__kid_的文本",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/batch-copy-eab",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "text": "string",
+                    "count": "integer"
+                }
+            }
+        }
+    ]
+}

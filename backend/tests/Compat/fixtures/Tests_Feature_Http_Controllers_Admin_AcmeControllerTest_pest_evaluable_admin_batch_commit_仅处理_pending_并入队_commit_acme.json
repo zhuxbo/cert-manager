@@ -1,0 +1,17 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AcmeControllerTest::__pest_evaluable_admin_batch_commit_仅处理_pending_并入队_commit__acme",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/acme/batch-commit",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

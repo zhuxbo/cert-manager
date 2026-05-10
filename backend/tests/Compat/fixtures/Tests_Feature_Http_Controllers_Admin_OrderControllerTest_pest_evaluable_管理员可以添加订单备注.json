@@ -1,0 +1,15 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员可以添加订单备注",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/order/remark/{id}",
+            "request_keys": [
+                "remark"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}

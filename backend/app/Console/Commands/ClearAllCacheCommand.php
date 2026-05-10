@@ -332,7 +332,7 @@ class ClearAllCacheCommand extends Command
             }
         }
 
-        // 如果是Docker环境或使用Supervisor，可以尝试额外的重启方式
+        // 如果使用 Supervisor 管理队列，提示确认重启
         if (! $quick) {
             $this->line('注意：如果使用Supervisor管理队列，请确认队列进程已重启');
         }

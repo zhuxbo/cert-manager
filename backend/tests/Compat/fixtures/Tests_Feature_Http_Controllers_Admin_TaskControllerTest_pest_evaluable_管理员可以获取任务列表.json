@@ -1,0 +1,34 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\TaskControllerTest::__pest_evaluable_管理员可以获取任务列表",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/task",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "order_id": "integer",
+                            "action": "string",
+                            "attempts": "integer",
+                            "source": "string",
+                            "weight": "integer",
+                            "status": "string",
+                            "started_at": "null",
+                            "last_execute_at": "null",
+                            "created_at": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

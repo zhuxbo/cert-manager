@@ -1,0 +1,15 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_user_sync_接口调用_Action__sync",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/sync/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

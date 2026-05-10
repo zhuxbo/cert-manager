@@ -2,8 +2,10 @@
 
 use App\Models\Admin;
 use App\Models\Fund;
+use App\Models\Transaction;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 
 uses(Tests\Traits\ActsAsAdmin::class);
 uses(RefreshDatabase::class);
@@ -86,6 +88,68 @@ test('查看不存在的资金记录返回错误', function () {
     $response->assertOk()->assertJson(['code' => 0]);
 });
 
+test('管理员可以手工充值（type=addfunds）', function () {
+    $payload = [
+        'user_id' => $this->user->id,
+        'amount' => '100.00',
+        'type' => 'addfunds',
+        'pay_method' => 'manual',
+        'status' => 0,
+        'remark' => '后台补单',
+    ];
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $payload);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect(Fund::where('user_id', $this->user->id)->where('type', 'addfunds')->exists())->toBeTrue();
+});
+
+test('管理员可以手工扣款（type=deduct）', function () {
+    $payload = [
+        'user_id' => $this->user->id,
+        'amount' => '50.00',
+        'type' => 'deduct',
+        'pay_method' => 'manual',
+        'status' => 0,
+        'remark' => '后台扣减',
+    ];
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $payload);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect(Fund::where('user_id', $this->user->id)->where('type', 'deduct')->exists())->toBeTrue();
+});
+
+test('store 拒绝 type=refunds（必须走 fund/refunds/{id} UPDATE 同行接口）', function () {
+    $payload = [
+        'user_id' => $this->user->id,
+        'amount' => '100.00',
+        'type' => 'refunds',
+        'pay_method' => 'manual',
+        'status' => 1,
+    ];
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $payload);
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect(Fund::where('type', 'refunds')->exists())->toBeFalse();
+});
+
+test('store 拒绝 type=reverse（必须走 fund/reverse/{id} UPDATE 同行接口）', function () {
+    $payload = [
+        'user_id' => $this->user->id,
+        'amount' => '50.00',
+        'type' => 'reverse',
+        'pay_method' => 'manual',
+        'status' => 1,
+    ];
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $payload);
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect(Fund::where('type', 'reverse')->exists())->toBeFalse();
+});
+
 test('管理员可以删除资金记录', function () {
     // Fund deleting 事件要求 status=0 且创建超2小时
     $fund = Fund::factory()->create([
@@ -97,6 +161,33 @@ test('管理员可以删除资金记录', function () {
 
     $response->assertOk()->assertJson(['code' => 1]);
     expect(Fund::find($fund->id))->toBeNull();
+});
+
+test('管理员不能删除已被入账的资金记录', function () {
+    $fund = Fund::factory()->create([
+        'user_id' => $this->user->id,
+        'amount' => '100.00',
+        'pay_method' => 'alipay',
+        'pay_sn' => null,
+        'status' => 0,
+        'created_at' => now()->subHours(3),
+    ]);
+
+    DB::transaction(fn () => Fund::transitionToSuccessful(
+        (string) $fund->id,
+        '100.00',
+        'addfunds',
+        'alipay',
+        'PAY_DESTROY_GUARD',
+    ));
+
+    $response = $this->actingAsAdmin($this->admin)->deleteJson("/api/admin/fund/$fund->id");
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($fund->fresh())->not->toBeNull();
+    expect($fund->fresh()->status)->toBe(1);
+    expect(Transaction::where('type', 'addfunds')->where('transaction_id', $fund->id)->count())->toBe(1);
+    expect((string) $this->user->fresh()->balance)->toBe('100.00');
 });
 
 test('管理员可以退款已完成的充值记录', function () {

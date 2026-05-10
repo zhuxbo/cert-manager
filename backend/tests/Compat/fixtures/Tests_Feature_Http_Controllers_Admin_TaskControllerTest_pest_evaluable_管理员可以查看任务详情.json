@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\TaskControllerTest::__pest_evaluable_管理员可以查看任务详情",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/task/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "order_id": "integer",
+                    "action": "string",
+                    "result": "null",
+                    "attempts": "integer",
+                    "started_at": "null",
+                    "last_execute_at": "null",
+                    "source": "string",
+                    "weight": "integer",
+                    "status": "string",
+                    "created_at": "string",
+                    "updated_at": "string"
+                }
+            }
+        }
+    ]
+}

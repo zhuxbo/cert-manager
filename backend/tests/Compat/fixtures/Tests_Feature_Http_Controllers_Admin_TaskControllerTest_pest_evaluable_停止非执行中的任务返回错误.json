@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\TaskControllerTest::__pest_evaluable_停止非执行中的任务返回错误",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/task/batch-stop",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

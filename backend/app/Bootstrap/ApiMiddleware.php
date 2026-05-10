@@ -12,6 +12,7 @@ use App\Http\Middleware\FlushLogs;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\LoginRateLimiter;
 use App\Http\Middleware\LogOperation;
+use App\Http\Middleware\MaintenanceMode;
 use App\Http\Middleware\RateLimiter;
 use App\Http\Middleware\TimezoneMiddleware;
 use App\Http\Middleware\TokenPreParser;
@@ -33,6 +34,9 @@ class ApiMiddleware
     public function handle(Config $middleware): void
     {
         // 全局中间件
+        // MaintenanceMode 必须排在 LogOperation 之前：freeze 期非白名单请求由
+        // MaintenanceMode 直接返回 503，不再进入 LogOperation；同时 ForceJsonResponse
+        // 已就位，503 也是 JSON 格式。
         $middleware->use([
             TrustProxies::class,
             DynamicCors::class,
@@ -41,6 +45,7 @@ class ApiMiddleware
             ConvertEmptyStringsToNull::class,
             TimezoneMiddleware::class,
             ForceJsonResponse::class,
+            MaintenanceMode::class,
             LogOperation::class,
             FlushLogs::class,
         ]);

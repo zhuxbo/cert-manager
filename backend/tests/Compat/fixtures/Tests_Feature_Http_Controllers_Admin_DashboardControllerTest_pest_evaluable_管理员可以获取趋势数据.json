@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_管理员可以获取趋势数据",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/trends",
+            "request_keys": [
+                "days"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "date": "string",
+                        "users": "integer",
+                        "orders": "integer",
+                        "recharge": "integer",
+                        "consumption": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

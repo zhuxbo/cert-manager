@@ -3,6 +3,7 @@
   "requires": ">=0.4.1",
   "description": "发票管理插件",
   "provider": "InvoiceServiceProvider",
+  "php_ext": [],
   "admin_bundle": "frontend/admin/invoice-plugin.iife.js",
   "admin_css": "frontend/admin/invoice-plugin-admin.css",
   "user_bundle": "frontend/user/invoice-plugin.iife.js",

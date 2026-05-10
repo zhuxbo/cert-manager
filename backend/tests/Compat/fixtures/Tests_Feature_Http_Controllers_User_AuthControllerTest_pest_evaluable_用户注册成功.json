@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AuthControllerTest::__pest_evaluable_用户注册成功",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/register",
+            "request_keys": [
+                "code",
+                "email",
+                "password",
+                "username"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "access_token": "string",
+                    "expires_in": "string",
+                    "refresh_token": "string",
+                    "username": "string",
+                    "balance": "null",
+                    "roles": "null",
+                    "permissions": "null"
+                }
+            }
+        }
+    ]
+}

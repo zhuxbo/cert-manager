@@ -1,0 +1,28 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\FundControllerTest::__pest_evaluable_管理员可以查看资金记录详情",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/fund/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "user_id": "integer",
+                    "amount": "string",
+                    "type": "string",
+                    "pay_method": "string",
+                    "pay_sn": "string",
+                    "ip": "string",
+                    "remark": "string",
+                    "status": "integer",
+                    "created_at": "string",
+                    "updated_at": "string"
+                }
+            }
+        }
+    ]
+}

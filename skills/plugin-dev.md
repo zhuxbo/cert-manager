@@ -82,11 +82,19 @@ class {Name}ServiceProvider extends ServiceProvider
 
 ### 数据库
 
-- 迁移文件放 `backend/migrations/`，安装时由 `loadMigrationsFrom()` 自动执行
+- 迁移文件放 `backend/migrations/`，ServiceProvider `boot()` 中调 `$this->loadMigrationsFrom("$basePath/backend/migrations")`，主系统 `php artisan migrate` 会自动包含
 - 表名建议加插件前缀（如 `{name}_logs`）避免冲突
 - 卸载时可选回滚迁移（`remove_data=true`）
 - **插件表独立管理**：主系统 `db:structure --export` 通过 `--path=database/migrations` 排除插件迁移，`structure.json` 仅包含主系统表
 - **从主系统迁移分离时注意**：如果原来某些表在主系统迁移文件中，拆分到插件时必须确保主系统迁移文件仍保留主系统自己的表（不能整个删除包含多张表的迁移文件）
+
+### MySQL 兼容性（与主系统同等约束）
+
+插件作为生产代码，跟主系统执行同一套 MySQL 5.7+ 兼容规则。详见 `skills/backend-dev.md` "MySQL 兼容性" 章节，插件特定要点：
+
+- **迁移禁用 `->json()` 列类型**：用 `->text()` 列 + Model `protected $casts = ['col' => 'array']`。理由：MySQL 5.7 对 `->json()` 索引和默认值支持有限，统一走 text + array cast 最稳妥。Model 不要用 `'json'` cast，统一用 `'array'`
+- **优先 Eloquent / Query Builder**：避免 `DB::raw` / `DB::statement` / `whereRaw`。仅 mysql 函数表达式（如 `DATE_SUB(NOW(), INTERVAL N DAY)`、`JSON_EXTRACT()`）允许 whereRaw
+- **`->change()` 注意点**：复杂列类型变更优先 `Schema::hasColumn` + drop + add 重建，避免 `change()` 翻译歧义
 
 ### 解耦原则
 
@@ -147,12 +155,12 @@ bash plugins/release-plugin.sh {name} --version x.y.z --build-only
 
 主系统在 `main.ts` 中全局注册了以下组件，插件可直接在模板中使用（无需 import）：
 
-| 组件 | admin | user | 说明 |
-|------|:-----:|:----:|------|
-| `PureTableBar` | ✅ | ✅ | 表格工具栏（列显隐、刷新、全屏） |
-| `ReRemoteSelect` | ✅ | - | 远程搜索选择器 |
-| `Auth` / `Perms` | ✅ | ✅ | 权限控制 |
-| `IconifyIconOffline/Online` | ✅ | ✅ | 图标 |
+| 组件                        | admin | user | 说明                             |
+| --------------------------- | :---: | :--: | -------------------------------- |
+| `PureTableBar`              |  ✅   |  ✅  | 表格工具栏（列显隐、刷新、全屏） |
+| `ReRemoteSelect`            |  ✅   |  -   | 远程搜索选择器                   |
+| `Auth` / `Perms`            |  ✅   |  ✅  | 权限控制                         |
+| `IconifyIconOffline/Online` |  ✅   |  ✅  | 图标                             |
 
 插件中使用全局组件时，通过 `resolveComponent()` 动态解析（TSX 中）或直接在 `<template>` 中使用。
 
@@ -172,6 +180,7 @@ import { PlusSearch, PlusDrawerForm } from "plus-pro-components";
 **原因**：`plus-pro-components/es/components/*/style/css` 会级联导入完整的 Element Plus 组件 CSS（含 `:root` 变量、Drawer header/footer 边框等），与主系统已加载的 CSS 产生冲突，导致样式覆盖（如抽屉出现边框、表单间距异常）。
 
 主系统已在 `main.ts` 中全局加载了 `PlusSearch` 的 CSS：
+
 ```typescript
 import "plus-pro-components/es/components/search/style/css";
 ```
@@ -183,12 +192,12 @@ import "plus-pro-components/es/components/search/style/css";
 ```html
 <!-- ✅ 安全：这些 class 在主系统中广泛使用 -->
 <div class="bg-bg_color w-[99/100] pl-4 pr-4 pt-[24px] pb-[12px]">
-
-<!-- ❌ 危险：p-6、mb-3、gap-12 等可能不在主系统 CSS 中 -->
-<div class="p-6 mb-3 gap-12">
-
-<!-- ✅ 推荐：对不确定的样式使用内联 style -->
-<div style="padding: 20px 24px; margin-bottom: 12px">
+  <!-- ❌ 危险：p-6、mb-3、gap-12 等可能不在主系统 CSS 中 -->
+  <div class="p-6 mb-3 gap-12">
+    <!-- ✅ 推荐：对不确定的样式使用内联 style -->
+    <div style="padding: 20px 24px; margin-bottom: 12px"></div>
+  </div>
+</div>
 ```
 
 **经验法则**：布局类的 padding/margin/gap 如果值不常见，优先用内联 `style`。
@@ -209,10 +218,10 @@ Route::prefix('api')->middleware(['global', 'api.user'])->group(...);
 
 ```typescript
 // admin 端
-http.get("/invoice", { params })  // → GET /api/admin/invoice
+http.get("/invoice", { params }); // → GET /api/admin/invoice
 
 // user 端（不加 /user/）
-http.get("/invoice", { params })  // → GET /api/invoice
+http.get("/invoice", { params }); // → GET /api/invoice
 ```
 
 #### 4. IIFE 插件中不能使用 useRoute/useRouter
@@ -245,9 +254,7 @@ const router = instance?.appContext.config.globalProperties.$router;
 ```typescript
 window.__registerPlugin({
   name: "my-plugin",
-  widgets: [
-    { slot: "user-dashboard-top", component: MyBanner, order: 0 }
-  ]
+  widgets: [{ slot: "user-dashboard-top", component: MyBanner, order: 0 }]
 });
 ```
 
@@ -257,8 +264,8 @@ window.__registerPlugin({
 
 已定义的插槽：
 
-| 插槽名 | 位置 | 说明 |
-|--------|------|------|
+| 插槽名               | 位置                  | 说明                       |
+| -------------------- | --------------------- | -------------------------- |
 | `user-dashboard-top` | 用户端 Dashboard 顶部 | 欢迎信息上方，适合公告横幅 |
 
 主系统通过 `getPluginWidgets(slot)` 获取并渲染插件组件。使用 widgets 的插件需要设置版本兼容（release 中 `requires` 字段），确保主系统已支持对应插槽。
@@ -285,17 +292,45 @@ window.__registerPlugin({
 
 可用命名空间（admin 端全部可用，user 端不含 task、notificationRecord、notificationTemplate）：
 
-| 命名空间 | 词典文件 | 常用可扩展字段 |
-|----------|---------|---------------|
-| `funds` | `views/funds/dictionary` | `fundPayMethodOptions`、`fundPayMethodMap`、`fundTypeOptions`、`fundTypeMap` |
-| `transaction` | `views/transaction/dictionary` | `transactionTypeOptions`、`transactionTypeMap` |
-| `order` | `views/order/dictionary` | `channelOptions`、`channel`、`channelType`、`productTypeOptions`、`productType` |
-| `system` | `views/system/dictionary` | `brandOptionsAll`、`productTypeOptions`、`productTypeLabels` |
-| `task` | `views/task/dictionary` | `actionLabels`、`actionTypes`、`statusLabels`、`statusTypes` |
-| `notificationRecord` | `views/notification/record/dictionary` | `availableChannels`、`statusOptions` |
-| `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`、`channelOptions` |
+| 命名空间               | 词典文件                                 | 常用可扩展字段                                                                  |
+| ---------------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
+| `funds`                | `views/funds/dictionary`                 | `fundPayMethodOptions`、`fundPayMethodMap`、`fundTypeOptions`、`fundTypeMap`    |
+| `transaction`          | `views/transaction/dictionary`           | `transactionTypeOptions`、`transactionTypeMap`                                  |
+| `order`                | `views/order/dictionary`                 | `channelOptions`、`channel`、`channelType`、`productTypeOptions`、`productType` |
+| `system`               | `views/system/dictionary`                | `brandOptionsAll`、`productTypeOptions`、`productTypeLabels`                    |
+| `task`                 | `views/task/dictionary`                  | `actionLabels`、`actionTypes`、`statusLabels`、`statusTypes`                    |
+| `notificationRecord`   | `views/notification/record/dictionary`   | `availableChannels`、`statusOptions`                                            |
+| `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`、`channelOptions`                                               |
 
 合并规则：数组用 `push` 追加，对象用 `Object.assign` 合并。
+
+---
+
+## 测试与 CI
+
+### 测试目录
+
+插件测试放 `plugins/{name}/backend/tests/`，结构与主系统一致（Pest + `Feature/Unit` 子目录）。命名空间通过主系统 `tests/` 的自动加载链可用。
+
+### CI 矩阵
+
+每个插件在 `.github/workflows/ci.yml` 拥有独立 job（`backend-{name}-plugin-test`），单 mysql 5.7 + redis service：
+
+- 复用主系统的 `.env`（与 `backend-core-test` 一致）
+- 跑 `php artisan migrate --force`（包括插件迁移），再跑 `php artisan test --parallel ../plugins/{name}/backend/tests`
+
+### 无自带 tests 的插件
+
+插件没有业务逻辑测试时（如 invoice 仅作 CRUD）仍要进 CI，验证迁移能跑通：
+
+- migrate step 之后用 `php artisan tinker --execute="..."` 检查关键表已创建
+- 不跑 `artisan test`（指向不存在的目录会 fail）
+- 参考 `backend-invoice-plugin-test`
+
+### 加新插件 → CI 增量
+
+1. 复制 `backend-easy-plugin-test` job，把名字、tests 路径替换成新插件
+2. 通过 yml 语法和 plugin migration 的兼容性
 
 ---
 
@@ -323,8 +358,22 @@ bash plugins/release-plugin.sh {name} --remote --server cn
 
 ```json
 {
-  "include": ["plugin.json", "backend/", "admin/{name}-plugin.iife.js", "admin/{name}-plugin-admin.css", "user/{name}-plugin.iife.js", "web/", "nginx/"],
-  "exclude": ["node_modules/", "src/", "*.config.ts", "package.json", "pnpm-lock.yaml"]
+  "include": [
+    "plugin.json",
+    "backend/",
+    "admin/{name}-plugin.iife.js",
+    "admin/{name}-plugin-admin.css",
+    "user/{name}-plugin.iife.js",
+    "web/",
+    "nginx/"
+  ],
+  "exclude": [
+    "node_modules/",
+    "src/",
+    "*.config.ts",
+    "package.json",
+    "pnpm-lock.yaml"
+  ]
 }
 ```
 
@@ -349,13 +398,13 @@ bash plugins/release-plugin.sh {name} --remote --server cn
 
 ### API
 
-| 操作 | 端点 | 参数 |
-|------|------|------|
-| 已安装列表 | `GET /api/admin/plugin/installed` | - |
-| 检查更新 | `GET /api/admin/plugin/check-updates` | - |
-| 安装 | `POST /api/admin/plugin/install` | `name`, `release_url?`, `version?` 或 `file`（上传） |
-| 更新 | `POST /api/admin/plugin/update` | `name`, `version?` |
-| 卸载 | `POST /api/admin/plugin/uninstall` | `name`, `remove_data?` |
+| 操作       | 端点                                  | 参数                                                 |
+| ---------- | ------------------------------------- | ---------------------------------------------------- |
+| 已安装列表 | `GET /api/admin/plugin/installed`     | -                                                    |
+| 检查更新   | `GET /api/admin/plugin/check-updates` | -                                                    |
+| 安装       | `POST /api/admin/plugin/install`      | `name`, `release_url?`, `version?` 或 `file`（上传） |
+| 更新       | `POST /api/admin/plugin/update`       | `name`, `version?`                                   |
+| 卸载       | `POST /api/admin/plugin/uninstall`    | `name`, `remove_data?`                               |
 
 ### 手动安装
 
@@ -374,3 +423,17 @@ php artisan route:clear && php artisan config:clear
 - ZIP 解压前检查所有条目，拒绝含 `..` 的路径
 - 公共端点仅返回 bundle/css 路径，管理端返回完整信息
 - plugin-loader 校验 URL 必须以 `/` 开头
+
+---
+
+## 内置插件参考
+
+新增插件可对照以下三个内置实现，按复杂度递增：
+
+| 插件              | 特点                                                             | 适合参考                              |
+| ----------------- | ---------------------------------------------------------------- | ------------------------------------- |
+| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory | 最小可用插件骨架                      |
+| `plugins/invoice` | 双端 CRUD（发票），含查询过滤 + 配额服务，无自带 tests           | CRUD 业务 + migrate-only CI 入口      |
+| `plugins/easy`    | 复杂度最高：多个回调控制器、log handler 接入主系统、产品级别映射 | 涉及 Callback / 日志处理 / 跨模型关联 |
+
+各插件的 ServiceProvider `boot()` 同时调 `loadRoutesFrom`（admin / user / api / callback 视需要）+ `loadMigrationsFrom`，主系统 `php artisan migrate` 自动覆盖。

@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_revokeCancel_他人订单返回_404",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/revoke-cancel/{id}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

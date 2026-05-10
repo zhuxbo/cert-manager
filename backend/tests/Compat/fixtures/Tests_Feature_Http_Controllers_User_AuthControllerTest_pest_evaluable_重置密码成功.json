@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AuthControllerTest::__pest_evaluable_重置密码成功",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/reset-password",
+            "request_keys": [
+                "code",
+                "email",
+                "password"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

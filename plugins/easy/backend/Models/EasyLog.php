@@ -18,8 +18,8 @@ class EasyLog extends BaseModel
     ];
 
     protected $casts = [
-        'params' => 'json',
-        'response' => 'json',
+        'params' => 'array',
+        'response' => 'array',
         'status' => 'integer',
     ];
 }

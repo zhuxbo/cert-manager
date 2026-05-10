@@ -16,24 +16,24 @@
 
 - **框架**: Laravel 11.x
 - **PHP 版本**: 8.3+
-- **数据库**: MySQL 8.0
+- **数据库**: MySQL 5.7+ 或 MariaDB
 - **缓存**: 文件缓存（默认）/ Redis（可选）
 - **队列**: 同步（默认）/ Redis（可选）
 - **认证**: JWT (tymon/jwt-auth)
 - **测试**: PHPUnit + Pest
 - **代码质量**: PHPStan + PHP Pint
 - **第三方集成**:
-  - 支付: 支付宝、微信支付 (yansongda/pay)
-  - 通信: 短信 (overtrue/easy-sms)、邮件 (phpmailer/phpmailer)
-  - 文档: Excel 处理 (phpoffice/phpspreadsheet)
+    - 支付: 支付宝、微信支付 (yansongda/pay)
+    - 通信: 短信 (overtrue/easy-sms)、邮件 (phpmailer/phpmailer)
+    - 文档: Excel 处理 (phpoffice/phpspreadsheet)
 
 ## 快速开始
 
 ### 环境要求
 
 - PHP 8.3+
-- MySQL 8.0+
-- Composer
+- 数据库：MySQL 5.7+ 或 MariaDB
+- Composer 2.8+
 - Redis（可选，用于缓存和队列）
 - JRE 17+（可选，用于 keytool 生成 JKS 证书）
 
@@ -120,18 +120,16 @@ barryvdh/laravel-ide-helper 包用于其它 IDE
 
 ```json
 {
-  "code": 1,
-  "data": {
-  }
+    "code": 1,
+    "data": {}
 }
 ```
 
 ```json
 {
-  "code": 0,
-  "msg": "错误信息",
-  "errors": {
-  }
+    "code": 0,
+    "msg": "错误信息",
+    "errors": {}
 }
 ```
 
@@ -233,15 +231,15 @@ php artisan test
 - 操作审计日志
 - 资金账户管理
 
-### ACME 订阅管理
+### ACME 订阅管理（封装下单 + 交付 EAB）
 
-- 单一 `Acme` 模型（表 `acmes`），独立于传统订单/证书
-- 计费三步流程：createOrder（unpaid）→ payOrder（pending）→ commitOrder（active，含 EAB）
-- 取消流程：commitCancel（标记 cancelling + 延时任务）→ executeCancel（调上游 + 退费）
-- Source API 层：4 方法接口（new/get/cancel/getProducts），按 product.source 路由，通过 SDK 代理调用 Gateway 端点
-- 产品映射由 Gateway 侧维护，Manager 通过 `GET /api/acme/get-products` 获取产品列表
-- 产品导入：Action::importProduct() 同时查询 Order + ACME 两端产品
-- Admin/User/Deploy 三端独立 ACME 控制器，Deploy 端支持一步到位下单
+- Manager **不实现 RFC 8555 服务端**，仅作 ACME 订阅生命周期管理；directory_url 由上游返回，certbot/acme.sh 直连 CA
+- 单一 `Acme` 模型（表 `acmes`），独立于传统订单/证书；`eab_hmac` 加密存储且默认 hidden
+- 计费三步流程：`Action::new()`（unpaid）→ `Action::pay()`（pending）→ `Action::commit()`（active，回写 EAB + directory_url）；`newAndCommit()` 一步到位（API/Deploy Token 入口）
+- 取消流程：Web `commitCancel()`（标记 cancelling + 120s 延时 Task）→ `cancel()`（调上游 + 退费）；Deploy/API `cancelNow()` 立即同步执行
+- Source API 层：`AcmeSourceApiInterface`（new / get / cancel / getProducts），按 `product.source` 路由，通过 Sdk 调用上游 `/api/acme/*` 端点
+- 产品映射由上游维护，Manager 通过 `GET /api/acme/get-products` 拉取并 `importProduct()` 入库
+- Admin/User/Deploy/API Token 四端独立路由，Deploy/API Token 入口支持一步到位下单
 
 ### 系统集成
 

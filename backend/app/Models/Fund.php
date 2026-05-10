@@ -8,6 +8,7 @@ use Exception;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
 
 class Fund extends BaseModel
 {
@@ -122,13 +123,10 @@ class Fund extends BaseModel
     }
 
     /**
-     * 创建 transaction 记录
+     * 创建 transaction 记录。
      *
-     * 契约：调用方（Fund::saving 钩子触发路径）必须处于 DB::transaction 内，
-     * 否则 Transaction::create 修改的 user.balance + transactions INSERT 与外层 funds INSERT/UPDATE
-     * 无法原子提交 —— 后续 funds 插入失败会留下"余额与 transaction 已落库，funds 记录缺失"的脏状态。
-     * 本方法不再开自己的内层事务/savepoint，让错误冒泡给外层事务统一回滚。
-     * Transaction::creating 钩子会在 transactionLevel=0 时抛异常兜底。
+     * 调用方必须在 DB::transaction 内，否则 Transaction::create 修改的 balance +
+     * transactions INSERT 与外层 funds 操作无法原子提交。
      */
     private static function createRecord(Model $model): void
     {
@@ -154,5 +152,52 @@ class Fund extends BaseModel
         }
 
         return $data;
+    }
+
+    /**
+     * CAS 状态转换：Fund.status 0→1 原子化。
+     *
+     * 完整 5 字段 WHERE（id + amount + type + pay_method + status=0），
+     * affected_rows=1 才认成功。CAS WHERE 不能简化 —— 否则金额或支付方式不匹配
+     * 的回调会把本地 fund 标成功并按本地 amount 入账。
+     *
+     * 调用契约：必须在 DB::transaction 内调用，使 CAS UPDATE + Transaction::create
+     * + user.balance 修改原子提交。
+     *
+     * @return self|null CAS 成功返回 fund 实例；任一字段不匹配或被并发抢占返回 null
+     */
+    public static function transitionToSuccessful(
+        int|string $id,
+        string $expectedAmount,
+        string $expectedType,
+        string $expectedPayMethod,
+        string $paySn
+    ): ?self {
+        if (DB::transactionLevel() === 0) {
+            throw new Exception('Fund::transitionToSuccessful 必须在 DB::transaction 内调用（防止 fund 状态与 transaction 非原子）');
+        }
+
+        $updated = static::where('id', $id)
+            ->where('amount', $expectedAmount)
+            ->where('type', $expectedType)
+            ->where('pay_method', $expectedPayMethod)
+            ->where('status', 0)
+            ->update(['status' => 1, 'pay_sn' => $paySn]);
+
+        if ($updated !== 1) {
+            return null;
+        }
+
+        $fund = static::find($id);
+        if (! $fund) {
+            return null;
+        }
+
+        // 查询构建器 update() 不触发 updating 钩子，CAS 成功后显式补写 transaction
+        $transaction = self::getTypeAmount($fund, ['transaction_id' => $fund->id]);
+
+        Transaction::create($transaction);
+
+        return $fund;
     }
 }

@@ -20,9 +20,9 @@ log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 # 将秒数格式化为可读时长
 format_secs() {
     local secs="$1"
-    local h=$(( secs / 3600 ))
-    local m=$(( (secs % 3600) / 60 ))
-    local s=$(( secs % 60 ))
+    local h=$((secs / 3600))
+    local m=$(((secs % 3600) / 60))
+    local s=$((secs % 60))
     if [ "$h" -gt 0 ]; then
         printf "%d小时%02d分%02d秒" "$h" "$m" "$s"
     elif [ "$m" -gt 0 ]; then
@@ -34,12 +34,14 @@ format_secs() {
 
 # 运行 rsync 并输出精简统计摘要
 run_rsync_with_stats() {
-    local label="$1"; shift
+    local label="$1"
+    shift
     local start_ts end_ts elapsed tmpstats total changed created deleted
     tmpstats=$(mktemp)
     start_ts=$(date +%s)
     if rsync --stats "$@" >"$tmpstats" 2>&1; then
-        end_ts=$(date +%s); elapsed=$(( end_ts - start_ts ))
+        end_ts=$(date +%s)
+        elapsed=$((end_ts - start_ts))
         # 注意：rsync 输出的数字可能带逗号（如 46,144），需要匹配 [0-9,]+ 并移除逗号
         total=$(grep -Eo 'Number of files: [0-9,]+' "$tmpstats" | awk '{gsub(/,/,""); print $4}' | tail -1)
         changed=$(grep -Eo 'Number of (regular )?files transferred: [0-9,]+' "$tmpstats" | awk '{gsub(/,/,""); print $NF}' | tail -1)
@@ -81,10 +83,10 @@ if [ "${BUILD_BACKEND:-false}" = "true" ]; then
 
         # 生成排除列表文件
         EXCLUDE_FILE="$(mktemp)"
-        jq -r '.exclude_patterns.backend[]' "$CONFIG_FILE" 2>/dev/null >> "$EXCLUDE_FILE" || true
+        jq -r '.exclude_patterns.backend[]' "$CONFIG_FILE" 2>/dev/null >>"$EXCLUDE_FILE" || true
 
         # 额外排除
-        cat >> "$EXCLUDE_FILE" <<'EOF'
+        cat >>"$EXCLUDE_FILE" <<'EOF'
 *.md
 README*
 LICENSE*
@@ -192,7 +194,7 @@ RELEASE_CHANNEL="${RELEASE_CHANNEL:-main}"
 
 # 生成 version.json（运行时使用）
 BUILD_TIME=$(date -Iseconds)
-cat > "$PRODUCTION_DIR/version.json" <<EOF
+cat >"$PRODUCTION_DIR/version.json" <<EOF
 {
   "version": "$VERSION",
   "channel": "$RELEASE_CHANNEL",

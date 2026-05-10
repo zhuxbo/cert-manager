@@ -5,8 +5,9 @@ namespace App\Bootstrap;
 use App\Exceptions\ApiResponseException;
 use App\Models\ErrorLog;
 use App\Services\LogBuffer;
-use App\Traits\LogSanitizer;
+use App\Utils\LogScrubber;
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\JsonResponse;
@@ -19,7 +20,7 @@ use Throwable;
 
 class ApiExceptions
 {
-    use LogSanitizer;
+    use DetectsConcurrencyErrors;
 
     /**
      * 不需要记录日志的异常类型
@@ -79,7 +80,7 @@ class ApiExceptions
                 'url' => $url,
                 'exception' => class_basename($e),
                 'message' => $message,
-                'trace' => $this->sanitizeResponse($e->getTrace()),
+                'trace' => LogScrubber::scrubResponse($e->getTrace()),
                 'status_code' => $this->getExceptionStatusCode($e),
                 'ip' => $ip,
             ]);
@@ -113,7 +114,51 @@ class ApiExceptions
             // 验证异常 状态码 200
             $e instanceof ValidationException => 200,
             $e instanceof HttpException => $e->getStatusCode(),
+            // 数据库并发冲突（MySQL deadlock / lock wait timeout）→ 503，让客户端/前端重试
+            $this->causedByConcurrencyError($e) => 503,
+            // 数据库唯一约束违反（funds.pay_method+pay_sn 重复 / transactions.type+transaction_id 重复）
+            // → 409 Conflict，与 503 区分：409 是请求本身重复无需重试，503 才是建议重试
+            $this->causedByDuplicateKey($e) !== null => 409,
             default => 400,
+        };
+    }
+
+    /**
+     * 检测 DB 唯一约束违反并返回业务消息；非唯一冲突返回 null。
+     *
+     * MySQL SQLSTATE 23000 + errno 1062 表示唯一约束冲突。
+     * 应用层钩子 exists 校验作为前端速失败保留，本翻译是 DB 兜底（并发漏失场景）。
+     */
+    protected function causedByDuplicateKey(Throwable $e): ?string
+    {
+        // QueryException 继承自 PDOException，单一检查即可覆盖两类。
+        if (! $e instanceof \PDOException) {
+            return null;
+        }
+
+        $sqlState = (string) $e->getCode();
+        $message = $e->getMessage();
+        $errCode = null;
+        if ($e instanceof \Illuminate\Database\QueryException) {
+            $errCode = $e->errorInfo[1] ?? null;
+        }
+
+        $isUniqueViolation = match (true) {
+            $sqlState === '23000' && (int) $errCode === 1062 => true,
+            // 兜底：不带 errcode 的 PDOException 用消息匹配
+            str_contains($message, 'Duplicate entry') => true,
+            default => false,
+        };
+
+        if (! $isUniqueViolation) {
+            return null;
+        }
+
+        // MySQL 错误消息含约束名，按命名匹配业务消息
+        return match (true) {
+            str_contains($message, 'funds_pay_method_pay_sn_unique') => '支付编号重复请勿重复支付',
+            str_contains($message, 'transactions_dedup_unique') => '交易记录已存在',
+            default => '数据已存在',
         };
     }
 
@@ -142,12 +187,19 @@ class ApiExceptions
             return new JsonResponse($response, $status);
         }
 
+        // DB 唯一约束违反：返回业务消息（后端原始 SQL 错误只在 debug / error_log 可见）
+        $duplicateKeyMessage = $this->causedByDuplicateKey($e);
+
         $message = match (true) {
             $e instanceof AuthenticationException => $e->getMessage() ?: '未登录或登录已过期',
             $e instanceof NotFoundHttpException => $e->getMessage() ?: '请求的资源不存在',
             $e instanceof MethodNotAllowedHttpException => $e->getMessage() ?: '请求方法不允许',
             $e instanceof ThrottleRequestsException => $e->getMessage() ?: '请求过于频繁，请稍后再试',
             $e instanceof HttpException => $e->getMessage() ?: '服务器错误',
+            // MySQL deadlock / lock wait timeout 等并发冲突——用户友好提示
+            // 后端原始异常（如 "Lock wait timeout exceeded"）只在 debug 模式或日志中可见
+            $this->causedByConcurrencyError($e) => '系统繁忙，请稍后重试',
+            $duplicateKeyMessage !== null => $duplicateKeyMessage,
             default => $debug ? $e->getMessage() : '服务器错误',
         };
 

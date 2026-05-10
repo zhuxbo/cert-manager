@@ -1,0 +1,17 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员可以修改未支付订单价格",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/order/amount/{id}",
+            "request_keys": [
+                "amount"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

@@ -1,8 +1,11 @@
 <?php
 
+use App\Models\AdminLog;
+use App\Models\ErrorLog;
 use App\Models\Fund;
 use App\Models\OrderDocument;
 use App\Models\User;
+use App\Models\UserLog;
 use Tests\Traits\CreatesTestData;
 
 test('签名为 schedule:purge', function () {
@@ -150,4 +153,47 @@ test('清理非进行中状态订单的文档', function () {
         expect(OrderDocument::find($doc->id))->toBeNull()
             ->and("$status should be purged")->toBe("$status should be purged");
     }
+});
+
+// --- 日志保留期 config 化测试 ---
+
+test('config(logs.retention.admin) 注入后清理超过保留期的 admin_logs', function () {
+    config(['logs.retention.admin' => 30]);
+
+    AdminLog::insert([
+        ['url' => 'https://test.local/old', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(31)],
+        ['url' => 'https://test.local/new', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(10)],
+    ]);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(AdminLog::where('url', 'https://test.local/old')->exists())->toBeFalse();
+    expect(AdminLog::where('url', 'https://test.local/new')->exists())->toBeTrue();
+});
+
+test('config(logs.retention.error) 注入后清理超过保留期的 error_logs', function () {
+    config(['logs.retention.error' => 7]);
+
+    ErrorLog::insert([
+        ['url' => 'https://test.local/err-old', 'method' => 'POST', 'exception' => 'E', 'message' => 'm', 'created_at' => now()->subDays(8)],
+        ['url' => 'https://test.local/err-new', 'method' => 'POST', 'exception' => 'E', 'message' => 'm', 'created_at' => now()->subDays(2)],
+    ]);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(ErrorLog::where('url', 'https://test.local/err-old')->exists())->toBeFalse();
+    expect(ErrorLog::where('url', 'https://test.local/err-new')->exists())->toBeTrue();
+});
+
+test('未注入 config 时使用默认 180 天兜底（user_logs）', function () {
+    // 不注入 config，依赖 config/logs.php 默认值
+    UserLog::insert([
+        ['url' => 'https://test.local/u-old', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(181)],
+        ['url' => 'https://test.local/u-new', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(170)],
+    ]);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(UserLog::where('url', 'https://test.local/u-old')->exists())->toBeFalse();
+    expect(UserLog::where('url', 'https://test.local/u-new')->exists())->toBeTrue();
 });

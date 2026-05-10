@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AuthControllerTest::__pest_evaluable_管理员使用正确旧密码可以修改密码",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/update-password",
+            "request_keys": [
+                "newPassword",
+                "newPassword_confirmation",
+                "oldPassword"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

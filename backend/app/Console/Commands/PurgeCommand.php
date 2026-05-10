@@ -15,6 +15,7 @@ use App\Models\Task;
 use App\Models\UserLog;
 use App\Services\Order\Action;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class PurgeCommand extends Command
@@ -48,55 +49,67 @@ class PurgeCommand extends Command
         $result = Fund::where('created_at', '<', now()->subHours(24))->where('status', 0)->delete();
         $this->info("Purged $result fund records");
 
-        // 清理超过180天的接口日志
-        $result = ApiLog::where('created_at', '<', now()->subDays(180))->delete();
+        // 日志保留期 / GET-only 短保留期（config('logs.retention.*') 优先，env 兜底）
+        $retentionApi = (int) config('logs.retention.api', 180);
+        $retentionAdmin = (int) config('logs.retention.admin', 180);
+        $retentionUser = (int) config('logs.retention.user', 180);
+        $retentionCallback = (int) config('logs.retention.callback', 180);
+        $retentionCa = (int) config('logs.retention.ca', 180);
+        $retentionError = (int) config('logs.retention.error', 90);
+        $retentionGet = (int) config('logs.retention.get_only', 30);
+
+        // 清理过期的接口日志
+        $result = ApiLog::where('created_at', '<', now()->subDays($retentionApi))->delete();
         $this->info("Purged $result API logs");
 
-        // 清理超过30天的GET方法接口日志
-        $result = ApiLog::where('created_at', '<', now()->subDays(30))->where('method', 'GET')->delete();
+        // 清理过期的 GET 方法接口日志
+        $result = ApiLog::where('created_at', '<', now()->subDays($retentionGet))->where('method', 'GET')->delete();
         $this->info("Purged $result GET API logs");
 
-        // 清理超过180天的管理员日志
-        $result = AdminLog::where('created_at', '<', now()->subDays(180))->delete();
+        // 清理过期的管理员日志
+        $result = AdminLog::where('created_at', '<', now()->subDays($retentionAdmin))->delete();
         $this->info("Purged $result admin logs");
 
-        // 清理超过30天的GET方法管理员日志
-        $result = AdminLog::where('created_at', '<', now()->subDays(30))->whereIn('method', ['GET', 'OPTIONS'])->delete();
+        // 清理过期的 GET 方法管理员日志
+        $result = AdminLog::where('created_at', '<', now()->subDays($retentionGet))->whereIn('method', ['GET', 'OPTIONS'])->delete();
         $this->info("Purged $result GET admin logs");
 
-        // 清理超过180天的用户日志
-        $result = UserLog::where('created_at', '<', now()->subDays(180))->delete();
+        // 清理过期的用户日志
+        $result = UserLog::where('created_at', '<', now()->subDays($retentionUser))->delete();
         $this->info("Purged $result user logs");
 
-        // 清理超过30天的GET方法用户日志
-        $result = UserLog::where('created_at', '<', now()->subDays(30))->whereIn('method', ['GET', 'OPTIONS'])->delete();
+        // 清理过期的 GET 方法用户日志
+        $result = UserLog::where('created_at', '<', now()->subDays($retentionGet))->whereIn('method', ['GET', 'OPTIONS'])->delete();
         $this->info("Purged $result GET user logs");
 
-        // 清理超过180天的回调日志
-        $result = CallbackLog::where('created_at', '<', now()->subDays(180))->delete();
+        // 清理过期的回调日志
+        $result = CallbackLog::where('created_at', '<', now()->subDays($retentionCallback))->delete();
         $this->info("Purged $result callback logs");
 
-        // 清理超过180天的CA日志
-        $result = CaLog::where('created_at', '<', now()->subDays(180))->delete();
+        // 清理过期的 CA 日志
+        $result = CaLog::where('created_at', '<', now()->subDays($retentionCa))->delete();
         $this->info("Purged $result ca logs");
 
-        // 清理超过90天的错误日志
-        $result = ErrorLog::where('created_at', '<', now()->subDays(90))->delete();
+        // 清理过期的错误日志
+        $result = ErrorLog::where('created_at', '<', now()->subDays($retentionError))->delete();
         $this->info("Purged $result error logs");
 
         // 动态清理其他 _logs 后缀表（插件日志表等）
+        // 用 Schema::getTableListing() 替代 raw SHOW TABLES LIKE，统一走 Laravel 抽象（Laravel 11+）
         $knownLogTables = ['api_logs', 'admin_logs', 'user_logs', 'callback_logs', 'ca_logs', 'error_logs'];
         try {
-            $rows = \Illuminate\Support\Facades\DB::select("SHOW TABLES LIKE '%\\_logs'");
-            foreach ($rows as $row) {
-                $tableName = current((array) $row);
+            $tableNames = \Illuminate\Support\Facades\Schema::getTableListing();
+            foreach ($tableNames as $tableName) {
+                if (! is_string($tableName) || ! str_ends_with($tableName, '_logs')) {
+                    continue;
+                }
                 if (! preg_match('/^[a-zA-Z0-9_]+$/', $tableName)) {
                     continue;
                 }
                 if (in_array($tableName, $knownLogTables)) {
                     continue;
                 }
-                $result = \Illuminate\Support\Facades\DB::table($tableName)->where('created_at', '<', now()->subDays(180))->delete();
+                $result = \Illuminate\Support\Facades\DB::table($tableName)->where('created_at', '<', now()->subDays($retentionApi))->delete();
                 $this->info("Purged $result $tableName");
             }
         } catch (\Throwable $e) {
@@ -113,8 +126,8 @@ class PurgeCommand extends Command
             ->join('products', 'orders.product_id', '=', 'products.id')
             ->whereHas('latestCert', fn ($query) => $query->where('status', 'processing'))
             ->where('products.refund_period', '>=', 5)
-            ->whereRaw('orders.created_at <= DATE_SUB(NOW(), INTERVAL products.refund_period - 4 DAY)')
-            ->whereRaw('orders.created_at > DATE_SUB(NOW(), INTERVAL products.refund_period - 2 DAY)')
+            ->where('orders.created_at', '<=', DB::raw('DATE_SUB(NOW(), INTERVAL (products.refund_period - 4) DAY)'))
+            ->where('orders.created_at', '>', DB::raw('DATE_SUB(NOW(), INTERVAL (products.refund_period - 2) DAY)'))
             ->select('orders.*')
             ->get();
 
@@ -134,8 +147,8 @@ class PurgeCommand extends Command
             ->join('products', 'orders.product_id', '=', 'products.id')
             ->whereHas('latestCert', fn ($query) => $query->where('status', 'processing'))
             ->where('products.refund_period', '>=', 5)
-            ->whereRaw('orders.created_at > DATE_SUB(NOW(), INTERVAL products.refund_period DAY)')
-            ->whereRaw('orders.created_at <= DATE_SUB(NOW(), INTERVAL products.refund_period - 2 DAY)')
+            ->where('orders.created_at', '>', DB::raw('DATE_SUB(NOW(), INTERVAL products.refund_period DAY)'))
+            ->where('orders.created_at', '<=', DB::raw('DATE_SUB(NOW(), INTERVAL (products.refund_period - 2) DAY)'))
             ->select('orders.*')
             ->get();
 

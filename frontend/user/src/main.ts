@@ -6,7 +6,11 @@ import { MotionPlugin } from "@vueuse/motion";
 // import { useEcharts } from "@/plugins/echarts";
 import { createApp, type Directive } from "vue";
 import { useElementPlus } from "@/plugins/elementPlus";
-import { injectResponsiveStorage } from "@shared/utils";
+import {
+  injectResponsiveStorage,
+  fetchMeta,
+  renderChannelDisabled
+} from "@shared/utils";
 import { routerArrays } from "@/layout/types";
 import {
   initPluginSystem,
@@ -67,6 +71,16 @@ import VueTippy from "vue-tippy";
 app.use(VueTippy);
 
 getPlatformConfig(app).then(async config => {
+  // 启动期检测 channels（前端编排）
+  // 后端 channels.user=false 时跳过主应用初始化，渲染降级页
+  // 注意：app.unmount() 释放 createApp(App) 已经创建的实例，避免持有 router/store 等模块的孤儿引用
+  const meta = await fetchMeta();
+  if (meta && meta.channels.user === false) {
+    renderChannelDisabled("user");
+    app.unmount();
+    return;
+  }
+
   setupStore(app);
   // 初始化 shared 模块（auth 和 http）
   const { setupSharedModules } = await import("@/utils/setup");

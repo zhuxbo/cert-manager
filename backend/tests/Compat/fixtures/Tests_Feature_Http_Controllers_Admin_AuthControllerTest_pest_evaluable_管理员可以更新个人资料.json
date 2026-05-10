@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AuthControllerTest::__pest_evaluable_管理员可以更新个人资料",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/update-profile",
+            "request_keys": [
+                "email",
+                "mobile"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

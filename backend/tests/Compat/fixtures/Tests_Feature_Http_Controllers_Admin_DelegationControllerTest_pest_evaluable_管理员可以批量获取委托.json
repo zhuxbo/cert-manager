@@ -1,0 +1,38 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DelegationControllerTest::__pest_evaluable_管理员可以批量获取委托",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/delegation/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "id": "integer",
+                        "user_id": "integer",
+                        "zone": "string",
+                        "prefix": "string",
+                        "label": "string",
+                        "valid": "boolean",
+                        "last_checked_at": "null",
+                        "fail_count": "integer",
+                        "last_error": "string",
+                        "created_at": "string",
+                        "updated_at": "string",
+                        "proxy_zone": "string",
+                        "target_fqdn": "string",
+                        "cname_to": {
+                            "host": "string",
+                            "value": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,37 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DelegationControllerTest::__pest_evaluable_管理员可以创建委托",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/delegation",
+            "request_keys": [
+                "prefix",
+                "user_id",
+                "zone"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "user_id": "integer",
+                    "zone": "string",
+                    "prefix": "string",
+                    "label": "string",
+                    "valid": "boolean",
+                    "fail_count": "integer",
+                    "last_error": "string",
+                    "id": "integer",
+                    "updated_at": "string",
+                    "created_at": "string",
+                    "proxy_zone": "string",
+                    "target_fqdn": "string",
+                    "cname_to": {
+                        "host": "string",
+                        "value": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

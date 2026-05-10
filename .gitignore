@@ -62,3 +62,14 @@ version.json
 
 # Superpowers specs/plans（本地开发文档，不入版本库）
 .superpowers/
+
+# Claude Code worktree（开发时按需创建，不入版本库）
+.claude/
+
+# 测试运行时临时目录（如 deploy/docker/test-startup.sh 的 .tmp/ / .tmp_iso/ / .tmp_log/）
+.tmp/
+.tmp_*/
+
+# e2e 集成层运行时产物（自动生成；不入版本库）
+deploy/test/e2e/integration/env/
+deploy/test/e2e/integration/data/

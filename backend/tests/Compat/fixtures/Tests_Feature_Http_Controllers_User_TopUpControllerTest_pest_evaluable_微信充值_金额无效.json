@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\TopUpControllerTest::__pest_evaluable_微信充值_金额无效",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/top-up/wechat",
+            "request_keys": [
+                "amount"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DeployTokenControllerTest::__pest_evaluable_未认证用户无法访问部署令牌管理",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/deploy-token",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "exception_type": "string",
+                    "exception_trace": {
+                        "__list_of__": {
+                            "file": "string",
+                            "line": "integer",
+                            "function": "string",
+                            "class": "string",
+                            "type": "string",
+                            "args": "array<mixed>"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

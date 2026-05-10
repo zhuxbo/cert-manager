@@ -2,10 +2,11 @@
 
 # SSL Manager 一键安装入口脚本
 # 用法:
-#   ./install.sh --url http://release.example.com
-#   ./install.sh --url http://release.example.com --version 0.0.10-beta
-#   ./install.sh --url http://release.example.com docker
-#   ./install.sh --url http://release.example.com bt
+# ./install.sh --url http://release.example.com
+# ./install.sh --url http://release.example.com --version 0.0.10-beta
+# ./install.sh --url http://release.example.com bt
+#
+# 部署方式：仅支持宝塔面板部署（已移除 Docker 部署，详见 ROADMAP）
 
 set -e
 
@@ -128,22 +129,167 @@ is_china_server() {
 
 # 检测宝塔面板
 check_bt_panel() {
-    if [ -f "/www/server/panel/BT-Panel" ] || \
-       [ -f "/www/server/panel/class/panelPlugin.py" ] || \
-       ([ -d "/www/server/panel" ] && [ -f "/www/server/panel/data/port.pl" ]); then
+    if [ -f "/www/server/panel/BT-Panel" ] ||
+        [ -f "/www/server/panel/class/panelPlugin.py" ] ||
+        ([ -d "/www/server/panel" ] && [ -f "/www/server/panel/data/port.pl" ]); then
         return 0
     fi
     return 1
 }
 
-# 检测 Docker
-check_docker() {
-    if ! command -v docker &> /dev/null; then
+# ========================================
+# 完整性校验
+# ========================================
+
+# 计算文件 SHA256（三平台 fallback：sha256sum / shasum / openssl）
+_local_file_sha256() {
+    local file="$1"
+    if command -v sha256sum &>/dev/null; then
+        sha256sum "$file" | cut -d' ' -f1
+    elif command -v shasum &>/dev/null; then
+        shasum -a 256 "$file" | cut -d' ' -f1
+    elif command -v openssl &>/dev/null; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
         return 1
     fi
-    if ! docker info &> /dev/null; then
-        return 2  # Docker 服务未运行
+}
+
+# 下载 releases.json（全局唯一真相源，含所有版本 + 每个 asset 的 sha256）
+# install.sh 强校验从 releases.json 读 sha256，不再使用 manifest.json
+_download_releases_json() {
+    local save_path="$1"
+    local base_url="${CUSTOM_RELEASE_URL%/}"
+    local url="$base_url/releases.json"
+    log_info "下载 releases.json: $url"
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 -o "$save_path" "$url" 2>/dev/null; then
+        log_error "releases.json 下载失败"
+        log_error " URL: $url"
+        return 1
     fi
+    return 0
+}
+
+# 从 releases.json 解析 latest/dev 占位符到实际版本号
+# 用法：_resolve_version <releases.json file> <input_version: latest|dev|X.Y.Z[-beta]>
+# stdout: 实际版本号（去掉 v 前缀）
+#
+# 实现：用 `{`/`}` 计数维护深度（depth），在 depth 1→≥2 时进入 release 块、≥2→1 时退出并判定。
+# 旧实现（仅匹配 `^[[:space:]]*\{[[:space:]]*$/` 行作为块边界）会被 `assets` 内嵌的 `{`
+# 误触发块重置，导致 indent=2 格式（json.dump 默认）下第一个 release 永远解析失败。
+_resolve_version() {
+    local releases_file="$1"
+    local input="$2"
+    if [[ "$input" != "latest" ]] && [[ "$input" != "dev" ]]; then
+        echo "$input"
+        return 0
+    fi
+    awk -v target="$input" '
+        BEGIN { depth = 0; tag = ""; pre = "" }
+        {
+            line = $0
+            n_open = 0; n_close = 0
+            s = line; len = length(s)
+            for (i = 1; i <= len; i++) {
+                c = substr(s, i, 1)
+                if (c == "{") n_open++
+                else if (c == "}") n_close++
+            }
+            new_depth = depth + n_open - n_close
+
+            if (depth == 1 && new_depth >= 2) { tag = ""; pre = "" }
+
+            if (new_depth >= 2 || depth >= 2) {
+                if (match(line, /"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"/)) {
+                    t = substr(line, RSTART, RLENGTH)
+                    gsub(/.*"tag_name"[[:space:]]*:[[:space:]]*"v/, "", t)
+                    gsub(/".*/, "", t)
+                    tag = t
+                }
+ if (match(line, /"prerelease"[[:space:]]*:[[:space:]]*true/)) pre = "true"
+                if (match(line, /"prerelease"[[:space:]]*:[[:space:]]*false/)) pre = "false"
+            }
+
+            if (depth >= 2 && new_depth == 1) {
+                if (tag != "") {
+                    if (target == "latest" && pre == "false") { print tag; exit }
+ if (target == "dev" && pre == "true" ) { print tag; exit }
+                }
+            }
+            depth = new_depth
+        }
+    ' "$releases_file"
+}
+
+# 从 releases.json 提取指定 version + asset 的 sha256
+# 用法：_extract_release_sha256 <releases.json file> <version> <asset filename>
+_extract_release_sha256() {
+    local releases_file="$1"
+    local version="$2"
+    local asset_name="$3"
+    awk -v ver="v$version" -v aname="$asset_name" '
+        BEGIN { in_target_release = 0; in_target_asset = 0 }
+        # 进入 release 块时检查 tag_name（同行）
+        match($0, /"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"/) {
+            s = substr($0, RSTART, RLENGTH)
+            gsub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", s)
+            gsub(/".*/, "", s)
+            in_target_release = (s == ver) ? 1 : 0
+            in_target_asset = 0
+            next
+        }
+        # 在目标 release 内：检查 asset 的 name（同行）
+        in_target_release && match($0, /"name"[[:space:]]*:[[:space:]]*"[^"]+\.zip"/) {
+            s = substr($0, RSTART, RLENGTH)
+            gsub(/.*"name"[[:space:]]*:[[:space:]]*"/, "", s)
+            gsub(/".*/, "", s)
+            in_target_asset = (s == aname) ? 1 : 0
+            next
+        }
+        # 在目标 asset 块内：找 sha256
+        in_target_release && in_target_asset && match($0, /"sha256"[[:space:]]*:[[:space:]]*"[^"]+"/) {
+            s = substr($0, RSTART, RLENGTH)
+            gsub(/.*"sha256"[[:space:]]*:[[:space:]]*"/, "", s)
+            gsub(/".*/, "", s)
+            print s
+            exit
+        }
+    ' "$releases_file"
+}
+
+# 强校验脚本包 SHA256（失败 → 立即 exit 1，不降级）
+# 用法：verify_script_package_sha256 <package_file> <releases.json file> <version>
+verify_script_package_sha256() {
+    local package_file="$1"
+    local releases_file="$2"
+    local version="$3"
+    local asset_name="ssl-manager-script-$version.zip"
+
+    local expected_sha=$(_extract_release_sha256 "$releases_file" "$version" "$asset_name")
+    if [ -z "$expected_sha" ]; then
+        log_error "releases.json 缺失 v$version 的 $asset_name sha256 字段"
+        log_error "无法验证脚本包完整性，安装中止"
+        return 1
+    fi
+
+    local actual_sha
+    actual_sha=$(_local_file_sha256 "$package_file") || {
+        log_error "缺少 sha256sum / shasum / openssl 工具，无法校验完整性"
+        return 1
+    }
+
+    expected_sha=$(echo "$expected_sha" | tr 'A-Z' 'a-z')
+    actual_sha=$(echo "$actual_sha" | tr 'A-Z' 'a-z')
+
+    if [ "$actual_sha" != "$expected_sha" ]; then
+        log_error "脚本包 SHA256 校验失败 — 包可能被篡改或下载损坏"
+        log_error " 文件: $package_file"
+        log_error " 期望: $expected_sha"
+        log_error " 实际: $actual_sha"
+        return 1
+    fi
+
+    log_success "脚本包 SHA256 校验通过"
     return 0
 }
 
@@ -163,7 +309,7 @@ download_script_package() {
         return 1
     fi
 
-    local base_url="${CUSTOM_RELEASE_URL%/}"  # 移除末尾斜杠
+    local base_url="${CUSTOM_RELEASE_URL%/}" # 移除末尾斜杠
     local url=""
 
     # 构建 URL
@@ -198,11 +344,11 @@ download_script_package() {
     log_error "下载失败 (curl exit code: $curl_exit)"
     [ -n "$curl_output" ] && log_error "$curl_output"
     case $curl_exit in
-        6)  log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
-        7)  log_info "提示: 无法连接服务器" ;;
+        6) log_info "提示: 无法解析域名，请检查 DNS 或网络配置" ;;
+        7) log_info "提示: 无法连接服务器" ;;
         22) log_info "提示: 服务器返回错误（文件可能不存在）" ;;
         28) log_info "提示: 下载超时" ;;
-        35|51|60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
+        35 | 51 | 60) log_info "提示: SSL/TLS 错误，旧系统可尝试 yum update ca-certificates" ;;
     esac
     return 1
 }
@@ -213,8 +359,8 @@ download_script_package() {
 show_banner() {
     echo ""
     echo -e "${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║${NC}           ${GREEN}SSL Manager 一键安装程序${NC}                        ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}           ${BLUE}https://github.com/$REPO_OWNER/$REPO_NAME${NC}         ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${GREEN}SSL Manager 一键安装程序${NC} ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${BLUE}https://github.com/$REPO_OWNER/$REPO_NAME${NC} ${CYAN}║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -226,31 +372,40 @@ show_help() {
     cat <<EOF
 用法: $0 --url <release_url> [选项] [模式]
 
-模式:
-  auto    自动检测环境（默认）
-  docker  使用 Docker 安装
-  bt      使用宝塔面板安装
+模式（仅支持宝塔；已移除 Docker 部署）:
+ auto 自动检测宝塔环境（默认；未检测到宝塔则报错并提示安装）
+ bt 显式使用宝塔面板安装（同 auto，仅做语义提示）
 
 选项:
-  --url URL              指定 release 服务 URL（必需）
-  --version, -v VERSION  指定安装版本
-                         latest   最新稳定版（默认）
-                         dev      最新开发版
-                         x.x.x    指定版本号
-  -y                     非交互模式，跳过确认提示
-  -h, --help             显示此帮助信息
+ --url URL 指定 release 服务 URL（必需）
+ --version, -v VERSION 指定安装版本
+ latest 最新稳定版（默认）
+ dev 最新开发版
+ x.x.x 指定版本号
+ -y 非交互模式，跳过确认提示
+ -h, --help 显示此帮助信息
 
 示例:
-  $0 --url http://release.example.com                           # 安装最新稳定版
-  $0 --url http://release.example.com --version 0.0.10-beta     # 安装指定版本
-  $0 --url http://release.example.com docker                    # Docker 安装
-  $0 --url http://release.example.com bt                        # 宝塔安装
-  $0 --url http://release.example.com docker -y                 # 非交互式 Docker 安装
+ $0 --url http://release.example.com # 安装最新稳定版
+ $0 --url http://release.example.com --version 0.0.10-beta # 安装指定版本
+ $0 --url http://release.example.com bt # 显式宝塔安装
+ $0 --url http://release.example.com bt -y # 非交互式宝塔安装
 
 环境变量:
-  FORCE_CHINA_MIRROR=1   强制使用国内镜像
-  FORCE_CHINA_MIRROR=0   强制使用国际源
-  AUTO_YES=true          非交互模式
+ FORCE_CHINA_MIRROR=1 强制使用国内镜像
+ FORCE_CHINA_MIRROR=0 强制使用国际源
+ AUTO_YES=true 非交互模式
+
+完整性校验:
+  install.sh 自动从 releases.json 读对应版本 ssl-manager-script-<v>.zip 的 sha256，
+  强校验脚本包；失败立即退出。
+
+  首次运行前可手工校验 install.sh 自身：
+    curl -fsSLO <release_url>/latest/install.sh
+    curl -fsSLO <release_url>/latest/install.sh.sha256
+    sha256sum -c install.sh.sha256
+  macOS（无 sha256sum）：
+    shasum -a 256 -c install.sh.sha256
 EOF
     exit 0
 }
@@ -262,11 +417,14 @@ main() {
     local mode="auto"
     local version="latest"
     local auto_yes="${AUTO_YES:-false}"
+    # 未识别参数透传给子脚本（bt-install.sh）
+    # install.sh 是入口路由，子脚本有自己的复杂参数（--site-domain / --bt-key 等）
+    local -a EXTRA_ARGS=()
 
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --version|-v)
+            --version | -v)
                 version="$2"
                 shift 2
                 ;;
@@ -278,16 +436,22 @@ main() {
                 auto_yes=true
                 shift
                 ;;
-            -h|--help)
+            -h | --help)
                 show_help
                 ;;
-            bt|docker|auto)
+            bt | auto)
                 mode="$1"
                 shift
                 ;;
+            docker)
+                log_error "Docker 部署已移除（架构简化，集中维护宝塔模式）"
+                log_info "请改用宝塔面板部署：$0 --url <url> bt"
+                exit 1
+                ;;
             *)
-                log_error "未知参数: $1"
-                show_help
+                # 未知参数透传给子脚本（保留原始 token，含可能的 = 形式如 --site-domain=xxx）
+                EXTRA_ARGS+=("$1")
+                shift
                 ;;
         esac
     done
@@ -316,7 +480,7 @@ main() {
 
     # 检查必需命令
     for cmd in curl unzip; do
-        if ! command -v $cmd &> /dev/null; then
+        if ! command -v $cmd &>/dev/null; then
             log_error "缺少必需命令: $cmd"
             log_info "请先安装: apt install $cmd 或 yum install $cmd"
             exit 1
@@ -341,10 +505,10 @@ main() {
     else
         echo ""
         echo "请选择网络环境:"
-        echo "  1. 中国大陆（使用国内镜像源，推荐国内服务器）"
-        echo "  2. 国际网络（使用官方源）"
+        echo " 1. 中国大陆（使用国内镜像源，推荐国内服务器）"
+        echo " 2. 国际网络（使用官方源）"
         echo ""
-        read -p "请选择 (1/2) [1]: " network_choice < /dev/tty
+        read -p "请选择 (1/2) [1]: " network_choice </dev/tty
         network_choice="${network_choice:-1}"
 
         case "$network_choice" in
@@ -368,11 +532,37 @@ main() {
     export INSTALL_VERSION="$version"
     export CUSTOM_RELEASE_URL
 
+    # 强校验链：先下 releases.json（含 sha256），再下 zip 包，最后校验
+    log_step "校验脚本包完整性..."
+    local releases_file="$TEMP_DIR/releases.json"
+    if ! _download_releases_json "$releases_file"; then
+        log_error "无法验证脚本包完整性，安装中止（sha256 强校验链）"
+        exit 1
+    fi
+
+    # 解析 latest/dev 占位符到实际版本号（X.Y.Z[-beta]）
+    local actual_version
+    actual_version=$(_resolve_version "$releases_file" "$version")
+    if [ -z "$actual_version" ]; then
+        log_error "releases.json 中未找到匹配 \"$version\" 的版本"
+        exit 1
+    fi
+    if [ "$actual_version" != "$version" ]; then
+        log_info "解析版本占位符: $version → $actual_version"
+        version="$actual_version"
+        export INSTALL_VERSION="$version"
+    fi
+
     # 下载脚本包
     log_step "下载安装脚本..."
     local package_file="$TEMP_DIR/$SCRIPT_PACKAGE"
     if ! download_script_package "$package_file" "$version"; then
         log_error "无法下载安装脚本包"
+        exit 1
+    fi
+
+    # 校验
+    if ! verify_script_package_sha256 "$package_file" "$releases_file" "$version"; then
         exit 1
     fi
 
@@ -403,98 +593,28 @@ main() {
         sub_args="-y"
     fi
 
-    # 根据模式或环境选择安装方式
+    # 部署方式：仅支持宝塔（已移除 Docker，简化维护）
+    # auto / bt 行为一致：检测到宝塔则用宝塔；否则报错并提示安装宝塔
     case "$mode" in
-        bt)
-            # 强制使用宝塔安装
+        bt | auto)
+            log_step "检测宝塔面板环境..."
             if check_bt_panel; then
+                log_success "已检测到宝塔面板"
                 log_info "使用宝塔面板安装..."
-                bash "$script_dir/bt-install.sh" $sub_args
+                bash "$script_dir/bt-install.sh" $sub_args "${EXTRA_ARGS[@]}"
             else
-                log_error "未检测到宝塔面板环境"
+                log_error "未检测到宝塔面板环境（仅支持宝塔部署）"
                 log_info "请先安装宝塔面板: https://www.bt.cn/new/download.html"
+                log_info "宝塔安装完成后重新运行此脚本"
                 exit 1
-            fi
-            ;;
-        docker)
-            # 强制使用 Docker 安装
-            log_info "使用 Docker 安装..."
-            bash "$script_dir/docker-install.sh" $sub_args
-            ;;
-        auto)
-            # 自动检测环境
-            log_step "检测运行环境..."
-
-            if check_bt_panel; then
-                log_success "检测到宝塔面板环境"
-                if [ "$auto_yes" = true ]; then
-                    # 非交互模式，默认使用宝塔安装
-                    log_info "非交互模式，使用宝塔面板安装..."
-                    bash "$script_dir/bt-install.sh" $sub_args
-                else
-                    echo ""
-                    echo "请选择安装方式:"
-                    echo "  1. 宝塔面板安装（推荐，适合已有宝塔环境）"
-                    echo "  2. Docker 安装（独立容器化部署）"
-                    echo ""
-                    read -p "请选择 (1/2) [1]: " choice < /dev/tty
-                    choice="${choice:-1}"
-
-                    case "$choice" in
-                        2)
-                            log_info "使用 Docker 安装..."
-                            bash "$script_dir/docker-install.sh" $sub_args
-                            ;;
-                        *)
-                            log_info "使用宝塔面板安装..."
-                            bash "$script_dir/bt-install.sh" $sub_args
-                            ;;
-                    esac
-                fi
-            elif check_docker; then
-                log_success "检测到 Docker 环境"
-                log_info "使用 Docker 安装..."
-                bash "$script_dir/docker-install.sh" $sub_args
-            else
-                log_warning "未检测到宝塔面板或 Docker 环境"
-                if [ "$auto_yes" = true ]; then
-                    # 非交互模式，默认使用 Docker 安装
-                    log_info "非交互模式，使用 Docker 安装..."
-                    bash "$script_dir/docker-install.sh" $sub_args
-                else
-                    echo ""
-                    echo "可选安装方式:"
-                    echo ""
-                    echo "  1. Docker 安装（推荐）"
-                    echo "     脚本将自动安装 Docker 并进行容器化部署"
-                    echo ""
-                    echo "  2. 宝塔面板安装"
-                    echo "     请先安装宝塔面板: https://www.bt.cn/new/download.html"
-                    echo "     然后重新运行此脚本"
-                    echo ""
-                    read -p "是否使用 Docker 安装？(y/n) [y]: " use_docker < /dev/tty
-                    use_docker="${use_docker:-y}"
-
-                    case "$use_docker" in
-                        n|N)
-                            log_info "请安装宝塔面板后重新运行此脚本"
-                            exit 0
-                            ;;
-                        *)
-                            log_info "使用 Docker 安装..."
-                            bash "$script_dir/docker-install.sh" $sub_args
-                            ;;
-                    esac
-                fi
             fi
             ;;
         *)
             log_error "未知的安装模式: $mode"
             echo ""
             echo "用法:"
-            echo "  $0         # 自动检测环境"
-            echo "  $0 docker  # 使用 Docker 安装"
-            echo "  $0 bt      # 使用宝塔面板安装"
+            echo " $0 --url <url> # 自动检测宝塔（默认）"
+            echo " $0 --url <url> bt # 显式宝塔安装"
             exit 1
             ;;
     esac

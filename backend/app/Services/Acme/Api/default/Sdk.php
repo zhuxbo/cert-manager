@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Services\Acme\Api\default;
 
+use App\Models\CaLog;
+use App\Services\LogBuffer;
+use App\Utils\LogScrubber;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
@@ -72,6 +75,8 @@ class Sdk
 
     /**
      * 发送 HTTP 请求
+     *
+     * 仅加日志写入（参考 Order Sdk 模式），不改业务逻辑（接口签名 / 返回值 / 错误处理保持原状）。
      */
     protected function request(string $method, string $uri, array $data = []): array
     {
@@ -80,6 +85,10 @@ class Sdk
         }
 
         $url = "$this->baseUrl/$uri";
+        $startTime = microtime(true);
+        $httpStatusCode = 0;
+        $result = [];
+        $caughtException = null;
 
         try {
             $request = Http::withToken($this->apiToken)
@@ -92,23 +101,38 @@ class Sdk
                 default => $request->asJson()->send($method, $url, ['json' => $data]),
             };
 
+            $httpStatusCode = $response->status();
             $responseData = $response->json() ?? [];
 
             if ($response->successful()) {
                 if (! isset($responseData['code'])) {
-                    return ['code' => 0, 'msg' => '上游返回格式错误'];
+                    $result = ['code' => 0, 'msg' => '上游返回格式错误'];
+                } else {
+                    $result = $responseData;
                 }
-
-                return $responseData;
+            } else {
+                $result = [
+                    'code' => 0,
+                    'msg' => $responseData['msg'] ?? 'HTTP '.$response->status(),
+                    'errors' => $responseData['errors'] ?? [],
+                ];
             }
-
-            return [
-                'code' => 0,
-                'msg' => $responseData['msg'] ?? 'HTTP '.$response->status(),
-                'errors' => $responseData['errors'] ?? [],
-            ];
         } catch (ConnectionException $e) {
-            return ['code' => 0, 'msg' => '上游连接失败'];
+            $caughtException = $e;
+            $result = ['code' => 0, 'msg' => '上游连接失败'];
         }
+
+        // 写入 ca_logs（参考 Order Sdk 模式 + correlation_id 由 LogBuffer 自动注入）
+        LogBuffer::add(CaLog::class, [
+            'url' => $this->baseUrl,
+            'api' => $uri,
+            'params' => LogScrubber::scrub($data),
+            'response' => LogScrubber::scrubResponse($result),
+            'status_code' => $httpStatusCode,
+            'status' => intval($result['code'] ?? 0) === 1 ? 1 : 0,
+            'duration' => round(microtime(true) - $startTime, 3),
+        ]);
+
+        return $result;
     }
 }

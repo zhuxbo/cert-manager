@@ -9,6 +9,7 @@ class UserLog extends BaseModel
     const null UPDATED_AT = null;
 
     protected $fillable = [
+        'correlation_id',
         'user_id',
         'module',
         'action',

@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_restore_在_mysql_不可用时立即返回错误，不入队_Job",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/database/backups/{id}/restore",
+            "request_keys": [
+                "mode"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": "array<string>"
+            }
+        }
+    ]
+}

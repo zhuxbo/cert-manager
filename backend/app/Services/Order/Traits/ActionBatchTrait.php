@@ -105,7 +105,7 @@ trait ActionBatchTrait
         $refundableOrders = Order::with(['product', 'latestCert'])
             ->join('products', 'orders.product_id', '=', 'products.id')
             ->whereHas('latestCert', fn ($query) => $query->whereIn('status', ['processing', 'active', 'approving']))
-            ->whereRaw('orders.created_at > DATE_SUB(NOW(), INTERVAL products.refund_period DAY)')
+            ->where('orders.created_at', '>', DB::raw('DATE_SUB(NOW(), INTERVAL products.refund_period DAY)'))
             ->whereIn('orders.id', $orderIds)
             ->select('orders.*')
             ->get();

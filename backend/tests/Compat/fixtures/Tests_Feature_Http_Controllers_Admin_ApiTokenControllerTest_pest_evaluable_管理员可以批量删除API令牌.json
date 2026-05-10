@@ -1,0 +1,17 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ApiTokenControllerTest::__pest_evaluable_管理员可以批量删除API令牌",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/admin/api-token/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

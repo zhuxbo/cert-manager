@@ -58,6 +58,16 @@ backend/
 
 ## 升级系统
 
+### 升级冻结契约
+
+升级期间应用进入只读维护态，避免 in-flight HTTP/Job 半执行：
+
+- **freeze 文件锁**：`storage/framework/upgrade.lock` 文件存在=已 freeze；与 cache driver 完全解耦（`cache:clear` 不会清掉它）
+- **HTTP**：`MaintenanceMode` 中间件返回 503 + Retry-After，白名单 `/api/health` / `/api/meta` / `/api/admin/upgrade/*` / admin 会话保活
+- **Queue**：`SkipWhenUpgradeFrozen` middleware 在 Job 执行业务前 `release(60)` 早退
+- **Schedule**：`routes/console.php` 所有 `Schedule::command(...)` 链 `->skip(fn () => UpgradeFreezeLock::isFrozen())`，freeze 期间不触发 Command
+- **smoke test 失败处理**：不 unfreeze，回滚代码到旧版本，旧版 smoke 通过后再恢复服务；都失败保持 freeze + 报警
+
 ### 关键服务
 
 | 服务                   | 职责                                     |
@@ -65,7 +75,7 @@ backend/
 | `UpgradeService`       | 升级主逻辑，`performUpgradeWithStatus()` |
 | `UpgradeStatusManager` | 状态管理，动态步骤计算                   |
 | `PackageExtractor`     | 包解压和应用，权限检查                   |
-| `ReleaseClient`        | Release 获取，Docker 地址转换            |
+| `ReleaseClient`        | Release 获取                             |
 | `BackupManager`        | 备份和恢复                               |
 | `VersionManager`       | 版本比较，环境检测                       |
 
@@ -76,19 +86,6 @@ backend/
 | 触发方式 | 管理后台 API  | `deploy/upgrade.sh` |
 | 升级包   | `upgrade` 包  | `full` 包           |
 | 维护模式 | 自动进入/退出 | 自动进入/退出       |
-
-### 环境检测
-
-```php
-// VersionManager.isDockerEnvironment()
-// 1. 检查 /.dockerenv 文件
-// 2. 检查 /proc/1/cgroup 包含 docker/kubepods
-```
-
-| 环境   | Web 用户 | version.json 路径                 |
-| ------ | -------- | --------------------------------- |
-| Docker | www-data | `/var/www/html/data/version.json` |
-| 宝塔   | www      | 项目根目录                        |
 
 ### 数据库结构校验
 
@@ -113,10 +110,10 @@ backend/
 ```bash
 php artisan db:structure --check        # 检测差异
 php artisan db:structure --fix          # 自动修复（仅 ADD）
-php artisan db:structure --export       # 导出标准结构（需 Docker 容器）
+php artisan db:structure --export       # 导出标准结构
 ```
 
-**注意**: 每次迁移变更后需用 Docker 容器重新导出 `structure.json`，禁止用 `--use-local`。
+**注意**: 每次迁移变更后需重新导出 `structure.json`。
 
 ---
 
@@ -197,6 +194,126 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ---
 
+
+## 资金确定性体系（4 道网）
+
+> **目的**：把资金安全从"LLM 审 + 单测 + 锁/事务"的**抽样**强度，升级为"DB 约束 + 应用层 CAS + 自动不变式校验"的**确定性**强度。当 LLM/审核找不到新问题、单测覆盖不到新路径时，多道独立网仍能拦住资金错账或在小时级被发现。
+
+### 设计原则
+
+区分**物理阻断**和**事后发现**两类能力，它们不互相替代：
+
+- **物理阻断**：INSERT/UPDATE 之前挡住错账发生 — DB 唯一索引、CAS UPDATE、事务 + 锁
+- **事后发现**：不阻止发生但保证发现 — Pest afterEach hook、每日 cron 对账
+
+**关键**：已删除的 fund 即便 invariant 报 orphan transaction，钱已入账、订单已消失，损失已发生。事后发现仅作"代码 bug + 物理层未覆盖路径"的兜底。
+
+### 物理阻断层
+
+#### 1. DB 唯一索引
+
+文件：`database/migrations/2026_05_07_*_add_fund_transaction_unique_indexes.php`
+
+| 索引                                                                | 含义                                                                                                                                                                                               |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `funds(pay_method, pay_sn)` 唯一                                    | 防"不同 fund 同一支付编号"。MySQL BTREE 索引中 NULL 互不相等，处理中订单 (pay_sn=NULL) 多行合法；落地后的 (pay_method, pay_sn) 才进入唯一性判定                                                     |
+| `transactions(type, transaction_id) WHERE type != 'order'` 部分唯一 | 防"同一事件被重复入账"。MySQL generated VIRTUAL 列 + 完全唯一索引模拟（`CASE WHEN type='order' THEN NULL ELSE CONCAT(type,':',transaction_id) END`，NULL 不参与唯一约束，效果等价于部分索引）       |
+
+旧 3 列索引 `funds_type_pay_method_pay_sn_unique` 已被本 migration 删除（语义弱于新 2 列、且 refunds/reverse 走 UPDATE 同行不冲突）。
+
+唯一冲突由 `app/Bootstrap/ApiExceptions.php::causedByDuplicateKey` 翻译为业务消息（"支付编号重复请勿重复支付" / "交易记录已存在"）+ 状态码 409。识别方式：`PDOException` + SQLSTATE 23000 + MySQL errcode 1062 + 约束名识别表。
+
+`Fund::creating` / `Transaction::creating` 钩子内的 `exists` 校验**保留**作为前端速失败提示，不是防重主屏障 — DB 唯一索引才是兜底。
+
+#### 2. Fund.status CAS UPDATE
+
+签名：
+
+```php
+Fund::transitionToSuccessful(
+    int|string $id,
+    string $expectedAmount,      // 上游回调金额
+    string $expectedType,        // 'addfunds'（保留扩展空间）
+    string $expectedPayMethod,   // 'alipay' / 'wechat'
+    string $paySn                // 写入的支付编号
+): ?self
+```
+
+**关键约束**：CAS WHERE 必须保留 5 字段完整匹配（id + amount + type + pay_method + status=0）— 否则金额/支付方式不匹配的回调也会把本地 fund 标成功并按本地 amount 入账，造成攻击面。
+
+实现要点：
+
+- 查询构建器 `update()` 不触发 Eloquent `updating` 钩子 — 这是 CAS 的优势（避免 SELECT-then-UPDATE 模式），但调用方必须**显式**调 createRecord 等价逻辑写 transaction
+- 调用方契约：必须在 `DB::transaction(fn)` 内调用，让 CAS UPDATE + Transaction::create + balance 修改原子提交
+- `Fund::updating` 钩子里现存的 `getOriginal('status')` 校验仍要保留 — 给走 Eloquent save 路径的代码（如 Admin update fund 备注、refunds/reverse）兜底
+
+新加资金状态转换路径**禁止**用 `lockForUpdate + 重读 + save` 模式 — 用 CAS。
+
+三处现有调用：`User\TopUpController` / `Admin\FundController` / `User\FundController` 的 `addfundsSuccessful`。
+
+#### 3. 事务 + 锁 + 锁内二次校验
+
+destroy/batchDestroy/Order::delete 等"删除已入账 fund"路径无法被 CAS 或唯一索引拦截（删除 SQL 本身合法）。必须事务内 `lockForUpdate` + 锁内 status/created_at 重读校验。已落地：
+
+- `app/Http/Controllers/Admin/FundController.php::destroy / batchDestroy`
+- `app/Services/Order/Traits/ActionTrait.php::delete`
+
+#### 4. Transaction 防重豁免
+
+`app/Models/Transaction.php` `creating` 钩子的 `exists` 校验排除列表收紧到 `['order']` — 仅 SSL 证书重签增域名场景允许重复 `transaction_id`。`acme_order` 是一对一交付 EAB，必须防重。
+
+DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏失。
+
+### 事后发现层
+
+#### 5. CI Pest afterEach hook
+
+文件：`tests/Pest.php`
+
+注册 hook，限定到资金相关测试目录（`Feature/FundAudit`、`Feature/Http/Controllers/{User,Admin}/{Fund,TopUp}*`、`Unit/Services/{Order,Acme}/ActionTest.php`、`Feature/Models/{Transaction,Fund,User}Test.php`）。
+
+每个测试 afterEach 自动调 `app(\App\Services\FundAudit\FundInvariants::class)->all()`，违反 → `test()->fail($msg)`。`RefreshDatabase` 包外层事务，hook 在 rollback 之前跑 — 能看到测试期间的所有变更。
+
+新增动了资金的测试**不需要**手写资金断言 — hook 自动守门。
+
+#### 6. 每天 03:00 finance:audit cron
+
+文件：`app/Console/Commands/FundAuditCommand.php` + `routes/console.php` 注册 `Schedule::command('finance:audit')->dailyAt('03:00')`。
+
+命令调 `FundInvariants::all()` 全量对账，违反 → 走 `NotificationCenter`（`code=finance_audit_alert`）发邮件给 `site.adminEmail` + `Log::error` 兜底。可选 `--freeze-on-violation` 自动把涉事 user.status=0 禁用。
+
+命令本身始终返回 0（不被 retry）；仅 invariant 自身崩溃返回 1。错开 AutoRenew 00:00 时段。
+
+### 4 条 invariant SQL
+
+`App\Services\FundAudit\FundInvariants` 4 个公开方法：
+
+| Layer | 方法                   | 含义                                                                                                                                     |
+| ----- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| L1    | `accountingIdentity()` | 每个 user：`SUM(transactions.amount per user) == users.balance`                                                                          |
+| L2    | `eventUniqueness()`    | `(type, transaction_id) WHERE type != 'order'` 不允许重复（DB 唯一索引的事后监控）                                                       |
+| L3    | `statePairing()`       | 每条 `funds.status ∈ (1,2)` 必须有对应 transaction（`user_id + type + transaction_id=fund.id`），双向：fund 缺 tx 与 tx 缺 fund 都报警   |
+| L4    | `amountPairing()`      | 每条 `funds.status ∈ (1,2)` 与对应 transaction.amount **按业务符号严格匹配**（addfunds/reverse 同号、deduct/refunds 反号），不仅比绝对值 |
+
+返回 `array<InvariantViolation>`，空数组表示通过。
+
+**L1 不变式前提**：所有 `user.balance` 变更必须经 `Transaction::create` 路径（`Transaction::creating` 钩子内 `bcadd` 修改 balance + 写流水原子）。**禁止**直接 SQL/Eloquent 改 balance；生产历史余额迁移走 admin "添加资金记录" 手工充值（`POST /api/admin/fund` type=addfunds），自然产生 transaction 流水。测试 helper（`UserFactory::withBalance` / `CreatesTestData::createTestUser`）也通过 `Transaction::create` 走钩子路径，**不直写 balance**——直写会被 Pest invariant hook 立即拦下。
+
+**性能**：起步规模（500 user / 1 万 transactions）单次 < 200ms。索引前提：`transactions(user_id)`（外键已有）、`transactions(type, transaction_id)`（Task 2 唯一索引顺带覆盖）。
+
+### 已知"order 类型允许重复 transaction_id"特例
+
+仅 SSL 证书重签增域名场景：一笔 order 在重签时新增了 N 个域名 → 再次扣费 → 共享同一 `transaction_id`。`Transaction.php` 防重排除 `'order'` 类型，DB 部分唯一索引 `WHERE type != 'order'` 也排除。
+
+### 新增资金路径的 checklist
+
+1. 状态转换用 CAS UPDATE 而非 SELECT-then-UPDATE，CAS WHERE 必须完整字段匹配（不能简化为单一 status 条件）
+2. 写 transaction 不依赖应用层 `exists` 防重 — DB 唯一索引兜底
+3. 修改 user.balance 必须在 `DB::transaction(fn)` 内 + 同事务内创建对应 transaction
+4. 测试只需直接调用业务路径，invariant hook 自动守门 — 不需要手写"transaction 已写"等资金断言
+5. 删除已入账 fund 路径必须事务内 `lockForUpdate` + 锁内 status/created_at 二次校验
+6. 上线前先跑 `php artisan finance:audit` 确认现有数据干净，否则改约束之后下一次相关 INSERT 触发"交易记录已存在"误报
+
 ## MySQL 兼容性
 
 - 兼容 MySQL 5.7，不使用 `json` 字段类型
@@ -209,7 +326,7 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - **up 幂等**：修改表结构的迁移必须先检查当前状态（`Schema::hasColumn`/`Schema::hasTable`），避免重复执行报错
 - **不写 down**：迁移只写 `up()`，不写 `down()`。生产环境不做回滚，回滚用新迁移前进修复
 - **structure.json 不手动改**：迁移变动后发布前通过 `php artisan db:structure --export` 重新导出
-- **数据库变更必须用容器导出**：有迁移变更时，必须用 Docker 容器导出干净的 structure.json（`php artisan db:structure --export`），禁止用 `--use-local`（本地数据库可能有脏数据或插件表干扰）
+- **导出前用干净测试库**：避免开发库脏数据或插件表干扰
 
 ### 迁移幂等示例
 

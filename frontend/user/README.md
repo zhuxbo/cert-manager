@@ -280,16 +280,6 @@ pnpm typecheck
 
 ## 部署说明
 
-### Docker部署
-
-```bash
-# 构建镜像
-docker build -t ssl-user-frontend .
-
-# 运行容器
-docker run -p 80:80 ssl-user-frontend
-```
-
 ### Nginx配置
 
 ```nginx
@@ -324,7 +314,7 @@ server {
 
 ## 相关链接
 
-- [后端API文档](../../../routes/)
+- [后端路由目录](../../backend/routes/)
 - [管理端项目](../admin/)
 - [Vue 3 官方文档](https://vuejs.org/)
 - [Element Plus 组件库](https://element-plus.org/)

@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\SettingControllerTest::__pest_evaluable_更新自动续签设置",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/setting/auto-preferences",
+            "request_keys": [
+                "auto_reissue",
+                "auto_renew"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "auto_renew": "boolean",
+                    "auto_reissue": "boolean"
+                }
+            }
+        }
+    ]
+}

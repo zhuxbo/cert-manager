@@ -1,0 +1,62 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员可以通过快速搜索筛选订单",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/order",
+            "request_keys": [
+                "quickSearch"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "user_id": "integer",
+                            "product_id": "integer",
+                            "latest_cert_id": "integer",
+                            "period": "integer",
+                            "amount": "string",
+                            "period_from": "string",
+                            "period_till": "string",
+                            "created_at": "string",
+                            "user": {
+                                "id": "integer",
+                                "username": "string"
+                            },
+                            "product": {
+                                "id": "integer",
+                                "name": "string",
+                                "product_type": "string",
+                                "refund_period": "integer"
+                            },
+                            "latest_cert": {
+                                "id": "integer",
+                                "common_name": "string",
+                                "channel": "string",
+                                "action": "string",
+                                "dcv": {
+                                    "__list_of__": {
+                                        "domain": "string",
+                                        "method": "string"
+                                    }
+                                },
+                                "validation": "array<unknown>",
+                                "status": "string",
+                                "amount": "string",
+                                "issued_at": "null",
+                                "expires_at": "null"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

@@ -3,6 +3,7 @@
   "requires": ">=0.4.2",
   "description": "Easy 简易证书申请插件",
   "provider": "EasyServiceProvider",
+  "php_ext": [],
   "admin_bundle": "frontend/admin/easy-plugin.iife.js",
   "admin_css": "frontend/admin/easy-plugin-admin.css",
   "user_bundle": "frontend/user/easy-plugin.iife.js"

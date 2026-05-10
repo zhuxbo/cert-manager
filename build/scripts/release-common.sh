@@ -104,8 +104,9 @@ generate_releases_update_script() {
     local prerelease="False"
     [ "$channel" = "dev" ] && prerelease="True"
 
-    cat << PYEOF
+    cat <<PYEOF
 import json
+import hashlib
 import os
 from datetime import datetime
 
@@ -117,14 +118,23 @@ created_at = '$created_at'
 rel_path = '$rel_path'
 version_dir = '$version_dir'
 
-# 构建 assets
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fp:
+        for chunk in iter(lambda: fp.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+# 构建 assets（含 sha256，install.sh / upgrade.sh 强校验依赖）
 assets = []
 for f in os.listdir(version_dir):
     if f.endswith('.zip'):
-        size = os.path.getsize(os.path.join(version_dir, f))
+        full = os.path.join(version_dir, f)
+        size = os.path.getsize(full)
         assets.append({
             'name': f,
             'size': size,
+            'sha256': _sha256(full),
             'browser_download_url': f'{rel_path}/{f}'
         })
 
@@ -176,7 +186,7 @@ update_releases_json_local() {
     local releases_file="$release_dir/releases.json"
     local rel_path="${version_dir#$release_dir/}"
 
-    if command -v python3 &> /dev/null; then
+    if command -v python3 &>/dev/null; then
         generate_releases_update_script "$releases_file" "$version" "$channel" "$version_dir" "$rel_path" | python3
     else
         log_error "需要 python3 来更新 releases.json"
@@ -212,14 +222,14 @@ deploy_scripts_local() {
 
     # 部署 install.sh
     if [ -f "$deploy_dir/install.sh" ]; then
-        process_deploy_script "$deploy_dir/install.sh" "$release_url" | sudo tee "$release_dir/install.sh" > /dev/null
+        process_deploy_script "$deploy_dir/install.sh" "$release_url" | sudo tee "$release_dir/install.sh" >/dev/null
         sudo chmod +x "$release_dir/install.sh"
         log_info "已部署: install.sh"
     fi
 
     # 部署 upgrade.sh
     if [ -f "$deploy_dir/upgrade.sh" ]; then
-        process_deploy_script "$deploy_dir/upgrade.sh" "$release_url" | sudo tee "$release_dir/upgrade.sh" > /dev/null
+        process_deploy_script "$deploy_dir/upgrade.sh" "$release_url" | sudo tee "$release_dir/upgrade.sh" >/dev/null
         sudo chmod +x "$release_dir/upgrade.sh"
         log_info "已部署: upgrade.sh"
     fi
@@ -303,7 +313,8 @@ cleanup_old_versions_local() {
 # ========================================
 # 检测 Web 用户
 # 宝塔环境: www
-# Docker 环境: www-data
+# 通用 Debian/Ubuntu: www-data
+# CentOS/RHEL: nginx
 # ========================================
 detect_web_user() {
     # 检测宝塔环境
@@ -312,7 +323,7 @@ detect_web_user() {
         return
     fi
 
-    # 检测 www-data 用户 (Debian/Ubuntu Docker)
+    # 检测 www-data 用户 (Debian/Ubuntu)
     if id -u www-data &>/dev/null; then
         echo "www-data"
         return

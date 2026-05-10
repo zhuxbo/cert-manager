@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ContactControllerTest::__pest_evaluable_管理员可以更新联系人",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/contact/{id}",
+            "request_keys": [
+                "email",
+                "first_name",
+                "last_name",
+                "phone",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

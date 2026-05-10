@@ -1,0 +1,100 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderControllerTest::__pest_evaluable_批量获取订单详情",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "product_id": "integer",
+                            "latest_cert_id": "integer",
+                            "brand": "string",
+                            "period": "integer",
+                            "amount": "string",
+                            "period_from": "string",
+                            "period_till": "string",
+                            "purchased_standard_count": "integer",
+                            "purchased_wildcard_count": "integer",
+                            "organization": "null",
+                            "contact": "null",
+                            "cancelled_at": "null",
+                            "admin_remark": "string",
+                            "remark": "string",
+                            "auto_renew": "null",
+                            "auto_reissue": "null",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "product": {
+                                "id": "integer",
+                                "name": "string",
+                                "product_type": "string",
+                                "ca": "string",
+                                "refund_period": "integer",
+                                "validation_methods": "array<string>",
+                                "validation_type": "string",
+                                "common_name_types": "array<string>",
+                                "alternative_name_types": "array<string>"
+                            },
+                            "latest_cert": {
+                                "id": "integer",
+                                "order_id": "integer",
+                                "last_cert_id": "null",
+                                "api_id": "string",
+                                "vendor_id": "string",
+                                "refer_id": "string",
+                                "unique_value": "null",
+                                "issuer": "null",
+                                "action": "string",
+                                "channel": "string",
+                                "params": "null",
+                                "amount": "string",
+                                "common_name": "string",
+                                "alternative_names": "string",
+                                "email": "null",
+                                "standard_count": "integer",
+                                "wildcard_count": "integer",
+                                "dcv": {
+                                    "__list_of__": {
+                                        "domain": "string",
+                                        "method": "string"
+                                    }
+                                },
+                                "validation": "array<unknown>",
+                                "documents": "array<unknown>",
+                                "issued_at": "string",
+                                "expires_at": "string",
+                                "auto_deploy_at": "null",
+                                "csr_md5": "string",
+                                "csr": "null",
+                                "private_key": "null",
+                                "cert": "null",
+                                "serial_number": "string",
+                                "fingerprint": "string",
+                                "encryption_alg": "string",
+                                "encryption_bits": "integer",
+                                "signature_digest_alg": "string",
+                                "cert_apply_status": "integer",
+                                "domain_verify_status": "integer",
+                                "org_verify_status": "integer",
+                                "status": "string",
+                                "created_at": "string",
+                                "updated_at": "string",
+                                "intermediate_cert": "null"
+                            }
+                        }
+                    },
+                    "balance": "string"
+                }
+            }
+        }
+    ]
+}

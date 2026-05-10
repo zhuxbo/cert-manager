@@ -59,10 +59,19 @@ test('ensureMysqlClient: PATH 中找不到二进制时抛简短异常', function
         ->toThrow(RuntimeException::class, '未找到 mysql 命令');
 });
 
-test('installHintLines: 返回平台相关的多行安装提示', function () {
-    $lines = BackupService::installHintLines();
+test('installHintLines: mysql driver 返回 mysql-client 安装提示', function () {
+    $lines = BackupService::installHintLines('mysql');
 
     expect($lines)->toBeArray()->not->toBeEmpty();
+    expect(implode("\n", $lines))->toContain('mysql-client');
+});
+
+test('installHintLines: 不传 driver 时回落到当前 default connection 的 driver', function () {
+    // default 已被测试环境设置为 mysql（.env），不传参时应返回 mysql 提示
+    if (config('database.connections.'.config('database.default').'.driver') !== 'mysql') {
+        test()->markTestSkipped('当前 default 不是 mysql');
+    }
+    $lines = BackupService::installHintLines();
     expect(implode("\n", $lines))->toContain('mysql-client');
 });
 

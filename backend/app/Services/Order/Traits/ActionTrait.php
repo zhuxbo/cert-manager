@@ -873,7 +873,9 @@ trait ActionTrait
             $result['msg'] = $e->getApiResponse()['msg'] ?? '扣费失败';
             $errors = $e->getApiResponse()['errors'] ?? null;
             $errors && $result['errors'] = $errors;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // catch Throwable（不是 Exception）确保 PHP Error / TypeError 也能正确 rollback。
+            // 否则 TaskJob 外层事务下 SAVEPOINT 残留 → 外层 commit 时一并落库脏账。
             DB::rollback();
             $result['status'] = 'failed';
             $result['msg'] = $e->getMessage();
@@ -882,7 +884,9 @@ trait ActionTrait
             }
         }
         $result['order_id'] = $order_id;
-        $create_commit_task && $this->createTask($order_id, 'commit');
+        // 仅扣费成功才入队 commit task；失败时建 task 会让 worker 因 status=unpaid 报错，
+        // 产生 failed_jobs 噪声 + 误报 Admin 告警邮件
+        $create_commit_task && $result['status'] === 'success' && $this->createTask($order_id, 'commit');
 
         return $result;
     }
@@ -938,21 +942,27 @@ trait ActionTrait
     /**
      * 删除 unpaid 状态的证书 并 恢复 renew,reissue 原证书的状态
      *
+     * 并发安全：事务内锁定 order 行 + 锁内二次校验 status=unpaid。原实现事务外读 unpaid 后
+     * 并发请求（charge）可把 status 改为 pending（已扣费），事务内仍执行删除 → 余额已扣
+     * 但订单消失，留下"transaction_id 指向已删除 order"的资金错乱。
+     *
      * @throws Throwable
      */
     public function delete(int $order_id): void
     {
-        $order = Order::with(['latestCert'])->whereHas('latestCert')->find($order_id);
+        DB::transaction(function () use ($order_id) {
+            $order = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($order_id);
 
-        if (! $order) {
-            $this->error('订单或相关数据不存在');
-        }
+            if (! $order) {
+                $this->error('订单或相关数据不存在');
+            }
 
-        $cert = $order->latestCert;
-        $cert->status === 'unpaid' || $this->error('只有待支付状态的证书可以删除');
+            $cert = $order->latestCert;
+            $cert->status === 'unpaid' || $this->error('只有待支付状态的证书可以删除');
 
-        DB::beginTransaction();
-        try {
             if ($cert->last_cert_id) {
                 // 尝试恢复旧证书状态
                 $last_cert = Cert::where('id', $cert->last_cert_id)->first();
@@ -975,11 +985,7 @@ trait ActionTrait
                 $order->delete();
             }
             $cert->delete();
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        });
     }
 
     /**
@@ -1064,8 +1070,9 @@ trait ActionTrait
                 // 获取交易信息并创建取消记录
                 $transaction = OrderUtil::getCancelTransaction($order->toArray());
                 Transaction::create($transaction);
-                // 标记证书为 cancelled，保留 order 和 cert
-                $cert->update(['status' => 'cancelled']);
+                // 标记证书为 cancelled，保留 order 和 cert；
+                // last_cert_id 置 null 释放 UNIQUE 槽位，否则源证书无法再次发起续费
+                $cert->update(['status' => 'cancelled', 'last_cert_id' => null]);
             } else {
                 // 获取交易信息
                 $transaction = OrderUtil::getCancelTransaction($order->toArray());

@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrganizationControllerTest::__pest_evaluable_更新组织",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/organization/{id}",
+            "request_keys": [
+                "address",
+                "city",
+                "country",
+                "name",
+                "phone",
+                "postcode",
+                "registration_number",
+                "state"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

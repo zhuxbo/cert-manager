@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderControllerTest::__pest_evaluable_新建订单",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/order/new",
+            "request_keys": [
+                "csr_generate",
+                "domains",
+                "period",
+                "product_id",
+                "validation_method"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer"
+                }
+            }
+        }
+    ]
+}

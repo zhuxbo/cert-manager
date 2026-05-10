@@ -4,9 +4,11 @@ namespace Tests\Traits;
 
 use App\Models\Cert;
 use App\Models\CnameDelegation;
+use App\Models\Fund;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 /**
  * 测试数据创建辅助 Trait
@@ -14,24 +16,46 @@ use App\Models\User;
 trait CreatesTestData
 {
     /**
-     * 创建测试用户
+     * 创建测试用户（balance 走 Fund::create 钩子链而非直写，满足资金审计）
      */
     protected function createTestUser(array $overrides = []): User
     {
         $email = $overrides['email'] ?? uniqid().'@test.com';
         unset($overrides['email']);
 
-        return User::firstOrCreate(
+        $balance = $overrides['balance'] ?? '100.00';
+        // user 创建时 balance=0，由后续 Fund::create 钩子加到目标值
+        $defaults = [
+            'username' => 'test_'.uniqid(),
+            'password' => 'password',
+            'join_at' => now(),
+            'balance' => '0.00',
+            'level_code' => 'standard',
+            'auto_settings' => ['auto_renew' => false, 'auto_reissue' => false],
+        ];
+        unset($overrides['balance']);
+
+        $user = User::firstOrCreate(
             ['email' => $email],
-            array_merge([
-                'username' => 'test_'.uniqid(),
-                'password' => 'password',
-                'join_at' => now(),
-                'balance' => '100.00',
-                'level_code' => 'standard',
-                'auto_settings' => ['auto_renew' => false, 'auto_reissue' => false],
-            ], $overrides)
+            array_merge($defaults, $overrides)
         );
+
+        if (bccomp((string) $balance, (string) $user->balance, 2) !== 0) {
+            $delta = bcsub((string) $balance, (string) $user->balance, 2);
+            $isAdd = bccomp($delta, '0', 2) > 0;
+            DB::transaction(fn () => Fund::create([
+                'user_id' => $user->id,
+                'amount' => $isAdd ? $delta : bcsub('0', $delta, 2),
+                'type' => $isAdd ? 'addfunds' : 'deduct',
+                'pay_method' => 'admin',
+                'pay_sn' => null,
+                'remark' => 'createTestUser',
+                'status' => 1,
+            ]));
+            $user->refresh();
+        }
+
+        return $user;
     }
 
     /**

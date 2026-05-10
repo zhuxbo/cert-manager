@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
 use Illuminate\Bus\Queueable;
@@ -22,17 +23,17 @@ use Throwable;
  * 数据库恢复异步任务。
  *
  * 流程：
- *  1. 获取全局互斥锁
- *  2. 先拍一个 pre_restore 保险备份（永不自动清理）
- *  3. artisan down 进入维护模式
- *  4. 按模式执行恢复：
- *     - full        — mysql 直接吞 .sql.gz（包含 DROP/CREATE/INSERT）
- *     - incremental — IncrementalSqlFilter 剥 DROP/CREATE + INSERT IGNORE 后 mysql 执行
- *  5. artisan up 退出维护模式
+ * 1. 获取全局互斥锁
+ * 2. 先拍一个 pre_restore 保险备份（永不自动清理）
+ * 3. artisan down 进入维护模式
+ * 4. 按模式执行恢复：
+ * - full — mysql 直接吞 .sql.gz（包含 DROP/CREATE/INSERT）
+ * - incremental — IncrementalSqlFilter 剥 DROP/CREATE + INSERT IGNORE 后 mysql 执行
+ * 5. artisan up 退出维护模式
  */
 class RestoreBackupJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $timeout = 3600;
 
@@ -47,6 +48,15 @@ class RestoreBackupJob implements ShouldQueue
 
     public function handle(BackupService $service, IncrementalSqlFilter $filter): void
     {
+        // driver 守门：仅支持 MySQL/MariaDB
+        $driver = (string) config('database.default');
+        $driverName = (string) config("database.connections.$driver.driver", $driver);
+        if (! in_array($driverName, ['mysql', 'mariadb'], true)) {
+            $this->progress($service, 'failed', 'init', "当前数据库驱动 [$driverName] 暂不支持在线恢复，请手工恢复 $this->backupId");
+
+            return;
+        }
+
         // 二进制缺失时入口直接失败，避免拿锁后才发现
         try {
             $service->ensureMysqlClient('mysqldump');
@@ -227,11 +237,11 @@ class RestoreBackupJob implements ShouldQueue
         $escape = fn (string $v) => str_replace(['\\', '"'], ['\\\\', '\\"'], $v);
 
         $content = "[client]\n"
-            .'host='.($cfg['host'] ?? '127.0.0.1')."\n"
-            .'port='.($cfg['port'] ?? '3306')."\n"
-            .'user='.($cfg['username'] ?? '')."\n"
-            .'password="'.$escape((string) ($cfg['password'] ?? '')).'"'."\n"
-            .'default-character-set='.($cfg['charset'] ?? 'utf8mb4')."\n";
+        .'host='.($cfg['host'] ?? '127.0.0.1')."\n"
+        .'port='.($cfg['port'] ?? '3306')."\n"
+        .'user='.($cfg['username'] ?? '')."\n"
+        .'password="'.$escape((string) ($cfg['password'] ?? '')).'"'."\n"
+        .'default-character-set='.($cfg['charset'] ?? 'utf8mb4')."\n";
 
         file_put_contents($path, $content);
         chmod($path, 0600);

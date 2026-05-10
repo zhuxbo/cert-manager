@@ -310,12 +310,10 @@ class BackupManager
         $database = Config::get("database.connections.$connection.database");
         $sqlFile = "$backupDir/database.sql";
 
-        if ($connection === 'mysql') {
+        if (in_array($connection, ['mysql', 'mariadb'], true)) {
             $this->backupMysql($sqlFile, $database);
-        } elseif ($connection === 'sqlite') {
-            $this->backupSqlite($sqlFile);
         } else {
-            Log::warning("不支持的数据库类型备份: $connection");
+            Log::warning("不支持的数据库类型备份: {$connection}（仅支持 mysql）");
         }
     }
 
@@ -371,18 +369,6 @@ class BackupManager
         }
 
         Log::info('MySQL 备份完成', ['excluded_tables' => $excludeTables]);
-    }
-
-    /**
-     * 备份 SQLite 数据库
-     */
-    protected function backupSqlite(string $sqlFile): void
-    {
-        $dbPath = Config::get('database.connections.sqlite.database');
-
-        if (File::exists($dbPath)) {
-            File::copy($dbPath, str_replace('.sql', '.sqlite', $sqlFile));
-        }
     }
 
     /**
@@ -456,21 +442,16 @@ class BackupManager
     }
 
     /**
-     * 恢复数据库
+     * 恢复数据库（仅 mysql）
      */
     protected function restoreDatabase(string $backupDir): void
     {
         $connection = Config::get('database.default');
 
-        if ($connection === 'mysql') {
+        if (in_array($connection, ['mysql', 'mariadb'], true)) {
             $sqlFile = "$backupDir/database.sql";
             if (File::exists($sqlFile)) {
                 $this->restoreMysql($sqlFile);
-            }
-        } elseif ($connection === 'sqlite') {
-            $sqliteFile = "$backupDir/database.sqlite";
-            if (File::exists($sqliteFile)) {
-                $this->restoreSqlite($sqliteFile);
             }
         }
     }
@@ -505,15 +486,6 @@ class BackupManager
     }
 
     /**
-     * 恢复 SQLite 数据库
-     */
-    protected function restoreSqlite(string $sqliteFile): void
-    {
-        $dbPath = Config::get('database.connections.sqlite.database');
-        File::copy($sqliteFile, $dbPath);
-    }
-
-    /**
      * 保存备份信息
      */
     protected function saveBackupInfo(string $backupDir, string $backupId): void
@@ -541,8 +513,8 @@ class BackupManager
     protected function readVersionFromFile(): string
     {
         $versionPaths = [
-            dirname(base_path()).'/version.json',  // 项目根目录（标准部署）
-            base_path('version.json'),               // backend 目录（Docker）
+            dirname(base_path()).'/version.json', // 项目根目录（标准部署）
+            base_path('version.json'), // backend 目录（兼容旧版本路径）
         ];
 
         foreach ($versionPaths as $path) {

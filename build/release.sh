@@ -113,7 +113,7 @@ ensure_tag() {
 # ========================================
 parse_server() {
     local server_str="$1"
-    IFS=',' read -r SERVER_NAME SERVER_HOST SERVER_PORT SERVER_DIR SERVER_URL <<< "$server_str"
+    IFS=',' read -r SERVER_NAME SERVER_HOST SERVER_PORT SERVER_DIR SERVER_URL <<<"$server_str"
     SERVER_PORT=${SERVER_PORT:-22}
 }
 
@@ -209,14 +209,14 @@ deploy_scripts_remote() {
 
     # 部署 install.sh
     if [ -f "$deploy_dir/install.sh" ]; then
-        process_deploy_script "$deploy_dir/install.sh" "$SERVER_URL" | \
+        process_deploy_script "$deploy_dir/install.sh" "$SERVER_URL" |
             ssh_cmd "$SERVER_HOST" "$SERVER_PORT" "cat > \"$SERVER_DIR/install.sh\" && chmod +x \"$SERVER_DIR/install.sh\""
         log_info "已部署: install.sh"
     fi
 
     # 部署 upgrade.sh
     if [ -f "$deploy_dir/upgrade.sh" ]; then
-        process_deploy_script "$deploy_dir/upgrade.sh" "$SERVER_URL" | \
+        process_deploy_script "$deploy_dir/upgrade.sh" "$SERVER_URL" |
             ssh_cmd "$SERVER_HOST" "$SERVER_PORT" "cat > \"$SERVER_DIR/upgrade.sh\" && chmod +x \"$SERVER_DIR/upgrade.sh\""
         log_info "已部署: upgrade.sh"
     fi
@@ -355,7 +355,7 @@ deploy_to_all() {
 # 显示帮助
 # ========================================
 show_help() {
-    cat << EOF
+    cat <<EOF
 用法: $0 [选项] [版本号]
 
 选项:
@@ -395,7 +395,7 @@ main() {
                 upload_only=true
                 shift
                 ;;
-            -h|--help)
+            -h | --help)
                 show_help
                 exit 0
                 ;;

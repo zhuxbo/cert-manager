@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\FundControllerTest::__pest_evaluable_检查充值状态_无效ID",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/fund/check/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

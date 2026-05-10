@@ -18,6 +18,10 @@
         </include>
     </source>
     <php>
+        <!-- PHP 8.5+：库（Pest/PHPUnit/Mockery/Collision）大量 deprecation 警告 +
+             Mockery EvalLoader 动态生成 mock 类会吃光默认 128M memory_limit。
+             给 1G 余裕；若测试本身真的内存泄漏，改回小值便于发现。 -->
+        <ini name="memory_limit" value="1G"/>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>

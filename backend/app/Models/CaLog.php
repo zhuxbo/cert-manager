@@ -7,6 +7,7 @@ class CaLog extends BaseModel
     const null UPDATED_AT = null;
 
     protected $fillable = [
+        'correlation_id',
         'url',
         'api',
         'params',

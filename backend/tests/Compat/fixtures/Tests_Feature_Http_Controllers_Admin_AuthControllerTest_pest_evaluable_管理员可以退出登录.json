@@ -1,0 +1,15 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AuthControllerTest::__pest_evaluable_管理员可以退出登录",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/admin/logout",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

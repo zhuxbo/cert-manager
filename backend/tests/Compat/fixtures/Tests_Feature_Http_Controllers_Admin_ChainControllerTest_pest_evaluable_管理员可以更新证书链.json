@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ChainControllerTest::__pest_evaluable_管理员可以更新证书链",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/chain/{id}",
+            "request_keys": [
+                "common_name",
+                "intermediate_cert"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

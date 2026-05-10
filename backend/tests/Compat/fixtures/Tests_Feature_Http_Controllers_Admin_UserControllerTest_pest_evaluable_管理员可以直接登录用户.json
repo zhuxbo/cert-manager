@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserControllerTest::__pest_evaluable_管理员可以直接登录用户",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/user/direct-login",
+            "request_keys": [
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "access_token": "string",
+                    "refresh_token": "string",
+                    "expires_in": "string",
+                    "direct_login_url": "string",
+                    "username": "string",
+                    "balance": "string"
+                }
+            }
+        }
+    ]
+}

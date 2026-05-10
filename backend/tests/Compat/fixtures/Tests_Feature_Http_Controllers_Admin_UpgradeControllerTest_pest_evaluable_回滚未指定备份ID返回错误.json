@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_回滚未指定备份ID返回错误",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/upgrade/rollback",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

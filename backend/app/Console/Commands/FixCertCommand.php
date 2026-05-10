@@ -155,7 +155,7 @@ class FixCertCommand extends Command
         // 快速统计需要修复的数量
         $totalCount = DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->count();
@@ -169,7 +169,7 @@ class FixCertCommand extends Command
         // 获取前20条记录用于预览
         $recordsToFix = DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->select(
@@ -204,7 +204,7 @@ class FixCertCommand extends Command
         // 统计总数
         $totalCount = DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->count();
@@ -233,7 +233,7 @@ class FixCertCommand extends Command
         // 分块批量更新
         DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->select('c.id as cert_id', 'o.id as order_id', 'c.order_id as old_order_id')
@@ -551,7 +551,7 @@ class FixCertCommand extends Command
         // 检查剩余的 Latest Cert ID 错误
         $remainingBasicErrors = DB::table('orders as o')
             ->join('certs as c', 'o.latest_cert_id', '=', 'c.id')
-            ->where('c.order_id', '!=', DB::raw('o.id'))
+            ->whereColumn('c.order_id', '!=', 'o.id')
             ->whereNotNull('o.latest_cert_id')
             ->whereNotNull('c.order_id')
             ->count();

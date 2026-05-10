@@ -1,0 +1,31 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\TopUpControllerTest::__pest_evaluable_充值_未认证",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/top-up/alipay",
+            "request_keys": [
+                "amount"
+            ],
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "exception_type": "string",
+                    "exception_trace": {
+                        "__list_of__": {
+                            "file": "string",
+                            "line": "integer",
+                            "function": "string",
+                            "class": "string",
+                            "type": "string",
+                            "args": "array<mixed>"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

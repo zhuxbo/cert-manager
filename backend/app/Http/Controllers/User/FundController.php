@@ -123,28 +123,34 @@ class FundController extends BaseController
     }
 
     /**
-     * 充值成功 使用事务 防止重复
+     * 充值成功（用户主动 check 走本地 fund 字段 best-effort 校验，
+     * 真正的金额/支付方式校验在 User\TopUpController 的回调路径）
      *
      * @throws Throwable
      */
     protected function addfundsSuccessful(string $id, int|string $pay_sn): void
     {
-        DB::beginTransaction();
         try {
-            $fund = Fund::where([
-                'id' => $id,
-                'type' => 'addfunds',
-                'status' => 0, // processing
-            ])->lockForUpdate()->first();
+            DB::transaction(function () use ($id, $pay_sn) {
+                $fund = Fund::where([
+                    'id' => $id,
+                    'type' => 'addfunds',
+                    'status' => 0, // processing
+                ])->first();
 
-            if ($fund) {
-                $fund->status = 1; // successful
-                $fund->pay_sn = $pay_sn;
-                $fund->save();
-                DB::commit();
-            }
+                if (! $fund) {
+                    return;
+                }
+
+                Fund::transitionToSuccessful(
+                    (string) $id,
+                    (string) $fund->amount,
+                    'addfunds',
+                    (string) $fund->pay_method,
+                    (string) $pay_sn,
+                );
+            });
         } catch (Throwable $e) {
-            DB::rollback();
             app(ApiExceptions::class)->logException($e);
             $this->error('充值失败：'.$e->getMessage());
         }

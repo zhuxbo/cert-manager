@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_pay_成功支付并同步提交至_active",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/pay/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "eab_kid": "string",
+                    "eab_hmac": "string",
+                    "directory_url": "string"
+                }
+            }
+        }
+    ]
+}

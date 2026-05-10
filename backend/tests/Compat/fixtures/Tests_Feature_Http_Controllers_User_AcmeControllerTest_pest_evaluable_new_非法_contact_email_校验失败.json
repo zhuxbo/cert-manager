@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_new_非法_contact__email_校验失败",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/new",
+            "request_keys": [
+                "contact_email",
+                "period",
+                "product_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "contact_email": "array<string>"
+                }
+            }
+        }
+    ]
+}

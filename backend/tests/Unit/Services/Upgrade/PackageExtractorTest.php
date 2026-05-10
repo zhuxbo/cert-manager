@@ -37,38 +37,47 @@ test('extract valid package', function () {
     $extractedPath = $this->extractor->extract($zipPath);
 
     expect($extractedPath)->toBeDirectory();
-    expect("$extractedPath/manifest.json")->toBeFile();
+    expect("$extractedPath/version.json")->toBeFile();
 
     // 清理
     File::deleteDirectory($extractedPath);
 });
 
-test('validate package throws for missing manifest', function () {
-    // 创建没有 manifest.json 的目录
+test('validate package throws for missing backend', function () {
+    // 创建没有 backend 目录的包
     $packageDir = "$this->testDir/package";
     File::makeDirectory($packageDir, 0755, true);
+    File::put("$packageDir/version.json", json_encode(['version' => '1.0.0']));
+
+    $this->extractor->validatePackage($packageDir);
+})->throws(RuntimeException::class, '缺少 backend 目录');
+
+test('validate package throws for missing version json', function () {
+    // 创建有 backend 但没 version.json
+    $packageDir = "$this->testDir/package";
     File::makeDirectory("$packageDir/backend/app", 0755, true);
+    File::makeDirectory("$packageDir/backend/config", 0755, true);
 
     $this->extractor->validatePackage($packageDir);
-})->throws(RuntimeException::class, '缺少 manifest.json');
+})->throws(RuntimeException::class, '缺少 version.json');
 
-test('validate package throws for invalid manifest', function () {
-    // 创建无效的 manifest.json
+test('validate package throws for invalid version json', function () {
     $packageDir = "$this->testDir/package";
-    File::makeDirectory($packageDir, 0755, true);
-    File::put("$packageDir/manifest.json", 'invalid json');
+    File::makeDirectory("$packageDir/backend/app", 0755, true);
+    File::makeDirectory("$packageDir/backend/config", 0755, true);
+    File::put("$packageDir/version.json", 'invalid json');
 
     $this->extractor->validatePackage($packageDir);
-})->throws(RuntimeException::class, 'manifest.json 格式错误');
+})->throws(RuntimeException::class, 'version.json 格式错误');
 
-test('validate package throws for missing version', function () {
-    // 创建缺少 version 的 manifest.json
+test('validate package throws for missing version field', function () {
     $packageDir = "$this->testDir/package";
-    File::makeDirectory($packageDir, 0755, true);
-    File::put("$packageDir/manifest.json", json_encode(['name' => 'test']));
+    File::makeDirectory("$packageDir/backend/app", 0755, true);
+    File::makeDirectory("$packageDir/backend/config", 0755, true);
+    File::put("$packageDir/version.json", json_encode(['name' => 'test']));
 
     $this->extractor->validatePackage($packageDir);
-})->throws(RuntimeException::class, '缺少版本信息');
+})->throws(RuntimeException::class, 'version.json 缺少 version 字段');
 
 test('validate package success', function () {
     $packageDir = createValidPackageDir($this->testDir);
@@ -92,31 +101,31 @@ test('detect web user returns www for baota', function () {
     }
 });
 
-test('find manifest in root', function () {
+test('find version config in root', function () {
     $packageDir = "$this->testDir/package";
     File::makeDirectory($packageDir, 0755, true);
-    File::put("$packageDir/manifest.json", '{}');
+    File::put("$packageDir/version.json", '{}');
 
     $reflection = new \ReflectionClass($this->extractor);
-    $method = $reflection->getMethod('findManifest');
+    $method = $reflection->getMethod('findVersionConfig');
 
     $result = $method->invoke($this->extractor, $packageDir);
 
-    expect($result)->toBe("$packageDir/manifest.json");
+    expect($result)->toBe("$packageDir/version.json");
 });
 
-test('find manifest in subdirectory', function () {
+test('find version config in subdirectory', function () {
     $packageDir = "$this->testDir/package";
     $subDir = "$packageDir/ssl-manager-1.0.0";
     File::makeDirectory($subDir, 0755, true);
-    File::put("$subDir/manifest.json", '{}');
+    File::put("$subDir/version.json", '{}');
 
     $reflection = new \ReflectionClass($this->extractor);
-    $method = $reflection->getMethod('findManifest');
+    $method = $reflection->getMethod('findVersionConfig');
 
     $result = $method->invoke($this->extractor, $packageDir);
 
-    expect($result)->toBe("$subDir/manifest.json");
+    expect($result)->toBe("$subDir/version.json");
 });
 
 test('find backend dir direct', function () {
@@ -179,7 +188,7 @@ function createTestPackage(string $testDir): string
     File::makeDirectory("$packageDir/backend/app", 0755, true);
     File::makeDirectory("$packageDir/backend/config", 0755, true);
 
-    File::put("$packageDir/manifest.json", json_encode([
+    File::put("$packageDir/version.json", json_encode([
         'version' => '1.0.0',
         'name' => 'Test Package',
     ]));
@@ -228,7 +237,7 @@ function createValidPackageDir(string $testDir): string
     File::makeDirectory("$packageDir/backend/app", 0755, true);
     File::makeDirectory("$packageDir/backend/config", 0755, true);
 
-    File::put("$packageDir/manifest.json", json_encode([
+    File::put("$packageDir/version.json", json_encode([
         'version' => '1.0.0',
         'name' => 'Test Package',
         'build_time' => date('Y-m-d H:i:s'),

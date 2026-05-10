@@ -39,7 +39,9 @@ class ProductController extends BaseController
             });
         }
         if (! empty($validated['brand'])) {
-            $query->where('brand', $validated['brand']);
+            // Product saving 钩子统一把 brand 存为小写；过滤入参也小写化，
+            // 兼容大小写敏感的 driver（mysql 大小写敏感（binary collation），mysql utf8mb4_unicode_ci 不敏感）。
+            $query->where('brand', strtolower($validated['brand']));
         }
         if (! empty($validated['product_type'])) {
             $types = (array) $validated['product_type'];

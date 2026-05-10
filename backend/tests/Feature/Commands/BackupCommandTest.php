@@ -33,6 +33,8 @@ afterEach(function () {
 });
 
 test('keep_days 清理过期备份，同步删 schema.json', function () {
+    // schedule:backup 必须实际备份成功后才会执行 purge。
+
     $old = makeBackup($this->testDir, '20260101_000000', 60);
     $fresh = makeBackup($this->testDir, '20260420_000000', 3);
 
@@ -57,6 +59,8 @@ test('keep_days 清理过期备份，同步删 schema.json', function () {
 });
 
 test('min_keep 兜底：即使全部过期也至少保留 N 份最新的', function () {
+    // 同 keep_days：依赖 schedule:backup 实际产生新备份才会跑 purge。
+
     // mtime 错开：最旧 62 天前，次旧 61 天前，最新 60 天前（仍全部过期）
     $oldest = makeBackup($this->testDir, '20260101_000001', 62);
     $middle = makeBackup($this->testDir, '20260101_000002', 61);
@@ -112,23 +116,37 @@ test('--prefix 含非法字符（大写/数字/横线）时报错并中止', fun
         ->and($output)->toContain('--prefix 只能包含小写字母与下划线');
 });
 
-test('非 mysql 驱动时立即中止', function () {
-    config(['database.default' => 'sqlite_test_driver']);
-    config(['database.connections.sqlite_test_driver' => [
-        'driver' => 'sqlite',
-        'database' => ':memory:',
+test('未支持的驱动时立即中止', function () {
+    // 用 BackupService::makeHandler 直接覆盖：注入一个不识别的 driver
+    // 不动 database.default 避免 RefreshDatabase tearDown 时撞上未支持的连接
+    $originalDefault = config('database.default');
+
+    // 临时建一个连接但只在 BackupCommand 的 handle 中读 driver — 切 default 一闪即弃
+    config(['database.connections.unknown_driver_conn' => [
+        'driver' => 'mongodb',
+        'database' => 'whatever',
     ]]);
+    config(['database.default' => 'unknown_driver_conn']);
 
-    $exit = Artisan::call('schedule:backup', [
-        '--path' => $this->testDir,
-    ]);
+    try {
+        $exit = Artisan::call('schedule:backup', [
+            '--path' => $this->testDir,
+        ]);
 
-    $output = Artisan::output();
-    expect($exit)->not->toBe(0)
-        ->and($output)->toContain('仅支持 mysql 驱动');
+        $output = Artisan::output();
+        expect($exit)->not->toBe(0)
+            ->and($output)->toContain('不支持的数据库驱动');
+    } finally {
+        // 立即恢复，避免 RefreshDatabase 的 afterEach 在 unknown driver 上炸
+        config(['database.default' => $originalDefault]);
+    }
 });
 
 test('mysqldump 不可用（绝对路径不存在）时立即中止', function () {
+    if (config('database.connections.'.config('database.default').'.driver') !== 'mysql') {
+        test()->markTestSkipped('mysql-only');
+    }
+
     config(['database.backup.mysqldump_bin' => '/nonexistent/path/to/mysqldump']);
 
     $exit = Artisan::call('schedule:backup', [

@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_下载_token_签发后可一次性消费",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/database/backups/download",
+            "request_keys": [
+                "token"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/database/backups/{id}/download-token",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "token": "string",
+                    "expires_in": "integer",
+                    "url": "string"
+                }
+            }
+        }
+    ]
+}

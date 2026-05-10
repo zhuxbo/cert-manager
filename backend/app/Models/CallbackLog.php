@@ -7,6 +7,7 @@ class CallbackLog extends BaseModel
     const null UPDATED_AT = null;
 
     protected $fillable = [
+        'correlation_id',
         'method',
         'url',
         'params',

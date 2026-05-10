@@ -27,9 +27,9 @@ SCRIPT_START_TIME=$(date +%s)
 # 将秒数格式化为中文可读时长
 human_duration() {
     local secs="$1"
-    local h=$(( secs / 3600 ))
-    local m=$(( (secs % 3600) / 60 ))
-    local s=$(( secs % 60 ))
+    local h=$((secs / 3600))
+    local m=$(((secs % 3600) / 60))
+    local s=$((secs % 60))
     if [ "$h" -gt 0 ]; then
         printf "%d小时%02d分%02d秒" "$h" "$m" "$s"
     elif [ "$m" -gt 0 ]; then
@@ -51,12 +51,12 @@ mkdir -p "$TEMP_DIR"/{reports,production-code,caches/pnpm-store,caches/composer-
 
 # 默认参数
 BUILD_MODULE="all"
-BUILD_VERSION=""            # 构建版本号
-RELEASE_CHANNEL=""          # 发布通道: main 或 dev
+BUILD_VERSION=""   # 构建版本号
+RELEASE_CHANNEL="" # 发布通道: main 或 dev
 FORCE_BUILD="false"
 REBUILD_IMAGE="false"
 CLEAR_CACHE="false"
-CREATE_PACKAGE="false"      # 是否创建安装包
+CREATE_PACKAGE="false" # 是否创建安装包
 
 # 显示帮助信息
 show_help() {
@@ -97,7 +97,7 @@ i=0
 while [ $i -lt ${#ARGS[@]} ]; do
     arg="${ARGS[$i]}"
     case "$arg" in
-        -h|--help)
+        -h | --help)
             show_help
             ;;
         --version)
@@ -183,7 +183,7 @@ log_info "============================================"
 echo ""
 
 # 检查 Docker
-if ! command -v docker &> /dev/null; then
+if ! command -v docker &>/dev/null; then
     log_error "Docker 未安装"
     log_info "请先安装 Docker: https://docs.docker.com/get-docker/"
     exit 1
@@ -255,7 +255,7 @@ to_epoch() {
     if [[ "$ts" =~ [+-][0-9]{2}:[0-9]{2} ]]; then
         local off_part="${ts#*${base_no_frac}}"
         local off_compact
-        off_compact=$(echo "$off_part" | sed -E 's/^([+-][0-9]{2}):([0-9]{2}).*$/\1\2/' )
+        off_compact=$(echo "$off_part" | sed -E 's/^([+-][0-9]{2}):([0-9]{2}).*$/\1\2/')
         if date -j -f "%Y-%m-%dT%H:%M:%S%z" "${base_no_frac}${off_compact}" "+%s" >/dev/null 2>&1; then
             date -j -f "%Y-%m-%dT%H:%M:%S%z" "${base_no_frac}${off_compact}" "+%s"
             return
@@ -289,7 +289,7 @@ check_image_age() {
         echo "ok"
         return
     fi
-    local age_days=$(( (now_timestamp - created_timestamp) / 86400 ))
+    local age_days=$(((now_timestamp - created_timestamp) / 86400))
     if [ "$age_days" -gt "$max_days" ]; then
         echo "outdated"
     else
@@ -352,31 +352,31 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 DOCKER_OPTS=(--rm --memory=4g)
 
 # 挂载 monorepo 源代码（只读）
-DOCKER_OPTS+=( -v "$MONOREPO_ROOT:/source:ro" )
+DOCKER_OPTS+=(-v "$MONOREPO_ROOT:/source:ro")
 
 # 挂载工作目录
-DOCKER_OPTS+=( -v "$TEMP_DIR:/workspace" )
+DOCKER_OPTS+=(-v "$TEMP_DIR:/workspace")
 
 # 挂载构建脚本
-DOCKER_OPTS+=( -v "$SCRIPT_DIR/scripts:/build/scripts:ro" )
+DOCKER_OPTS+=(-v "$SCRIPT_DIR/scripts:/build/scripts:ro")
 
 # 挂载 custom 目录（如果存在）
 if [ -d "$CUSTOM_DIR" ]; then
-    DOCKER_OPTS+=( -v "$CUSTOM_DIR:/build/custom:ro" )
+    DOCKER_OPTS+=(-v "$CUSTOM_DIR:/build/custom:ro")
     log_info "已挂载 custom 目录"
 fi
 
 # 传递构建环境变量
-DOCKER_OPTS+=( -e BUILD_MODULE="$BUILD_MODULE" )
-DOCKER_OPTS+=( -e BUILD_VERSION="$BUILD_VERSION" )
-DOCKER_OPTS+=( -e RELEASE_CHANNEL="$RELEASE_CHANNEL" )
-DOCKER_OPTS+=( -e FORCE_BUILD="$FORCE_BUILD" )
+DOCKER_OPTS+=(-e BUILD_MODULE="$BUILD_MODULE")
+DOCKER_OPTS+=(-e BUILD_VERSION="$BUILD_VERSION")
+DOCKER_OPTS+=(-e RELEASE_CHANNEL="$RELEASE_CHANNEL")
+DOCKER_OPTS+=(-e FORCE_BUILD="$FORCE_BUILD")
 
 # 依赖缓存复用
-DOCKER_OPTS+=( -e COMPOSER_CACHE_DIR=/composer/cache )
-DOCKER_OPTS+=( -v "$TEMP_DIR/caches/composer-cache:/composer/cache" )
-DOCKER_OPTS+=( -e PNPM_STORE_DIR=/pnpm/store )
-DOCKER_OPTS+=( -v "$TEMP_DIR/caches/pnpm-store:/pnpm/store" )
+DOCKER_OPTS+=(-e COMPOSER_CACHE_DIR=/composer/cache)
+DOCKER_OPTS+=(-v "$TEMP_DIR/caches/composer-cache:/composer/cache")
+DOCKER_OPTS+=(-e PNPM_STORE_DIR=/pnpm/store)
+DOCKER_OPTS+=(-v "$TEMP_DIR/caches/pnpm-store:/pnpm/store")
 
 # 运行容器
 log_info "容器将在构建完成后自动销毁"
@@ -398,7 +398,7 @@ if [ "$RUN_STATUS" -eq 0 ]; then
         [ -n "$VERSION" ] && log_info "构建版本: $VERSION"
         [ -n "$BUILD_TIME" ] && log_info "构建时间: $BUILD_TIME"
         END_TIME=$(date +%s)
-        ELAPSED=$(( END_TIME - SCRIPT_START_TIME ))
+        ELAPSED=$((END_TIME - SCRIPT_START_TIME))
         log_info "构建用时: $(human_duration "$ELAPSED")"
         log_info "生产代码: $TEMP_DIR/production-code"
     fi
@@ -434,7 +434,7 @@ else
         grep -Ei "error|failed|fatal|exception|panic|traceback" "$BUILD_REPORT" || true
         echo -e "\n==== Last 200 Lines ===="
         tail -n 200 "$BUILD_REPORT" || true
-    } > "$ERROR_REPORT" 2>/dev/null || true
+    } >"$ERROR_REPORT" 2>/dev/null || true
 
     if [ -s "$ERROR_REPORT" ]; then
         log_error "错误信息已保存到: $ERROR_REPORT"
@@ -444,7 +444,7 @@ else
     fi
 
     END_TIME=$(date +%s)
-    ELAPSED=$(( END_TIME - SCRIPT_START_TIME ))
+    ELAPSED=$((END_TIME - SCRIPT_START_TIME))
     log_info "本次构建用时: $(human_duration "$ELAPSED")"
     log_warning "提示：可使用 --clear-cache 清理依赖缓存后再试"
 

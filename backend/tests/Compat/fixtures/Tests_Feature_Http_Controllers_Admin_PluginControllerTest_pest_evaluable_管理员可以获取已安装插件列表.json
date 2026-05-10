@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_管理员可以获取已安装插件列表",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/plugin/installed",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "plugins": {
+                        "__list_of__": {
+                            "name": "string",
+                            "version": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

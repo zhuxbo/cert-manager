@@ -1,0 +1,49 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ProductControllerTest::__pest_evaluable_管理员可以添加产品",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/product",
+            "request_keys": [
+                "add_san",
+                "alternative_name_types",
+                "api_id",
+                "brand",
+                "ca",
+                "code",
+                "common_name_types",
+                "encryption_alg",
+                "encryption_standard",
+                "gift_root_domain",
+                "name",
+                "periods",
+                "product_type",
+                "refund_period",
+                "reissue",
+                "renew",
+                "replace_san",
+                "reuse_csr",
+                "server",
+                "signature_digest_alg",
+                "source",
+                "standard_max",
+                "standard_min",
+                "status",
+                "total_max",
+                "total_min",
+                "validation_methods",
+                "validation_type",
+                "warranty",
+                "warranty_currency",
+                "weight",
+                "wildcard_max",
+                "wildcard_min"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

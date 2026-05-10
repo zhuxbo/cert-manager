@@ -2,8 +2,10 @@
 
 namespace Database\Factories;
 
+use App\Models\Fund;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\DB;
 
 /**
  * 用户工厂
@@ -53,11 +55,27 @@ class UserFactory extends Factory
     }
 
     /**
-     * 设置余额
+     * 设置余额（走 Fund::create 钩子链产生 transaction 流水，满足资金审计）
      */
     public function withBalance(string $amount): static
     {
-        return $this->state(['balance' => $amount]);
+        return $this->afterCreating(function (User $user) use ($amount) {
+            if (bccomp((string) $amount, '0.00', 2) === 0) {
+                return;
+            }
+
+            DB::transaction(fn () => Fund::create([
+                'user_id' => $user->id,
+                'amount' => (string) $amount,
+                'type' => 'addfunds',
+                'pay_method' => 'admin',
+                'pay_sn' => null,
+                'remark' => 'factory withBalance',
+                'status' => 1,
+            ]));
+
+            $user->refresh();
+        });
     }
 
     /**

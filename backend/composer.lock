@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "13b1b810b27e3379af842e1c413b461b",
+    "content-hash": "8b332d17ab0020e28e0ca3a203336339",
     "packages": [
         {
             "name": "brick/math",
@@ -8801,8 +8801,8 @@
             "version": "2.1.x-dev",
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/phpstan/phpstan/zipball/a7825e7abd3d522aabe657adb81b3c3656c7b68d",
-                "reference": "a7825e7abd3d522aabe657adb81b3c3656c7b68d",
+                "url": "https://api.github.com/repos/phpstan/phpstan/zipball/c937b6d6c93ccc5a239358ed61f5dc98768e0206",
+                "reference": "c937b6d6c93ccc5a239358ed61f5dc98768e0206",
                 "shasum": ""
             },
             "require": {
@@ -8811,7 +8811,6 @@
             "conflict": {
                 "phpstan/phpstan-shim": "*"
             },
-            "default-branch": true,
             "bin": [
                 "phpstan",
                 "phpstan.phar"
@@ -8848,7 +8847,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-01-19T14:55:49+00:00"
+            "time": "2026-05-09T14:16:03+00:00"
         },
         {
             "name": "phpunit/php-code-coverage",
@@ -10961,7 +10960,6 @@
         "ext-openssl": "*",
         "ext-pcntl": "*",
         "ext-pdo": "*",
-        "ext-redis": "*",
         "ext-zip": "*"
     },
     "platform-dev": {},

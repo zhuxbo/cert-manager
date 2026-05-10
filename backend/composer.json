@@ -20,7 +20,6 @@
         "ext-openssl": "*",
         "ext-pcntl": "*",
         "ext-pdo": "*",
-        "ext-redis": "*",
         "ext-zip": "*",
         "jeremykendall/php-domain-parser": "^6.0",
         "laravel/framework": "^11.0",
@@ -46,6 +45,9 @@
         "phpunit/phpunit": "^10.5",
         "spatie/laravel-ignition": "^2.4"
     },
+    "suggest": {
+        "ext-redis": "项目默认使用 file driver；如需切换 CACHE_DRIVER/QUEUE_CONNECTION/SESSION_DRIVER 到 redis，请安装 phpredis 扩展（依赖 igbinary）"
+    },
     "minimum-stability": "dev",
     "prefer-stable": true,
     "autoload": {
@@ -64,7 +66,9 @@
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
             "@php artisan package:discover --ansi"
-        ]
+        ],
+        "test:snapshot:capture": "COMPAT_CAPTURE=true php artisan test tests/Feature/Http/Controllers",
+        "test:snapshot": "COMPAT_COMPARE=true php artisan test tests/Feature/Http/Controllers"
     },
     "config": {
         "optimize-autoloader": true,

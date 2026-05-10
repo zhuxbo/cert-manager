@@ -71,7 +71,7 @@ class AutoRenewCommand extends Command
                 $query->where('auto_renew', true)
                     ->orWhere(function ($q) {
                         $q->whereNull('auto_renew')
-                            ->whereHas('user', fn ($u) => $u->where('auto_settings->auto_renew', true));
+                            ->whereHas('user', fn ($u) => $this->whereJsonBoolEq($u, 'auto_settings', 'auto_renew', true));
                     });
             })
             // 订单剩余 ≤15 天走续费（active 状态已保证未过期）
@@ -103,16 +103,18 @@ class AutoRenewCommand extends Command
                         $q->whereNull('channel')->orWhere('channel', '!=', 'api');
                     });
             })
-            // 订单级 auto_reissue=true，或订单未设置时回落到用户设置
-            // 注意：auto_reissue 的用户默认值是 true（normalizeAutoSettings），
-            // 数据库 auto_settings 为 null 或不含 auto_reissue 键时视为 true
+            // 订单级 auto_reissue=true，或订单未设置时回落到用户设置。
+            // auto_reissue 用户默认值是 true（normalizeAutoSettings），
+            // auto_settings 为 null 或不含 auto_reissue 键时视为 true
             ->where(function ($query) {
                 $query->where('auto_reissue', true)
                     ->orWhere(function ($q) {
                         $q->whereNull('auto_reissue')
-                            ->whereHas('user', fn ($u) => $u->whereNull('auto_settings')
-                                ->orWhere('auto_settings->auto_reissue', true)
-                                ->orWhereNull('auto_settings->auto_reissue'));
+                            ->whereHas('user', function ($u) {
+                                $u->whereNull('auto_settings')
+                                    ->orWhere(fn ($q2) => $this->whereJsonBoolEq($q2, 'auto_settings', 'auto_reissue', true))
+                                    ->orWhere(fn ($q2) => $this->whereJsonKeyMissing($q2, 'auto_settings', 'auto_reissue'));
+                            });
                     });
             })
             // 订单剩余时间超过15天，走重签
@@ -284,5 +286,35 @@ class AutoRenewCommand extends Command
     private function checkDelegationValidity(int $userId, string $domains, string $ca): bool
     {
         return app(AutoRenewService::class)->checkDelegationValidity($userId, $domains, $ca);
+    }
+
+    /**
+     * MySQL 兼容的 JSON 路径布尔比较（auto_settings 列存的是 text + array cast）。
+     *
+     * 用 JSON_UNQUOTE(JSON_EXTRACT(...)) = 'true' / 'false' 字符串比较，
+     * 与 model auto_settings cast 'array' 序列化后的 JSON 表示匹配。
+     */
+    private function whereJsonBoolEq(\Illuminate\Database\Eloquent\Builder $query, string $column, string $key, bool $value): \Illuminate\Database\Eloquent\Builder
+    {
+        $jsonPath = '$.'.json_encode($key);
+        $expected = $value ? 'true' : 'false';
+
+        return $query->whereRaw(
+            "JSON_UNQUOTE(JSON_EXTRACT($column, ?)) = ?",
+            [$jsonPath, $expected]
+        );
+    }
+
+    /**
+     * MySQL 兼容的 JSON 路径不存在（key missing 或 value 是 JSON null）。
+     */
+    private function whereJsonKeyMissing(\Illuminate\Database\Eloquent\Builder $query, string $column, string $key): \Illuminate\Database\Eloquent\Builder
+    {
+        $jsonPath = '$.'.json_encode($key);
+
+        return $query->whereRaw(
+            "JSON_EXTRACT($column, ?) IS NULL OR JSON_TYPE(JSON_EXTRACT($column, ?)) = 'NULL'",
+            [$jsonPath, $jsonPath]
+        );
     }
 }

@@ -24,7 +24,10 @@ return new class extends Migration
         $ptCol = collect(Schema::getColumns('products'))->firstWhere('name', 'product_type');
         if ($ptCol && ! str_contains($ptCol['type'], "'acme'")) {
             Schema::table('products', function (Blueprint $table) {
-                $table->enum('product_type', ['ssl', 'codesign', 'smime', 'docsign', 'acme'])->default('ssl')->comment('产品类型')->change();
+                $table->enum('product_type', ['ssl', 'codesign', 'smime', 'docsign', 'acme'])
+                    ->default('ssl')
+                    ->comment('产品类型')
+                    ->change();
             });
         }
 

@@ -1,0 +1,33 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\ContactControllerTest::__pest_evaluable_获取联系人列表",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/contact",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "first_name": "string",
+                            "last_name": "string",
+                            "identification_number": "string",
+                            "title": "string",
+                            "email": "string",
+                            "phone": "string",
+                            "created_at": "string",
+                            "full_name": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

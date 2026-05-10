@@ -51,17 +51,24 @@ build/
 
 构建完成后，打包脚本会生成：
 
-| 文件 | 说明 |
-|------|------|
-| `ssl-manager-full-{version}.zip` | 完整安装包 |
-| `ssl-manager-upgrade-{version}.zip` | 升级包 |
-| `ssl-manager-script-{version}.zip` | 部署脚本包 |
-| `manifest.json` | 包清单 |
+| 文件                                | 说明                                                                   |
+| ----------------------------------- | ---------------------------------------------------------------------- |
+| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor，安装期生成）                                  |
+| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级保留现有依赖）                                |
+| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）                       |
+
+> 包清单与 sha256 写入 release 站根目录的 `releases.json`（由 `release.sh` 上传时生成），install/upgrade 链路统一从该文件读 `assets[].sha256` 强校验。打包阶段不再生成包内 `manifest.json`。
 
 ### 手动打包
 
+手动打包必须使用完整构建后的 `build/temp/production-code`。脚本会在打包前校验后端、前端和 nginx 关键产物，缺失时直接失败并清理半成品 zip。
+
 ```bash
+# 使用默认 build/temp/production-code
 ./build/scripts/package.sh
+
+# 指定生产代码目录和输出目录（相对路径会自动规范为绝对路径）
+./build/scripts/package.sh --source build/temp/production-code --output build/temp/packages
 ```
 
 ## 版本号管理
@@ -70,11 +77,11 @@ build/
 
 ### 版本获取优先级
 
-| 场景 | 优先级 | 说明 |
-|------|--------|------|
-| **build.sh** | --version 参数 > git tag > 0.0.0-dev | 通过环境变量传入容器 |
-| **release.sh** | 命令行参数（必须指定） | 不支持从 version.json 或 git tag 回落 |
-| **GitHub CI** | git tag | 由 tag push 触发 |
+| 场景           | 优先级                               | 说明                                  |
+| -------------- | ------------------------------------ | ------------------------------------- |
+| **build.sh**   | --version 参数 > git tag > 0.0.0-dev | 通过环境变量传入容器                  |
+| **release.sh** | 命令行参数（必须指定）               | 不支持从 version.json 或 git tag 回落 |
+| **GitHub CI**  | git tag                              | 由 tag push 触发                      |
 
 ### 本地开发
 
@@ -84,10 +91,10 @@ build/
 
 ### GitHub Actions
 
-| Workflow | 触发条件 | 功能 |
-|----------|---------|------|
+| Workflow      | 触发条件      | 功能                            |
+| ------------- | ------------- | ------------------------------- |
 | `release.yml` | 推送 `v*` tag | 构建、打包、创建 GitHub Release |
-| `ci.yml` | PR/push | 代码检查、构建测试 |
+| `ci.yml`      | PR/push       | 代码检查、构建测试              |
 
 GitHub Release 仅用于代码存档，实际部署使用自建 release 服务。
 

@@ -7,14 +7,12 @@ namespace App\Services\Order\Api\default;
 use App\Bootstrap\ApiExceptions;
 use App\Models\CaLog;
 use App\Services\LogBuffer;
-use App\Traits\LogSanitizer;
+use App\Utils\LogScrubber;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 
 class Sdk
 {
-    use LogSanitizer;
-
     /**
      * 获取产品
      */
@@ -140,8 +138,8 @@ class Sdk
         LogBuffer::add(CaLog::class, [
             'url' => $apiUrl,
             'api' => $uri,
-            'params' => $data,
-            'response' => $this->sanitizeResponse($result),
+            'params' => LogScrubber::scrub($data),
+            'response' => LogScrubber::scrubResponse($result),
             'status_code' => $httpStatusCode,
             'status' => intval($result['code'] ?? 0) === 1 ? 1 : 0,
         ]);

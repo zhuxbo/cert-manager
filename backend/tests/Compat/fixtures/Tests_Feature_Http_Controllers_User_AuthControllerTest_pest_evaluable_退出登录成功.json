@@ -1,0 +1,15 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AuthControllerTest::__pest_evaluable_退出登录成功",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/logout",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

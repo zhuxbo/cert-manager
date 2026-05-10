@@ -1,0 +1,30 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ApiTokenControllerTest::__pest_evaluable_管理员可以批量获取API令牌",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/api-token/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "id": "integer",
+                        "user_id": "integer",
+                        "allowed_ips": "null",
+                        "rate_limit": "integer",
+                        "last_used_at": "null",
+                        "last_used_ip": "null",
+                        "status": "integer",
+                        "created_at": "string",
+                        "updated_at": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -7,17 +7,16 @@ use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Console\Command;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command as CommandAlias;
-use Symfony\Component\Process\Process;
 use Throwable;
 
 class BackupCommand extends Command
 {
     protected $signature = 'schedule:backup
-        {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")；仅清理 backup_ 前缀文件，pre_restore_ 永不自动清理}
-        {--path= : 输出目录，默认 storage/databak}
-        {--prefix=backup : 文件名前缀，内部调用可传 pre_restore}';
+ {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")；仅清理 backup_ 前缀文件，pre_restore_ 永不自动清理}
+ {--path= : 输出目录，默认 storage/databak}
+ {--prefix=backup : 文件名前缀，内部调用可传 pre_restore}';
 
-    protected $description = '备份数据库：mysqldump 核心数据，剔除日志与队列等运行时表';
+    protected $description = '备份数据库（mysql）：通过 MysqlBackupHandler 走 mysqldump，剔除日志与队列等运行时表';
 
     public function __construct(
         private DatabaseStructureService $structureService,
@@ -30,23 +29,26 @@ class BackupCommand extends Command
     {
         $connection = config('database.default');
         $config = config("database.connections.$connection");
+        $driver = (string) ($config['driver'] ?? '');
 
-        if (($config['driver'] ?? null) !== 'mysql') {
-            $this->error('仅支持 mysql 驱动');
+        if (! in_array($driver, ['mysql', 'mariadb'], true)) {
+            $this->error("不支持的数据库驱动: {$driver}（仅支持 mysql）");
 
             return CommandAlias::FAILURE;
         }
 
         try {
-            $dumpBin = $this->backupService->ensureMysqlClient('mysqldump');
+            $handler = $this->backupService->makeHandler($driver);
+            $handler->ensureClient();
         } catch (Throwable $e) {
             $this->error($e->getMessage());
-            foreach (BackupService::installHintLines() as $line) {
+            foreach (BackupService::installHintLines($driver) as $line) {
                 $this->line($line);
             }
 
             return CommandAlias::FAILURE;
         }
+
         $path = $this->option('path') ?: storage_path('databak');
 
         if (! is_dir($path) && ! mkdir($path, 0755, true) && ! is_dir($path)) {
@@ -63,18 +65,16 @@ class BackupCommand extends Command
         }
 
         $timestamp = now()->format('Ymd_His');
-        $database = $config['database'];
+        $database = (string) ($config['database'] ?? '');
         $finalPath = "$path/{$prefix}_$timestamp.sql.gz";
         $schemaPath = "$path/{$prefix}_$timestamp.schema.json";
 
         $ignoreTables = $this->backupService->resolveIgnoreTables($database);
         $this->info('忽略表: '.(empty($ignoreTables) ? '无' : implode(', ', $ignoreTables)));
 
-        $cnfPath = $this->writeCnfFile($config);
-
         try {
             $this->info('导出并压缩中...');
-            $this->runDumpGzip($dumpBin, $cnfPath, $database, $ignoreTables, $finalPath);
+            $handler->backup($config, $finalPath, $ignoreTables);
 
             $this->info('导出数据库结构到 schema.json...');
             $this->writeSchemaJson($connection, $schemaPath, $ignoreTables);
@@ -84,8 +84,6 @@ class BackupCommand extends Command
             $this->error('备份失败: '.$e->getMessage());
 
             return CommandAlias::FAILURE;
-        } finally {
-            @unlink($cnfPath);
         }
 
         $size = is_file($finalPath) ? filesize($finalPath) : 0;
@@ -93,8 +91,8 @@ class BackupCommand extends Command
 
         $keepOption = $this->option('keep');
         $keep = $keepOption === null
-            ? (int) config('database.backup.keep_days', 30)
-            : (int) $keepOption;
+        ? (int) config('database.backup.keep_days', 30)
+        : (int) $keepOption;
         if ($keep > 0) {
             $minKeep = (int) config('database.backup.min_keep', 3);
             $purged = $this->purgeOldBackups($path, $keep, $minKeep);
@@ -105,85 +103,7 @@ class BackupCommand extends Command
     }
 
     /**
-     * 写临时凭据文件，避免密码出现在 ps 输出里。
-     */
-    private function writeCnfFile(array $config): string
-    {
-        $path = tempnam(sys_get_temp_dir(), 'mysqldump_');
-        if ($path === false) {
-            throw new RuntimeException('无法创建临时配置文件');
-        }
-
-        $escape = fn (string $v) => str_replace(['\\', '"'], ['\\\\', '\\"'], $v);
-
-        $content = "[client]\n"
-            .'host='.($config['host'] ?? '127.0.0.1')."\n"
-            .'port='.($config['port'] ?? '3306')."\n"
-            .'user='.($config['username'] ?? '')."\n"
-            .'password="'.$escape((string) ($config['password'] ?? '')).'"'."\n"
-            .'default-character-set='.($config['charset'] ?? 'utf8mb4')."\n";
-
-        file_put_contents($path, $content);
-        chmod($path, 0600);
-
-        return $path;
-    }
-
-    /**
-     * mysqldump 流式写入 gzip 文件，一次完成。
-     */
-    private function runDumpGzip(
-        string $bin,
-        string $cnfPath,
-        string $database,
-        array $ignoreTables,
-        string $outputPath
-    ): void {
-        $args = [
-            $bin,
-            "--defaults-extra-file=$cnfPath",
-            '--single-transaction',
-            '--quick',
-            '--skip-lock-tables',
-            '--no-tablespaces',
-            '--set-gtid-purged=OFF',
-            '--column-statistics=0',
-            '--default-character-set=utf8mb4',
-            '--hex-blob',
-            '--add-drop-table',
-        ];
-
-        foreach ($ignoreTables as $t) {
-            $args[] = "--ignore-table=$database.$t";
-        }
-
-        $args[] = $database;
-
-        $gz = gzopen($outputPath, 'wb6');
-        if ($gz === false) {
-            throw new RuntimeException("无法创建 gzip 文件: $outputPath");
-        }
-
-        $process = new Process($args);
-        $process->setTimeout(3600);
-
-        try {
-            $process->run(function ($type, $buffer) use ($gz) {
-                if ($type === Process::OUT) {
-                    gzwrite($gz, $buffer);
-                }
-            });
-        } finally {
-            gzclose($gz);
-        }
-
-        if (! $process->isSuccessful()) {
-            throw new RuntimeException('mysqldump 失败: '.trim($process->getErrorOutput() ?: $process->getOutput()));
-        }
-    }
-
-    /**
-     * 导出当前数据库结构为 JSON，剔除与 mysqldump 同样被忽略的表，确保 schema 与备份内容一致。
+     * 导出当前数据库结构为 JSON，剔除与 dump 同样被忽略的表，确保 schema 与备份内容一致。
      */
     private function writeSchemaJson(string $connection, string $outputPath, array $ignoreTables): void
     {
@@ -223,7 +143,6 @@ class BackupCommand extends Command
             }
             if (filemtime($file) < $cutoff && @unlink($file)) {
                 $deleted++;
-                // 同步删除对应的 schema.json
                 $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
                 if ($schema && is_file($schema)) {
                     @unlink($schema);

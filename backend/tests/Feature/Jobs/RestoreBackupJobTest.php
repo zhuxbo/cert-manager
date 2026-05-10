@@ -8,6 +8,14 @@ use Illuminate\Support\Facades\Cache;
 beforeEach(function () {
     Cache::flush();
 
+    // RestoreBackupJob 仅支持 mysql/mariadb；其它 driver 由 Unit/Jobs/RestoreBackupJobDriverGuardTest 覆盖
+    // 这里默认 driver 不变，依赖 .env / phpunit.xml 默认值；非 mysql/mariadb 全量测试应显式跳过。
+    $driver = (string) config('database.default');
+    $driverName = (string) config("database.connections.$driver.driver", $driver);
+    if (! in_array($driverName, ['mysql', 'mariadb'], true)) {
+        test()->markTestSkipped('RestoreBackupJob 在线恢复路径仅 mysql/mariadb 适用，非 mysql/mariadb 守门由 RestoreBackupJobDriverGuardTest 覆盖');
+    }
+
     // 独立目录避免污染
     $this->testDir = storage_path('databak_job_test_'.uniqid());
     mkdir($this->testDir, 0755, true);

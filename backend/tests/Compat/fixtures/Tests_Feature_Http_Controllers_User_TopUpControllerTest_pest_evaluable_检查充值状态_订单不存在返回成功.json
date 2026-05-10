@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\TopUpControllerTest::__pest_evaluable_检查充值状态_订单不存在返回成功",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/top-up/check/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "message": "string"
+                }
+            }
+        }
+    ]
+}

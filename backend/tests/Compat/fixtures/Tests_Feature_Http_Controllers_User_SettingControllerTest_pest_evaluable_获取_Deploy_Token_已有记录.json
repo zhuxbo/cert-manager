@@ -1,0 +1,27 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\SettingControllerTest::__pest_evaluable_获取_Deploy_Token_已有记录",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/setting/deploy-token",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "user_id": "integer",
+                    "token": "string",
+                    "allowed_ips": "null",
+                    "rate_limit": "integer",
+                    "last_used_at": "null",
+                    "last_used_ip": "null",
+                    "status": "integer",
+                    "created_at": "string",
+                    "updated_at": "string"
+                }
+            }
+        }
+    ]
+}

@@ -19,6 +19,7 @@ import {
 } from "@/api/upgrade";
 import { message } from "@shared/utils";
 import {
+  ElAlert,
   ElButton,
   ElCard,
   ElTag,
@@ -29,10 +30,18 @@ import {
   ElSelect,
   ElOption
 } from "element-plus";
+import { useRouter } from "vue-router";
 
 defineOptions({
   name: "Upgrade"
 });
+
+const router = useRouter();
+
+// 升级前先备份数据库
+function goBackup() {
+  router.push("/database-backup");
+}
 
 // 当前版本信息
 const currentVersion = ref<VersionInfo | null>(null);
@@ -418,6 +427,23 @@ onUnmounted(() => {
 
 <template>
   <div class="main p-4">
+    <!-- 升级前备份提示（默认不备份数据库） -->
+    <el-alert
+      type="warning"
+      :closable="false"
+      show-icon
+      class="mb-4"
+      style="margin-bottom: 16px"
+    >
+      <template #title>
+        <strong>建议升级前先备份数据库</strong>
+      </template>
+      <template #default>
+        升级流程默认<strong>不备份数据库</strong>，仅备份代码与前端。如升级失败需要还原数据，需要你升级前手工备份。
+        <el-button type="primary" link @click="goBackup">立即备份</el-button>
+      </template>
+    </el-alert>
+
     <!-- 当前版本信息 -->
     <el-card class="mb-4">
       <template #header>

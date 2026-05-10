@@ -23,6 +23,16 @@ class AppServiceProvider extends ServiceProvider
         foreach (glob($helperPath.'/*.php') as $file) {
             require_once $file;
         }
+
+        // 数据库 session timezone 与 app.timezone 同源（仅 mysql）
+        // mysql 不强制依赖时区表（mysql_tzinfo_to_sql），统一用数字偏移。
+        $tz = config('app.timezone');
+        $offsetSec = (new \DateTimeZone($tz))->getOffset(new \DateTime);
+        $sign = $offsetSec >= 0 ? '+' : '-';
+        $absSec = abs($offsetSec);
+        $numericOffset = sprintf('%s%02d:%02d', $sign, intdiv($absSec, 3600), intdiv($absSec, 60) % 60);
+
+        config(['database.connections.mysql.timezone' => $numericOffset]);
     }
 
     /**

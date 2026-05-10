@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_管理员可以设置发布通道",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/upgrade/channel",
+            "request_keys": [
+                "channel"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "channel": "string",
+                    "message": "string"
+                }
+            }
+        }
+    ]
+}

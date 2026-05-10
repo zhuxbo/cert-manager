@@ -39,7 +39,7 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 # 帮助
 # ========================================
 show_help() {
-    cat << EOF
+    cat <<EOF
 用法: $0 <插件名或目录> [选项]
 
 选项:
@@ -73,13 +73,35 @@ INPUT_VERSION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version)      INPUT_VERSION="$2"; shift 2 ;;
-        --build-only)   BUILD_ONLY=true; shift ;;
-        --publish-only) PUBLISH_ONLY=true; shift ;;
-        --server)       TARGET_SERVER="$2"; shift 2 ;;
-        -h|--help)      show_help; exit 0 ;;
-        -*)             log_error "未知选项: $1"; show_help; exit 1 ;;
-        *)              PLUGIN_INPUT="$1"; shift ;;
+        --version)
+            INPUT_VERSION="$2"
+            shift 2
+            ;;
+        --build-only)
+            BUILD_ONLY=true
+            shift
+            ;;
+        --publish-only)
+            PUBLISH_ONLY=true
+            shift
+            ;;
+        --server)
+            TARGET_SERVER="$2"
+            shift 2
+            ;;
+        -h | --help)
+            show_help
+            exit 0
+            ;;
+        -*)
+            log_error "未知选项: $1"
+            show_help
+            exit 1
+            ;;
+        *)
+            PLUGIN_INPUT="$1"
+            shift
+            ;;
     esac
 done
 
@@ -198,7 +220,7 @@ build_plugin() {
         sed -i.bak 's/"name"[[:space:]]*:/"version": "'"$VERSION"'", "name":/' "$PACK_DIR/plugin.json"
         rm -f "$PACK_DIR/plugin.json.bak"
         # 用 python 格式化 JSON（保持可读性）
-        if command -v python3 &> /dev/null; then
+        if command -v python3 &>/dev/null; then
             python3 -c "import json; d=json.load(open('$PACK_DIR/plugin.json')); json.dump(d, open('$PACK_DIR/plugin.json','w'), indent=2, ensure_ascii=False)"
         fi
         log_info "已注入版本号: $VERSION"
@@ -247,7 +269,7 @@ generate_plugin_releases_update() {
     local created_at=$(date -Iseconds)
     local zip_size=$(stat -f%z "$zip_path" 2>/dev/null || stat -c%s "$zip_path" 2>/dev/null || echo 0)
 
-    cat << PYEOF
+    cat <<PYEOF
 import json
 
 releases_file = '$releases_file'
@@ -319,7 +341,7 @@ publish_remote() {
     local ssh_timeout="${SSH_TIMEOUT:-10}"
 
     for server_str in "${SERVERS[@]}"; do
-        IFS=',' read -r srv_name srv_host srv_port srv_dir srv_url <<< "$server_str"
+        IFS=',' read -r srv_name srv_host srv_port srv_dir srv_url <<<"$server_str"
         srv_port=${srv_port:-22}
 
         # 过滤指定服务器

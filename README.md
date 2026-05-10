@@ -3,7 +3,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/zhuxbo/ssl-manager?include_prereleases)](https://github.com/zhuxbo/ssl-manager/releases)
 [![CI](https://github.com/zhuxbo/ssl-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/zhuxbo/ssl-manager/actions/workflows/ci.yml)
 
-SSL 证书管理系统，支持多级代理、自动续签、在线升级。
+SSL 证书管理系统，支持多级代理、自动续签、在线升级。MySQL + 宝塔部署。
 
 ## 安装
 
@@ -15,29 +15,47 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 curl -fsSL https://release-us.cnssl.com/install.sh | sudo bash
 ```
 
+完整性校验：install.sh 自动从 releases.json 强校验脚本包 sha256，校验失败立即退出。首次运行前可手工校验 install.sh 自身：
+
+```bash
+curl -fsSLO https://release-cn.cnssl.com/install.sh
+curl -fsSLO https://release-cn.cnssl.com/install.sh.sha256
+sha256sum -c install.sh.sha256 # Linux
+shasum -a 256 -c install.sh.sha256 # macOS
+```
+
+详细部署指南见 [DEPLOY.md](DEPLOY.md)，升级回滚演练见 [UPGRADE.md](UPGRADE.md)。
+
 <details>
 <summary>更多安装选项</summary>
 
 ```bash
-# 指定部署方式
-curl ... | sudo bash -s -- docker   # Docker 部署（推荐）
-curl ... | sudo bash -s -- bt       # 宝塔面板部署
+# 显式指定宝塔（默认 auto 模式自动检测）
+curl ... | sudo bash -s -- bt
 
-# 非交互式安装
-curl ... | sudo bash -s -- docker -y
+# 非交互式安装（必须提供 --site-domain 或 INSTALL_DIR）
+curl ... | sudo bash -s -- bt -y --site-domain manager.example.com
+# 或：INSTALL_DIR=/data/manager curl ... | sudo bash -s -- bt -y
 
 # 指定版本安装
 curl ... | sudo bash -s -- --version 0.0.9-beta
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `docker` | Docker 部署（推荐） |
-| `bt` | 宝塔面板部署 |
-| `-y` | 非交互模式，自动确认 |
-| `--version latest` | 最新稳定版（默认） |
-| `--version dev` | 最新开发版 |
-| `--version x.x.x` | 指定版本号 |
+| 参数                     | 说明                                                        |
+| ------------------------ | ----------------------------------------------------------- |
+| `bt`                     | 宝塔面板部署（唯一支持的部署模式）                          |
+| `-y`                     | 非交互模式，自动确认（需 `--site-domain` 或 `INSTALL_DIR`） |
+| `--site-domain <domain>` | 站点域名，自动推导 `INSTALL_DIR=/www/wwwroot/<domain>`      |
+| `--version latest`       | 最新稳定版（默认）                                          |
+| `--version dev`          | 最新开发版                                                  |
+| `--version x.x.x`        | 指定版本号                                                  |
+
+`-y` 模式下未提供 `DB_USERNAME` 时默认 `root`；`DB_PASSWORD` 留空（mysql 无密码本地连接）。如需自定义传 env：
+
+```bash
+DB_USERNAME=manager DB_PASSWORD=xxx \
+  curl ... | sudo bash -s -- bt -y --site-domain manager.example.com
+```
 
 </details>
 
@@ -57,57 +75,52 @@ curl -fsSL https://release-cn.cnssl.com/upgrade.sh | sudo bash
 <summary>更多升级选项</summary>
 
 ```bash
-curl ... | bash                         # 升级到最新版
-curl ... | bash -s -- --version 1.0.0   # 升级到指定版本
-curl ... | bash -s -- --dir /path/to/app  # 指定安装目录
-curl ... | bash -s -- rollback          # 回滚到上一版本
+curl ... | bash # 升级到最新版
+curl ... | bash -s -- --version 1.0.0 # 升级到指定版本
+curl ... | bash -s -- --dir /path/to/app # 指定安装目录
+curl ... | bash -s -- rollback # 回滚到上一版本
 
 # artisan 命令（需进入 backend 目录）
-php artisan upgrade:check       # 检查更新
-php artisan upgrade:run         # 执行升级
-php artisan upgrade:rollback    # 回滚
+php artisan upgrade:check # 检查更新
+php artisan upgrade:run # 执行升级
+php artisan upgrade:rollback # 回滚
 
 # 用户数据管理
-php artisan user:data export {user_id}              # 导出用户数据（SQL dump）
-php artisan user:data import {user_id} --dry-run    # 干跑检测冲突
-php artisan user:data import {user_id}              # 导入用户数据
-php artisan user:data purge {user_id}               # 清理用户数据（需先禁用+导出）
+php artisan user:data export {user_id} # 导出用户数据（SQL dump）
+php artisan user:data import {user_id} --dry-run # 干跑检测冲突
+php artisan user:data import {user_id} # 导入用户数据
+php artisan user:data purge {user_id} # 清理用户数据（需先禁用+导出）
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `--version x.x.x` | 升级到指定版本 |
-| `--dir PATH` | 指定安装目录（自动检测失败时使用） |
-| `-y, --yes` | 自动确认，非交互模式 |
-| `rollback` | 回滚到上一版本 |
+| 参数              | 说明                               |
+| ----------------- | ---------------------------------- |
+| `--version x.x.x` | 升级到指定版本                     |
+| `--dir PATH`      | 指定安装目录（自动检测失败时使用） |
+| `-y, --yes`       | 自动确认，非交互模式               |
+| `rollback`        | 回滚到上一版本                     |
 
 </details>
 
 ## 卸载
 
-Docker 部署卸载：
-
-```bash
-cd /opt/ssl-manager  # 进入安装目录
-docker-compose down -v  # 停止并删除容器和数据卷
-```
+通过宝塔面板删除站点 + 关联的 supervisor / cron 即可。详见 [DEPLOY.md](DEPLOY.md)。
 
 ## 架构
 
 ```
-frontend/           # Vue 3 前端
-├── shared/         # 共享组件库
-├── admin/          # 管理端
-└── user/           # 用户端
-backend/            # Laravel 11 后端
-build/              # 构建系统（见 build/README.md）
-deploy/             # 部署脚本
+frontend/ # Vue 3 前端
+├── shared/ # 共享组件库
+├── admin/ # 管理端
+└── user/ # 用户端
+backend/ # Laravel 11 后端
+build/ # 构建系统（见 build/README.md）
+deploy/ # 部署脚本
 ```
 
-| 组件 | 技术栈 |
-|------|--------|
+| 组件 | 技术栈                                    |
+| ---- | ----------------------------------------- |
 | 后端 | Laravel 11, PHP 8.3+, MySQL, Redis (可选) |
-| 前端 | Vue 3, TypeScript, Element Plus, Vite |
+| 前端 | Vue 3, TypeScript, Element Plus, Vite     |
 
 ## 自动化部署
 
@@ -116,7 +129,7 @@ deploy/             # 部署脚本
 将域名验证 CNAME 记录指向平台托管域名，实现自动续签：
 
 ```
-_dnsauth.example.com  →  *******.your-platform.com
+_dnsauth.example.com → *******.your-platform.com
 ```
 
 配置后，平台自动完成 DNS 验证，无需手动操作。
@@ -142,12 +155,12 @@ sslctl deploy --cert order-12345
 通过 Deploy Token 认证（`Authorization: Bearer <deploy_token>`）：
 
 ```http
-GET  /api/deploy?order=123           # 按订单 ID 查询
-GET  /api/deploy?order=example.com   # 按域名查询
-GET  /api/deploy?order=1,2,a.com     # 批量混合查询
-GET  /api/deploy                     # 列出所有 active 订单
-POST /api/deploy                     # 更新/续费证书
-POST /api/deploy/callback            # 部署结果回调
+GET /api/deploy?order=123 # 按订单 ID 查询
+GET /api/deploy?order=example.com # 按域名查询
+GET /api/deploy?order=1,2,a.com # 批量混合查询
+GET /api/deploy # 列出所有 active 订单
+POST /api/deploy # 更新/续费证书
+POST /api/deploy/callback # 部署结果回调
 ```
 
 ### ACME 订阅管理
@@ -175,10 +188,12 @@ Web 端支持两步创建：先建立订阅（unpaid → pending），再从详�
 
 ## 文档
 
-| 文档 | 说明 |
-|------|------|
-| [build/README.md](build/README.md) | 构建系统、版本发布 |
-| [deploy/docker/README.md](deploy/docker/README.md) | Docker 部署详细说明 |
+| 文档                               | 说明                                                                |
+| ---------------------------------- | ------------------------------------------------------------------- |
+| [DEPLOY.md](DEPLOY.md)             | 部署指南（宝塔，含 sha256 校验、目录权限）                          |
+| [UPGRADE.md](UPGRADE.md)           | 升级回滚演练手册（freeze 流程、smoke test、自动回滚链路）           |
+| [skills/SKILL.md](skills/SKILL.md) | 开发规范（按领域组织：后端 / 前端 / 部署 / 构建发布 / 插件 / ACME） |
+| [build/README.md](build/README.md) | 构建系统、版本发布                                                  |
 
 ## License
 

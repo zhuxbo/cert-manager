@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AcmeControllerTest::__pest_evaluable_new_成功创建订单",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/acme/new",
+            "request_keys": [
+                "contact_email",
+                "period",
+                "product_id",
+                "purchased_standard_count",
+                "purchased_wildcard_count",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer"
+                }
+            }
+        }
+    ]
+}

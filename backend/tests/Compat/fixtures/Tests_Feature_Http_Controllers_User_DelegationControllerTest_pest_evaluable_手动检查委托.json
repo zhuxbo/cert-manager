@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DelegationControllerTest::__pest_evaluable_手动检查委托",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/delegation/check/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "user_id": "integer",
+                    "zone": "string",
+                    "prefix": "string",
+                    "label": "string",
+                    "valid": "boolean",
+                    "fail_count": "integer",
+                    "last_error": "string",
+                    "id": "integer",
+                    "updated_at": "string",
+                    "created_at": "string",
+                    "proxy_zone": "string",
+                    "target_fqdn": "string"
+                }
+            }
+        }
+    ]
+}

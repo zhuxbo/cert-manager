@@ -17,7 +17,7 @@ return [
         'include' => [
             'backend' => true,      // 后端代码
             'frontend' => true,     // 前端（编译后的 dist 目录）
-            'database' => false,    // 数据库（Docker 环境无 mysqldump）
+            'database' => false,    // 数据库（升级前 BackupService 已单独全量 mysqldump，避免重复）
         ],
 
         // 数据库备份排除的表（日志表、队列表、通知记录等非核心数据）

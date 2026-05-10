@@ -234,7 +234,8 @@ class AcmeController extends BaseController
             $query->whereIn('status', ['cancelled', 'revoked', 'expired']);
         }
         if ($request->filled('brand')) {
-            $query->where('brand', $request->input('brand'));
+            // brand 统一小写匹配（兼容 case-sensitive driver）
+            $query->where('brand', strtolower((string) $request->input('brand')));
         }
         if ($request->filled('period')) {
             $query->where('period', (int) $request->input('period'));
