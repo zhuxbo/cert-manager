@@ -98,14 +98,28 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 发行包不包含 `backend/vendor`。`bt-install.sh::run_composer_install` 在宿主机执行 `composer install --no-dev --optimize-autoloader`。
 
-### 网络检测优先级
+### PHP / Composer 路径约定
 
-1. `FORCE_CHINA_MIRROR` 环境变量
-2. 云服务商元数据（阿里云、腾讯云、华为云中国区）
-3. 百度可达 + Google 不可达
-4. GitHub API 访问速度
+**所有 PHP / Composer 调用必须用绝对路径**，避免宝塔多版本系统下 root PATH 命中错误版本：
 
-中国大陆自动使用腾讯云 Composer 镜像。
+- artisan：`"$PHP_CMD" artisan ...`（`PHP_CMD=/www/server/php/<ver>/bin/php`）
+- composer：`"$PHP_CMD" "$COMPOSER_BIN" install ...`（**显式 `$PHP_CMD` 驱动 phar，绕过 shebang `#!/usr/bin/env php`**，否则 phar 内部仍会用 PATH 中找到的 PHP）
+
+`bt-install.sh` 安装时由 `select_php_version` 选定 `PHP_CMD`，写入 BT vhost / supervisor / cron 配置。
+`upgrade.sh` 通过 `detect_php_cmd` 探测：env `PHP_CMD` 优先 → BT vhost 反查（`root` 等于 `INSTALL_DIR` 的站点的 `enable-php-XX.conf`）→ 系统单版本兜底；多版本反查失败时报错要求 `export PHP_CMD=...`。
+
+### 网络环境（国内镜像）
+
+`install.sh` 启动时确定网络环境：
+
+1. env `FORCE_CHINA_MIRROR=1/0` 优先
+2. `-y` 非交互模式默认中国大陆
+3. 交互模式让用户选（默认 1=中国大陆）
+
+选中"中国大陆"时：
+
+- `bt-install.sh::check_composer` 用 `-g` 全局配置阿里云源（`mirrors.aliyun.com/composer/`）
+- 同时写入 `version.json` 的 `network: "china"`，供 `upgrade.sh` 后续使用
 
 ---
 
@@ -204,7 +218,7 @@ bt-install.sh 严格 4 种来源（**禁止** `--admin-password=xxx` 命令行�
 
 1. 临时文件 `--admin-password-file=PATH`（chmod 600，脚本读取后 rm 销毁）
 2. 环境变量 `ADMIN_PASSWORD=xxx`（读后 unset）
-3. 交互输入 `read -s`（回显隐藏，`< /dev/tty` 防 stdin 重定向）
+3. 交互输入（明文回显，`< /dev/tty` 防 stdin 重定向；安装一次性私有操作，避免视障/远程终端用户输入看不见出错）
 4. 自动生成 16 位 `openssl rand -base64 12 | tr -d '+/=' | cut -c1-16`（终端打印一次，首次登录后建议立即修改）
 
 bt-install 不落盘保存 admin 密码，seed 后直接调用 `admin:reset-password`。

@@ -7,6 +7,14 @@
 - 升级流程（freeze / smoke test / 自动回滚）
 - 失败处理 + 手工回滚演练
 
+> **宝塔环境手工运维注意**：本文档命令示例中的 `php` 在宝塔多版本系统下需替换为绝对路径（避免 root PATH 找到错误 PHP 版本）：
+>
+> - PHP 8.3：`/www/server/php/83/bin/php`
+> - PHP 8.4：`/www/server/php/84/bin/php`
+> - composer：`/www/server/php/<ver>/bin/php /usr/local/bin/composer`（绕过 phar shebang 强制版本一致）
+>
+> `upgrade.sh` 已自动使用绝对路径，本提示仅针对手工运维场景。
+
 ---
 
 ## 升级前必读

@@ -195,6 +195,8 @@ exit;
 
 ## 队列和计划任务设置
 
+> **宝塔环境**：示例中的 `php` 在宝塔多版本系统下应替换为绝对路径（如 `/www/server/php/83/bin/php`），避免 cron / supervisor 用错 PHP 版本。`bt-install.sh` 已自动写入绝对路径，下方示例仅作为手工配置参考骨架。
+
 ### 配置队列
 
 1. 确保 `.env` 文件中 `QUEUE_CONNECTION=redis`
@@ -219,7 +221,6 @@ php artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-tim
 ```bash
 cd /path-to-your-project && php artisan schedule:run
 ```
-
 
 ## 文件权限设置
 

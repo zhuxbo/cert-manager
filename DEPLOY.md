@@ -2,6 +2,14 @@
 
 仅支持 **宝塔面板 + MySQL** 部署。
 
+> **宝塔环境手工运维注意**：本文档命令示例中的 `php` 在宝塔多版本系统下需替换为绝对路径（避免 root PATH 找到错误 PHP 版本）：
+>
+> - PHP 8.3：`/www/server/php/83/bin/php`
+> - PHP 8.4：`/www/server/php/84/bin/php`
+> - composer：`/www/server/php/<ver>/bin/php /usr/local/bin/composer`（绕过 phar shebang 强制版本一致）
+>
+> `bt-install.sh` / `upgrade.sh` 已自动使用绝对路径，本提示仅针对手工运维场景。
+
 ---
 
 ## 系统要求
@@ -91,7 +99,7 @@ sudo bash bt-install.sh --admin-password-file=/tmp/admin.pwd
 # 2. 环境变量（脚本读后立即 unset）
 ADMIN_PASSWORD='StrongPass123' sudo bash bt-install.sh
 
-# 3. 交互输入（read -s 回显隐藏）
+# 3. 交互输入（明文回显，安装是一次性私有操作）
 sudo bash bt-install.sh
 
 # 4. 自动生成（-y 模式且无密码来源 → 16 位强密码 + 终端打印一次）

@@ -60,6 +60,10 @@ get_timestamp() {
 # 全局变量：自动确认
 AUTO_YES=false
 
+# PHP CLI 绝对路径（detect_php_cmd 设置；环境变量 PHP_CMD 可覆盖探测）
+# 所有 php artisan / composer install 都走这个路径，避免多版本系统下走错版本
+PHP_CMD="${PHP_CMD:-}"
+
 confirm() {
     local message="$1"
     local default="${2:-n}"
@@ -144,27 +148,6 @@ _resolve_version() {
             depth = new_depth
         }
     ' "$releases_file"
-}
-
-is_china_server() {
-    if [ -n "$FORCE_CHINA_MIRROR" ]; then
-        [ "$FORCE_CHINA_MIRROR" = "1" ] && return 0 || return 1
-    fi
-
-    # 云服务商检测
-    local aliyun_region=$(timeout 1 curl -s "http://100.100.100.200/latest/meta-data/region-id" 2>/dev/null || echo "")
-    if [ -n "$aliyun_region" ] && [[ "$aliyun_region" =~ ^cn- ]]; then
-        return 0
-    fi
-
-    # Baidu 可达 + Google 不可达
-    if timeout 2 curl -s --head "https://www.baidu.com" >/dev/null 2>&1; then
-        if ! timeout 3 curl -s --head "https://www.google.com" >/dev/null 2>&1; then
-            return 0
-        fi
-    fi
-
-    return 1
 }
 
 # 版本比较（v1 > v2 返回 0）
@@ -260,6 +243,86 @@ detect_install() {
             log_error "无效选择"
         done
     fi
+}
+
+# 探测 PHP CLI 绝对路径（与 install.sh 选中版本对齐）
+# 优先级：env PHP_CMD > BT vhost 反查 > 系统单版本探测
+# 多版本但 vhost 反查失败 → 报错，要求显式 export PHP_CMD（不瞎猜）
+detect_php_cmd() {
+    # 环境变量已指定（最高优先级）
+    if [ -n "$PHP_CMD" ]; then
+        if [ ! -x "$PHP_CMD" ]; then
+            log_error "环境变量 PHP_CMD 指向的路径不可执行: $PHP_CMD"
+            return 1
+        fi
+        log_info "使用环境变量 PHP_CMD: $PHP_CMD"
+        return 0
+    fi
+
+    log_step "探测 PHP CLI 版本"
+
+    local found_ver=""
+    local install_dir_norm="${INSTALL_DIR%/}"
+
+    # 1. 反查 BT vhost：扫站点 nginx 配置，匹配 root 指向 $INSTALL_DIR 的站点，提取 enable-php-XX.conf
+    # 用 awk 字符串比较避免 INSTALL_DIR 中的 . 在正则中错配
+    if [ -d "/www/server/panel/vhost/nginx" ]; then
+        local matched_vhost=""
+        for vhost in /www/server/panel/vhost/nginx/*.conf; do
+            [ -f "$vhost" ] || continue
+            if awk -v dir="$install_dir_norm" '
+                /^[[:space:]]*root[[:space:]]+/ {
+                    line = $0
+                    sub(/^[[:space:]]*root[[:space:]]+/, "", line)
+                    sub(/[[:space:]]*;.*$/, "", line)
+                    sub(/\/$/, "", line)
+                    if (line == dir) { found = 1; exit }
+                }
+                END { exit (found ? 0 : 1) }
+            ' "$vhost"; then
+                matched_vhost="$vhost"
+                break
+            fi
+        done
+
+        if [ -n "$matched_vhost" ]; then
+            found_ver=$(grep -oE 'enable-php-[0-9]+' "$matched_vhost" | head -1 | grep -oE '[0-9]+$')
+            if [ -n "$found_ver" ]; then
+                log_info "从 BT vhost $(basename "$matched_vhost") 识别 PHP 版本: 8.${found_ver: -1}"
+            fi
+        fi
+    fi
+
+    # 2. fallback：系统单版本
+    if [ -z "$found_ver" ]; then
+        local available=()
+        for ver in 84 83; do
+            [ -x "/www/server/php/$ver/bin/php" ] && available+=("$ver")
+        done
+        if [ ${#available[@]} -eq 1 ]; then
+            found_ver="${available[0]}"
+            log_info "系统仅装一个 PHP 版本: 8.${found_ver: -1}"
+        elif [ ${#available[@]} -gt 1 ]; then
+            log_error "系统装有多个 PHP 版本（${available[*]}），但无法从 BT vhost 反查站点对应版本"
+            log_info "INSTALL_DIR=$INSTALL_DIR"
+            log_info "请手工指定: export PHP_CMD=/www/server/php/<ver>/bin/php"
+            return 1
+        else
+            log_error "未检测到 PHP 8.3 或 8.4（/www/server/php/{83,84}/bin/php 均不存在）"
+            log_info "请确认宝塔已安装 PHP 8.3 或 8.4"
+            return 1
+        fi
+    fi
+
+    PHP_CMD="/www/server/php/$found_ver/bin/php"
+
+    if [ ! -x "$PHP_CMD" ]; then
+        log_error "PHP CLI 不可执行: $PHP_CMD"
+        return 1
+    fi
+
+    log_success "PHP CLI: $PHP_CMD"
+    return 0
 }
 
 # 获取当前版本
@@ -505,7 +568,7 @@ perform_upgrade() {
     # 3. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
     cd "$INSTALL_DIR/backend"
-    php artisan down --retry=60 || true
+    "$PHP_CMD" artisan down --retry=60 || true
 
     # 4. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."
@@ -761,6 +824,18 @@ PYEOF
     if [ "$need_composer" = true ]; then
         log_step "安装 Composer 依赖..."
 
+        # 探测 composer phar 路径（用 $PHP_CMD 显式驱动，避免 shebang #!/usr/bin/env php 走错版本）
+        local composer_bin=""
+        if [ -x "/usr/local/bin/composer" ]; then
+            composer_bin="/usr/local/bin/composer"
+        elif command -v composer &>/dev/null; then
+            composer_bin="$(command -v composer)"
+        else
+            log_error "未找到 composer（已检查 /usr/local/bin/composer 和 PATH）"
+            exit 1
+        fi
+        log_info "使用 composer: $composer_bin"
+
         # 从 version.json 读取网络配置（安装时用户选择）
         local use_china_mirror=false
         if [ -f "$INSTALL_DIR/version.json" ]; then
@@ -771,23 +846,41 @@ PYEOF
             fi
         fi
 
-        # 执行 composer install
+        # 临时 COMPOSER_HOME（一次性，跑完即删；不污染持久目录，不进宝塔备份）
+        local tmp_home
+        tmp_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
+
         cd "$INSTALL_DIR/backend"
+        # 镜像配置写到 tmp_home（不污染项目 composer.json）
         if [ "$use_china_mirror" = true ]; then
-            composer config repo.packagist composer https://mirrors.aliyun.com/composer/
+            env HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
+                "$PHP_CMD" "$composer_bin" config -g repo.packagist composer https://mirrors.aliyun.com/composer/
         fi
-        COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
+
+        local rc=0
+        COMPOSER_ALLOW_SUPERUSER=1 HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
+            "$PHP_CMD" "$composer_bin" install --no-dev --optimize-autoloader || rc=$?
+
+        rm -rf "$tmp_home"
+
+        if [ "$rc" -ne 0 ]; then
+            log_error "composer install 失败"
+            exit 1
+        fi
+
+        # vendor/ 由 root 重建，统一 chown 给 www
+        chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
     fi
 
     # 10. 运行数据库迁移
     log_step "运行数据库迁移..."
     cd "$INSTALL_DIR/backend"
-    php artisan migrate --force
+    "$PHP_CMD" artisan migrate --force
 
     # 10.1 初始化/更新数据
     log_step "更新数据..."
     cd "$INSTALL_DIR/backend"
-    php artisan db:seed --force || true
+    "$PHP_CMD" artisan db:seed --force || true
 
     # 10.2 数据库结构校验
     log_step "数据库结构校验..."
@@ -795,7 +888,7 @@ PYEOF
     local structure_output=""
     cd "$INSTALL_DIR/backend"
     # 检查结构差异
-    structure_output=$(php artisan db:structure --check 2>&1) || true
+    structure_output=$("$PHP_CMD" artisan db:structure --check 2>&1) || true
     if echo "$structure_output" | grep -q "数据库结构完全一致"; then
         log_success "数据库结构校验通过"
     else
@@ -803,7 +896,7 @@ PYEOF
         echo "$structure_output" | head -50
         echo ""
         log_warning "尝试自动修复（仅 ADD 操作）..."
-        if php artisan db:structure --fix --skip-foreign-keys 2>&1; then
+        if "$PHP_CMD" artisan db:structure --fix --skip-foreign-keys 2>&1; then
             log_success "数据库结构自动修复完成"
         else
             log_warning "部分结构差异需要手动处理"
@@ -811,15 +904,15 @@ PYEOF
         fi
         echo ""
         echo -e "${YELLOW}提示: 使用以下命令查看和修复结构差异：${NC}"
-        echo " php artisan db:structure --check # 查看差异"
-        echo " php artisan db:structure --fix # 自动修复"
+        echo " $PHP_CMD artisan db:structure --check # 查看差异"
+        echo " $PHP_CMD artisan db:structure --fix # 自动修复"
     fi
 
     # 11. 清理缓存
     log_step "清理缓存..."
     cd "$INSTALL_DIR/backend"
-    php artisan config:cache || true
-    php artisan route:cache || true
+    "$PHP_CMD" artisan config:cache || true
+    "$PHP_CMD" artisan route:cache || true
 
     # 12. 完整性校验
     log_step "完整性校验..."
@@ -849,7 +942,7 @@ PYEOF
     # 13. 退出维护模式
     log_step "退出维护模式..."
     cd "$INSTALL_DIR/backend"
-    php artisan up
+    "$PHP_CMD" artisan up
 
     # 最终权限检查
     log_step "确认文件权限..."
@@ -910,7 +1003,7 @@ rollback() {
 
     # 进入维护模式
     cd "$INSTALL_DIR/backend"
-    php artisan down || true
+    "$PHP_CMD" artisan down || true
 
     # 恢复文件（支持新旧两种备份格式）
     log_info "恢复文件..."
@@ -969,7 +1062,7 @@ rollback() {
 
     # 退出维护模式
     cd "$INSTALL_DIR/backend"
-    php artisan up
+    "$PHP_CMD" artisan up
 
     log_success "回滚完成"
 }
@@ -1088,6 +1181,11 @@ main() {
 
     log_info "安装目录: $INSTALL_DIR"
     log_info "部署模式: $DEPLOY_MODE"
+
+    # 探测 PHP CLI（artisan / composer install 都走绝对路径，避免多版本错配）
+    if ! detect_php_cmd; then
+        exit 1
+    fi
 
     local current_version=$(get_current_version)
     log_info "当前版本: $current_version"
