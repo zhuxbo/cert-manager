@@ -1,10 +1,10 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\ContactControllerTest::__pest_evaluable_联系人列表_未认证",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\MetricsControllerTest::__pest_evaluable_未认证用户无法访问_metrics_端点",
     "version": "1.0.0",
     "calls": [
         {
             "method": "GET",
-            "uri_pattern": "/api/contact",
+            "uri_pattern": "/api/admin/metrics",
             "request_keys": null,
             "response_status": "4xx",
             "response_schema": {

@@ -1,0 +1,30 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\MetaControllerTest::__pest_evaluable_plugins_字段返回_name_和_version_二元组",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/meta",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "channels": {
+                        "admin": "boolean",
+                        "user": "boolean",
+                        "api": "boolean",
+                        "deploy": "boolean"
+                    },
+                    "plugins": {
+                        "__list_of__": {
+                            "name": "string",
+                            "version": "string"
+                        }
+                    },
+                    "version": "string"
+                }
+            }
+        }
+    ]
+}

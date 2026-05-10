@@ -73,6 +73,7 @@ php artisan test tests/Unit/Compat/
 - HTTP status 归类为 `2xx` / `4xx` / `5xx` 等，避免 200/201/204 抖动
 - URI 优先用 Laravel route pattern（`/api/admin/order/show/{id}`），fallback 把数字段抽象为 `{id}`、长 token 段抽象为 `{token}`
 - 同一测试同一 endpoint 多次调用仅记录首次（避免 token 一次性消费等场景导致 fixture 不稳定）
+- 自动剥离仅 `APP_DEBUG=true` 时输出的调试字段（`errors.exception_type` / `errors.exception_trace`），保证本地与 CI 采集结果一致
 
 ## 预期破坏性变更：豁免
 

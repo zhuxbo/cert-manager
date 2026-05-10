@@ -1,0 +1,77 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\MetricsControllerTest::__pest_evaluable_返回订单_24h___7d_统计与状态分布",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/metrics",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "orders": {
+                        "count_24h": "integer",
+                        "count_7d": "integer",
+                        "status_distribution": {
+                            "active": "integer",
+                            "pending": "integer",
+                            "cancelled": "integer"
+                        }
+                    },
+                    "queue": {
+                        "jobs": "integer",
+                        "failed_jobs": "integer",
+                        "lag_seconds": "integer"
+                    },
+                    "ca": {
+                        "requests_24h": "integer",
+                        "success_rate": "integer",
+                        "latency_p50_ms": "integer",
+                        "latency_p95_ms": "integer"
+                    },
+                    "logs": {
+                        "admin_logs": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "user_logs": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "api_logs": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "callback_logs": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "ca_logs": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "error_logs": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "tasks": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        },
+                        "notifications": {
+                            "row_count": "integer",
+                            "size_bytes": "integer"
+                        }
+                    },
+                    "database": {
+                        "driver": "string",
+                        "total_size_bytes": "integer",
+                        "total_size_mb": "float"
+                    },
+                    "collected_at": "string"
+                }
+            }
+        }
+    ]
+}

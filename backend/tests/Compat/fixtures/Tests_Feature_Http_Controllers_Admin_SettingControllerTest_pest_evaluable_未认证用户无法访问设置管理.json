@@ -9,20 +9,7 @@
             "response_status": "4xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string",
-                "errors": {
-                    "exception_type": "string",
-                    "exception_trace": {
-                        "__list_of__": {
-                            "file": "string",
-                            "line": "integer",
-                            "function": "string",
-                            "class": "string",
-                            "type": "string",
-                            "args": "array<mixed>"
-                        }
-                    }
-                }
+                "msg": "string"
             }
         }
     ]
