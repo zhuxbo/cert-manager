@@ -85,7 +85,6 @@ class RestoreBackupJob implements ShouldQueue
 
         $downEntered = false;
         $tmpSql = null;
-        $tmpDecrypted = null;
 
         try {
             // 1. 拍保险备份
@@ -97,29 +96,20 @@ class RestoreBackupJob implements ShouldQueue
             Artisan::call('down', ['--retry' => 60]);
             $downEntered = true;
 
-            // 3. 解密（如有需要）— 6-1 默认加密产物 *.sql.gz.enc，旧 *.sql.gz 直读
-            $sqlGzPath = $backup['sql'];
-            if (! empty($backup['encrypted'])) {
-                $this->progress($service, 'running', 'decrypting', '解密备份...');
-                $tmpDecrypted = tempnam(sys_get_temp_dir(), 'restore_dec_').'.sql.gz';
-                $service->decryptBackup($backup['sql'], $tmpDecrypted);
-                $sqlGzPath = $tmpDecrypted;
-            }
-
-            // 4. 执行恢复
+            // 3. 执行恢复
             if ($this->mode === 'incremental') {
                 $this->progress($service, 'running', 'filtering', '生成增量 SQL...');
                 $tmpSql = tempnam(sys_get_temp_dir(), 'restore_').'.sql';
-                $stats = $filter->filter($sqlGzPath, $tmpSql);
+                $stats = $filter->filter($backup['sql'], $tmpSql);
                 $this->progress($service, 'running', 'restoring',
                     "执行增量恢复（{$stats['rewritten_insert']} 条 INSERT IGNORE）...");
                 $this->runMysqlFromFile($tmpSql);
             } else {
                 $this->progress($service, 'running', 'restoring', '执行全量恢复（覆盖当前库）...');
-                $this->runMysqlFromGzip($sqlGzPath);
+                $this->runMysqlFromGzip($backup['sql']);
             }
 
-            // 5. 退出维护
+            // 4. 退出维护
             Artisan::call('up');
             $downEntered = false;
 
@@ -137,9 +127,6 @@ class RestoreBackupJob implements ShouldQueue
             }
             if ($tmpSql !== null && is_file($tmpSql)) {
                 @unlink($tmpSql);
-            }
-            if ($tmpDecrypted !== null && is_file($tmpDecrypted)) {
-                @unlink($tmpDecrypted);
             }
             $lock->release();
         }

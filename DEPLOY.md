@@ -1,6 +1,6 @@
 # SSL Manager 部署指南
 
-仅支持 **宝塔面板** 部署（已移除 Docker / SQLite / PostgreSQL，简化维护）。
+仅支持 **宝塔面板 + MySQL** 部署。
 
 ---
 
@@ -125,16 +125,16 @@ CHANNELS_DEPLOY=true # 关闭则 /api/deploy/* 不注册
 | APP_KEY     | install 期 `php artisan key:generate`；启动校验拒绝默认值 / 空值                 |
 | admin 密码  | 4 种来源（不入 shell history），首次登录后建议立即修改                           |
 | HTTPS       | 宝塔站点 SSL 配置（自动 Let's Encrypt 或上传证书）                               |
-| 备份加密    | **默认启用** AES-256-CBC，密钥 `BACKUP_ENC_KEY` install 期自动生成               |
+| 备份产物    | `mysqldump` + `gzip`，明文 `.sql.gz` 落 `storage/databak/`（仅本机进程可访问）   |
 | 日志脱敏    | `App\Utils\LogScrubber` 集中脱敏密码 / token / CSR / 银行卡号 / 身份证号等 14 类 |
 
-### 备份加密关键告警
+### 备份产物保护
 
-`BACKUP_ENC_KEY` 是 AES-256 32 字节密钥（hex 编码 64 字符），**密钥丢失 = 备份不可恢复**：
+备份不做应用层加密 — 备份文件与 `.env`、数据库本身位于同一台机器，应用层加密无法对抗"获得文件读取权限"的攻击者，反而带来密钥管理负担。防护重点放在**文件系统层**：
 
-- 部署完成后立即将 `.env` 中的 `BACKUP_ENC_KEY` 离线保存（U 盘 / 密码管理器 / 加密备忘录）
-- 后台备份页 + 升级页都有 el-alert warning 提示
-- 加密格式：`[4 magic 'SBME'][1 version 0x01][1 cipher_id 0x01][16 IV][N ciphertext]`，向前兼容已立约定
+- `storage/` 目录由 install.sh 设定 chmod，仅 www 用户可读
+- `.env` 单独 `chmod 600`，确保 DB 凭据不外泄
+- 异地保存备份时（S3 / 邮件 / U 盘）请在传输前自行 `gpg --encrypt` 或 `age` 加密
 
 ---
 

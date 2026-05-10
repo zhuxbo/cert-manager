@@ -2,7 +2,7 @@
 
 提交前逐项检查，跳过不涉及的部分。
 
-> 简化：仅 MySQL + 宝塔部署。已移除 Docker / SQLite / PostgreSQL / SqlDialect 抽象层。
+> 范围：仅 MySQL + 宝塔部署。
 
 ---
 
@@ -48,6 +48,7 @@ git diff --cached --stat
 **判定通过**：清单 1~4 全部 grep 0 命中；命中只剩"故意保留的反向断言/兼容拒绝/工具链文件"等明确豁免。
 
 **常见漏删模式**：
+
 - 删了 `config/X.php` 的连接定义，没删 `AppServiceProvider` 往该连接注入的代码
 - 删了 Command 类，没删 README/skills 里的 `php artisan X` 示例
 - 删了表 / 字段，没删 Model `$fillable` / `$casts` / Observer 引用
@@ -266,7 +267,7 @@ git status --short | grep "^??"
 - [ ] 没有未使用的 `use`（PHP）或 `import`（TS/Vue）— Pint 会自动清理 PHP 端
 - [ ] 新增命名符合项目风格
 - [ ] **未跟踪文件（`??`）**：
-- 若是 paratest 临时遗留（`backend/database/database.test.sqlite_test_*` / `backend/storage/databak_unit_*`）→ 直接 `rm -rf` 清理
+- 若是测试临时遗留（如 `backend/storage/databak_unit_*`）→ 直接 `rm -rf` 清理
 - 若被生产代码 `require` / `use` 引用 → 必须 `git add`（grep 全代码库验证引用）
 
 ---

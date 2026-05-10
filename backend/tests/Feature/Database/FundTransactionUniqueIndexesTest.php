@@ -6,7 +6,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
- * funds + transactions 唯一索引物理阻断 + ApiExceptions 翻译三库守门。
+ * funds + transactions 唯一索引物理阻断 + ApiExceptions 翻译守门。
  *
  * DB::table 直接 INSERT 绕过 Eloquent 钩子的 exists 校验，直击 DB 层唯一约束。
  */

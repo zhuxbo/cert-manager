@@ -89,23 +89,6 @@ class BackupCommand extends Command
         $size = is_file($finalPath) ? filesize($finalPath) : 0;
         $this->info('备份完成: '.$finalPath.' ('.$this->formatSize((int) $size).')');
 
-        // 默认启用 AES-256-CBC 备份加密，原 .sql.gz 落盘后立刻加密产出 .sql.gz.enc 并删原文件
-        try {
-            $encPath = $this->backupService->encryptBackup($finalPath);
-            @unlink($finalPath);
-            $finalPath = $encPath;
-            $encSize = is_file($encPath) ? filesize($encPath) : 0;
-            $this->info('备份已加密: '.$encPath.' ('.$this->formatSize((int) $encSize).')');
-        } catch (Throwable $e) {
-            // 加密失败：删除所有产物，避免在磁盘上留下未加密的 .sql.gz（要求默认加密）
-            // 同时删 schema.json 保持产物状态一致，运维通过日志知道加密未完成需重跑
-            @unlink($finalPath);
-            @unlink($schemaPath);
-            $this->error('备份加密失败: '.$e->getMessage());
-
-            return CommandAlias::FAILURE;
-        }
-
         $keepOption = $this->option('keep');
         $keep = $keepOption === null
         ? (int) config('database.backup.keep_days', 30)
@@ -147,14 +130,7 @@ class BackupCommand extends Command
     private function purgeOldBackups(string $dir, int $keepDays, int $minKeep): int
     {
         $cutoff = time() - $keepDays * 86400;
-        // 6-1 默认加密后产物为 *.sql.gz.enc；同时兼容存量 *.sql.gz（未加密旧备份）
-        $files = array_merge(
-            glob("$dir/backup_*.sql.gz.enc") ?: [],
-            glob("$dir/backup_*.sql.gz") ?: []
-        );
-        // glob 'backup_*.sql.gz' 不会同时匹配 '.sql.gz.enc'（因为 PHP glob 默认非递归且 * 不跨字面后缀），
-        // 但保险起见去重一次
-        $files = array_values(array_unique($files));
+        $files = glob("$dir/backup_*.sql.gz") ?: [];
 
         // 按 mtime 降序（新在前）
         usort($files, fn ($a, $b) => filemtime($b) <=> filemtime($a));
@@ -167,8 +143,7 @@ class BackupCommand extends Command
             }
             if (filemtime($file) < $cutoff && @unlink($file)) {
                 $deleted++;
-                // 同步删除对应的 schema.json（先去 .enc 后缀再去 .sql.gz）
-                $schema = preg_replace('/\.sql\.gz(\.enc)?$/', '.schema.json', $file);
+                $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
                 if ($schema && is_file($schema)) {
                     @unlink($schema);
                 }

@@ -37,21 +37,6 @@ class BackupService
     public const JOB_CACHE_TTL = 3600;
 
     /**
-     * 加密文件 magic（4 bytes）— SSL Manager Backup Encrypted。
-     * 对照：未加密 gzip 文件以 0x1f 0x8b 开头，与 'SBME' 完全不冲突，可用于版本嗅探。
-     */
-    public const ENC_MAGIC = 'SBME';
-
-    /** 加密格式版本号（1 byte） */
-    public const ENC_VERSION = 0x01;
-
-    /** 加密算法 ID（1 byte）— 0x01 = aes-256-cbc */
-    public const ENC_CIPHER_AES256_CBC = 0x01;
-
-    /** Header 长度：4 magic + 1 version + 1 cipher_id + 16 IV = 22 bytes */
-    public const ENC_HEADER_LENGTH = 22;
-
-    /**
      * 备份时固定排除的运行时表（日志表通过 %_logs 动态发现）。
      * BackupCommand 的 mysqldump、schema.json 写入、Controller 的 schemaDiff 共用同一份。
      * - jobs/failed_jobs/job_batches/cache/cache_locks/sessions：Laravel 运行时
@@ -330,56 +315,40 @@ class BackupService
     }
 
     /**
-     * 列出所有备份文件（按时间倒序），每条包含 sql.gz / sql.gz.enc 与配套 schema.json 信息。
+     * 列出所有备份文件（按时间倒序），每条含 .sql.gz 文件信息与配套 schema.json 标记。
      *
-     * 6-1 之后默认产出 *.sql.gz.enc（加密）；保留对存量 *.sql.gz 的识别（未加密旧备份）。
-     * 同 ID（prefix_timestamp）若同时存在 .enc 与 .sql.gz，优先取 .enc（视为最新加密版）。
-     *
-     * @return array<int, array{id:string,prefix:string,filename:string,path:string,size:int,encrypted:bool,created_at:string,has_schema:bool,schema_size:int}>
+     * @return array<int, array{id:string,prefix:string,filename:string,path:string,size:int,created_at:string,has_schema:bool,schema_size:int}>
      */
     public function listBackups(): array
     {
         $this->ensureDirectory();
 
         $base = $this->basePath();
-        $files = array_merge(
-            glob("$base/*_*.sql.gz.enc") ?: [],
-            glob("$base/*_*.sql.gz") ?: [],
-        );
+        $files = glob("$base/*_*.sql.gz") ?: [];
 
-        // 按 ID 收口；遇到同一 ID 已存在则跳过（顺序保证 .enc 先入）
-        $byId = [];
+        $items = [];
         foreach ($files as $file) {
             $filename = basename($file);
-            if (! preg_match('/^([a-z_]+)_(\d{8}_\d{6})\.sql\.gz(\.enc)?$/', $filename, $m)) {
+            if (! preg_match('/^([a-z_]+)_(\d{8}_\d{6})\.sql\.gz$/', $filename, $m)) {
                 continue;
             }
 
-            $prefix = $m[1];
-            $stamp = $m[2];
-            $isEnc = ($m[3] ?? '') === '.enc';
-            $id = "{$prefix}_$stamp";
-            if (isset($byId[$id])) {
-                continue; // 同 ID 已记录（优先 .enc）
-            }
-
+            $id = "{$m[1]}_$m[2]";
             $schemaFile = "$base/$id.schema.json";
             $hasSchema = is_file($schemaFile);
 
-            $byId[$id] = [
+            $items[] = [
                 'id' => $id,
-                'prefix' => $prefix,
+                'prefix' => $m[1],
                 'filename' => $filename,
                 'path' => $file,
                 'size' => (int) (@filesize($file) ?: 0),
-                'encrypted' => $isEnc,
                 'created_at' => date('Y-m-d H:i:s', (int) (@filemtime($file) ?: 0)),
                 'has_schema' => $hasSchema,
                 'schema_size' => $hasSchema ? (int) (@filesize($schemaFile) ?: 0) : 0,
             ];
         }
 
-        $items = array_values($byId);
         usort($items, fn ($a, $b) => strcmp($b['created_at'], $a['created_at']));
 
         return $items;
@@ -388,9 +357,7 @@ class BackupService
     /**
      * 校验备份 ID 格式并返回对应的文件路径；不存在返回 null。
      *
-     * 优先返回 .sql.gz.enc（加密），缺失时回落到 .sql.gz（兼容存量未加密备份）。
-     *
-     * @return array{id:string,sql:string,encrypted:bool,schema:?string}|null
+     * @return array{id:string,sql:string,schema:?string}|null
      */
     public function resolveBackup(string $id): ?array
     {
@@ -399,16 +366,8 @@ class BackupService
         }
 
         $base = $this->basePath();
-        $encPath = "$base/$id.sql.gz.enc";
-        $plainPath = "$base/$id.sql.gz";
-
-        if (is_file($encPath)) {
-            $sql = $encPath;
-            $encrypted = true;
-        } elseif (is_file($plainPath)) {
-            $sql = $plainPath;
-            $encrypted = false;
-        } else {
+        $sqlPath = "$base/$id.sql.gz";
+        if (! is_file($sqlPath)) {
             return null;
         }
 
@@ -417,8 +376,7 @@ class BackupService
 
         return [
             'id' => $id,
-            'sql' => $sql,
-            'encrypted' => $encrypted,
+            'sql' => $sqlPath,
             'schema' => $schema,
         ];
     }
@@ -516,128 +474,5 @@ class BackupService
         Cache::forget($key);
 
         return (string) $payload['backup_id'];
-    }
-
-    // ----- 备份加密 / 解密 -----
-
-    /**
-     * 把 BACKUP_ENC_KEY (hex) 解为 32 字节二进制密钥。
-     * 缺失或长度不对一律抛 RuntimeException — 默认启用，未配置即视为部署错误。
-     */
-    private static function loadEncKey(): string
-    {
-        $hex = (string) config('backup.enc_key', '');
-        if ($hex === '') {
-            throw new RuntimeException(
-                'BACKUP_ENC_KEY 未配置：备份加密默认启用。'
-                .' 请在 .env 写入 BACKUP_ENC_KEY=$(openssl rand -hex 32)，'
-                .'丢失=备份不可恢复，请离线保存。'
-            );
-        }
-        // 严格 64 hex 字符（AES-256 = 32 字节）
-        if (! preg_match('/^[0-9a-fA-F]{64}$/', $hex)) {
-            throw new RuntimeException('BACKUP_ENC_KEY 必须是 64 个十六进制字符（32 字节 / AES-256 密钥）');
-        }
-        $key = hex2bin($hex);
-        if ($key === false || strlen($key) !== 32) {
-            throw new RuntimeException('BACKUP_ENC_KEY 解码失败');
-        }
-
-        return $key;
-    }
-
-    /**
-     * 加密备份文件。
-     *
-     * 输出文件路径 = $sourcePath . '.enc'（同目录加 .enc 后缀），原文件保留供调用方决定是否删除。
-     * 格式（二进制）：
-     * [4 bytes magic 'SBME'][1 byte version=0x01][1 byte cipher_id=0x01][16 bytes IV][N bytes ciphertext]
-     *
-     * 缺失 BACKUP_ENC_KEY → RuntimeException。
-     *
-     * @param  string  $sourcePath  原始（未加密）文件路径
-     * @return string 加密后文件路径
-     */
-    public function encryptBackup(string $sourcePath): string
-    {
-        if (! is_file($sourcePath)) {
-            throw new RuntimeException("源文件不存在: $sourcePath");
-        }
-        $key = self::loadEncKey();
-
-        $plaintext = file_get_contents($sourcePath);
-        if ($plaintext === false) {
-            throw new RuntimeException("无法读取源文件: $sourcePath");
-        }
-
-        $iv = random_bytes(16); // AES-256-CBC IV = 16 bytes
-        $cipher = openssl_encrypt($plaintext, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
-        if ($cipher === false) {
-            throw new RuntimeException('备份加密失败: '.(string) openssl_error_string());
-        }
-
-        $header = self::ENC_MAGIC
-        .chr(self::ENC_VERSION)
-        .chr(self::ENC_CIPHER_AES256_CBC)
-        .$iv;
-
-        $destPath = $sourcePath.'.enc';
-        if (file_put_contents($destPath, $header.$cipher) === false) {
-            throw new RuntimeException("无法写入加密文件: $destPath");
-        }
-        @chmod($destPath, 0600);
-
-        return $destPath;
-    }
-
-    /**
-     * 解密备份文件到指定目标路径。
-     *
-     * 校验失败（magic/版本/cipher_id 不支持，或解密失败）→ RuntimeException。
-     *
-     * @param  string  $encPath  加密文件路径
-     * @param  string  $destPath  解密输出路径
-     */
-    public function decryptBackup(string $encPath, string $destPath): void
-    {
-        if (! is_file($encPath)) {
-            throw new RuntimeException("加密文件不存在: $encPath");
-        }
-        $key = self::loadEncKey();
-
-        $blob = file_get_contents($encPath);
-        if ($blob === false) {
-            throw new RuntimeException("无法读取加密文件: $encPath");
-        }
-        if (strlen($blob) < self::ENC_HEADER_LENGTH) {
-            throw new RuntimeException('加密文件过短：缺少完整 header');
-        }
-
-        $magic = substr($blob, 0, 4);
-        if ($magic !== self::ENC_MAGIC) {
-            throw new RuntimeException('加密文件格式错误：magic 不匹配（期望 SBME）');
-        }
-
-        $version = ord($blob[4]);
-        if ($version !== self::ENC_VERSION) {
-            throw new RuntimeException("不支持的加密格式版本: $version");
-        }
-
-        $cipherId = ord($blob[5]);
-        if ($cipherId !== self::ENC_CIPHER_AES256_CBC) {
-            throw new RuntimeException("不支持的加密算法 ID: $cipherId");
-        }
-
-        $iv = substr($blob, 6, 16);
-        $cipher = substr($blob, self::ENC_HEADER_LENGTH);
-
-        $plaintext = openssl_decrypt($cipher, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
-        if ($plaintext === false) {
-            throw new RuntimeException('备份解密失败：密钥不匹配或文件损坏');
-        }
-
-        if (file_put_contents($destPath, $plaintext) === false) {
-            throw new RuntimeException("无法写入解密文件: $destPath");
-        }
     }
 }

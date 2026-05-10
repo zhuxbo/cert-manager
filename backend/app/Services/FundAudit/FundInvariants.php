@@ -79,7 +79,7 @@ class FundInvariants
      * L2 事件唯一：(type, transaction_id) WHERE type != 'order' 不允许重复。
      *
      * 物理阻断由 transactions_dedup_unique 唯一索引承担，本查询用于
-     * "索引被误删 / 三库索引不一致"的事后守门。
+     * "索引被误删"的事后守门。
      *
      * @return array{layer: string, message: string, rows: array}|null
      */

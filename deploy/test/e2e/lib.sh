@@ -60,7 +60,6 @@ e2e_make_fixture_zip() {
     cat >"$stage/upgrade/backend/.env.example" <<'EOF'
 APP_NAME=Manager
 APP_KEY=
-BACKUP_ENC_KEY=
 EOF
     echo '{"name":"manager"}' >"$stage/upgrade/backend/composer.json"
     : >"$stage/upgrade/frontend/admin/.gitkeep"

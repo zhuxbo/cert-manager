@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # e2e 场景 4：bt-install.sh mysql 单驱动 + .env 生成契约
 #
-# 已移除 sqlite/pgsql 三库支持，仅保留 mysql。
 # 验证：
 # - 拒绝 --db-password=xxx 命令行明文（与 admin 密码同安全策略）
 # - --db-password-file=PATH 销毁逻辑就位
 # - generate_env_file / select_db_driver / collect_db_credentials / run_artisan_install / setup_admin_password 5 函数已加
-# - DTO 兼容性：删除 backend/public/install.php + install-assets/
+# - 不残留 web 安装向导（backend/public/install.php + install-assets/ 已删除）
 
 set -uo pipefail
 
@@ -80,13 +79,6 @@ else
     e2e_fail "select_db_driver 未强制 mysql"
 fi
 
-# 反向断言：sqlite/pgsql 引用应已彻底删除
-if grep -qE "pgsql|PostgreSQL|sqlite|SQLite" "$BT_INSTALL"; then
-    e2e_fail "bt-install.sh 仍含 sqlite/pgsql 引用（应已彻底移除）"
-else
-    e2e_pass "bt-install.sh 不含 sqlite/pgsql 引用"
-fi
-
 # === 测试 7：generate_env_file 写入 mysql 5 字段 ===
 e2e_log "7. generate_env_file 写入 mysql 5 字段"
 GEN_BODY=$(awk '/^generate_env_file\(\) \{/,/^}/' "$BT_INSTALL")
@@ -105,15 +97,17 @@ else
     e2e_fail "generate_env_file 缺 DB_CONNECTION"
 fi
 
-# === 测试 8：generate_env_file 生成 APP_KEY + BACKUP_ENC_KEY + JWT_SECRET ===
-e2e_log "8. generate_env_file 含 APP_KEY + BACKUP_ENC_KEY + JWT_SECRET 生成"
+# === 测试 8：generate_env_file 生成 APP_KEY + JWT_SECRET ===
+# 备份不再加密（明文 .sql.gz），install 期不应残留 BACKUP_ENC_KEY 字样
+e2e_log "8. generate_env_file 含 APP_KEY + JWT_SECRET 生成"
 if grep -qE 'app_key=.*openssl rand -base64' "$BT_INSTALL" &&
-    grep -qE 'enc_key=.*openssl rand -hex 32' "$BT_INSTALL" &&
+    grep -qE 'jwt_secret=.*openssl rand -base64' "$BT_INSTALL" &&
     grep -qE '_set_env_var.*APP_KEY.*\$app_key' "$BT_INSTALL" &&
-    grep -qE '_set_env_var.*BACKUP_ENC_KEY.*\$enc_key' "$BT_INSTALL"; then
-    e2e_pass "APP_KEY + BACKUP_ENC_KEY 现场生成 + 写入 .env"
+    grep -qE '_set_env_var.*JWT_SECRET.*\$jwt_secret' "$BT_INSTALL" &&
+    ! grep -qE 'BACKUP_ENC_KEY' "$BT_INSTALL"; then
+    e2e_pass "APP_KEY + JWT_SECRET 现场生成 + 写入 .env"
 else
-    e2e_fail "密钥生成逻辑缺失或不完整"
+    e2e_fail "密钥生成逻辑缺失或仍残留 BACKUP_ENC_KEY"
 fi
 
 # === 测试 9：run_artisan_install + setup_admin_password 链路 ===

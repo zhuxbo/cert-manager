@@ -249,24 +249,6 @@ onUnmounted(stopPolling);
 
 <template>
   <div class="p-4">
-    <!-- 备份加密密钥关键告警，置顶常驻不可关闭 -->
-    <el-alert
-      type="warning"
-      :closable="false"
-      show-icon
-      class="mb-3"
-      style="margin-bottom: 12px"
-    >
-      <template #title>
-        <strong>密钥丢失 = 备份不可恢复</strong>
-      </template>
-      <template #default>
-        备份默认启用 AES-256-CBC 加密。请将
-        <code>.env</code> 中的 <code>BACKUP_ENC_KEY</code>
-        离线保存（U 盘 / 密码管理器）。密钥丢失后，无法恢复任何加密备份。
-      </template>
-    </el-alert>
-
     <el-card shadow="never">
       <template #header>
         <div class="flex items-center justify-between">

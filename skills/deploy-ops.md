@@ -209,31 +209,17 @@ bt-install.sh 严格 4 种来源（**禁止** `--admin-password=xxx` 命令行�
 
 bt-install 不落盘保存 admin 密码，seed 后直接调用 `admin:reset-password`。
 
-### 备份加密
-
-`BACKUP_ENC_KEY` 在 install.sh 期自动生成 32 字节 hex（64 字符）写入 `.env`，BackupService 用 AES-256-CBC 加密备份文件。
-
-加密格式：`[4 magic 'SBME'][1 version 0x01][1 cipher_id 0x01][16 IV][N ciphertext]`
-
-**关键告警**：密钥丢失=备份不可恢复，请离线保存（U 盘 / 密码管理器）。后台备份页 + 升级页都有 el-alert warning 提示。
-
-**手工解密**（标准 openssl，无需额外工具）：
-
-```bash
-ENC=backup.sql.gz.enc
-KEY=$(grep '^BACKUP_ENC_KEY=' /path/to/backend/.env | cut -d= -f2-)
-IV=$(dd if="$ENC" bs=1 skip=6 count=16 2>/dev/null | xxd -p -c 32)
-dd if="$ENC" bs=1 skip=22 2>/dev/null \
-  | openssl enc -d -aes-256-cbc -K "$KEY" -iv "$IV" \
-  | gunzip > backup.dump
-```
-
 ### 备份产物格式
 
-`MysqlBackupHandler` 用 `mysqldump` 输出 SQL 文本，gzip 压缩后再走 AES-256-CBC 加密。
+`MysqlBackupHandler` 用 `mysqldump` 输出 SQL 文本，`gzip` 压缩后落 `storage/databak/{prefix}_{Ymd_His}.sql.gz`，**不做应用层加密**。
 
-恢复方式（解密后）：`mysql -u<user> -p <db> < backup.dump`
+理由：备份文件与 `.env`、数据库本身住在同一台机器，应用层加密对"获取文件读取权限"的攻击者无效；密钥保管反而是新的失败模式。防护交给文件系统层（`storage/` chmod、`.env` 600）。异地保存（S3 / 邮件 / U 盘）请在**传输前**自行 `gpg --encrypt` 或 `age` 加密。
 
+恢复方式：
+
+```bash
+gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
+```
 
 ## 常见问题
 

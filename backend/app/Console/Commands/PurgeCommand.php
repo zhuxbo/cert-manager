@@ -95,7 +95,7 @@ class PurgeCommand extends Command
         $this->info("Purged $result error logs");
 
         // 动态清理其他 _logs 后缀表（插件日志表等）
-        // 用 Schema::getTableListing() 替代 mysql 专有的 SHOW TABLES LIKE，三库通用（Laravel 11+）
+        // 用 Schema::getTableListing() 替代 raw SHOW TABLES LIKE，统一走 Laravel 抽象（Laravel 11+）
         $knownLogTables = ['api_logs', 'admin_logs', 'user_logs', 'callback_logs', 'ca_logs', 'error_logs'];
         try {
             $tableNames = \Illuminate\Support\Facades\Schema::getTableListing();

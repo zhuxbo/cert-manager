@@ -19,8 +19,7 @@ SITE_DOMAIN="${SITE_DOMAIN:-}" # 可选：BT 自动建站使用的域名（缺�
 BT_KEY="${BT_KEY:-}"           # 可选：宝塔 API key；缺失自动从 /www/server/panel/config/api.json 探测
 SITE_REUSE_CONFIRMED=false     # 复用 BT 已有站点时置 true（同意复用即同意覆盖目录，跳过二次询问）
 
-# 数据库连接（交互或参数收集；三库支持）
-# 仅支持 mysql 单驱动
+# 数据库连接（交互或参数收集）— 仅支持 mysql
 # DB_PASSWORD 4 来源（同 admin 密码模式）：env / --db-password-file=PATH / 交互 read -s / 空（mysql 允许）
 DB_DRIVER="${DB_DRIVER:-}"
 DB_HOST="${DB_HOST:-}"
@@ -779,8 +778,8 @@ _set_env_var() {
 }
 
 # 生成 .env 文件
-# - APP_KEY / BACKUP_ENC_KEY 现场生成
-# - 三库 DB_CONNECTION + 对应字段
+# - APP_KEY / JWT_SECRET 现场生成
+# - mysql DB_CONNECTION + 连接字段
 # - chmod 600 + chown www
 generate_env_file() {
     log_step "生成 .env 文件"
@@ -796,9 +795,8 @@ generate_env_file() {
     cp "$env_example" "$env_file"
 
     # 安全密钥
-    local app_key enc_key jwt_secret
+    local app_key jwt_secret
     app_key="base64:$(openssl rand -base64 32 | tr -d '\n')"
-    enc_key="$(openssl rand -hex 32)"
     # JWT_SECRET：admin/user/api token 签发；空值会导致 login 500（tymon/jwt-auth 报 "Secret is not set"）
     jwt_secret="$(openssl rand -base64 64 | tr -d '\n')"
 
@@ -826,7 +824,6 @@ generate_env_file() {
     _set_env_var "$env_file" "APP_DEBUG" "false"
     _set_env_var "$env_file" "APP_KEY" "$app_key"
     _set_env_var "$env_file" "JWT_SECRET" "$jwt_secret"
-    _set_env_var "$env_file" "BACKUP_ENC_KEY" "$enc_key"
 
     # APP_URL 留空走 config/app.php 默认；用户在宝塔配好 https 后自行写入 .env
 
@@ -1178,7 +1175,7 @@ main() {
     # 9. 数据库连接信息收集（依赖 INSTALL_DIR / WWW_USER）
     collect_db_credentials
 
-    # 10. 生成 .env（APP_KEY + BACKUP_ENC_KEY 自动生成）
+    # 10. 生成 .env（APP_KEY / JWT_SECRET 自动生成）
     generate_env_file
 
     # 11-12. artisan migrate + db:seed

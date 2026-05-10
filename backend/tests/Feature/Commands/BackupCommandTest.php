@@ -21,8 +21,6 @@ function makeBackup(string $dir, string $stamp, int $daysAgo): array
 beforeEach(function () {
     $this->testDir = storage_path('databak_unit_'.uniqid());
     mkdir($this->testDir, 0755, true);
-    // 6-1：备份默认加密，提供测试用 BACKUP_ENC_KEY（生产由 install.sh 写入）
-    config(['backup.enc_key' => bin2hex(random_bytes(32))]);
 });
 
 afterEach(function () {

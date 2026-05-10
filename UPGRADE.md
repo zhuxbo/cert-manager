@@ -18,10 +18,8 @@
 ```bash
 cd /www/wwwroot/ssl-manager/backend
 sudo -u www php artisan schedule:backup
-# 备份产物在 storage/databak/，加密 .sql.gz.enc 格式
+# 备份产物在 storage/databak/，明文 .sql.gz 格式（异地保存时请自行 gpg/age 加密）
 ```
-
-**备份加密关键告警**：`BACKUP_ENC_KEY`（`.env` 内）丢失=备份不可恢复，请离线保存。
 
 ### 检查 freeze 锁
 
@@ -105,7 +103,7 @@ sudo -u www php artisan schedule:backup:restore <id>
 
 `<id>` 是备份记录 ID，从 `php artisan schedule:backup:list` 获取。
 
-加密备份（`.sql.gz.enc`）需要 `.env` 中 `BACKUP_ENC_KEY` 一致才能还原。
+备份是 gzip 压缩的明文 SQL（`.sql.gz`），无需密钥，直接 `gunzip | mysql` 即可还原。
 
 ---
 
@@ -135,7 +133,7 @@ curl -H "Authorization: Bearer <admin_token>" http://your-host/api/admin/metrics
 - [ ] 完整升级 1 次（A → B）确认所有 14 步通过
 - [ ] 故意触发 smoke test 失败（修改 backend 中某个关键路由让其 500），确认自动回滚
 - [ ] 手工 rollback 1 次（A → B → rollback 回 A）
-- [ ] 数据库备份 + 还原 1 次（确认 `BACKUP_ENC_KEY` 加密 / 解密链路）
+- [ ] 数据库备份 + 还原 1 次（确认 mysqldump / gzip / mysql 链路畅通）
 - [ ] freeze 期间访问 `/api/health` 仍返回 200 但 `freeze: true`
 - [ ] freeze 期间访问 `/api/admin/order/index` 返回 503
 
