@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\FundControllerTest::__pest_evaluable_管理员可以手工扣款（type_deduct）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/fund",
+            "request_keys": [
+                "amount",
+                "pay_method",
+                "remark",
+                "status",
+                "type",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

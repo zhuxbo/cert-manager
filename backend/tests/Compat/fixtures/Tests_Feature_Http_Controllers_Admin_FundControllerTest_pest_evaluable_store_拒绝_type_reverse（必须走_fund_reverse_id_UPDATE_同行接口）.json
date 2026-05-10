@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\FundControllerTest::__pest_evaluable_store_拒绝_type_reverse（必须走_fund_reverse__id__UPDATE_同行接口）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/fund",
+            "request_keys": [
+                "amount",
+                "pay_method",
+                "status",
+                "type",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "type": "array<string>"
+                }
+            }
+        }
+    ]
+}

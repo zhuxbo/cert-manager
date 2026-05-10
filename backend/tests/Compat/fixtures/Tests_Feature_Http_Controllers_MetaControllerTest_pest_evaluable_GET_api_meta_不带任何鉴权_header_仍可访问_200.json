@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\MetaControllerTest::__pest_evaluable_GET__api_meta_不带任何鉴权_header_仍可访问_200",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/meta",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "channels": {
+                        "admin": "boolean",
+                        "user": "boolean",
+                        "api": "boolean",
+                        "deploy": "boolean"
+                    },
+                    "plugins": "array<unknown>",
+                    "version": "string"
+                }
+            }
+        }
+    ]
+}

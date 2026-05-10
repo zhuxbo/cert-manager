@@ -184,7 +184,7 @@ final class SnapshotListener
                 return null;
             }
 
-            return SchemaDiffer::extractSchema($data);
+            return SchemaDiffer::extractSchema(self::stripDebugFields($data));
         }
 
         if (! method_exists($response, 'getContent')) {
@@ -199,7 +199,29 @@ final class SnapshotListener
             return null;
         }
 
-        return SchemaDiffer::extractSchema($decoded);
+        return SchemaDiffer::extractSchema(self::stripDebugFields($decoded));
+    }
+
+    /**
+     * 剥离仅在 APP_DEBUG=true 时输出的调试字段。
+     *
+     * ApiExceptions 在 debug 模式下塞入 errors.exception_type / errors.exception_trace —
+     * 这些是栈跟踪信息，不属于 API 公共契约，不应固化到快照（否则本地 capture 与
+     * CI compare 因 APP_DEBUG 差异产生 false positive）。
+     *
+     * @param  array<mixed>  $data
+     * @return array<mixed>
+     */
+    private static function stripDebugFields(array $data): array
+    {
+        if (isset($data['errors']) && is_array($data['errors'])) {
+            unset($data['errors']['exception_type'], $data['errors']['exception_trace']);
+            if ($data['errors'] === []) {
+                unset($data['errors']);
+            }
+        }
+
+        return $data;
     }
 
     /**
