@@ -4,7 +4,6 @@
 # 用法:
 # ./install.sh --url http://release.example.com
 # ./install.sh --url http://release.example.com --version 0.0.10-beta
-# ./install.sh --url http://release.example.com bt
 #
 # 部署方式：仅支持宝塔面板部署（已移除 Docker 部署，详见 ROADMAP）
 
@@ -304,11 +303,9 @@ show_banner() {
 # ========================================
 show_help() {
     cat <<EOF
-用法: $0 --url <release_url> [选项] [模式]
+用法: $0 --url <release_url> [选项]
 
-模式（仅支持宝塔；已移除 Docker 部署）:
- auto 自动检测宝塔环境（默认；未检测到宝塔则报错并提示安装）
- bt 显式使用宝塔面板安装（同 auto，仅做语义提示）
+部署方式：仅支持宝塔面板（已移除 Docker 部署）；未检测到宝塔则报错并提示安装。
 
 选项:
  --url URL 指定 release 服务 URL（必需）
@@ -322,8 +319,7 @@ show_help() {
 示例:
  $0 --url http://release.example.com # 安装最新稳定版
  $0 --url http://release.example.com --version 0.0.10-beta # 安装指定版本
- $0 --url http://release.example.com bt # 显式宝塔安装
- $0 --url http://release.example.com bt -y # 非交互式宝塔安装
+ $0 --url http://release.example.com -y # 非交互式安装
 
 环境变量:
  FORCE_CHINA_MIRROR=1 强制使用国内镜像
@@ -333,13 +329,6 @@ show_help() {
 完整性校验:
   install.sh 自动从 releases.json 读对应版本 ssl-manager-script-<v>.zip 的 sha256，
   强校验脚本包；失败立即退出。
-
-  首次运行前可手工校验 install.sh 自身：
-    curl -fsSLO <release_url>/latest/install.sh
-    curl -fsSLO <release_url>/latest/install.sh.sha256
-    sha256sum -c install.sh.sha256
-  macOS（无 sha256sum）：
-    shasum -a 256 -c install.sh.sha256
 EOF
     exit 0
 }
@@ -348,7 +337,6 @@ EOF
 # 主流程
 # ========================================
 main() {
-    local mode="auto"
     local version="latest"
     local auto_yes="${AUTO_YES:-false}"
     # 未识别参数透传给子脚本（bt-install.sh）
@@ -373,13 +361,9 @@ main() {
             -h | --help)
                 show_help
                 ;;
-            bt | auto)
-                mode="$1"
-                shift
-                ;;
             docker)
                 log_error "Docker 部署已移除（架构简化，集中维护宝塔模式）"
-                log_info "请改用宝塔面板部署：$0 --url <url> bt"
+                log_info "请改用宝塔面板部署：$0 --url <url>"
                 exit 1
                 ;;
             *)
@@ -528,30 +512,18 @@ main() {
     fi
 
     # 部署方式：仅支持宝塔（已移除 Docker，简化维护）
-    # auto / bt 行为一致：检测到宝塔则用宝塔；否则报错并提示安装宝塔
-    case "$mode" in
-        bt | auto)
-            log_step "检测宝塔面板环境..."
-            if check_bt_panel; then
-                log_success "已检测到宝塔面板"
-                log_info "使用宝塔面板安装..."
-                bash "$script_dir/bt-install.sh" $sub_args "${EXTRA_ARGS[@]}"
-            else
-                log_error "未检测到宝塔面板环境（仅支持宝塔部署）"
-                log_info "请先安装宝塔面板: https://www.bt.cn/new/download.html"
-                log_info "宝塔安装完成后重新运行此脚本"
-                exit 1
-            fi
-            ;;
-        *)
-            log_error "未知的安装模式: $mode"
-            echo ""
-            echo "用法:"
-            echo " $0 --url <url> # 自动检测宝塔（默认）"
-            echo " $0 --url <url> bt # 显式宝塔安装"
-            exit 1
-            ;;
-    esac
+    # 检测到宝塔则用宝塔；否则报错并提示安装宝塔
+    log_step "检测宝塔面板环境..."
+    if check_bt_panel; then
+        log_success "已检测到宝塔面板"
+        log_info "使用宝塔面板安装..."
+        bash "$script_dir/bt-install.sh" $sub_args "${EXTRA_ARGS[@]}"
+    else
+        log_error "未检测到宝塔面板环境（仅支持宝塔部署）"
+        log_info "请先安装宝塔面板: https://www.bt.cn/new/download.html"
+        log_info "宝塔安装完成后重新运行此脚本"
+        exit 1
+    fi
 }
 
 # 运行主流程

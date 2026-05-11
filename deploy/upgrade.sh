@@ -1300,12 +1300,20 @@ main() {
                 exit 1
             fi
 
-            # 获取目标版本（如果是 latest，需要从包中读取）
+            # 获取目标版本（仅 --file 路径会走到：占位符未被前面 releases.json 解析为具体版本）
+            # 关键：仅匹配 zip 中一级目录的 version.json（顶层 <top>/version.json）
+            # 旧实现 `*/version.json` 会跨层匹配 backend/version.json 等组件版本号，导致取错版本
             if [ "$target_version" = "latest" ] || [ "$target_version" = "dev" ]; then
-                # 尝试从升级包中读取版本
-                local pkg_version=$(unzip -p "$upgrade_file" "*/version.json" 2>/dev/null | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
-                if [ -n "$pkg_version" ]; then
-                    target_version="$pkg_version"
+                local pkg_root_version_path
+                pkg_root_version_path=$(unzip -l "$upgrade_file" 2>/dev/null |
+                    awk '$NF ~ /^[^/]+\/version\.json$/ { print $NF; exit }')
+                if [ -n "$pkg_root_version_path" ]; then
+                    local pkg_version
+                    pkg_version=$(unzip -p "$upgrade_file" "$pkg_root_version_path" 2>/dev/null |
+                        grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
+                    if [ -n "$pkg_version" ]; then
+                        target_version="$pkg_version"
+                    fi
                 fi
             fi
 

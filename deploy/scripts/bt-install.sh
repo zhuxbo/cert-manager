@@ -334,8 +334,8 @@ select_install_dir() {
         if [ -z "${INSTALL_DIR:-}" ]; then
             log_error "-y 模式必须提供 INSTALL_DIR（env）或 --site-domain（自动推导 /www/wwwroot/<domain>）"
             log_info "示例:"
-            log_info " install.sh --url <url> bt -y --site-domain manager.example.com"
-            log_info " INSTALL_DIR=/data/manager install.sh --url <url> bt -y"
+            log_info " install.sh --url <url> -y --site-domain manager.example.com"
+            log_info " INSTALL_DIR=/data/manager install.sh --url <url> -y"
             exit 1
         fi
         if [ -z "${SITE_DOMAIN:-}" ]; then
@@ -599,7 +599,7 @@ check_composer() {
     # 镜像源配置由 run_composer_install 跑（与 install 共用临时 COMPOSER_HOME）
 }
 
-# 安装 PHP 依赖（full 包不含 vendor/，bt 模式需运行时安装）
+# 安装 PHP 依赖（full 包不含 vendor/，运行时拉取）
 run_composer_install() {
     log_step "安装 PHP 依赖（composer install）"
 

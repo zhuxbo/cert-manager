@@ -34,42 +34,30 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 # 海外服务器
 curl -fsSL https://release-us.cnssl.com/install.sh | sudo bash
 
-# 显式指定宝塔（默认 auto 模式自动检测）
-curl -fsSL ... | sudo bash -s -- bt
-
 # 非交互模式（必须提供 --site-domain 或 INSTALL_DIR）
-curl -fsSL ... | sudo bash -s -- bt -y --site-domain manager.example.com
+curl -fsSL ... | sudo bash -s -- -y --site-domain manager.example.com
 # 自定义安装目录：
 INSTALL_DIR=/data/manager \
-  curl -fsSL ... | sudo bash -s -- bt -y
+  curl -fsSL ... | sudo bash -s -- -y
 ```
 
-`-y` 模式自动给安全默认值：`DB_USERNAME=root` / `DB_PASSWORD=空`（本地 mysql 无密码连接）。如需自定义传 env：
+`-y` 模式数据库默认 `DB_USERNAME=manager` / `DB_DATABASE=manager` / `DB_PASSWORD=空`。如需自定义传 env：
 
 ```bash
 DB_USERNAME=manager DB_PASSWORD='xxxx' \
-  curl -fsSL ... | sudo bash -s -- bt -y --site-domain manager.example.com
+  curl -fsSL ... | sudo bash -s -- -y --site-domain manager.example.com
 ```
 
 ### 完整性校验
 
 `install.sh` 自动从 release 站根目录的 `releases.json` 读取目标版本 `assets[].sha256` 强校验脚本包，失败立即退出。bt-install.sh 在下载完整包 / 升级包后按相同逻辑再次校验。`deploy/upgrade.sh` 升级链路同样以 `releases.json` 为唯一真相源。
 
-**首次运行 install.sh 前可手工校验**：
-
-```bash
-curl -fsSLO https://release-cn.cnssl.com/install.sh
-curl -fsSLO https://release-cn.cnssl.com/install.sh.sha256
-sha256sum -c install.sh.sha256 # Linux
-shasum -a 256 -c install.sh.sha256 # macOS
-```
-
 ---
 
 ## 宝塔自动安装
 
 ```bash
-curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash -s -- bt
+curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 ```
 
 `bt-install.sh` 流程：

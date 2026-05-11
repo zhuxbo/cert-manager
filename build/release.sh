@@ -9,6 +9,7 @@
 #   ./release.sh --server cn  # 只发布到指定服务器
 #   ./release.sh --test       # 测试 SSH 连接
 #   ./release.sh --upload-only # 只上传，跳过构建
+#   ./release.sh --scripts-only # 仅推送 install.sh / upgrade.sh 入口脚本（不发版）
 
 set -e
 
@@ -361,13 +362,15 @@ show_help() {
 选项:
   --test            测试所有服务器 SSH 连接
   --server NAME     只部署到指定服务器
-  --upload-only     只上传，跳过构建
+  --upload-only     只上传，跳过构建（仍执行完整发布流程，需版本号）
+  --scripts-only    仅推送 install.sh / upgrade.sh 入口脚本（不发版、无需版本号）
   -h, --help        显示帮助
 
 示例:
   $0 0.0.15-beta        发布指定版本
   $0 --server cn        只发布到 cn 服务器
   $0 --test             测试连接
+  $0 --scripts-only     仅推送 deploy/install.sh + deploy/upgrade.sh（占位符替换 + chmod +x）
 EOF
 }
 
@@ -379,6 +382,7 @@ main() {
     local target_server=""
     local upload_only=false
     local test_only=false
+    local scripts_only=false
 
     # 解析参数
     while [ $# -gt 0 ]; do
@@ -393,6 +397,10 @@ main() {
                 ;;
             --upload-only)
                 upload_only=true
+                shift
+                ;;
+            --scripts-only)
+                scripts_only=true
                 shift
                 ;;
             -h | --help)
@@ -420,6 +428,38 @@ main() {
     if [ "$test_only" = true ]; then
         test_all_connections
         exit $?
+    fi
+
+    # 仅推送入口脚本：跳过版本号 / 构建 / 打包 / zip 上传 / releases.json 更新 / tag
+    # 用途：install.sh / upgrade.sh 内容变更需立即生效，不触发新版本发布
+    if [ "$scripts_only" = true ]; then
+        log_info "模式: 仅推送入口脚本（不发版）"
+        log_info "目标服务器: ${target_server:-全部}"
+
+        if ! test_all_connections; then
+            log_error "请先解决连接问题"
+            exit 1
+        fi
+
+        local pushed=0 failed=0
+        for server in "${SERVERS[@]}"; do
+            parse_server "$server"
+            if [ -n "$target_server" ] && [ "$SERVER_NAME" != "$target_server" ]; then
+                continue
+            fi
+            log_step "推送入口脚本到 $SERVER_NAME ($SERVER_HOST)..."
+            if deploy_scripts_remote "$server"; then
+                pushed=$((pushed + 1))
+            else
+                failed=$((failed + 1))
+                log_error "$SERVER_NAME: 推送失败"
+            fi
+        done
+
+        echo ""
+        log_info "已推送: $pushed 个服务器"
+        [ "$failed" -gt 0 ] && log_error "失败: $failed 个服务器"
+        exit "$failed"
     fi
 
     # 版本号必须通过命令行参数传入

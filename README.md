@@ -15,14 +15,7 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 curl -fsSL https://release-us.cnssl.com/install.sh | sudo bash
 ```
 
-完整性校验：install.sh 自动从 releases.json 强校验脚本包 sha256，校验失败立即退出。首次运行前可手工校验 install.sh 自身：
-
-```bash
-curl -fsSLO https://release-cn.cnssl.com/install.sh
-curl -fsSLO https://release-cn.cnssl.com/install.sh.sha256
-sha256sum -c install.sh.sha256 # Linux
-shasum -a 256 -c install.sh.sha256 # macOS
-```
+完整性校验：install.sh 自动从 releases.json 强校验脚本包 sha256，校验失败立即退出。
 
 详细部署指南见 [DEPLOY.md](DEPLOY.md)，升级回滚演练见 [UPGRADE.md](UPGRADE.md)。
 
@@ -30,12 +23,9 @@ shasum -a 256 -c install.sh.sha256 # macOS
 <summary>更多安装选项</summary>
 
 ```bash
-# 显式指定宝塔（默认 auto 模式自动检测）
-curl ... | sudo bash -s -- bt
-
 # 非交互式安装（必须提供 --site-domain 或 INSTALL_DIR）
-curl ... | sudo bash -s -- bt -y --site-domain manager.example.com
-# 或：INSTALL_DIR=/data/manager curl ... | sudo bash -s -- bt -y
+curl ... | sudo bash -s -- -y --site-domain manager.example.com
+# 或：INSTALL_DIR=/data/manager curl ... | sudo bash -s -- -y
 
 # 指定版本安装
 curl ... | sudo bash -s -- --version 0.0.9-beta
@@ -43,18 +33,17 @@ curl ... | sudo bash -s -- --version 0.0.9-beta
 
 | 参数                     | 说明                                                        |
 | ------------------------ | ----------------------------------------------------------- |
-| `bt`                     | 宝塔面板部署（唯一支持的部署模式）                          |
 | `-y`                     | 非交互模式，自动确认（需 `--site-domain` 或 `INSTALL_DIR`） |
 | `--site-domain <domain>` | 站点域名，自动推导 `INSTALL_DIR=/www/wwwroot/<domain>`      |
 | `--version latest`       | 最新稳定版（默认）                                          |
 | `--version dev`          | 最新开发版                                                  |
 | `--version x.x.x`        | 指定版本号                                                  |
 
-`-y` 模式下未提供 `DB_USERNAME` 时默认 `root`；`DB_PASSWORD` 留空（mysql 无密码本地连接）。如需自定义传 env：
+`-y` 模式下数据库默认用户名/数据库名为 `manager`，密码留空。如需自定义传 env：
 
 ```bash
 DB_USERNAME=manager DB_PASSWORD=xxx \
-  curl ... | sudo bash -s -- bt -y --site-domain manager.example.com
+  curl ... | sudo bash -s -- -y --site-domain manager.example.com
 ```
 
 </details>

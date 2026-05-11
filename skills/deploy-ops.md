@@ -21,7 +21,7 @@ curl -fsSL https://release-us.cnssl.com/install.sh | sudo bash
 ### 一键安装
 
 ```bash
-curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash -s -- bt
+curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 ```
 
 ### 安装流程
@@ -189,15 +189,6 @@ php artisan upgrade:rollback  # 回滚
 4. 任一失败立即 `exit 1`，不降级
 
 `_resolve_version` 是单函数共享逻辑（每个发布入口脚本各自内联，因 install.sh / upgrade.sh 是 release 站发布的单文件，不能 source）。
-
-用户首次校验 install.sh 自身：
-
-```bash
-curl -fsSLO https://release.cnssl.com/install.sh
-curl -fsSLO https://release.cnssl.com/install.sh.sha256
-sha256sum -c install.sh.sha256          # Linux
-shasum -a 256 -c install.sh.sha256       # macOS
-```
 
 ---
 
