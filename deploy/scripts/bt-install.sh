@@ -14,13 +14,14 @@ source "$SCRIPT_DIR/common.sh"
 INSTALL_DIR="${INSTALL_DIR:-}" # 支持通过环境变量预设
 PHP_VERSION=""
 PHP_CMD=""
+COMPOSER_BIN=""                # composer phar 绝对路径（check_composer 设置；run_composer_install 用 "$PHP_CMD" "$COMPOSER_BIN" 驱动）
 AUTO_YES="${AUTO_YES:-false}"  # 非交互模式
 SITE_DOMAIN="${SITE_DOMAIN:-}" # 可选：BT 自动建站使用的域名（缺失则跳过 BT API 建站）
 BT_KEY="${BT_KEY:-}"           # 可选：宝塔 API key；缺失自动从 /www/server/panel/config/api.json 探测
 SITE_REUSE_CONFIRMED=false     # 复用 BT 已有站点时置 true（同意复用即同意覆盖目录，跳过二次询问）
 
 # 数据库连接（交互或参数收集）— 仅支持 mysql
-# DB_PASSWORD 4 来源（同 admin 密码模式）：env / --db-password-file=PATH / 交互 read -s / 空（mysql 允许）
+# DB_PASSWORD 4 来源（同 admin 密码模式）：env / --db-password-file=PATH / 交互输入（明文回显）/ 空（mysql 允许）
 DB_DRIVER="${DB_DRIVER:-}"
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-}"
@@ -49,7 +50,7 @@ while [[ $# -gt 0 ]]; do
             log_info "请改用以下任一方式："
             log_info " 1. 临时文件: --admin-password-file=PATH（chmod 600，脚本读取后自动删除）"
             log_info " 2. 环境变量: ADMIN_PASSWORD=xxx ./install.sh ..."
-            log_info " 3. 交互输入: 直接运行（不带 -y），脚本会提示输入（回显隐藏）"
+            log_info " 3. 交互输入: 直接运行（不带 -y），脚本会提示输入"
             log_info " 4. 自动生成: 加 -y 且不提供密码，脚本会生成 16 位强密码并打印"
             exit 1
             ;;
@@ -75,7 +76,7 @@ while [[ $# -gt 0 ]]; do
             log_info " 1. 环境变量: BT_KEY=xxx sudo bash bt-install.sh"
             log_info " 2. 临时文件: --bt-key-file=PATH（chmod 600，读后立即销毁）"
             log_info " 3. 自动探测: 不传任何 BT_KEY，脚本读 /www/server/panel/config/api.json"
-            log_info " 4. 交互输入: 自动探测失败时脚本会回显隐藏地提示输入"
+            log_info " 4. 交互输入: 自动探测失败时脚本会提示输入"
             exit 1
             ;;
         --bt-key)
@@ -135,7 +136,7 @@ while [[ $# -gt 0 ]]; do
             log_info "请改用："
             log_info " 1. env: DB_PASSWORD=xxx sudo bash bt-install.sh"
             log_info " 2. 临时文件: --db-password-file=PATH（chmod 600，读后销毁）"
-            log_info " 3. 交互输入: 不带 -y，脚本回显隐藏 read"
+            log_info " 3. 交互输入: 不带 -y，脚本提示输入"
             exit 1
             ;;
         --db-password-file=*)
@@ -333,8 +334,8 @@ select_install_dir() {
         if [ -z "${INSTALL_DIR:-}" ]; then
             log_error "-y 模式必须提供 INSTALL_DIR（env）或 --site-domain（自动推导 /www/wwwroot/<domain>）"
             log_info "示例:"
-            log_info " install.sh --url <url> bt -y --site-domain manager.example.com"
-            log_info " INSTALL_DIR=/data/manager install.sh --url <url> bt -y"
+            log_info " install.sh --url <url> -y --site-domain manager.example.com"
+            log_info " INSTALL_DIR=/data/manager install.sh --url <url> -y"
             exit 1
         fi
         if [ -z "${SITE_DOMAIN:-}" ]; then
@@ -569,44 +570,36 @@ download_application() {
 }
 
 # 检测 Composer（必要时安装 Composer；PHP 依赖由 run_composer_install 执行）
+# 设置全局 COMPOSER_BIN，所有 composer 调用都用 "$PHP_CMD" "$COMPOSER_BIN" 显式驱动 phar，
+# 避免 phar shebang #!/usr/bin/env php 找到错误版本（多版本系统 root PATH 可能命中老版 PHP）
 check_composer() {
     log_step "检测 Composer"
 
-    local composer_bin=""
     if command -v composer &>/dev/null; then
-        composer_bin="$(command -v composer)"
-        log_success "Composer 已安装: $composer_bin"
+        COMPOSER_BIN="$(command -v composer)"
+        log_success "Composer 已安装: $COMPOSER_BIN"
     elif [ -f "/usr/local/bin/composer" ]; then
-        composer_bin="/usr/local/bin/composer"
-        log_success "Composer 已安装: $composer_bin"
+        COMPOSER_BIN="/usr/local/bin/composer"
+        log_success "Composer 已安装: $COMPOSER_BIN"
     else
         # 安装 Composer（在临时目录中执行，避免污染当前目录）
         log_info "安装 Composer..."
         local temp_composer_dir="/tmp/composer-install-$$"
         mkdir -p "$temp_composer_dir"
         cd "$temp_composer_dir"
-        curl -sS https://getcomposer.org/installer | $PHP_CMD
+        curl -sS https://getcomposer.org/installer | "$PHP_CMD"
         mv composer.phar /usr/local/bin/composer
         chmod +x /usr/local/bin/composer
         cd - >/dev/null
         rm -rf "$temp_composer_dir"
-        composer_bin="/usr/local/bin/composer"
+        COMPOSER_BIN="/usr/local/bin/composer"
         log_success "Composer 安装完成"
     fi
 
-    # 配置 composer 镜像源
-    # NETWORK_ENV=china → 阿里云镜像；否则保留官方源
-    # 全局配置（-g）确保本脚本后续 composer install 同样走该源
-    if [ "${NETWORK_ENV:-}" = "china" ] && [ -x "$composer_bin" ]; then
-        if "$composer_bin" config -g repo.packagist composer https://mirrors.aliyun.com/composer/ 2>/dev/null; then
-            log_success "已配置 composer 国内镜像源（阿里云）"
-        else
-            log_warning "配置 composer 镜像源失败，将使用默认源"
-        fi
-    fi
+    # 镜像源配置由 run_composer_install 跑（与 install 共用临时 COMPOSER_HOME）
 }
 
-# 安装 PHP 依赖（full 包不含 vendor/，bt 模式需运行时安装）
+# 安装 PHP 依赖（full 包不含 vendor/，运行时拉取）
 run_composer_install() {
     log_step "安装 PHP 依赖（composer install）"
 
@@ -625,12 +618,33 @@ run_composer_install() {
         exit 1
     fi
 
-    # 对 ext-redis 容错：项目默认 CACHE_DRIVER=file 不需要 phpredis；BT 11.x 装 phpredis 还要先装 igbinary
-    # 依赖链复杂。如果 composer.json 历史版本仍含 ext-redis require，--ignore-platform-req=ext-redis 让它通过
+    # 临时 COMPOSER_HOME（一次性，跑完即删；不污染持久目录，不进宝塔备份）
+    local tmp_home
+    tmp_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
+    chown -R "$WWW_USER:$WWW_USER" "$tmp_home"
+
+    # 镜像源配置（写到 tmp_home，与 install 共用）
+    if [ "${NETWORK_ENV:-}" = "china" ] && [ -x "$COMPOSER_BIN" ]; then
+        if sudo -u "$WWW_USER" -E env HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
+            "$PHP_CMD" "$COMPOSER_BIN" config -g repo.packagist composer https://mirrors.aliyun.com/composer/ 2>/dev/null; then
+            log_info "已配置 composer 国内镜像源（阿里云）"
+        else
+            log_warning "配置 composer 镜像源失败，将使用默认源"
+        fi
+    fi
+
+    # ext-redis 容错：项目默认 CACHE_DRIVER=file 不依赖 phpredis；--ignore-platform-req=ext-redis 跳过缺失校验
     log_info "执行 composer install --no-dev --optimize-autoloader（容忍 ext-redis 缺失）"
-    if ! sudo -u "$WWW_USER" -E env COMPOSER_ALLOW_SUPERUSER=1 \
-        composer install --no-dev --no-interaction --no-progress --optimize-autoloader \
-        --ignore-platform-req=ext-redis 2>&1; then
+    # sudo -u www 跑 → vendor 直接归 www；"$PHP_CMD" "$COMPOSER_BIN" 显式驱动 phar 锁定 PHP 版本
+    local rc=0
+    sudo -u "$WWW_USER" -E env COMPOSER_ALLOW_SUPERUSER=1 HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
+        "$PHP_CMD" "$COMPOSER_BIN" install --no-dev --no-interaction --no-progress --optimize-autoloader \
+        --ignore-platform-req=ext-redis 2>&1 || rc=$?
+
+    # 清理临时目录（成功失败都删）
+    rm -rf "$tmp_home"
+
+    if [ "$rc" -ne 0 ]; then
         log_error "composer install 失败"
         exit 1
     fi
@@ -698,8 +712,53 @@ select_db_driver() {
     log_info "数据库驱动: mysql"
 }
 
-# 收集数据库连接信息（mysql 必填）
-# 命令行 / env 已设置的字段会被尊重，仅在缺失字段时交互询问
+# 测试 MySQL 连接（用 MYSQL_PWD 环境变量传密码，避免 -p"$pwd" 在 ps -ef 暴露）
+# 优先 mysql 客户端 → mysqladmin ping → 端口连通性 fallback
+# 返回 0 = 通过；1 = 失败（错误信息已 log_error）
+_test_mysql_connection() {
+    log_info "测试 MySQL 连接..."
+
+    if command -v mysql &>/dev/null; then
+        local err
+        if err=$(MYSQL_PWD="$DB_PASSWORD" mysql \
+            -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" \
+            --connect-timeout=5 \
+            -e "SELECT 1" "$DB_DATABASE" 2>&1); then
+            return 0
+        fi
+        log_error "MySQL 连接失败: $(echo "$err" | head -3)"
+        return 1
+    fi
+
+    if command -v mysqladmin &>/dev/null; then
+        local err
+        if err=$(MYSQL_PWD="$DB_PASSWORD" mysqladmin \
+            -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" \
+            --connect-timeout=5 ping 2>&1); then
+            log_warning "mysqladmin ping 通过，但未验证 database '$DB_DATABASE' 是否存在 / 账号是否有权限"
+            return 0
+        fi
+        log_error "mysqladmin 连接失败: $(echo "$err" | head -3)"
+        return 1
+    fi
+
+    # 客户端缺失：仅测试端口连通性
+    log_warning "未安装 mysql / mysqladmin 客户端，仅测试端口连通性"
+    if command -v nc &>/dev/null && nc -z -w 3 "$DB_HOST" "$DB_PORT" &>/dev/null; then
+        log_warning "端口可达，但无法验证账号/密码/数据库（migrate 阶段会暴露真实错误）"
+        return 0
+    fi
+    if (echo >/dev/tcp/"$DB_HOST"/"$DB_PORT") 2>/dev/null; then
+        log_warning "端口可达，但无法验证账号/密码/数据库（migrate 阶段会暴露真实错误）"
+        return 0
+    fi
+
+    log_error "无法连接到 $DB_HOST:$DB_PORT"
+    return 1
+}
+
+# 收集数据库连接信息（mysql 必填）+ 测试连接，失败循环重新输入
+# 命令行 / env 已设置的字段作为默认，回车保留
 collect_db_credentials() {
     log_step "收集 $DB_DRIVER 连接信息"
 
@@ -707,50 +766,79 @@ collect_db_credentials() {
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_PORT="${DB_PORT:-3306}"
     DB_DATABASE="${DB_DATABASE:-manager}"
+    DB_USERNAME="${DB_USERNAME:-manager}"
 
-    # 交互（仅 -y 之外）
-    if [ "$AUTO_YES" != "true" ]; then
-        local input
-        read -r -p "数据库主机 [$DB_HOST]: " input </dev/tty || input=""
-        DB_HOST="${input:-$DB_HOST}"
-
-        read -r -p "数据库端口 [$DB_PORT]: " input </dev/tty || input=""
-        DB_PORT="${input:-$DB_PORT}"
-
-        read -r -p "数据库名 [$DB_DATABASE]: " input </dev/tty || input=""
-        DB_DATABASE="${input:-$DB_DATABASE}"
-
-        if [ -z "$DB_USERNAME" ]; then
-            local default_user="root"
-            read -r -p "数据库用户名 [$default_user]: " input </dev/tty || input=""
-            DB_USERNAME="${input:-$default_user}"
-        fi
-    else
-        # -y 模式：未提供时给安全默认值，避免脚本中断
-        DB_USERNAME="${DB_USERNAME:-root}"
-    fi
-
-    # 必填校验
-    if [ -z "$DB_USERNAME" ]; then
-        log_error "数据库用户名不能为空（$DB_DRIVER 模式）"
-        exit 1
-    fi
-
-    # DB_PASSWORD 4 来源：file > env > 交互（read -s）> 空（mysql 局部允许）
+    # DB_PASSWORD 一次性来源：file > env（仅函数入口解析；重试循环内走交互）
     if [ -n "$DB_PASSWORD_FILE" ] && [ -r "$DB_PASSWORD_FILE" ]; then
         DB_PASSWORD="$(head -n1 "$DB_PASSWORD_FILE" | tr -d '\r\n')"
         rm -f "$DB_PASSWORD_FILE" # 销毁，防落盘
         log_info "DB_PASSWORD: 来自 --db-password-file"
     elif [ -n "$DB_PASSWORD" ]; then
         log_info "DB_PASSWORD: 来自 env"
-    elif [ "$AUTO_YES" != "true" ]; then
-        local pwd_input=""
-        read -r -s -p "数据库密码（回显隐藏；空密码请回车）: " pwd_input </dev/tty || pwd_input=""
-        echo
-        DB_PASSWORD="$pwd_input"
     fi
 
-    log_info "数据库配置: $DB_DRIVER@$DB_HOST:$DB_PORT/$DB_DATABASE 用户=$DB_USERNAME"
+    local attempt=0
+    while true; do
+        attempt=$((attempt + 1))
+
+        # 交互（仅 -y 之外；重试时所有字段允许回车保留当前值）
+        if [ "$AUTO_YES" != "true" ]; then
+            if [ "$attempt" -gt 1 ]; then
+                echo
+                log_warning "重新输入数据库连接信息（回车保留当前值）"
+            fi
+
+            local input
+            read -r -p "数据库主机 [$DB_HOST]: " input </dev/tty || input=""
+            DB_HOST="${input:-$DB_HOST}"
+
+            read -r -p "数据库端口 [$DB_PORT]: " input </dev/tty || input=""
+            DB_PORT="${input:-$DB_PORT}"
+
+            read -r -p "数据库名 [$DB_DATABASE]: " input </dev/tty || input=""
+            DB_DATABASE="${input:-$DB_DATABASE}"
+
+            read -r -p "数据库用户名 [$DB_USERNAME]: " input </dev/tty || input=""
+            DB_USERNAME="${input:-$DB_USERNAME}"
+
+            # 密码：首次循环且 file/env 已设则跳过；否则提示
+            # 重试时回车保留当前值（避免每次都要重输正确字段）
+            if [ "$attempt" -eq 1 ] && [ -n "$DB_PASSWORD" ]; then
+                : # 已用 file/env 设置，本次不交互
+            else
+                local pwd_prompt="数据库密码（空密码请回车）: "
+                [ "$attempt" -gt 1 ] && pwd_prompt="数据库密码（回车保留当前值）: "
+                local pwd_input=""
+                read -r -p "$pwd_prompt" pwd_input </dev/tty || pwd_input=""
+                if [ "$attempt" -gt 1 ] && [ -z "$pwd_input" ]; then
+                    : # 重试时回车保留
+                else
+                    DB_PASSWORD="$pwd_input"
+                fi
+            fi
+        fi
+
+        # 必填校验
+        if [ -z "$DB_USERNAME" ]; then
+            log_error "数据库用户名不能为空（$DB_DRIVER 模式）"
+            [ "$AUTO_YES" = "true" ] && exit 1
+            continue
+        fi
+
+        log_info "数据库配置: $DB_DRIVER@$DB_HOST:$DB_PORT/$DB_DATABASE 用户=$DB_USERNAME"
+
+        if _test_mysql_connection; then
+            log_success "MySQL 连接测试通过"
+            return 0
+        fi
+
+        # 失败处理：-y 模式直接退出，交互模式循环重试
+        if [ "$AUTO_YES" = "true" ]; then
+            log_error "MySQL 连接失败（-y 模式不重试）"
+            log_info "请检查 host/port/user/password/database，确认 MySQL 运行中且账号有访问权限"
+            exit 1
+        fi
+    done
 }
 
 # 写入 / 替换 .env 文件中指定字段（幂等）
@@ -864,7 +952,7 @@ run_artisan_install() {
 }
 
 # 设置 admin 初始密码（合并采集 + 应用，无 .admin_password 中转文件）
-# 4 来源优先级：--admin-password-file > env ADMIN_PASSWORD > 交互（read -s）> 自动生成
+# 4 来源优先级：--admin-password-file > env ADMIN_PASSWORD > 交互输入（明文回显）> 自动生成
 # 设计：seed 之后直接调 admin:reset-password 改密码；密码全程仅在 bash 变量中，不写磁盘
 # - 文件来源：读完立即 rm（避免残留）
 # - env 来源：读完 unset（避免暴露给子进程）
@@ -891,11 +979,11 @@ setup_admin_password() {
         log_info "已从环境变量读取密码"
 
     # 3. 交互输入（仅非 -y 模式；用户回车跳过则走"自动生成"）
+    # 不隐藏回显：安装是一次性私有操作，避免输入看不见出错；登录后立即修改更稳
     elif [ "$AUTO_YES" != "true" ]; then
         echo
         echo "可选：现在设置 admin 初始密码（直接回车则自动生成 16 位强密码）"
-        read -s -p "Admin 初始密码（回显隐藏）: " password </dev/tty
-        echo
+        read -r -p "Admin 初始密码: " password </dev/tty
     fi
 
     # 4. 自动生成（非交互或交互跳过）

@@ -8,6 +8,7 @@ afterEach(function () {
     config([
         'logs.scrubber.extra_fields' => [],
         'logs.scrubber.extra_patterns' => [],
+        'logs.scrubber.extra_nested_fields' => [],
     ]);
 });
 
@@ -209,4 +210,118 @@ test('数字索引数组中嵌套敏感字段也会脱敏', function () {
     expect($result['list'][0]['password'])->toBe('******');
     expect($result['list'][1]['password'])->toBe('******');
     expect($result['list'][0]['name'])->toBe('a');
+});
+
+// ==========================================
+// scrubWith：覆盖字段集（直对接异构 CA SDK 预留扩展）
+// ==========================================
+
+test('scrubWith 仅使用传入字段集，不叠加内置默认', function () {
+    $result = LogScrubber::scrubWith([
+        'csr_code' => 'csr-content',
+        'crt_code' => 'crt-content',
+        'ca_code' => 'ca-content',
+        'password' => 'should-not-be-scrubbed',
+        'normal' => 'keep',
+    ], ['csr_code', 'crt_code', 'ca_code']);
+
+    expect($result['csr_code'])->toBe('******');
+    expect($result['crt_code'])->toBe('******');
+    expect($result['ca_code'])->toBe('******');
+    // password 不在传入字段集中，且 scrubWith 不读内置字段，所以保留原值
+    expect($result['password'])->toBe('should-not-be-scrubbed');
+    expect($result['normal'])->toBe('keep');
+});
+
+test('scrubWith 支持自定义正则', function () {
+    $result = LogScrubber::scrubWith([
+        'cert_a' => 'a',
+        'cert_b' => 'b',
+        'normal' => 'keep',
+    ], [], ['/^cert_.*/i']);
+
+    expect($result['cert_a'])->toBe('******');
+    expect($result['cert_b'])->toBe('******');
+    expect($result['normal'])->toBe('keep');
+});
+
+test('scrubWith 空响应返回 null', function () {
+    expect(LogScrubber::scrubWith(null, ['x']))->toBeNull();
+    expect(LogScrubber::scrubWith('', ['x']))->toBeNull();
+    expect(LogScrubber::scrubWith([], ['x']))->toBeNull();
+});
+
+test('scrubWith 解码 JSON 字符串', function () {
+    $json = json_encode(['X509Cert' => 'pem-blob', 'orderID' => 'abc']);
+    $result = LogScrubber::scrubWith($json, ['X509Cert']);
+
+    expect($result['X509Cert'])->toBe('******');
+    expect($result['orderID'])->toBe('abc');
+});
+
+test('scrubWith 嵌套递归', function () {
+    $result = LogScrubber::scrubWith([
+        'data' => [
+            'csr' => 'csr-blob',
+            'name' => 'tom',
+        ],
+    ], ['csr']);
+
+    expect($result['data']['csr'])->toBe('******');
+    expect($result['data']['name'])->toBe('tom');
+});
+
+test('scrubWith 大小写不敏感', function () {
+    $result = LogScrubber::scrubWith([
+        'X509Cert' => 'a',
+        'x509cert' => 'b',
+    ], ['x509cert']);
+
+    expect($result['X509Cert'])->toBe('******');
+    expect($result['x509cert'])->toBe('******');
+});
+
+// ==========================================
+// SENSITIVE_NESTED_FIELDS：嵌套路径敏感（部分 CA 响应字段名通用，需路径感知）
+// ==========================================
+
+test('内置嵌套字段 certificate.path 脱敏', function () {
+    $result = LogScrubber::scrub([
+        'certificate' => [
+            'path' => 'pem-blob',
+            'serialNumber' => 'keep',
+        ],
+    ]);
+
+    expect($result['certificate']['path'])->toBe('******');
+    expect($result['certificate']['serialNumber'])->toBe('keep');
+});
+
+test('顶层 path 字段不脱敏（路径不匹配）', function () {
+    $result = LogScrubber::scrub([
+        'path' => '/api/v1/orders',
+    ]);
+
+    // path 不在内置敏感字段，单独出现不脱敏
+    expect($result['path'])->toBe('/api/v1/orders');
+});
+
+test('extra_nested_fields 配置扩展生效', function () {
+    config(['logs.scrubber.extra_nested_fields' => ['order.secret_field']]);
+
+    $result = LogScrubber::scrub([
+        'order' => ['secret_field' => 'top-secret', 'normal' => 'keep'],
+    ]);
+
+    expect($result['order']['secret_field'])->toBe('******');
+    expect($result['order']['normal'])->toBe('keep');
+});
+
+test('credentials.hmac 内置敏感（hmac 字段名直接匹配）', function () {
+    $result = LogScrubber::scrub([
+        'credentials' => ['hmac' => 'eab-secret', 'kid' => 'keep'],
+    ]);
+
+    expect($result['credentials']['hmac'])->toBe('******');
+    expect($result['credentials']['kid'])->toBe('keep');
 });

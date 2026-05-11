@@ -2,6 +2,14 @@
 
 仅支持 **宝塔面板 + MySQL** 部署。
 
+> **宝塔环境手工运维注意**：本文档命令示例中的 `php` 在宝塔多版本系统下需替换为绝对路径（避免 root PATH 找到错误 PHP 版本）：
+>
+> - PHP 8.3：`/www/server/php/83/bin/php`
+> - PHP 8.4：`/www/server/php/84/bin/php`
+> - composer：`/www/server/php/<ver>/bin/php /usr/local/bin/composer`（绕过 phar shebang 强制版本一致）
+>
+> `bt-install.sh` / `upgrade.sh` 已自动使用绝对路径，本提示仅针对手工运维场景。
+
 ---
 
 ## 系统要求
@@ -26,42 +34,30 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 # 海外服务器
 curl -fsSL https://release-us.cnssl.com/install.sh | sudo bash
 
-# 显式指定宝塔（默认 auto 模式自动检测）
-curl -fsSL ... | sudo bash -s -- bt
-
 # 非交互模式（必须提供 --site-domain 或 INSTALL_DIR）
-curl -fsSL ... | sudo bash -s -- bt -y --site-domain manager.example.com
+curl -fsSL ... | sudo bash -s -- -y --site-domain manager.example.com
 # 自定义安装目录：
 INSTALL_DIR=/data/manager \
-  curl -fsSL ... | sudo bash -s -- bt -y
+  curl -fsSL ... | sudo bash -s -- -y
 ```
 
-`-y` 模式自动给安全默认值：`DB_USERNAME=root` / `DB_PASSWORD=空`（本地 mysql 无密码连接）。如需自定义传 env：
+`-y` 模式数据库默认 `DB_USERNAME=manager` / `DB_DATABASE=manager` / `DB_PASSWORD=空`。如需自定义传 env：
 
 ```bash
 DB_USERNAME=manager DB_PASSWORD='xxxx' \
-  curl -fsSL ... | sudo bash -s -- bt -y --site-domain manager.example.com
+  curl -fsSL ... | sudo bash -s -- -y --site-domain manager.example.com
 ```
 
 ### 完整性校验
 
 `install.sh` 自动从 release 站根目录的 `releases.json` 读取目标版本 `assets[].sha256` 强校验脚本包，失败立即退出。bt-install.sh 在下载完整包 / 升级包后按相同逻辑再次校验。`deploy/upgrade.sh` 升级链路同样以 `releases.json` 为唯一真相源。
 
-**首次运行 install.sh 前可手工校验**：
-
-```bash
-curl -fsSLO https://release-cn.cnssl.com/install.sh
-curl -fsSLO https://release-cn.cnssl.com/install.sh.sha256
-sha256sum -c install.sh.sha256 # Linux
-shasum -a 256 -c install.sh.sha256 # macOS
-```
-
 ---
 
 ## 宝塔自动安装
 
 ```bash
-curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash -s -- bt
+curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 ```
 
 `bt-install.sh` 流程：
@@ -91,7 +87,7 @@ sudo bash bt-install.sh --admin-password-file=/tmp/admin.pwd
 # 2. 环境变量（脚本读后立即 unset）
 ADMIN_PASSWORD='StrongPass123' sudo bash bt-install.sh
 
-# 3. 交互输入（read -s 回显隐藏）
+# 3. 交互输入（明文回显，安装是一次性私有操作）
 sudo bash bt-install.sh
 
 # 4. 自动生成（-y 模式且无密码来源 → 16 位强密码 + 终端打印一次）

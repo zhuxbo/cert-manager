@@ -496,17 +496,53 @@ _bt_supervisor_plugin_install() {
     return 1
 }
 
+# supervisor 运行时准备：日志目录 + systemd 服务
+# - /var/log/supervisor：BT supervisor 插件默认 logfile 路径；缺目录会让 supervisord 启动报：
+#   "The directory named as part of the path /var/log/supervisor/<x>.log does not exist"
+# - 启动失败多次后 systemd 进入 failed，需 reset-failed 后才能再 start
+_bt_supervisor_ensure_runtime() {
+    mkdir -p /var/log/supervisor
+
+    command -v systemctl &>/dev/null || return 0
+
+    # 兼容 supervisord.service / supervisor.service 不同发行版命名
+    local svc=""
+    for s in supervisord supervisor; do
+        if systemctl list-unit-files 2>/dev/null | grep -qE "^$s\.service"; then
+            svc="$s"
+            break
+        fi
+    done
+    [ -n "$svc" ] || return 0
+
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        return 0
+    fi
+
+    log_info "  $svc 服务未运行，尝试 reset-failed + restart"
+    systemctl reset-failed "$svc" 2>/dev/null || true
+    systemctl restart "$svc" 2>/dev/null || true
+    sleep 2
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        log_info "  $svc 服务已启动"
+    else
+        log_warning "  $svc 服务启动失败，到面板 → SuperVisord 检查日志（常见原因：旧进程 ini 中 logfile 父目录缺失）"
+    fi
+}
+
 # 确保 supervisor 插件可用：已装直接返回 0，未装尝试安装
 # return 0 可用；1 不可用（已 log_warning）
 bt_ensure_supervisor_plugin() {
     log_step "检测 BT supervisor 插件"
     if _bt_supervisor_plugin_installed; then
         log_success "supervisor 插件已安装"
+        _bt_supervisor_ensure_runtime
         return 0
     fi
 
     log_info "supervisor 插件未安装，触发自动安装"
     if _bt_supervisor_plugin_install; then
+        _bt_supervisor_ensure_runtime
         return 0
     fi
 
@@ -542,10 +578,27 @@ bt_add_supervisor_process() {
     log_step "BT 添加 supervisor 进程: $pjname"
 
     # 1. 检测同名进程是否存在；存在则先删（覆盖重装语义）
-    local list_resp
+    # 用 python3 解析 JSON：BT 后端 PHP json_encode 默认无空格，
+    # 早期 grep -F '"program": "<name>"' 因带空格永远不命中，导致同名进程无法被覆盖
+    local list_resp existing
     list_resp=$(_bt_api_post "/plugin?action=a&name=supervisor&s=GetProcessList" "") || true
-    # 列表项形如 {"program":"<name>",...}；用 -F 严格字符串匹配避免域名点号被当正则
-    if echo "$list_resp" | grep -qF "\"program\": \"$pjname\""; then
+    existing=$(echo "$list_resp" | python3 -c "
+import json, sys
+try:
+    raw = sys.stdin.read()
+    data = json.loads(raw)
+    # GetProcessList 响应：list 或 {'data':[...]} 或 {'msg':[...]}（BT 不同版本字段差异）
+    items = data if isinstance(data, list) else (data.get('data') or data.get('msg') or [])
+    if not isinstance(items, list):
+        items = []
+    for it in items:
+        if isinstance(it, dict) and it.get('program') == '$pjname':
+            print(it.get('program'))
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "$existing" ]; then
         log_info "  同名进程 $pjname 已存在，先删除（覆盖重装）"
         _bt_api_post "/plugin?action=a&name=supervisor&s=RemoveProcess" \
             "--data-urlencode 'program=$pjname'" >/dev/null 2>&1 || true
@@ -576,8 +629,29 @@ bt_add_supervisor_process() {
         return 0
     fi
 
+    # AddProcess 失败重试：GetProcessList 在 supervisor 服务停止时返回空（漏检），
+    # BT 数据库中的进程配置记录仍然保留，AddProcess 报"已被使用"。
+    # 强制 RemoveProcess（操作 BT 数据库不依赖 supervisor 服务运行）+ 重试 AddProcess。
+    if echo "$msg" | grep -qE '已被使用|已存在|exist'; then
+        log_info "  AddProcess 报名称冲突，强制 RemoveProcess + 重试（supervisor 服务停止时 GetProcessList 漏检）"
+        _bt_api_post "/plugin?action=a&name=supervisor&s=RemoveProcess" \
+            "--data-urlencode 'program=$pjname'" >/dev/null 2>&1 || true
+        sleep 1
+        resp=$(_bt_api_post "/plugin?action=a&name=supervisor&s=AddProcess" "$form") || {
+            log_warning "BT API AddProcess 重试调用失败"
+            return 1
+        }
+        status="$(_bt_json_get "$resp" "status")"
+        msg="$(_bt_json_get "$resp" "msg")"
+        if [ "$status" = "true" ]; then
+            log_success "supervisor 进程已添加: $pjname（重试通过）"
+            return 0
+        fi
+    fi
+
     log_warning "BT supervisor AddProcess 失败: ${msg:-未知错误}"
     log_info "原始响应: $resp"
+    log_info "提示：若 supervisor 服务已停止，请到面板 → 软件商店 → SuperVisord → 启动"
     return 1
 }
 
