@@ -109,7 +109,7 @@ class ApiController extends Controller
         $where[] = ['status', '=', 1];
         $where[] = ['product_type', '=', Product::TYPE_ACME];
 
-        $res = Product::where($where)->orderBy('weight', 'ASC')->get();
+        $res = Product::where($where)->orderBy('weight', 'asc')->get();
         $res->makeHidden(['id', 'api_id', 'cost', 'status', 'created_at', 'updated_at']);
 
         $data = [];

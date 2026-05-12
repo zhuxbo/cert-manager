@@ -101,14 +101,14 @@ frontend/ # Vue 3 前端
 ├── shared/ # 共享组件库
 ├── admin/ # 管理端
 └── user/ # 用户端
-backend/ # Laravel 12 后端
+backend/ # Laravel 13 后端
 build/ # 构建系统（见 build/README.md）
 deploy/ # 部署脚本
 ```
 
 | 组件 | 技术栈                                    |
 | ---- | ----------------------------------------- |
-| 后端 | Laravel 12, PHP 8.3/8.4/8.5, MySQL, Redis (可选) |
+| 后端 | Laravel 13, PHP 8.3/8.4/8.5, MySQL, Redis (可选) |
 | 前端 | Vue 3, TypeScript, Element Plus, Vite     |
 
 ## 自动化部署

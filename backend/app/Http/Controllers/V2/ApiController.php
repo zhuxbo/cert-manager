@@ -62,7 +62,7 @@ class ApiController extends Controller
         $where[] = ['status', '=', 1];
         $where[] = ['product_type', '!=', Product::TYPE_ACME];
 
-        $res = Product::where($where)->orderBy('weight', 'ASC')->get();
+        $res = Product::where($where)->orderBy('weight', 'asc')->get();
         $res->makeHidden(['id', 'api_id', 'cost', 'status', 'created_at', 'updated_at']);
 
         // 遍历查询结果并获取会员价格
@@ -155,7 +155,7 @@ class ApiController extends Controller
                 'updated_at',
             ])
             ->where('user_id', '=', $this->user_id)
-            ->orderBy('id', 'DESC');
+            ->orderBy('id', 'desc');
 
         $total = $query->count();
         $res = $query->limit($pageSize)->offset(($page - 1) * $pageSize)->get();
