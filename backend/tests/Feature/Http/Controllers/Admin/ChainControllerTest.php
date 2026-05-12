@@ -3,8 +3,9 @@
 use App\Models\Admin;
 use App\Models\Chain;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {

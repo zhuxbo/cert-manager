@@ -5,6 +5,7 @@ use App\Models\Chain;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 test('证书属于订单', function () {
     $user = User::factory()->create();
@@ -95,8 +96,8 @@ test('日期字段正确转换', function () {
     ]);
 
     $cert->refresh();
-    expect($cert->issued_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
-    expect($cert->expires_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($cert->issued_at)->toBeInstanceOf(Carbon::class);
+    expect($cert->expires_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('创建时自动生成 csr_md5', function () {

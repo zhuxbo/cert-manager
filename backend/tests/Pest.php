@@ -1,5 +1,9 @@
 <?php
 
+use App\Services\FundAudit\FundInvariants;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
 /*
 |--------------------------------------------------------------------------
 | Test Case
@@ -11,13 +15,13 @@
 |
 */
 
-uses(Tests\TestCase::class)->in('Feature');
+uses(TestCase::class)->in('Feature');
 
 require_once __DIR__.'/Support/FundAuditGuard.php';
 
 // 仅 mysql：所有 Feature 测试统一走 RefreshDatabase；下方列出的子目录精确控制
 // 哪些用真实 DB（其它如 Feature/Compat 用 mock 或不跑 DB）。
-uses(Illuminate\Foundation\Testing\RefreshDatabase::class)->in(
+uses(RefreshDatabase::class)->in(
     'Feature/Commands',
     'Feature/Console',
     'Feature/Database',
@@ -42,7 +46,7 @@ uses(Illuminate\Foundation\Testing\RefreshDatabase::class)->in(
 | 测试期间的全部变更。
 */
 uses()->afterEach(function () {
-    $violations = app(\App\Services\FundAudit\FundInvariants::class)->all();
+    $violations = app(FundInvariants::class)->all();
     if (! empty($violations)) {
         $msg = '资金审计破：'.collect($violations)
             ->map(fn ($v) => $v['layer'].' '.$v['message'])

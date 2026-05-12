@@ -3,6 +3,8 @@
 namespace Tests;
 
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Tests\Compat\Helpers;
+use Tests\Compat\SnapshotListener;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -13,17 +15,17 @@ abstract class TestCase extends BaseTestCase
     {
         parent::setUp();
 
-        if (\Tests\Compat\Helpers::isCaptureMode() || \Tests\Compat\Helpers::isCompareMode()) {
-            \Tests\Compat\SnapshotListener::register();
-            \Tests\Compat\SnapshotListener::setCurrentTest($this->toString());
+        if (Helpers::isCaptureMode() || Helpers::isCompareMode()) {
+            SnapshotListener::register();
+            SnapshotListener::setCurrentTest($this->toString());
         }
     }
 
     protected function tearDown(): void
     {
-        if (\Tests\Compat\Helpers::isCaptureMode() || \Tests\Compat\Helpers::isCompareMode()) {
-            \Tests\Compat\SnapshotListener::finalizeTest($this->toString());
-            \Tests\Compat\SnapshotListener::setCurrentTest(null);
+        if (Helpers::isCaptureMode() || Helpers::isCompareMode()) {
+            SnapshotListener::finalizeTest($this->toString());
+            SnapshotListener::setCurrentTest(null);
         }
 
         parent::tearDown();

@@ -3,6 +3,8 @@
 namespace App\Services\Notification\Channels;
 
 use App\Models\Notification;
+use App\Models\NotificationTemplate;
+use App\Models\User;
 use App\Utils\Email;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
@@ -16,7 +18,7 @@ class MailChannel implements ChannelInterface
      */
     public function send(Notification $notification): array
     {
-        /** @var \App\Models\User|null $notifiable */
+        /** @var User|null $notifiable */
         $notifiable = $notification->notifiable;
         $email = $notification->data['email'] ?? $notifiable?->email;
         if (! $email) {
@@ -35,7 +37,7 @@ class MailChannel implements ChannelInterface
             return ['code' => 0, 'msg' => '邮件服务未配置'];
         }
 
-        /** @var \App\Models\NotificationTemplate|null $template */
+        /** @var NotificationTemplate|null $template */
         $template = $notification->template;
         $subject = $meta['subject'] ?? $template?->name ?? '通知'; // @phpstan-ignore nullsafe.neverNull
         $body = $meta['content'] ?? $template?->render($notification->data ?? []) ?? '';

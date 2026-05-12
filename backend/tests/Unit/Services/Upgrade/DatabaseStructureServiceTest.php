@@ -1,9 +1,11 @@
 <?php
 
 use App\Services\Upgrade\DatabaseStructureService;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->service = new DatabaseStructureService;
@@ -25,7 +27,7 @@ test('is column different detects type change', function () {
         'comment' => '',
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isColumnDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -47,7 +49,7 @@ test('is column different detects nullable change', function () {
         'comment' => '',
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isColumnDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -69,7 +71,7 @@ test('is column different detects extra change', function () {
         'comment' => '',
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isColumnDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -93,7 +95,7 @@ test('is column different ignores comment by default', function () {
         'comment' => 'Username',
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isColumnDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeFalse();
@@ -117,7 +119,7 @@ test('is column different checks comment when strict', function () {
         'comment' => 'Username',
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isColumnDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -137,7 +139,7 @@ test('is index different detects column change', function () {
         'sub_parts' => [null],
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isIndexDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -157,7 +159,7 @@ test('is index different detects unique change', function () {
         'sub_parts' => [null],
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isIndexDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -177,7 +179,7 @@ test('is index different detects type change', function () {
         'sub_parts' => [null],
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isIndexDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
@@ -197,14 +199,14 @@ test('is index different detects sub parts change', function () {
         'sub_parts' => [null],
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isIndexDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeTrue();
 });
 
 test('escape default value handles single quotes', function () {
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('escapeDefaultValue');
 
     $result = $method->invoke($this->service, "it's a test");
@@ -215,7 +217,7 @@ test('escape default value handles single quotes', function () {
 });
 
 test('escape default value handles multiple quotes', function () {
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('escapeDefaultValue');
 
     $result = $method->invoke($this->service, "'''");
@@ -223,7 +225,7 @@ test('escape default value handles multiple quotes', function () {
 });
 
 test('generate add column with special default', function () {
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('generateAddColumnStatement');
 
     $columnDef = [
@@ -241,7 +243,7 @@ test('generate add column with special default', function () {
 });
 
 test('normalize integer type removes display width', function () {
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('normalizeIntegerType');
 
     expect($method->invoke($this->service, 'int(11)'))->toBe('int');
@@ -267,7 +269,7 @@ test('is column different ignores integer display width', function () {
         'comment' => '',
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('isColumnDifferent');
 
     expect($method->invoke($this->service, $standard, $current))->toBeFalse();
@@ -491,7 +493,7 @@ test('compare table structure detects modified indexes', function () {
         'foreign_keys' => [],
     ];
 
-    $reflection = new \ReflectionClass($this->service);
+    $reflection = new ReflectionClass($this->service);
     $method = $reflection->getMethod('compareTableStructure');
 
     $result = $method->invoke($this->service, $standard, $current);
@@ -512,7 +514,7 @@ test('check returns correct diff structure', function () {
         expect($result['has_diff'])->toBeBool();
         expect($result['diff'])->toBeArray();
         expect($result['summary'])->toBeArray();
-    } catch (\Illuminate\Database\QueryException $e) {
+    } catch (QueryException $e) {
         // 数据库连接不可用时跳过此测试
         test()->markTestSkipped('数据库连接不可用');
     }

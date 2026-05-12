@@ -8,8 +8,9 @@ use App\Services\Notification\DTOs\NotificationPayload;
 use Database\Seeders\NotificationTemplateSeeder;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Cache;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     // 避开 site 设置真实查表（Unit 不走 RefreshDatabase）

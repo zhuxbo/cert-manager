@@ -4,8 +4,9 @@ use App\Models\Admin;
 use App\Models\AdminRefreshToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 test('管理员使用正确凭证登录成功', function () {

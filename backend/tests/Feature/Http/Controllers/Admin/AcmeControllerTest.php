@@ -1,19 +1,22 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Jobs\TaskJob;
 use App\Models\Acme;
 use App\Models\Admin;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\Setting;
 use App\Models\SettingGroup;
+use App\Models\Task;
 use App\Models\User;
 use App\Services\Acme\Action;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -345,7 +348,7 @@ test('revokeCancel 撤回取消恢复 active 并清理 Task', function () {
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
     expect($acme->cancelled_at)->toBeNull();
-    expect(\App\Models\Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
 });
 
 test('revokeCancel 非 cancelling 状态拒绝', function () {
@@ -398,7 +401,7 @@ test('admin batch-commit 仅处理 pending 并入队 commit_acme', function () {
 
     $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-commit', ['ids' => [$a1->id, $a2->id]]);
     $res->assertJsonPath('code', 1);
-    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+    Queue::assertPushed(TaskJob::class, 1);
 });
 
 // ==================== batch-sync ====================
@@ -411,7 +414,7 @@ test('admin batch-sync 仅处理 active/cancelling 并入队 sync_acme', functio
 
     $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-sync', ['ids' => [$active->id, $pending->id]]);
     $res->assertJsonPath('code', 1);
-    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+    Queue::assertPushed(TaskJob::class, 1);
 });
 
 // ==================== batch-commit-cancel ====================

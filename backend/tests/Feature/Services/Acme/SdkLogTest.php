@@ -5,6 +5,7 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Acme\Api\default\Sdk;
 use App\Services\LogBuffer;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
 uses()->group('database');
@@ -113,7 +114,7 @@ test('ACME Sdk 调用失败 (HTTP 500) 时 ca_logs status=0 + status_code=500', 
 
 test('ACME Sdk 连接失败 (ConnectionException) 时 ca_logs status=0 + status_code=0', function () {
     Http::fake(function () {
-        throw new \Illuminate\Http\Client\ConnectionException('connection refused');
+        throw new ConnectionException('connection refused');
     });
 
     $sdk = new Sdk;

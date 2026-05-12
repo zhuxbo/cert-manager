@@ -2,8 +2,9 @@
 
 use App\Services\Upgrade\ReleaseClient;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     Config::set('upgrade.source.provider', 'github');
@@ -18,7 +19,7 @@ beforeEach(function () {
 test('match channel main', function () {
     $client = new ReleaseClient;
 
-    $reflection = new \ReflectionClass($client);
+    $reflection = new ReflectionClass($client);
     $method = $reflection->getMethod('matchChannel');
 
     // main 通道：不带 -dev 后缀
@@ -31,7 +32,7 @@ test('match channel main', function () {
 test('match channel dev', function () {
     $client = new ReleaseClient;
 
-    $reflection = new \ReflectionClass($client);
+    $reflection = new ReflectionClass($client);
     $method = $reflection->getMethod('matchChannel');
 
     // dev 通道：带 -dev 后缀
@@ -44,7 +45,7 @@ test('match channel dev', function () {
 test('normalize release', function () {
     $client = new ReleaseClient;
 
-    $reflection = new \ReflectionClass($client);
+    $reflection = new ReflectionClass($client);
     $method = $reflection->getMethod('normalizeRelease');
 
     $rawRelease = [
@@ -81,7 +82,7 @@ test('normalize release', function () {
 test('normalize release with v prefix', function () {
     $client = new ReleaseClient;
 
-    $reflection = new \ReflectionClass($client);
+    $reflection = new ReflectionClass($client);
     $method = $reflection->getMethod('normalizeRelease');
 
     $releases = [
@@ -176,7 +177,7 @@ test('find package url no assets key', function () {
 test('resolveExecutablePath 对不存在命令返回 null', function () {
     $client = new ReleaseClient;
 
-    $reflection = new \ReflectionClass($client);
+    $reflection = new ReflectionClass($client);
     $method = $reflection->getMethod('resolveExecutablePath');
 
     $result = $method->invoke($client, 'cmd-not-exists-'.uniqid());

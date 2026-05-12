@@ -2,8 +2,9 @@
 
 use App\Models\Organization;
 use App\Models\User;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 test('获取组织列表', function () {
     $user = User::factory()->create();

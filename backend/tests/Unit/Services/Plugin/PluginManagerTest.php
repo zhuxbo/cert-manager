@@ -3,8 +3,9 @@
 use App\Services\Plugin\PluginManager;
 use App\Services\Upgrade\VersionManager;
 use Illuminate\Support\Facades\File;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 afterEach(function () {
     Mockery::close();

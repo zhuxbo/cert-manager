@@ -184,7 +184,7 @@ test('rows 超过 10 行只显示前 10 行', function () {
 test('FundInvariants 抛异常 → 命令返回 1（FAILURE）', function () {
     $this->fundInvariants->shouldReceive('all')
         ->once()
-        ->andThrow(new \RuntimeException('DB connection lost'));
+        ->andThrow(new RuntimeException('DB connection lost'));
 
     // 异常路径不应 dispatch
     $this->notificationCenter->shouldNotReceive('dispatch');

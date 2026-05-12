@@ -1,8 +1,9 @@
 <?php
 
 use App\Services\Order\Utils\ValidatorUtil;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 // ==========================================
 // validateDomain

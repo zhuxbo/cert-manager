@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Utils;
 
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
 use InvalidArgumentException;
 use RuntimeException;
@@ -36,9 +37,9 @@ class SnowFlake
     protected static string $stateKey = 'snowflake_state';
 
     /**
-     * @var \Illuminate\Contracts\Cache\Lock|null 当前持有的锁实例
+     * @var Lock|null 当前持有的锁实例
      */
-    protected static ?\Illuminate\Contracts\Cache\Lock $currentLock = null;
+    protected static ?Lock $currentLock = null;
 
     /**
      * 设置机器ID

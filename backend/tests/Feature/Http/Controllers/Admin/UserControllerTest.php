@@ -2,12 +2,15 @@
 
 use App\Models\Admin;
 use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\User;
 use App\Models\UserLevel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
+use Tests\Traits\MocksExternalApis;
 
-uses(Tests\Traits\ActsAsAdmin::class);
-uses(Tests\Traits\MocksExternalApis::class);
+uses(ActsAsAdmin::class);
+uses(MocksExternalApis::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -112,7 +115,7 @@ test('管理员可以批量删除用户', function () {
 test('管理员可以直接登录用户', function () {
     $user = User::factory()->create();
     // 需要设置站点 URL
-    $group = \App\Models\SettingGroup::factory()->create(['name' => 'site']);
+    $group = SettingGroup::factory()->create(['name' => 'site']);
     Setting::factory()->create([
         'group_id' => $group->id,
         'key' => 'url',

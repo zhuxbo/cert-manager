@@ -6,8 +6,9 @@ use App\Services\Notification\Guards\ChannelGuardInterface;
 use App\Services\Notification\Guards\ChannelGuardManager;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 afterEach(function () {
     Mockery::close();

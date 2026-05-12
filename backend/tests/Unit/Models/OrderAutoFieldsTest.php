@@ -4,9 +4,10 @@ use App\Models\Order;
 use App\Models\Product;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
-uses(Tests\TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     $this->seed = true;

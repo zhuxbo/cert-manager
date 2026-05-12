@@ -1,5 +1,11 @@
 <?php
 
+use App\Models\Admin;
+use App\Models\AdminRefreshToken;
+use App\Models\ApiToken;
+use App\Models\User;
+use App\Models\UserRefreshToken;
+
 return [
     'guards' => [
         'admin' => [
@@ -27,23 +33,23 @@ return [
     'providers' => [
         'admins' => [
             'driver' => 'eloquent',
-            'model' => App\Models\Admin::class,
+            'model' => Admin::class,
         ],
         'users' => [
             'driver' => 'eloquent',
-            'model' => App\Models\User::class,
+            'model' => User::class,
         ],
         'api_tokens' => [
             'driver' => 'eloquent',
-            'model' => App\Models\ApiToken::class,
+            'model' => ApiToken::class,
         ],
         'admin_refresh_tokens' => [
             'driver' => 'eloquent',
-            'model' => App\Models\AdminRefreshToken::class,
+            'model' => AdminRefreshToken::class,
         ],
         'user_refresh_tokens' => [
             'driver' => 'eloquent',
-            'model' => App\Models\UserRefreshToken::class,
+            'model' => UserRefreshToken::class,
         ],
     ],
 

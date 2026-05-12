@@ -5,8 +5,9 @@ use App\Services\Notification\TemplateSelection;
 use App\Services\Notification\TemplateSelector;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     $this->seed(DatabaseSeeder::class);

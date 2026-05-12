@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
@@ -7,8 +8,9 @@ use App\Models\User;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
+use Tests\Traits\CreatesTestData;
 
-uses(Tests\Traits\CreatesTestData::class);
+uses(CreatesTestData::class);
 
 afterEach(function () {
     Mockery::close();
@@ -60,9 +62,9 @@ test('有续费订单时调用 renew → pay(不提交) → 创建延时 commit'
     // Mock Action：renew 和 pay 通过 ApiResponseException 返回成功
     $actionMock = Mockery::mock(Action::class);
     $actionMock->shouldReceive('renew')->once()
-        ->andThrow(new \App\Exceptions\ApiResponseException('', null, ['order_id' => $order->id], 1));
+        ->andThrow(new ApiResponseException('', null, ['order_id' => $order->id], 1));
     $actionMock->shouldReceive('pay')->once()->with($order->id, false)
-        ->andThrow(new \App\Exceptions\ApiResponseException('', null, null, 1));
+        ->andThrow(new ApiResponseException('', null, null, 1));
     $actionMock->shouldReceive('createTask')->once()
         ->with($order->id, 'commit', Mockery::type('int'));
     $this->app->bind(Action::class, fn () => $actionMock);

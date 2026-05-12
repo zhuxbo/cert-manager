@@ -2,8 +2,10 @@
 
 namespace Database\Factories;
 
+use App\Models\Admin;
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
+use App\Models\Order;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -87,8 +89,8 @@ class NotificationFactory extends Factory
     public function forAdmin(): static
     {
         return $this->state([
-            'notifiable_type' => \App\Models\Admin::class,
-            'notifiable_id' => \App\Models\Admin::factory(),
+            'notifiable_type' => Admin::class,
+            'notifiable_id' => Admin::factory(),
         ]);
     }
 
@@ -98,8 +100,8 @@ class NotificationFactory extends Factory
     public function forOrder(): static
     {
         return $this->state([
-            'notifiable_type' => \App\Models\Order::class,
-            'notifiable_id' => \App\Models\Order::factory(),
+            'notifiable_type' => Order::class,
+            'notifiable_id' => Order::factory(),
         ]);
     }
 }

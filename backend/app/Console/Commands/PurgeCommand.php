@@ -16,6 +16,7 @@ use App\Models\UserLog;
 use App\Services\Order\Action;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 class PurgeCommand extends Command
@@ -98,7 +99,7 @@ class PurgeCommand extends Command
         // 用 Schema::getTableListing() 替代 raw SHOW TABLES LIKE，统一走 Laravel 抽象（Laravel 11+）
         $knownLogTables = ['api_logs', 'admin_logs', 'user_logs', 'callback_logs', 'ca_logs', 'error_logs'];
         try {
-            $tableNames = \Illuminate\Support\Facades\Schema::getTableListing();
+            $tableNames = Schema::getTableListing();
             foreach ($tableNames as $tableName) {
                 if (! is_string($tableName) || ! str_ends_with($tableName, '_logs')) {
                     continue;
@@ -109,10 +110,10 @@ class PurgeCommand extends Command
                 if (in_array($tableName, $knownLogTables)) {
                     continue;
                 }
-                $result = \Illuminate\Support\Facades\DB::table($tableName)->where('created_at', '<', now()->subDays($retentionApi))->delete();
+                $result = DB::table($tableName)->where('created_at', '<', now()->subDays($retentionApi))->delete();
                 $this->info("Purged $result $tableName");
             }
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $this->warn('Dynamic log cleanup failed: '.$e->getMessage());
         }
 

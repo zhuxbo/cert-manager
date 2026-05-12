@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Http\Middleware\RateLimiter;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -59,7 +60,7 @@ test('RateLimiter IP 限流 - 超过限制抛出异常', function () {
     $middleware->handle($request, function () {
         return new Response('ok');
     }, 'v2');
-})->throws(\App\Exceptions\ApiResponseException::class);
+})->throws(ApiResponseException::class);
 
 test('RateLimiter ACME 模式仅检查 IP', function () {
     $middleware = new RateLimiter;
@@ -83,7 +84,7 @@ test('RateLimiter 默认限流更严格', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'default'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'default'))->toThrow(ApiResponseException::class);
 });
 
 test('RateLimiter 计数器递增正确', function () {
@@ -138,7 +139,7 @@ test('滑动窗口 - 上一窗口计数加权影响当前判定', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'v2'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'v2'))->toThrow(ApiResponseException::class);
 });
 
 test('滑动窗口 - 无上一窗口数据时仅看当前窗口', function () {
@@ -167,7 +168,7 @@ test('滑动窗口 - 当前窗口满载触发限流', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'v2'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'v2'))->toThrow(ApiResponseException::class);
 });
 
 test('滑动窗口 - 上一窗口少量请求不影响当前窗口正常使用', function () {
@@ -201,7 +202,7 @@ test('滑动窗口 - 两个窗口累计超限被拒绝', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'v2'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'v2'))->toThrow(ApiResponseException::class);
 });
 
 test('滑动窗口 - 不同 limiter 隔离计数', function () {

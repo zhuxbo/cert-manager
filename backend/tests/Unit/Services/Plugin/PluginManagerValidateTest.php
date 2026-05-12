@@ -2,8 +2,9 @@
 
 use App\Services\Plugin\PluginManager;
 use App\Services\Upgrade\VersionManager;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 /**
  * PluginManager::validatePlugin 的 php_ext 校验

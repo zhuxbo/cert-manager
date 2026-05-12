@@ -2,6 +2,7 @@
 
 use App\Models\ApiToken;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 test('API 令牌属于用户', function () {
     $user = User::factory()->create();
@@ -116,5 +117,5 @@ test('last_used_at 为日期时间 cast', function () {
     $apiToken = ApiToken::factory()->used()->create();
     $apiToken->refresh();
 
-    expect($apiToken->last_used_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($apiToken->last_used_at)->toBeInstanceOf(Carbon::class);
 });

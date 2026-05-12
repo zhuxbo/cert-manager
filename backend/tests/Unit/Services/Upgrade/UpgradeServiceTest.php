@@ -6,8 +6,9 @@ use App\Services\Upgrade\PackageExtractor;
 use App\Services\Upgrade\ReleaseClient;
 use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\VersionManager;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 afterEach(function () {
     Mockery::close();
@@ -206,7 +207,7 @@ test('delete backup calls backup manager', function () {
 test('find composer command', function () {
     $service = app(UpgradeService::class);
 
-    $reflection = new \ReflectionClass($service);
+    $reflection = new ReflectionClass($service);
     $method = $reflection->getMethod('findComposerCommand');
 
     $result = $method->invoke($service);
@@ -218,7 +219,7 @@ test('find composer command', function () {
 test('check network access method', function () {
     $service = app(UpgradeService::class);
 
-    $reflection = new \ReflectionClass($service);
+    $reflection = new ReflectionClass($service);
     $method = $reflection->getMethod('checkNetworkAccess');
 
     // 测试本地地址

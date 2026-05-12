@@ -3,8 +3,9 @@
 use App\Services\Upgrade\BackupManager;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->testBackupPath = storage_path('test-backups');
@@ -29,7 +30,7 @@ test('validate backup id valid', function () {
     $manager = new BackupManager;
 
     // 有效的备份 ID 应该不抛出异常
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('validateBackupId');
 
     // 不抛出异常即为通过
@@ -42,7 +43,7 @@ test('validate backup id valid', function () {
 test('validate backup id invalid format', function () {
     $manager = new BackupManager;
 
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('validateBackupId');
 
     $method->invoke($manager, '../../../etc/passwd');
@@ -51,7 +52,7 @@ test('validate backup id invalid format', function () {
 test('validate backup id path traversal', function () {
     $manager = new BackupManager;
 
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('validateBackupId');
 
     $invalidIds = [
@@ -67,7 +68,7 @@ test('validate backup id path traversal', function () {
     foreach ($invalidIds as $id) {
         try {
             $method->invoke($manager, $id);
-            throw new \Exception("Expected exception for invalid ID: $id");
+            throw new Exception("Expected exception for invalid ID: $id");
         } catch (RuntimeException $e) {
             expect($e->getMessage())->toContain('无效的备份 ID');
         }

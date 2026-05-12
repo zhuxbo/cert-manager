@@ -3,8 +3,10 @@
 use App\Models\CnameDelegation;
 use App\Models\User;
 use App\Services\Delegation\CnameDelegationService;
+use Tests\Traits\ActsAsUser;
+use Tests\Traits\MocksExternalApis;
 
-uses(Tests\Traits\ActsAsUser::class, Tests\Traits\MocksExternalApis::class);
+uses(ActsAsUser::class, MocksExternalApis::class);
 
 test('获取委托列表', function () {
     $user = User::factory()->create();

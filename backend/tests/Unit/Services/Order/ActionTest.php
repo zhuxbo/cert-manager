@@ -10,9 +10,10 @@ use App\Models\User;
 use App\Services\Order\Action;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
-uses(Tests\TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     $this->service = app(Action::class);

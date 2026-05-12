@@ -4,8 +4,9 @@ use App\Jobs\RestoreBackupJob;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
 use Illuminate\Support\Facades\Cache;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 /**
  * RestoreBackupJob driver 守门：当前仅支持 mysql / mariadb；其余 driver 必须立即 failed，不拿锁也不调 mysqldump。

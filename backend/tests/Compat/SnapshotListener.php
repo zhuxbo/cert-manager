@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Tests\Compat;
 
 use Illuminate\Foundation\Http\Events\RequestHandled;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Event;
+use PHPUnit\Framework\Assert;
 
 /**
  * Pest 测试 HTTP 调用拦截器（API 兼容性快照对照）。
@@ -178,7 +181,7 @@ final class SnapshotListener
         }
 
         // JsonResponse 保留原始数据，取 getData(true) 可拿到关联数组
-        if ($response instanceof \Illuminate\Http\JsonResponse) {
+        if ($response instanceof JsonResponse) {
             $data = $response->getData(true);
             if (! is_array($data)) {
                 return null;
@@ -235,7 +238,7 @@ final class SnapshotListener
         try {
             $route = $request->route();
             // $route 可能是 Illuminate\Routing\Route 或 Closure 或 null（具体取决于请求阶段）
-            if ($route instanceof \Illuminate\Routing\Route) {
+            if ($route instanceof Route) {
                 $uri = $route->uri();
                 if ($uri !== '') {
                     return '/'.ltrim($uri, '/');
@@ -436,7 +439,7 @@ final class SnapshotListener
         );
 
         // 用 PHPUnit 断言失败（必须先有 PHPUnit 上下文，afterEach 内调）
-        \PHPUnit\Framework\Assert::fail($report);
+        Assert::fail($report);
     }
 
     private static function shortRepr(mixed $v): string

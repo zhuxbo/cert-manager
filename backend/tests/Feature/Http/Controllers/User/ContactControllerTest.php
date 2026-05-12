@@ -2,8 +2,9 @@
 
 use App\Models\Contact;
 use App\Models\User;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 test('获取联系人列表', function () {
     $user = User::factory()->create();

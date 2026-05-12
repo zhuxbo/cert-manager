@@ -2,8 +2,9 @@
 
 use App\Services\Upgrade\PackageExtractor;
 use Illuminate\Support\Facades\File;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->extractor = new PackageExtractor;
@@ -88,7 +89,7 @@ test('validate package success', function () {
 });
 
 test('detect web user returns www for baota', function () {
-    $reflection = new \ReflectionClass($this->extractor);
+    $reflection = new ReflectionClass($this->extractor);
     $method = $reflection->getMethod('detectWebUser');
 
     $result = $method->invoke($this->extractor);
@@ -106,7 +107,7 @@ test('find version config in root', function () {
     File::makeDirectory($packageDir, 0755, true);
     File::put("$packageDir/version.json", '{}');
 
-    $reflection = new \ReflectionClass($this->extractor);
+    $reflection = new ReflectionClass($this->extractor);
     $method = $reflection->getMethod('findVersionConfig');
 
     $result = $method->invoke($this->extractor, $packageDir);
@@ -120,7 +121,7 @@ test('find version config in subdirectory', function () {
     File::makeDirectory($subDir, 0755, true);
     File::put("$subDir/version.json", '{}');
 
-    $reflection = new \ReflectionClass($this->extractor);
+    $reflection = new ReflectionClass($this->extractor);
     $method = $reflection->getMethod('findVersionConfig');
 
     $result = $method->invoke($this->extractor, $packageDir);
@@ -132,7 +133,7 @@ test('find backend dir direct', function () {
     $packageDir = "$this->testDir/package";
     File::makeDirectory("$packageDir/backend/app", 0755, true);
 
-    $reflection = new \ReflectionClass($this->extractor);
+    $reflection = new ReflectionClass($this->extractor);
     $method = $reflection->getMethod('findBackendDir');
 
     $result = $method->invoke($this->extractor, $packageDir);
@@ -144,7 +145,7 @@ test('find backend dir with app', function () {
     $packageDir = "$this->testDir/package";
     File::makeDirectory("$packageDir/app", 0755, true);
 
-    $reflection = new \ReflectionClass($this->extractor);
+    $reflection = new ReflectionClass($this->extractor);
     $method = $reflection->getMethod('findBackendDir');
 
     $result = $method->invoke($this->extractor, $packageDir);

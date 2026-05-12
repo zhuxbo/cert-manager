@@ -8,7 +8,9 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Throwable;
 
 class ApiController extends Controller
@@ -302,7 +304,7 @@ class ApiController extends Controller
             // 如果传了 deployed_at，尝试解析
             if (! empty($params['deployed_at'])) {
                 try {
-                    $deployTime = \Carbon\Carbon::parse($params['deployed_at']);
+                    $deployTime = Carbon::parse($params['deployed_at']);
                 } catch (\Exception) {
                     // 解析失败使用当前时间
                 }
@@ -323,7 +325,7 @@ class ApiController extends Controller
     /**
      * 统一分页返回格式
      */
-    private function paginateResult(\Illuminate\Support\Collection $orders, ?Request $request = null): array
+    private function paginateResult(Collection $orders, ?Request $request = null): array
     {
         $page = $request ? (int) $request->input('page', 1) : 1;
         $page_size = $request ? (int) ($request->input('page_size', 100) ?? 100) : 100;
@@ -340,7 +342,7 @@ class ApiController extends Controller
     /**
      * 批量查询：支持 id 和 domain 混合，英文逗号分割
      */
-    private function batchQuery(string $queryStr): \Illuminate\Support\Collection
+    private function batchQuery(string $queryStr): Collection
     {
         $items = array_filter(array_map('trim', explode(',', $queryStr)));
 

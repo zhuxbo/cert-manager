@@ -7,9 +7,11 @@ use App\Models\Product;
 use App\Models\User;
 use App\Services\Order\Action;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
+use Tests\Traits\MocksExternalApis;
 
-uses(Tests\Traits\ActsAsAdmin::class);
-uses(Tests\Traits\MocksExternalApis::class);
+uses(ActsAsAdmin::class);
+uses(MocksExternalApis::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {

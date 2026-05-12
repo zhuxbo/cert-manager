@@ -3,10 +3,12 @@
 use App\Models\CnameDelegation;
 use App\Services\Delegation\CnameDelegationService;
 use Database\Seeders\DatabaseSeeder;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
-uses(Tests\TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     $this->seed = true;
@@ -312,4 +314,4 @@ test('update throws exception for other user', function () {
     ]);
 
     $this->service->update($user2->id, $delegation->id, ['regen_label' => true]);
-})->throws(\Illuminate\Database\Eloquent\ModelNotFoundException::class);
+})->throws(ModelNotFoundException::class);

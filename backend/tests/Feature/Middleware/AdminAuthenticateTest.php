@@ -2,6 +2,7 @@
 
 use App\Models\Admin;
 use Tests\Traits\ActsAsAdmin;
+use Tymon\JWTAuth\Facades\JWTAuth;
 
 uses(ActsAsAdmin::class);
 
@@ -44,7 +45,7 @@ test('AdminAuthenticate token_version 过期且超过宽限期返回 401', funct
     ]);
 
     // 用旧的 token_version 生成令牌
-    $token = \Tymon\JWTAuth\Facades\JWTAuth::fromUser($admin);
+    $token = JWTAuth::fromUser($admin);
 
     // 增加 token_version（模拟密码修改或登出）
     Admin::where('id', $admin->id)->update([

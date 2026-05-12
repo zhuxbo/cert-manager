@@ -1,9 +1,10 @@
 <?php
 
 use App\Services\Backup\BackupService;
+use Tests\TestCase;
 
 // ensureMysqlClient 依赖 config()，需要启动 Laravel app（Unit 默认不挂 TestCase）
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 test('filterStructureTables 剔除指定表', function () {
     $svc = new BackupService;

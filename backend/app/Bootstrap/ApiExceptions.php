@@ -8,6 +8,7 @@ use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\DetectsConcurrencyErrors;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\JsonResponse;
@@ -139,7 +140,7 @@ class ApiExceptions
         $sqlState = (string) $e->getCode();
         $message = $e->getMessage();
         $errCode = null;
-        if ($e instanceof \Illuminate\Database\QueryException) {
+        if ($e instanceof QueryException) {
             $errCode = $e->errorInfo[1] ?? null;
         }
 

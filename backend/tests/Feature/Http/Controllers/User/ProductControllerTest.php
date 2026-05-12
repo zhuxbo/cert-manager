@@ -2,8 +2,9 @@
 
 use App\Models\Product;
 use App\Models\User;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 test('获取产品列表-无需认证', function () {
     Product::factory()->count(3)->create();

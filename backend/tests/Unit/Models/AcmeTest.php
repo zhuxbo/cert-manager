@@ -5,10 +5,12 @@ use App\Models\Product;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
+use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
-uses(Tests\TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     $this->seed = true;
@@ -131,9 +133,9 @@ test('datetime fields cast correctly', function () {
         'cancelled_at' => $now,
     ]);
 
-    expect($acme->period_from)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
-    expect($acme->period_till)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
-    expect($acme->cancelled_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($acme->period_from)->toBeInstanceOf(Carbon::class);
+    expect($acme->period_till)->toBeInstanceOf(Carbon::class);
+    expect($acme->cancelled_at)->toBeInstanceOf(Carbon::class);
 });
 
 /**

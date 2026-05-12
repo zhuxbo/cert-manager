@@ -3,6 +3,8 @@
 namespace App\Services\Notification\Channels;
 
 use App\Models\Notification;
+use App\Models\NotificationTemplate;
+use App\Models\User;
 use App\Utils\Sms;
 use Throwable;
 
@@ -10,7 +12,7 @@ class SmsChannel implements ChannelInterface
 {
     public function send(Notification $notification): array
     {
-        /** @var \App\Models\User|null $notifiable */
+        /** @var User|null $notifiable */
         $notifiable = $notification->notifiable;
         $mobile = $notification->data['mobile'] ?? $notifiable?->mobile;
 
@@ -28,7 +30,7 @@ class SmsChannel implements ChannelInterface
             return ['code' => 0, 'msg' => '短信服务未配置'];
         }
 
-        /** @var \App\Models\NotificationTemplate|null $template */
+        /** @var NotificationTemplate|null $template */
         $template = $notification->template;
         $templateCode = $template?->code;
         if (! $templateCode) {

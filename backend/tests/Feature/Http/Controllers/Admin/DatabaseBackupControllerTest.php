@@ -4,11 +4,13 @@ use App\Jobs\CreateBackupJob;
 use App\Jobs\RestoreBackupJob;
 use App\Models\Admin;
 use App\Services\Backup\BackupService;
+use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -198,7 +200,7 @@ test('schemaDiff: schema 与当前一致时 has_diff=false 且返回表概览', 
     );
 
     // mock DatabaseStructureService 返回相同结构 + 空差异
-    $this->mock(App\Services\Upgrade\DatabaseStructureService::class, function ($m) use ($schema) {
+    $this->mock(DatabaseStructureService::class, function ($m) use ($schema) {
         $m->shouldReceive('exportCurrentStructure')->andReturn($schema);
         $m->shouldReceive('compareStructures')->andReturn([
             'missing_tables' => [],
@@ -250,7 +252,7 @@ test('schemaDiff: schema 与当前不一致时 has_diff=true 含 missing/extra/m
         json_encode($schema)
     );
 
-    $this->mock(App\Services\Upgrade\DatabaseStructureService::class, function ($m) {
+    $this->mock(DatabaseStructureService::class, function ($m) {
         $m->shouldReceive('exportCurrentStructure')->andReturn(['tables' => ['new_table' => []]]);
         $m->shouldReceive('compareStructures')->andReturn([
             'missing_tables' => ['old_table' => []],

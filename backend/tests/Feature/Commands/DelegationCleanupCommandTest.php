@@ -1,6 +1,9 @@
 <?php
 
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Services\Delegation\ProxyDNS;
+use Illuminate\Support\Facades\Cache;
 
 beforeEach(function () {
     $this->proxyDNS = Mockery::mock(ProxyDNS::class);
@@ -22,11 +25,11 @@ test('代理域名未配置时终止执行', function () {
 
 test('没有需要清理的记录时正常退出', function () {
     // 清除设置缓存
-    \Illuminate\Support\Facades\Cache::flush();
+    Cache::flush();
 
     // 设置系统配置
-    $group = \App\Models\SettingGroup::factory()->create(['name' => 'site']);
-    \App\Models\Setting::factory()->create([
+    $group = SettingGroup::factory()->create(['name' => 'site']);
+    Setting::factory()->create([
         'group_id' => $group->id,
         'key' => 'delegation',
         'type' => 'array',

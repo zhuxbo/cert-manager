@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Tests\Compat\SnapshotListener;
 
 // 不要在此文件加 namespace —— 这是给测试用例的全局辅助函数。
 
@@ -22,6 +23,6 @@ if (! function_exists('expectsBreakingChange')) {
      */
     function expectsBreakingChange(string $reason): void
     {
-        \Tests\Compat\SnapshotListener::markBreakingChange($reason);
+        SnapshotListener::markBreakingChange($reason);
     }
 }

@@ -2,8 +2,9 @@
 
 use App\Services\Upgrade\UpgradeStatusManager;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->statusManager = new UpgradeStatusManager;
@@ -140,7 +141,7 @@ test('get total steps uses config when no expected steps', function () {
     $manager->start('v1.0.0');
 
     // 基础步骤 7 + backup 1 + maintenance 2 + migrate 1 + cache 1 + structure_check 1 + seed 1 = 14
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('getTotalSteps');
 
     $totalSteps = $method->invoke($manager);
@@ -186,7 +187,7 @@ test('multiple steps tracked correctly', function () {
 
 test('save uses file lock', function () {
     // 验证 save 方法使用文件锁（通过反射检查方法内部实现）
-    $reflection = new \ReflectionClass($this->statusManager);
+    $reflection = new ReflectionClass($this->statusManager);
     $method = $reflection->getMethod('save');
 
     // 执行 save

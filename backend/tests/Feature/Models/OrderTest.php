@@ -5,6 +5,7 @@ use App\Models\Notification;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 test('订单属于用户', function () {
     $user = User::factory()->create();
@@ -89,8 +90,8 @@ test('datetime 字段正确转换', function () {
     ]);
 
     $order->refresh();
-    expect($order->period_from)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
-    expect($order->period_till)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($order->period_from)->toBeInstanceOf(Carbon::class);
+    expect($order->period_till)->toBeInstanceOf(Carbon::class);
 });
 
 test('amount 字段为 decimal:2 格式', function () {
@@ -128,7 +129,7 @@ test('cancelled_at 字段正确转换为 datetime', function () {
     ]);
 
     $order->refresh();
-    expect($order->cancelled_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($order->cancelled_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('period 字段为整数', function () {

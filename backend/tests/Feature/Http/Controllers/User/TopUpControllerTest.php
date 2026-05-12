@@ -7,15 +7,16 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Payment\PaymentGateway;
 use GuzzleHttp\Psr7\Response;
+use Tests\Traits\ActsAsUser;
 use Yansongda\Pay\Pay;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 afterEach(function () {
     Pay::clear();
     cache()->forget('pay_config_alipay');
     cache()->forget('pay_config_wechat');
-    \Mockery::close();
+    Mockery::close();
 });
 
 test('支付宝充值-金额无效', function () {
@@ -284,7 +285,7 @@ function mockPayCallback(string $driver, array $payload, int $times = 1, bool $s
 {
     Pay::clear();
 
-    $provider = \Mockery::mock();
+    $provider = Mockery::mock();
     $provider->shouldReceive('callback')
         ->times($times)
         ->andReturn($payload);
@@ -296,7 +297,7 @@ function mockPayCallback(string $driver, array $payload, int $times = 1, bool $s
         $successExpectation->never();
     }
 
-    $gateway = \Mockery::mock(PaymentGateway::class);
+    $gateway = Mockery::mock(PaymentGateway::class);
     $gateway->shouldReceive($driver)->andReturn($provider);
     app()->instance(PaymentGateway::class, $gateway);
 }

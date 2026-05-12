@@ -13,6 +13,7 @@ use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\UserData\UserDataTableRegistry;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 
 beforeEach(function () {
@@ -432,13 +433,13 @@ test('import 自动跳过目标表不存在的列', function () {
     $user->delete();
 
     // 导入应成功，自动跳过 fake_column
-    Illuminate\Support\Facades\Artisan::call('user:data', [
+    Artisan::call('user:data', [
         'action' => 'import',
         'user_id' => $user->id,
         '--force' => true,
         '--file' => $filePath,
     ]);
-    $output = Illuminate\Support\Facades\Artisan::output();
+    $output = Artisan::output();
 
     expect($output)->toContain('跳过列')->toContain('fake_column');
     expect(User::find($user->id))->not->toBeNull();
@@ -487,13 +488,13 @@ test('dry-run 雪花表显示正确的记录数和冲突检测', function () {
     $user->delete();
 
     // dry-run 应显示正确行数和冲突检测结果
-    Illuminate\Support\Facades\Artisan::call('user:data', [
+    Artisan::call('user:data', [
         'action' => 'import',
         'user_id' => $user->id,
         '--dry-run' => true,
         '--file' => $files[0],
     ]);
-    $output = Illuminate\Support\Facades\Artisan::output();
+    $output = Artisan::output();
 
     expect($output)->toContain('3条')->toContain('0 条冲突');
 });

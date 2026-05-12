@@ -2,8 +2,9 @@
 
 use App\Services\Upgrade\VersionManager;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     Config::set('version', [

@@ -1,18 +1,21 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Jobs\TaskJob;
 use App\Models\Acme;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\Setting;
 use App\Models\SettingGroup;
+use App\Models\Task;
 use App\Models\User;
 use App\Services\Acme\Action;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 uses(RefreshDatabase::class);
 
 /**
@@ -396,7 +399,7 @@ test('revokeCancel 撤回取消恢复 active', function () {
         ->toBe(Acme::STATUS_ACTIVE)
         ->and($acme->cancelled_at)
         ->toBeNull();
-    expect(\App\Models\Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
 });
 
 test('revokeCancel 他人订单返回 404', function () {
@@ -489,7 +492,7 @@ test('user batch-commit 仅处理 pending 并入队 commit_acme', function () {
 
     $res = $this->actingAsUser($user)->postJson('/api/acme/batch-commit', ['ids' => [$pending->id, $unpaid->id]]);
     $res->assertJsonPath('code', 1);
-    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+    Queue::assertPushed(TaskJob::class, 1);
 });
 
 // ==================== batch-sync ====================
@@ -504,7 +507,7 @@ test('user batch-sync 仅处理 active 并入队 sync_acme', function () {
 
     $res = $this->actingAsUser($user)->postJson('/api/acme/batch-sync', ['ids' => [$active->id, $pending->id]]);
     $res->assertJsonPath('code', 1);
-    Queue::assertPushed(\App\Jobs\TaskJob::class, 1);
+    Queue::assertPushed(TaskJob::class, 1);
 });
 
 // ==================== batch-copy-eab ====================

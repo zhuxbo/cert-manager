@@ -3,8 +3,9 @@
 use App\Http\Middleware\TimezoneMiddleware;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->originalAppTz = config('app.timezone');

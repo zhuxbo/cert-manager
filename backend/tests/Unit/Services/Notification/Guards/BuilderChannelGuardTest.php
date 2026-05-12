@@ -5,8 +5,9 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\Guards\BuilderChannelGuard;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 afterEach(function () {
     Mockery::close();

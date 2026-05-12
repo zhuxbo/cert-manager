@@ -2,8 +2,9 @@
 
 use App\Services\Upgrade\SmokeChecker;
 use Illuminate\Support\Facades\Route;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class)->group('database');
+uses(TestCase::class)->group('database');
 
 /**
  * SmokeChecker 与 channels.api 配置的联动。

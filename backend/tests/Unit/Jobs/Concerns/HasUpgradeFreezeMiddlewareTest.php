@@ -2,8 +2,9 @@
 
 use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Jobs\Middleware\SkipWhenUpgradeFrozen;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 /**
  * 一个仅供合并逻辑测试用的占位 middleware。

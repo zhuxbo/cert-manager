@@ -3,6 +3,7 @@
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 test('标记通知为已读', function () {
     $notification = Notification::factory()->create();
@@ -13,7 +14,7 @@ test('标记通知为已读', function () {
     $notification->refresh();
 
     expect($notification->read_at)->not->toBeNull();
-    expect($notification->read_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($notification->read_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('已读通知再次标记不会更新时间', function () {

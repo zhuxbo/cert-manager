@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use Tests\Traits\ActsAsUser;
+use Tymon\JWTAuth\Facades\JWTAuth;
 
 uses(ActsAsUser::class);
 
@@ -43,7 +44,7 @@ test('UserAuthenticate token_version 过期且超过宽限期返回 401', functi
         'logout_at' => now()->subMinutes(5),
     ]);
 
-    $token = \Tymon\JWTAuth\Facades\JWTAuth::claims(['guard' => 'user'])->fromUser($user);
+    $token = JWTAuth::claims(['guard' => 'user'])->fromUser($user);
 
     User::where('id', $user->id)->update([
         'token_version' => 1,

@@ -4,8 +4,9 @@ use App\Models\User;
 use App\Models\UserRefreshToken;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 test('用户登录成功', function () {
     $user = User::factory()->create([

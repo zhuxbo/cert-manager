@@ -5,8 +5,9 @@ use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\UpgradeStatusManager;
 use App\Services\Upgrade\VersionManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {

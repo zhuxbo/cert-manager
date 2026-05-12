@@ -5,8 +5,10 @@ use App\Models\Cert;
 use App\Models\Order;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -83,7 +85,7 @@ test('返回队列深度 jobs / failed_jobs / lag_seconds', function () {
     ]);
 
     DB::table('failed_jobs')->insert([
-        'uuid' => (string) \Illuminate\Support\Str::uuid(),
+        'uuid' => (string) Str::uuid(),
         'connection' => 'database',
         'queue' => 'default',
         'payload' => '{}',
@@ -201,7 +203,7 @@ test('返回数据库总大小（mysql information_schema 求和）', function (
 /**
  * 创建带 latest_cert_id 的订单（用于 metrics.orders.status_distribution 统计）。
  *
- * @return array{0: \App\Models\Order, 1: \App\Models\Cert}
+ * @return array{0: Order, 1: Cert}
  */
 function createOrderWithLatestCert(string $certStatus, array $orderOverrides = []): array
 {

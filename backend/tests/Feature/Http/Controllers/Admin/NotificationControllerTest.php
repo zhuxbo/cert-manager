@@ -6,9 +6,11 @@ use App\Models\NotificationTemplate;
 use App\Models\User;
 use App\Services\Notification\NotificationCenter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
+use Tests\Traits\MocksExternalApis;
 
-uses(Tests\Traits\ActsAsAdmin::class);
-uses(Tests\Traits\MocksExternalApis::class);
+uses(ActsAsAdmin::class);
+uses(MocksExternalApis::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
