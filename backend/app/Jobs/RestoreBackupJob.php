@@ -89,7 +89,10 @@ class RestoreBackupJob implements ShouldQueue
         try {
             // 1. 拍保险备份
             $this->progress($service, 'running', 'snapshot', '正在创建恢复前快照...');
-            Artisan::call('schedule:backup', ['--prefix' => 'pre_restore', '--keep' => 0]);
+            $snapshotExit = Artisan::call('schedule:backup', ['--prefix' => 'pre_restore', '--keep' => 0]);
+            if ($snapshotExit !== 0) {
+                throw new RuntimeException('恢复前快照失败: '.trim(Artisan::output()));
+            }
 
             // 2. 维护模式
             $this->progress($service, 'running', 'maintenance', '进入维护模式...');
