@@ -10,7 +10,7 @@ frontend/
 ├── admin/ # 管理端应用
 ├── user/ # 用户端应用
 └── base/ # 上游框架（只读）
-backend/ # Laravel 11 后端
+backend/ # Laravel 12 后端
 plugins/ # 插件目录（独立功能模块）
 build/ # 构建系统
 deploy/ # 部署脚本
