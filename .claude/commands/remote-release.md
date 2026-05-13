@@ -32,11 +32,13 @@ bash build/release.sh <版本号>
 
 完成后保留在当前分支，无需额外动作。
 
+> **不需要跑资金核心变异测试**。预发布版本就是用来试错的，门禁仅在正式版（main 通道）启用 — 见 §3.0。
+
 ### 3. 正式版（main 通道）
 
-#### 3.0 发布前门禁：资金核心变异测试
+#### 3.0 创建 dev → main PR **之前**：跑资金核心变异测试
 
-正式版发布前必须跑变异测试，验证资金核心代码（Acme/Order Action + Fund/Transaction Model + FundAudit）的测试质量没有退步：
+正式版仅 main 通道发布。在执行 §3.1 创建 dev → main PR **之前**必须跑变异测试，验证资金核心代码（Acme/Order Action + Fund/Transaction Model + FundAudit）的测试质量没有退步：
 
 ```
 cd backend
@@ -46,11 +48,11 @@ composer test:mutate
 要求：
 
 - MSI 必须 ≥ `tests/.mutation-baseline.json` 中的 `min_msi` 值
-- 不达标则**停止发布**，先修复测试或上调（需有充分理由）/下调 baseline
-- 跑完约 30-60 min（可在做其他发布准备工作时并行）
+- 不达标则**停止发布**，先补测试让 MSI 回升；**禁止靠下调 baseline 让发布通过**（除非已评估该 mutation 无害，如不可达分支）
+- 跑完约 5-7 分钟
 - 仅本机跑，CI 不跑（避免 PR 等待）
 
-如果有 `untested` 的 mutation，pest 会列出来 — 是补测试的指引。**禁止靠下调 baseline 让发布通过**，除非已经评估过该 mutation 是无害（如不可达分支）。
+如果有 `untested` 的 mutation，pest 会列出来 — 是补测试的指引。
 
 #### 3.1 发布前：合并 dev 领先的提交到 main
 

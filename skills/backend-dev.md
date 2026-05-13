@@ -646,9 +646,10 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 **触发场景**：
 
-- 本地开发：改了上述 class 后主动跑 `composer test:mutate` 自检
-- 正式 release 前必跑（`/remote-release` 命令的 3.0 步骤）
-- **CI 不跑**（30-60 min 太慢，避免卡 PR 节奏）
+- **改了上述 5 个 class 中任一文件 → 必须主动跑 `composer test:mutate` 自检**（最重要的触发点，开发者自我把关）
+- 正式版（main 通道）release 前必跑（`/remote-release` 命令的 §3.0 步骤）
+- **预发布版（dev 通道）不跑**（试错性质，门禁仅在正式版生效）
+- **CI 不跑**（避免 PR 等待 5-7 min，且 release 前已有人工门禁兜底）
 
 **门槛**：
 
@@ -686,9 +687,9 @@ composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
 
 **为什么不入 CI**：
 
-- 单 class 跑 6 min，全量 30-60 min
-- PR path-filter 触发会让改资金代码的 PR 等死
-- release 前门禁是关键时刻，本地跑足够保证质量
+- 全量 5-7 min（用 `--covered-only` 优化后），单跑某个 class 约 6 min
+- PR path-filter 触发会让改资金代码的 PR 等额外 5-7 min
+- release 前门禁是关键时刻，本地跑足够保证质量；开发者改资金代码时主动跑做第一道把关
 
 ---
 
