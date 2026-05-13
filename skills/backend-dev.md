@@ -655,7 +655,26 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 - baseline 文件 `backend/tests/.mutation-baseline.json` 入库，`min_msi` 字段为门槛
 - pest 跑出的 MSI 必须 ≥ `min_msi`，否则 fail
-- baseline **不退步**原则：跑出更高 MSI 时，PR 内手动上调 `min_msi`（不要自动）；不允许靠下调 baseline 让发布通过
+- baseline **只升不降**：跑出更高 MSI 时手动上调，不允许靠下调 baseline 让发布通过
+
+**baseline 演进规则**：
+
+baseline 不是终点，而是逐步提升的安全网。演进发生在四个时机，每次都用**独立的 `chore:` commit**（不混进业务 PR）。
+
+| 时机 | 触发者 | 操作 |
+|---|---|---|
+| **A) 补了测试** | 改资金代码的 PR 作者 | 本机 `composer test:mutate` 看 MSI；如果升高 ≥ 2%，单独 commit 调高 `min_msi`（最多 = `floor(实测 - 2)`，留 2% 缓冲） |
+| **B) release 前发现自然升高** | 跑 `/remote-release` 的人 | 跑完看分数高于 baseline ≥ 3%，先 commit 调高 baseline 再走发布流程 |
+| **C) 范围扩展** | 决策加新核心 class 的人 | 在 `backend/scripts/test-mutate.sh` 加新 `--class=...`，重跑出新 baseline，整体调整 `min_msi` |
+| **D) 退步（MSI 跌破 baseline）** | 发现退步的人 | **禁止下调 baseline**——必须先补测试让 MSI 回升；除非该 untested mutation 已评估无害（如不可达分支），此时应在源码加 `// pest-mutate-ignore` 标记，而非动 baseline |
+
+**长期阶段路线**：
+
+| 阶段 | min_msi 目标 | 重点 |
+|---|---|---|
+| 当前 | 77（实测 80.12） | 防退化 |
+| 中期 | 85 | 通过补测试逐步消化 33 个 untested mutations |
+| 长期 | 90+ | 范围可扩到 AutoRenew / 退费等其他敏感模块 |
 
 **首次跑出 baseline**：
 
