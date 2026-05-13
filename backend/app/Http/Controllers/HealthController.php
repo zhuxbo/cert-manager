@@ -132,7 +132,7 @@ class HealthController extends Controller
      */
     protected function queueLagRedis(): int
     {
-        $depth = Redis::llen('queues:default');
+        $depth = Redis::command('llen', ['queues:default']);
 
         return max(0, (int) $depth);
     }
