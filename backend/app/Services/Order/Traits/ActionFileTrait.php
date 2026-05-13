@@ -137,28 +137,44 @@ trait ActionFileTrait
         }
 
         if (($type == 'all' || $type == 'iis' || $type == 'tomcat') && $privateKey && $keyMatched) {
-            $chain = array_filter(explode('-----END CERTIFICATE-----', trim($intermediateCert)));
-
-            $args['extracerts'] = [];
-            foreach ($chain as $k => $v) {
-                $args['extracerts'][$k] = $v.'-----END CERTIFICATE-----';
-            }
-            $args['friendly_name'] = $commonName;
-
             $pfx = $tempDir.'/temp.pfx';
-            openssl_pkcs12_export_to_file($cert, $pfx, $privateKey, $password, $args);
+            $certFile = $tempDir.'/temp.crt';
+            $keyFile = $tempDir.'/temp.key';
+            $chainFile = $tempDir.'/temp.chain';
+            file_put_contents($certFile, $cert);
+            file_put_contents($keyFile, $privateKey);
+            file_put_contents($chainFile, $intermediateCert);
 
-            if ($type == 'all' || $type == 'iis') {
-                $zip->addFile($pfx, $certPath.'iis/'.$certName.'.pfx');
-                $zip->addFromString($certPath.'iis/password.txt', $password);
+            // 用 PBE-SHA1-3DES + HMAC-SHA1 生成 PFX，兼容 Windows Server 2008+ 全系列
+            // PHP openssl_pkcs12_export 在 OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，老 Windows 报"密码错误"无法导入
+            $baseCmd = 'openssl pkcs12 -export'
+                .' -inkey '.escapeshellarg($keyFile)
+                .' -in '.escapeshellarg($certFile)
+                .' -certfile '.escapeshellarg($chainFile)
+                .' -out '.escapeshellarg($pfx)
+                .' -name '.escapeshellarg($commonName)
+                .' -password '.escapeshellarg("pass:$password")
+                .' -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1';
+
+            // OpenSSL 3.x 需 -legacy 启用 3DES/RC2 老算法；1.x 默认即老算法，无此参数
+            @exec("$baseCmd -legacy > /dev/null 2>&1", $output, $returnCode);
+            if ($returnCode !== 0) {
+                @exec("$baseCmd > /dev/null 2>&1", $output, $returnCode);
             }
 
-            if (($type == 'all' || $type == 'tomcat') && $this->checkJdk()) {
-                $jks = $tempDir.'/temp.jks';
-                $cmd = 'keytool -importkeystore -srckeystore '.escapeshellarg($pfx)." -srcstoretype PKCS12 -srcstorepass $password -deststoretype jks -deststorepass $password -destkeystore ".escapeshellarg($jks);
-                @exec("$cmd > /dev/null 2>&1");
-                $zip->addFile($jks, $certPath.'tomcat/'.$certName.'.jks');
-                $zip->addFromString($certPath.'tomcat/password.txt', $password);
+            if ($returnCode === 0 && file_exists($pfx)) {
+                if ($type == 'all' || $type == 'iis') {
+                    $zip->addFile($pfx, $certPath.'iis/'.$certName.'.pfx');
+                    $zip->addFromString($certPath.'iis/password.txt', $password);
+                }
+
+                if (($type == 'all' || $type == 'tomcat') && $this->checkJdk()) {
+                    $jks = $tempDir.'/temp.jks';
+                    $cmd = 'keytool -importkeystore -srckeystore '.escapeshellarg($pfx)." -srcstoretype PKCS12 -srcstorepass $password -deststoretype jks -deststorepass $password -destkeystore ".escapeshellarg($jks);
+                    @exec("$cmd > /dev/null 2>&1");
+                    $zip->addFile($jks, $certPath.'tomcat/'.$certName.'.jks');
+                    $zip->addFromString($certPath.'tomcat/password.txt', $password);
+                }
             }
         }
 
