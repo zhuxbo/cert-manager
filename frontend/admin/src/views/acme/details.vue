@@ -341,7 +341,7 @@ onMounted(() => {
   width: calc(100% - 156px);
   vertical-align: top;
   color: var(--el-text-color-regular);
-  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .copy-btn {

@@ -10,8 +10,7 @@
     "build:admin": "pnpm --filter admin build",
     "build:user": "pnpm --filter user build",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint",
-    "sync:base": "git fetch pureadmin && git subtree pull --prefix=frontend/base pureadmin main --squash"
+    "lint": "pnpm -r lint"
   },
   "engines": {
     "node": ">=18.18.0",
@@ -19,8 +18,7 @@
   },
   "pnpm": {
     "overrides": {
-      "vue": "^3.5.13",
-      "element-plus": "^2.9.8"
+      "vue": "^3.5.13"
     },
     "allowedDeprecatedVersions": {
       "are-we-there-yet": "*",

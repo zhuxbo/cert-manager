@@ -17,14 +17,8 @@
 frontend/
 ├── shared/     # 共享代码库
 ├── admin/      # 管理端应用
-├── user/       # 用户端应用
-└── base/       # 上游框架（只读）
+└── user/       # 用户端应用
 ```
-
-### base 目录规则
-
-- **只读** - 通过 git subtree 同步上游代码，不要修改
-- 本地开发需执行 `cd base && pnpm install --ignore-workspace`
 
 ---
 

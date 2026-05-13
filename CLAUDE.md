@@ -8,8 +8,7 @@
 frontend/
 ├── shared/ # 共享代码库（@shared/*）
 ├── admin/ # 管理端应用
-├── user/ # 用户端应用
-└── base/ # 上游框架（只读）
+└── user/ # 用户端应用
 backend/ # Laravel 13 后端
 plugins/ # 插件目录（独立功能模块）
 build/ # 构建系统
@@ -25,7 +24,6 @@ skills/ # 开发规范（详细文档）
   - 前端 TS/Vue/CSS：`pnpm lint`（含 ESLint + Prettier + Stylelint）
   - Markdown：`git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --write`
   - Shell：`git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -w`（`brew install shfmt`）
-- **base 目录只读** - 通过 git subtree 同步上游代码，不要修改
 - **PHP 8.3+** - 双引号变量不加大括号（如 `"$var"` 而非 `"{$var}"`）；例外：变量后紧跟中文等非 ASCII 字符时必须加花括号（`"{$var}，中文"` 而非 `"$var，中文"`），因为 PHP 变量名匹配 `\x80-\xff` 字节
 - **测试发现 bug 必须修复代码** - 测试的目的是发现 bug 并修复，绝不修改测试去迎合错误的代码
 
