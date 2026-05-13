@@ -227,13 +227,13 @@ const systemTrendsChartData = computed(() => {
         color: "#10B981"
       },
       {
-        name: "充值",
+        name: "净充值",
         data: trendsData.value.map(item => item.recharge),
         color: "#22C55E",
         yAxisIndex: 1
       },
       {
-        name: "消费",
+        name: "净消费",
         data: trendsData.value.map(item => item.consumption),
         color: "#EF4444",
         yAxisIndex: 1
@@ -496,7 +496,7 @@ onMounted(async () => {
             <div>
               <div class="flex items-center gap-2">
                 <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                  充值
+                  净充值
                 </p>
                 <div class="flex gap-1">
                   <span
@@ -551,7 +551,7 @@ onMounted(async () => {
             <div>
               <div class="flex items-center gap-2">
                 <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                  消费
+                  净消费
                 </p>
                 <div class="flex gap-1">
                   <span
@@ -739,7 +739,7 @@ onMounted(async () => {
             :series="systemTrendsChartData.series"
             :y-axis-config="[
               { name: '用户/订单', position: 'left' as const },
-              { name: '充值/消费', position: 'right' as const }
+              { name: '净充值/净消费', position: 'right' as const }
             ]"
             height="320px"
             :show-data-zoom="true"

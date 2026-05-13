@@ -1,11 +1,14 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\Fund;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\Transaction;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Tests\Traits\ActsAsAdmin;
 
 uses(ActsAsAdmin::class);
@@ -95,4 +98,69 @@ test('未认证用户无法访问仪表盘', function () {
     $response = $this->getJson('/api/admin/dashboard/overview');
 
     $response->assertUnauthorized();
+});
+
+/**
+ * 创建订单类 transaction（不在 L3 资金类配对约束内，可直接 INSERT）
+ */
+function seedOrderTransaction(User $user, string $type, float $amount, int $transactionId): void
+{
+    DB::transaction(function () use ($user, $type, $amount, $transactionId) {
+        Transaction::create([
+            'user_id' => $user->id,
+            'type' => $type,
+            'transaction_id' => $transactionId,
+            'amount' => $amount,
+        ]);
+    });
+}
+
+test('财务口径：净充值反映 refunds 抵扣、净消费含 ACME 且可为负', function () {
+    Cache::forget('dashboard:admin:system_overview');
+
+    $user = User::factory()->withBalance('0')->create();
+
+    // 充值 1000：Fund status=1 触发 +1000 addfunds transaction
+    Fund::factory()->completed()->create([
+        'user_id' => $user->id,
+        'amount' => '1000.00',
+        'type' => 'addfunds',
+    ]);
+
+    // 充值 200 后被撤销：先 +200 addfunds，再 update→refunds 写 -200 refunds
+    $refunded = Fund::factory()->completed()->create([
+        'user_id' => $user->id,
+        'amount' => '200.00',
+        'type' => 'addfunds',
+    ]);
+    $refunded->type = 'refunds';
+    $refunded->status = 2;
+    $refunded->save();
+
+    // 订单类 transaction（L3 不约束）
+    seedOrderTransaction($user, 'order', -100, 1001);
+    seedOrderTransaction($user, 'cancel', 50, 1002);
+    seedOrderTransaction($user, 'acme_order', -30, 1003);
+    seedOrderTransaction($user, 'acme_cancel', 10, 1004);
+
+    $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/dashboard/system-overview');
+
+    $daily = $response->json('data.finance.daily');
+    // 充值桶：addfunds(1000+200) + refunds(-200) = 1000
+    expect((float) $daily['recharge'])->toBe(1000.0);
+    // 消费桶：-(order(-100) + cancel(+50) + acme_order(-30) + acme_cancel(+10)) = 70
+    expect((float) $daily['consumption'])->toBe(70.0);
+});
+
+test('财务口径：净退费日消费为负数', function () {
+    Cache::forget('dashboard:admin:system_overview');
+
+    $user = User::factory()->withBalance('1000')->create();
+    // 仅 cancel +500（订单全额退费），无任何消费
+    seedOrderTransaction($user, 'cancel', 500, 2001);
+
+    $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/dashboard/system-overview');
+
+    $daily = $response->json('data.finance.daily');
+    expect((float) $daily['consumption'])->toBe(-500.0);
 });
