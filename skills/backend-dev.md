@@ -636,12 +636,13 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 `pest-plugin-mutate`（Pest 4 自带）针对资金核心代码做变异测试，验证测试质量没有静默退化（覆盖了但断言不强 → 改代码不报错）。
 
-**范围**（5 个 class，spec 决策）：
+**范围**（6 个 class，spec 决策）：
 
 - `App\Models\Fund`
 - `App\Models\Transaction`
 - `App\Services\Acme\Action`
 - `App\Services\Order\Action`
+- `App\Services\Order\AutoRenewService`（自动续费/重签的判断逻辑，资金敏感）
 - `App\Services\FundAudit\FundInvariants`
 
 **触发场景**：
@@ -670,11 +671,11 @@ baseline 不是终点，而是逐步提升的安全网。演进发生在四个�
 
 **长期阶段路线**：
 
-| 阶段 | min_msi 目标 | 重点 |
-|---|---|---|
-| 当前 | 77（实测 80.12） | 防退化 |
-| 中期 | 85 | 通过补测试逐步消化 33 个 untested mutations |
-| 长期 | 90+ | 范围可扩到 AutoRenew / 退费等其他敏感模块 |
+| 阶段 | min_msi 目标 | 实测 | 重点 |
+|---|---|---|---|
+| 第一阶段（已完成） | 77 | 80.12 | 6 class baseline 落地 |
+| 第二阶段（已完成） | 88 | 90.96 | FundInvariants 加 message 弱断言 + 加入 AutoRenewService |
+| 第三阶段 | 93+ | — | 消化剩余 15 个 untested（多为 ConcatSwitchSides 等价突变，性价比低）或扩范围到退费明细 |
 
 **首次跑出 baseline**：
 
@@ -685,6 +686,7 @@ XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
     --class='App\Models\Transaction' \
     --class='App\Services\Acme\Action' \
     --class='App\Services\Order\Action' \
+    --class='App\Services\Order\AutoRenewService' \
     --class='App\Services\FundAudit\FundInvariants' \
     --covered-only --parallel
 # 看 Score: X%，把 floor(X - 3) 写到 tests/.mutation-baseline.json 的 min_msi

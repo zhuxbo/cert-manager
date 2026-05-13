@@ -56,6 +56,9 @@ test('L1 反例：直接 UPDATE balance 制造账目偏离，invariant 报违反
     expect($report['layer'])->toBe('L1');
     expect($report['rows'])->toHaveCount(1);
     expect((int) $report['rows'][0]['id'])->toBe($user->id);
+    // 防 ConcatRemoveLeft/Right + RemoveArrayItem：layer 标识 + 描述关键词都要在
+    expect($report['message'])->toContain('L1 账目恒等破');
+    expect($report['message'])->toContain('个用户');
 
     // 清理：恢复 balance 让后续测试干净
     DB::table('users')->where('id', $user->id)->update(['balance' => '200.00']);
@@ -134,6 +137,9 @@ test('L3 反例（正向）：直接 INSERT funds.status=1 不写 transaction，
     expect($report['rows'])->toHaveCount(1);
     expect($report['rows'][0]['direction'])->toBe('forward');
     expect((int) $report['rows'][0]['fund_id'])->toBe((int) $fundId);
+    // 防 L156 RemoveNot (反转 if (! empty($forward))) + ConcatRemove*
+    expect($report['message'])->toContain('L3 状态-事件配对破');
+    expect($report['message'])->toContain('缺失对应 transaction');
 
     // 清理
     DB::table('funds')->where('id', $fundId)->delete();
@@ -162,6 +168,9 @@ test('L3 反例（反向）：fund 被违规删除留下孤儿 transaction，inv
     expect($report)->not->toBeNull();
     expect($report['layer'])->toBe('L3');
     expect(collect($report['rows'])->where('direction', 'reverse')->count())->toBe(1);
+    // 防 L161 RemoveNot (反转 if (! empty($reverse))) + ConcatRemove*
+    expect($report['message'])->toContain('L3 状态-事件配对破');
+    expect($report['message'])->toContain('缺失对应已完成');
 
     $reverseRow = collect($report['rows'])->firstWhere('direction', 'reverse');
     expect((int) $reverseRow['transaction_id'])->toBe($fund->id);
@@ -206,6 +215,8 @@ test('L3 反例（反向）：transaction 已写但 fund 仍是处理中，invar
 
     expect($report)->not->toBeNull();
     expect($report['layer'])->toBe('L3');
+    expect($report['message'])->toContain('L3 状态-事件配对破');
+    expect($report['message'])->toContain('缺失对应已完成');
 
     $reverseRow = collect($report['rows'])->firstWhere('direction', 'reverse');
     expect($reverseRow)->not->toBeNull();
@@ -265,6 +276,8 @@ test('L4 反例：篡改 transaction.amount 制造金额错配，invariant 报�
     expect($report['layer'])->toBe('L4');
     expect($report['rows'])->toHaveCount(1);
     expect((int) $report['rows'][0]['fund_id'])->toBe($fund->id);
+    expect($report['message'])->toContain('L4 金额配对破');
+    expect($report['message'])->toContain('与对应 transaction');
 
     // 清理
     DB::table('transactions')->where('id', $tx->id)->update(['amount' => '50.00']);
@@ -302,7 +315,29 @@ test('L4 符号反例：deduct 的 transaction 被错写成正数（应为负）
     expect($report['rows'])->toHaveCount(1);
     expect((int) $report['rows'][0]['fund_id'])->toBe($fund->id);
     expect($report['rows'][0]['type'])->toBe('deduct');
+    expect($report['message'])->toContain('L4 金额配对破');
+    expect($report['message'])->toContain('与对应 transaction');
 
     // 清理
     DB::table('transactions')->where('id', $tx->id)->update(['amount' => '-50.00']);
+});
+
+// =============== all() 聚合 ===============
+
+test('all() 在违反时返回 non-empty 数组（防 AlwaysReturnEmptyArray）', function () {
+    $user = User::factory()->withBalance('200.00')->create();
+
+    // 制造 L1 违反
+    DB::table('users')->where('id', $user->id)->update([
+        'balance' => DB::raw('balance + 999'),
+    ]);
+
+    $violations = $this->invariants->all();
+
+    expect($violations)->not->toBeEmpty();
+    expect($violations)->toHaveCount(1);
+    expect($violations[0]['layer'])->toBe('L1');
+
+    // 清理
+    DB::table('users')->where('id', $user->id)->update(['balance' => '200.00']);
 });

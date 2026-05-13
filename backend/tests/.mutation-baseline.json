@@ -1,17 +1,18 @@
 {
-  "min_msi": 77,
-  "baseline_msi": 80.12,
+  "min_msi": 88,
+  "baseline_msi": 90.96,
   "scope": [
     "App\\Models\\Fund",
     "App\\Models\\Transaction",
     "App\\Services\\Acme\\Action",
     "App\\Services\\Order\\Action",
+    "App\\Services\\Order\\AutoRenewService",
     "App\\Services\\FundAudit\\FundInvariants"
   ],
   "snapshot": {
-    "tested": 133,
-    "untested": 33,
-    "duration_seconds": 345,
+    "tested": 151,
+    "untested": 15,
+    "duration_seconds": 392,
     "captured_at": "2026-05-13"
   },
   "_doc": "MSI = mutation score indicator. min_msi 为门槛，跑出的 score 必须 ≥ 此值否则 fail。提升 baseline 时 PR 内手动调高 min_msi。详见 skills/backend-dev.md 资金核心变异测试章节。"

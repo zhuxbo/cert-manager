@@ -39,6 +39,7 @@ XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
     --class='App\Models\Transaction' \
     --class='App\Services\Acme\Action' \
     --class='App\Services\Order\Action' \
+    --class='App\Services\Order\AutoRenewService' \
     --class='App\Services\FundAudit\FundInvariants' \
     --covered-only \
     --parallel \
