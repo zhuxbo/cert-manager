@@ -44,6 +44,8 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
           coverage: none
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
@@ -116,6 +118,8 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
           coverage: none
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
@@ -188,6 +192,8 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
           coverage: none
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
@@ -261,6 +267,8 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
           coverage: none
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
@@ -303,7 +311,7 @@ jobs:
       - name: Verify invoices table created
         working-directory: backend
         run: |
-          php artisan tinker --execute="if (! Schema::hasTable('invoices')) { fwrite(STDERR, 'invoices table not created'); exit(1); } echo 'invoices schema OK';"
+          php artisan tinker --execute="if (! \Illuminate\Support\Facades\Schema::hasTable('invoices')) { fwrite(STDERR, 'invoices table not created'); exit(1); } echo 'invoices schema OK';"
 
   # API 兼容性快照对照
   # - push to main / release tag 时触发（PR 不阻断，避免功能开发卡住）
@@ -338,6 +346,8 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
           coverage: none
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
