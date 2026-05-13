@@ -68,7 +68,11 @@
             "@php artisan package:discover --ansi"
         ],
         "test:snapshot:capture": "COMPAT_CAPTURE=true php artisan test tests/Feature/Http/Controllers",
-        "test:snapshot": "COMPAT_COMPARE=true php artisan test tests/Feature/Http/Controllers"
+        "test:snapshot": "COMPAT_COMPARE=true php artisan test tests/Feature/Http/Controllers",
+        "test:mutate": [
+            "Composer\\Config::disableProcessTimeout",
+            "bash scripts/test-mutate.sh"
+        ]
     },
     "config": {
         "optimize-autoloader": true,

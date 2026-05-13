@@ -632,6 +632,64 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 4. **Mock 策略**：外部服务（DNS、上游 API）使用 Mockery 模拟
 5. **测试必须反映真实约束**：不要为架构上不可能的场景编写测试（如 `latestCert` 为 null），也不要在代码中用防御性检查掩盖此类错误——如果真的发生，应让系统抛出异常暴露问题，而非静默返回
 
+### 资金核心变异测试
+
+`pest-plugin-mutate`（Pest 4 自带）针对资金核心代码做变异测试，验证测试质量没有静默退化（覆盖了但断言不强 → 改代码不报错）。
+
+**范围**（5 个 class，spec 决策）：
+
+- `App\Models\Fund`
+- `App\Models\Transaction`
+- `App\Services\Acme\Action`
+- `App\Services\Order\Action`
+- `App\Services\FundAudit\FundInvariants`
+
+**触发场景**：
+
+- 本地开发：改了上述 class 后主动跑 `composer test:mutate` 自检
+- 正式 release 前必跑（`/remote-release` 命令的 3.0 步骤）
+- **CI 不跑**（30-60 min 太慢，避免卡 PR 节奏）
+
+**门槛**：
+
+- baseline 文件 `backend/tests/.mutation-baseline.json` 入库，`min_msi` 字段为门槛
+- pest 跑出的 MSI 必须 ≥ `min_msi`，否则 fail
+- baseline **不退步**原则：跑出更高 MSI 时，PR 内手动上调 `min_msi`（不要自动）；不允许靠下调 baseline 让发布通过
+
+**首次跑出 baseline**：
+
+```bash
+cd backend
+XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
+    --class='App\Models\Fund' \
+    --class='App\Models\Transaction' \
+    --class='App\Services\Acme\Action' \
+    --class='App\Services\Order\Action' \
+    --class='App\Services\FundAudit\FundInvariants' \
+    --covered-only --parallel
+# 看 Score: X%，把 floor(X - 3) 写到 tests/.mutation-baseline.json 的 min_msi
+```
+
+**日常使用**：
+
+```bash
+cd backend
+composer test:mutate                  # 跑全量门禁（按 baseline 门槛）
+composer test:mutate -- --bail        # 遇到第一个 untested 立即停（debug 用）
+composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
+```
+
+**依赖**：
+
+- 本机 PHP 必须装 xdebug 或 pcov（变异测试需要 code coverage driver）
+- 本机必须装 jq（`brew install jq` / `apt install jq`）
+
+**为什么不入 CI**：
+
+- 单 class 跑 6 min，全量 30-60 min
+- PR path-filter 触发会让改资金代码的 PR 等死
+- release 前门禁是关键时刻，本地跑足够保证质量
+
 ---
 
 ## PHP 8.x 废弃函数

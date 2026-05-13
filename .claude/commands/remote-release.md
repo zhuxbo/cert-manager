@@ -34,6 +34,24 @@ bash build/release.sh <版本号>
 
 ### 3. 正式版（main 通道）
 
+#### 3.0 发布前门禁：资金核心变异测试
+
+正式版发布前必须跑变异测试，验证资金核心代码（Acme/Order Action + Fund/Transaction Model + FundAudit）的测试质量没有退步：
+
+```
+cd backend
+composer test:mutate
+```
+
+要求：
+
+- MSI 必须 ≥ `tests/.mutation-baseline.json` 中的 `min_msi` 值
+- 不达标则**停止发布**，先修复测试或上调（需有充分理由）/下调 baseline
+- 跑完约 30-60 min（可在做其他发布准备工作时并行）
+- 仅本机跑，CI 不跑（避免 PR 等待）
+
+如果有 `untested` 的 mutation，pest 会列出来 — 是补测试的指引。**禁止靠下调 baseline 让发布通过**，除非已经评估过该 mutation 是无害（如不可达分支）。
+
 #### 3.1 发布前：合并 dev 领先的提交到 main
 
 确认当前在 dev 分支且工作区干净，然后通过 PR 合并：
