@@ -206,6 +206,38 @@ body {
   font-family: inherit;
 }
 
+/* 只读展示行（如可开金额）：与 input 同高、左对齐 */
+.form-group .form-readonly {
+  flex: 1;
+  padding: 10px 15px;
+  font-size: 14px;
+  color: var(--text-regular);
+  line-height: 1.4;
+}
+
+/* 只读金额信息行：行距收紧 + 与下方表单分隔 */
+.form-group--info {
+  margin-bottom: 4px;
+}
+.form-group--info .form-readonly {
+  padding: 4px 15px;
+}
+/* 金额信息块与下方申请表单的视觉分隔（#apply-form 仅出现在金额信息之后） */
+#apply-form {
+  margin-top: 24px;
+}
+
+/* 无额度提示 */
+.quota-empty {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background-color: var(--border-extra-light);
+  color: var(--text-regular);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .required {
   color: var(--danger-color);
 }
