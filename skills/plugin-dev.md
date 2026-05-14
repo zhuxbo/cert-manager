@@ -430,10 +430,10 @@ php artisan route:clear && php artisan config:clear
 
 新增插件可对照以下三个内置实现，按复杂度递增：
 
-| 插件              | 特点                                                             | 适合参考                              |
-| ----------------- | ---------------------------------------------------------------- | ------------------------------------- |
-| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory | 最小可用插件骨架                      |
-| `plugins/invoice` | 双端 CRUD（发票），含查询过滤 + 配额服务，无自带 tests           | CRUD 业务 + migrate-only CI 入口      |
-| `plugins/easy`    | 复杂度最高：多个回调控制器、log handler 接入主系统、产品级别映射 | 涉及 Callback / 日志处理 / 跨模型关联 |
+| 插件              | 特点                                                                                                                                                         | 适合参考                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory                                                                                             | 最小可用插件骨架                                           |
+| `plugins/invoice` | 双端 CRUD（发票）+ 配额服务 + 外部开票方接入（`/api/invoice/external/{pending,complete}`，token+IP 鉴权）+ Admin 配置面板（storage 文件 + Crypt 加密 token） | 对外接口 + 中间件别名插件内自注册 + 跨插件被 `easy` 软依赖 |
+| `plugins/easy`    | 复杂度最高：多回调控制器、log handler 接入主系统、产品级别映射；简易开票（独立 web 静态页 `invoice.html`，tid+email 鉴权，class_exists 软依赖 invoice 插件） | 涉及 Callback / 日志处理 / 跨模型关联 / 跨插件软依赖       |
 
 各插件的 ServiceProvider `boot()` 同时调 `loadRoutesFrom`（admin / user / api / callback 视需要）+ `loadMigrationsFrom`，主系统 `php artisan migrate` 自动覆盖。
