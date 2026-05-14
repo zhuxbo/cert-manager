@@ -14,6 +14,7 @@ if (! function_exists('fundAuditGuardedTestPaths')) {
             'Feature/Http/Controllers/User/TopUpControllerTest.php',
             'Feature/Models/FundCasTest.php',
             'Feature/Models/FundTest.php',
+            'Feature/Services/Order/SyncedCancelRefundTest.php',
             'Unit/Services/Acme/ActionTest.php',
             'Unit/Services/Order/ActionTest.php',
         ];

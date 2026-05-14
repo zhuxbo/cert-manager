@@ -194,7 +194,6 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ---
 
-
 ## 资金确定性体系（4 道网）
 
 > **目的**：把资金安全从"LLM 审 + 单测 + 锁/事务"的**抽样**强度，升级为"DB 约束 + 应用层 CAS + 自动不变式校验"的**确定性**强度。当 LLM/审核找不到新问题、单测覆盖不到新路径时，多道独立网仍能拦住资金错账或在小时级被发现。
@@ -214,10 +213,10 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 文件：`database/migrations/2026_05_07_*_add_fund_transaction_unique_indexes.php`
 
-| 索引                                                                | 含义                                                                                                                                                                                               |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `funds(pay_method, pay_sn)` 唯一                                    | 防"不同 fund 同一支付编号"。MySQL BTREE 索引中 NULL 互不相等，处理中订单 (pay_sn=NULL) 多行合法；落地后的 (pay_method, pay_sn) 才进入唯一性判定                                                     |
-| `transactions(type, transaction_id) WHERE type != 'order'` 部分唯一 | 防"同一事件被重复入账"。MySQL generated VIRTUAL 列 + 完全唯一索引模拟（`CASE WHEN type='order' THEN NULL ELSE CONCAT(type,':',transaction_id) END`，NULL 不参与唯一约束，效果等价于部分索引）       |
+| 索引                                                                | 含义                                                                                                                                                                                          |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `funds(pay_method, pay_sn)` 唯一                                    | 防"不同 fund 同一支付编号"。MySQL BTREE 索引中 NULL 互不相等，处理中订单 (pay_sn=NULL) 多行合法；落地后的 (pay_method, pay_sn) 才进入唯一性判定                                               |
+| `transactions(type, transaction_id) WHERE type != 'order'` 部分唯一 | 防"同一事件被重复入账"。MySQL generated VIRTUAL 列 + 完全唯一索引模拟（`CASE WHEN type='order' THEN NULL ELSE CONCAT(type,':',transaction_id) END`，NULL 不参与唯一约束，效果等价于部分索引） |
 
 旧 3 列索引 `funds_type_pay_method_pay_sn_unique` 已被本 migration 删除（语义弱于新 2 列、且 refunds/reverse 走 UPDATE 同行不冲突）。
 
@@ -422,6 +421,77 @@ Schema::table('products', function (Blueprint $table) {
 ### 相关命令
 
 `php artisan schedule:auto-renew` - 同时处理续费和重签
+
+---
+
+## PurgeCommand 自动取消（临近退款期处理中订单）
+
+`schedule:purge` 每天 02:00 执行，扫描 `created_at` 在 `refund_period - 2 ~ refund_period` 天之间的处理中订单，调 `Order\Action::cancel` 取消并退款。
+
+### 限定条件
+
+- `cert.status = 'processing'`
+- `cert.action IN ('new', 'renew')`（**重签订单 reissue 不取消**，避免连带把原订单 latestCert 改 cancelled）
+- `products.refund_period >= 5`（退款期 < 5 天的产品跳过）
+
+### 实现位置
+
+`backend/app/Console/Commands/PurgeCommand.php` 两段 query 的 `whereHas('latestCert', ...)` 闭包同时加 `whereIn('action', ['new','renew'])`：
+
+- L121-133：预同步 query（refund_period - 4 ~ refund_period - 2 天的订单创建 sync 预热任务）
+- L147-154：取消 query（refund_period - 2 ~ refund_period 天的订单走 sync + cancel）
+
+---
+
+## 同步取消退款开关（site.autoRefundOnSyncedCancel）
+
+多级代理场景下，上级 Manager 可能先取消订单（如其自身的 PurgeCommand 触发）；下级 Manager 的 `Order\Action::sync` 同步上游状态时，默认仅更新本地 `cert.status='cancelled'`，**不退款**。是否退款给末端用户由各级 Manager 管理员自决。
+
+### 开关
+
+- 分组：`site`，key：`autoRefundOnSyncedCancel`，type：`boolean`，默认 `false`
+- 后端读取：`get_system_setting('site', 'autoRefundOnSyncedCancel')`
+- 前端：admin 站点设置页面自动按 SettingGroup 渲染 boolean toggle
+
+### 触发条件（四个必须全部成立）
+
+1. 上游返回 `data.status === 'cancelled'`
+2. `cert.status ∈ {processing, approving, cancelling}`（过渡态；排除 active 已签发 / 终态）
+3. `cert.action ∈ {new, renew}`（排除 reissue 重签）
+4. 开关 `site.autoRefundOnSyncedCancel === true`
+
+### 资金路径
+
+私有 helper `Order\Action::refundForSyncedCancel(Order, array $certData)`：
+
+1. `DB::transaction` 闭包
+2. `Order::with('latestCert')->whereHas('latestCert')->lock()->find($order->id)` 加 order 行锁
+3. 锁内二次校验触发条件 2/3/4（data.status 已外层校验）
+4. 防重检查 `Transaction::where(['type'=>'cancel','transaction_id'=>$order->id])->exists()`
+5. 若不重复且 amount > 0：调 `OrderUtil::getCancelTransaction($order->toArray())` + `Transaction::create($tx)`（`Transaction::creating` 钩子内自带 user.lockForUpdate + balance 增加）
+6. `$cert->update($certData + [status='cancelled', cancelled_at=now()])`
+7. `$order->cancelled_at = now(); $order->save();`
+8. callback task / deleteTask（复用 sync L532-538 副作用，createTask 内部已 `->afterCommit()`）
+
+### sync 集成
+
+`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用。
+
+### 设计决策
+
+- **不检查 refund_period**：以上游状态为权威，与主动 `cancel()` 路径行为不同。上游已取消意味着资金已从上游退回，本系统应该传递给末端用户，不受退款期限制。
+- **cancelling 状态进入 helper**：若已有 `commitCancel` / `PurgeCommand` 创建的 cancel task 存在，helper 完成后 cert.status='cancelled'，残留 cancel task 被 TaskJob 调度时 `Action::cancel` 锁内首先检查 status === 'cancelled' 立即报错回滚，不会重复调上游 api、不会重复退款。helper 内**不主动删 cancel task**，避免 order→task 与项目惯例 task→order 锁顺序倒置引发死锁。
+- **资金确定性体系契合**：事务+锁、应用层防重 + DB 唯一索引 `transactions_type_transaction_id_unique` 兜底、afterEach FundInvariants 守门（测试登记在 `tests/Support/FundAuditGuard.php::fundAuditGuardedTestPaths()`）。
+
+### 测试覆盖
+
+- `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：12 个用例覆盖开关开/关 / status / action / 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发
+- `tests/Feature/Commands/PurgeCommandTest.php`：补 2 个用例验证 reissue 不取消 / new 仍取消
+
+### 部署注意
+
+- 升级后需跑一次 `php artisan db:seed --class=Database\\Seeders\\SettingSeeder` 让设置项落库
+- 默认 `false` 即维持现状行为，无回滚风险，可作为开关式金丝雀
 
 ---
 
@@ -662,20 +732,20 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 baseline 不是终点，而是逐步提升的安全网。演进发生在四个时机，每次都用**独立的 `chore:` commit**（不混进业务 PR）。
 
-| 时机 | 触发者 | 操作 |
-|---|---|---|
-| **A) 补了测试** | 改资金代码的 PR 作者 | 本机 `composer test:mutate` 看 MSI；如果升高 ≥ 2%，单独 commit 调高 `min_msi`（最多 = `floor(实测 - 2)`，留 2% 缓冲） |
-| **B) release 前发现自然升高** | 跑 `/remote-release` 的人 | 跑完看分数高于 baseline ≥ 3%，先 commit 调高 baseline 再走发布流程 |
-| **C) 范围扩展** | 决策加新核心 class 的人 | 在 `backend/scripts/test-mutate.sh` 加新 `--class=...`，重跑出新 baseline，整体调整 `min_msi` |
-| **D) 退步（MSI 跌破 baseline）** | 发现退步的人 | **禁止下调 baseline**——必须先补测试让 MSI 回升；除非该 untested mutation 已评估无害（如不可达分支），此时应在源码加 `// pest-mutate-ignore` 标记，而非动 baseline |
+| 时机                             | 触发者                    | 操作                                                                                                                                                              |
+| -------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A) 补了测试**                  | 改资金代码的 PR 作者      | 本机 `composer test:mutate` 看 MSI；如果升高 ≥ 2%，单独 commit 调高 `min_msi`（最多 = `floor(实测 - 2)`，留 2% 缓冲）                                             |
+| **B) release 前发现自然升高**    | 跑 `/remote-release` 的人 | 跑完看分数高于 baseline ≥ 3%，先 commit 调高 baseline 再走发布流程                                                                                                |
+| **C) 范围扩展**                  | 决策加新核心 class 的人   | 在 `backend/scripts/test-mutate.sh` 加新 `--class=...`，重跑出新 baseline，整体调整 `min_msi`                                                                     |
+| **D) 退步（MSI 跌破 baseline）** | 发现退步的人              | **禁止下调 baseline**——必须先补测试让 MSI 回升；除非该 untested mutation 已评估无害（如不可达分支），此时应在源码加 `// pest-mutate-ignore` 标记，而非动 baseline |
 
 **长期阶段路线**：
 
-| 阶段 | min_msi 目标 | 实测 | 重点 |
-|---|---|---|---|
-| 第一阶段（已完成） | 77 | 80.12 | 6 class baseline 落地 |
-| 第二阶段（已完成） | 88 | 90.96 | FundInvariants 加 message 弱断言 + 加入 AutoRenewService |
-| 第三阶段 | 93+ | — | 消化剩余 15 个 untested（多为 ConcatSwitchSides 等价突变，性价比低）或扩范围到退费明细 |
+| 阶段               | min_msi 目标 | 实测  | 重点                                                                                   |
+| ------------------ | ------------ | ----- | -------------------------------------------------------------------------------------- |
+| 第一阶段（已完成） | 77           | 80.12 | 6 class baseline 落地                                                                  |
+| 第二阶段（已完成） | 88           | 90.96 | FundInvariants 加 message 弱断言 + 加入 AutoRenewService                               |
+| 第三阶段           | 93+          | —     | 消化剩余 15 个 untested（多为 ConcatSwitchSides 等价突变，性价比低）或扩范围到退费明细 |
 
 **首次跑出 baseline**：
 

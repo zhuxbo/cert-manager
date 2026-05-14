@@ -4,8 +4,10 @@ use App\Models\AdminLog;
 use App\Models\ErrorLog;
 use App\Models\Fund;
 use App\Models\OrderDocument;
+use App\Models\Task;
 use App\Models\User;
 use App\Models\UserLog;
+use App\Services\Order\Action;
 use Tests\Traits\CreatesTestData;
 
 test('签名为 schedule:purge', function () {
@@ -196,4 +198,45 @@ test('未注入 config 时使用默认 180 天兜底（user_logs）', function (
 
     expect(UserLog::where('url', 'https://test.local/u-old')->exists())->toBeFalse();
     expect(UserLog::where('url', 'https://test.local/u-new')->exists())->toBeTrue();
+});
+
+// --- 自动取消：action 过滤测试 ---
+
+test('PurgeCommand 不取消 reissue 处理中订单', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['refund_period' => 30]);
+    $order = $this->createTestOrder($user, $product);
+    // Eloquent timestamps 会覆盖 create 中的 created_at，需要在 create 后单独更新
+    $order->forceFill(['created_at' => now()->subDays(29)])->save();
+    $this->createTestCert($order, ['status' => 'processing', 'action' => 'reissue']);
+
+    // reissue 在 whereIn('action', ['new','renew']) 阶段被过滤，不应进入 syncImmediately；
+    // shouldNotReceive 做反向保护：若过滤被误删，sync 被意外调用时测试立即失败
+    $actionMock = Mockery::mock(Action::class)->makePartial();
+    $actionMock->shouldNotReceive('sync');
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect($order->latestCert()->first()->status)->toBe('processing');
+    expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(0);
+});
+
+test('PurgeCommand 仍取消 new 处理中订单', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['refund_period' => 30]);
+    $order = $this->createTestOrder($user, $product);
+    // Eloquent timestamps 会覆盖 create 中的 created_at，需要在 create 后单独更新
+    $order->forceFill(['created_at' => now()->subDays(29)])->save();
+    $this->createTestCert($order, ['status' => 'processing', 'action' => 'new']);
+
+    // mock sync 避免真实 API 调用；createTask/deleteTask 走真实逻辑以便断言 Task 记录
+    $actionMock = Mockery::mock(Action::class)->makePartial();
+    $actionMock->shouldReceive('sync')->andReturn(null);
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect($order->latestCert()->first()->status)->toBe('cancelling');
+    expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(1);
 });
