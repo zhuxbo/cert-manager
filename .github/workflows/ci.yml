@@ -237,7 +237,6 @@ jobs:
         working-directory: backend
         run: php artisan test ../plugins/notice/backend/tests
 
-  # Invoice 插件无自带测试，本 job 仅验证插件迁移在 mysql 下能跑通
   backend-invoice-plugin-test:
     name: Backend Invoice Plugin Tests (mysql)
     runs-on: ubuntu-latest
@@ -312,6 +311,10 @@ jobs:
         working-directory: backend
         run: |
           php artisan tinker --execute="if (! \Illuminate\Support\Facades\Schema::hasTable('invoices')) { fwrite(STDERR, 'invoices table not created'); exit(1); } echo 'invoices schema OK';"
+
+      - name: Run Invoice plugin tests
+        working-directory: backend
+        run: php artisan test ../plugins/invoice/backend/tests
 
   # API 兼容性快照对照
   # - push to main / release tag 时触发（PR 不阻断，避免功能开发卡住）
