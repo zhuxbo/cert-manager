@@ -10,3 +10,4 @@ export * from "./RePureTableBar";
 export * from "./ReRemoteSelect";
 export * from "./ReSegmented";
 export * from "./ReText";
+export * from "./OrganizationEditor";

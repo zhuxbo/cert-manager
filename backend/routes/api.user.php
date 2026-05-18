@@ -5,6 +5,7 @@ use App\Http\Controllers\User\AuthController;
 use App\Http\Controllers\User\ContactController;
 use App\Http\Controllers\User\DashboardController;
 use App\Http\Controllers\User\DelegationController;
+use App\Http\Controllers\User\EnterpriseLookupController;
 use App\Http\Controllers\User\FundController;
 use App\Http\Controllers\User\OrderController;
 use App\Http\Controllers\User\OrganizationController;
@@ -13,6 +14,7 @@ use App\Http\Controllers\User\SettingController;
 use App\Http\Controllers\User\TopUpController;
 use App\Http\Controllers\User\TransactionController;
 use App\Http\Controllers\User\VerifyCodeController;
+use App\Http\Controllers\User\ZipcodeLookupController;
 use App\Utils\RouteHelper;
 use Illuminate\Support\Facades\Route;
 
@@ -164,4 +166,13 @@ Route::middleware('api.user')->group(function () {
         Route::post('check/{id}', [DelegationController::class, 'check'])->where('id', '[0-9]+');
         Route::post('batch-store', [DelegationController::class, 'batchStore']);
     });
+
+    // 工商信息查询
+    Route::get('enterprise-lookup/status', [EnterpriseLookupController::class, 'status']);
+    Route::post('enterprise-lookup', [EnterpriseLookupController::class, 'lookup'])
+        ->middleware('throttle:enterprise-lookup');
+
+    // 邮编查询(本地数据)
+    Route::post('zipcode-lookup', [ZipcodeLookupController::class, 'lookup'])
+        ->middleware('throttle:zipcode-lookup');
 });

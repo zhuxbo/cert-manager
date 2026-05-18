@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Services\FundAudit\FundInvariants;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -101,6 +103,25 @@ expect()->extend('toBeOne', function () {
 function something()
 {
     // ..
+}
+
+/**
+ * 创建或更新工商查询 Setting 配置项
+ */
+function setEnterpriseLookupSetting(string $key, mixed $value, string $type = 'string'): void
+{
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'enterprise_lookup'],
+        ['title' => '工商信息查询', 'weight' => 9],
+    );
+    $setting = Setting::where('group_id', $group->id)->where('key', $key)->first();
+    if (! $setting) {
+        $setting = new Setting(['group_id' => $group->id, 'key' => $key, 'type' => $type]);
+    }
+    $setting->type = $type;
+    $setting->value = $value;
+    $setting->save();
+    Setting::clearGroupCache($group->id);
 }
 
 /**

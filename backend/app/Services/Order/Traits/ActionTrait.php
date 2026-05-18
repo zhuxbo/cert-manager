@@ -764,8 +764,18 @@ trait ActionTrait
                 // 前端可能传字符串形式的 ID，需要转换
                 $orgId = is_numeric($organization) ? (int) $organization : 0;
                 if ($orgId > 0) {
-                    $params['organization'] = FindUtil::Organization($orgId, $userId);
-                    $params['organization'] = FilterUtil::filterOrganization($params['organization']->toArray());
+                    $orgModel = FindUtil::Organization($orgId, $userId);
+
+                    // 当传了 organization 但没传 contact，自动从企业反查联系人
+                    if ($needContact && empty($contact)) {
+                        if (empty($orgModel->contact_id)) {
+                            $this->error('请先为该企业绑定联系人');
+                        }
+                        $params['contact'] = $orgModel->contact_id;
+                        $contact = $params['contact'];
+                    }
+
+                    $params['organization'] = FilterUtil::filterOrganization($orgModel->toArray());
                 } elseif (! is_array($organization)) {
                     // 如果需要组织但没有提供，让验证器处理
                     unset($params['organization']);

@@ -7,6 +7,7 @@ use App\Http\Requests\Contact\IndexRequest;
 use App\Http\Requests\Contact\StoreRequest;
 use App\Http\Requests\Contact\UpdateRequest;
 use App\Models\Contact;
+use App\Models\Organization;
 
 class ContactController extends BaseController
 {
@@ -144,6 +145,11 @@ class ContactController extends BaseController
             $this->error('联系人不存在');
         }
 
+        $refs = Organization::where('contact_id', $id)->pluck('name')->all();
+        if (! empty($refs)) {
+            $this->error('该联系人正被以下企业绑定：'.implode('、', $refs));
+        }
+
         $contact->delete();
         $this->success();
     }
@@ -158,6 +164,14 @@ class ContactController extends BaseController
         $contacts = Contact::whereIn('id', $ids)->get();
         if ($contacts->isEmpty()) {
             $this->error('联系人不存在');
+        }
+
+        $refs = Organization::whereIn('contact_id', $ids)
+            ->get(['contact_id', 'name'])
+            ->groupBy('contact_id');
+        if ($refs->isNotEmpty()) {
+            $msg = $refs->map(fn ($items, $cid) => "ID $cid 被 ".$items->pluck('name')->implode('、').' 绑定')->implode('；');
+            $this->error("以下联系人正被引用，整批未删除：$msg");
         }
 
         Contact::destroy($ids);

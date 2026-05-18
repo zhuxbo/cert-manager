@@ -1,22 +1,20 @@
 <script setup lang="tsx">
-import { onMounted } from "vue";
+import { onMounted, ref } from "vue";
 import { PureTableBar } from "@shared/components";
-import { PlusSearch, PlusDrawerForm } from "plus-pro-components";
+import { PlusSearch } from "plus-pro-components";
+import { OrganizationEditor } from "@shared/components/OrganizationEditor";
+import ReRemoteSelect from "@shared/components/ReRemoteSelect";
+import { countryCodes } from "@/views/system/country";
 import { useOrganization } from "./hook";
 import { useOrganizationSearch } from "./search";
-import { useOrganizationStore } from "./store";
 import { useOrganizationTable } from "./table";
 
 import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
-import { useDrawerSize } from "@/views/system/drawer";
 import CloseBold from "~icons/ep/close-bold";
 
 defineOptions({
   name: "Organization"
 });
-
-// 使用统一的响应式抽屉宽度
-const { drawerSize } = useDrawerSize();
 
 const {
   tableRef,
@@ -44,18 +42,38 @@ const {
 // 创建搜索列配置
 const { searchColumns } = useOrganizationSearch(() => onSearch());
 
-// 创建表单列配置
-const {
-  storeRef,
-  showStore,
-  storeId,
-  storeColumns,
-  rules,
-  storeValues,
-  openStoreForm,
-  confirmStoreForm,
-  closeStoreForm
-} = useOrganizationStore(() => onSearch());
+// Editor 状态
+const editorVisible = ref(false);
+const editingOrgId = ref<number | null>(null);
+const editingUserId = ref<number | undefined>(undefined);
+
+// 选用户弹窗状态
+const userPickerVisible = ref(false);
+const pickedUserId = ref<number | null>(null);
+
+function openEdit(orgId: number, userId: number) {
+  editingOrgId.value = orgId;
+  editingUserId.value = userId;
+  editorVisible.value = true;
+}
+
+function openCreate() {
+  pickedUserId.value = null;
+  userPickerVisible.value = true;
+}
+
+function confirmUserPicker() {
+  if (!pickedUserId.value) return;
+  userPickerVisible.value = false;
+  editingOrgId.value = null;
+  editingUserId.value = pickedUserId.value;
+  editorVisible.value = true;
+}
+
+function onEditorSaved() {
+  editorVisible.value = false;
+  onSearch();
+}
 
 onMounted(() => {
   onSearch();
@@ -87,7 +105,7 @@ onMounted(() => {
     </div>
     <PureTableBar title="组织管理" :columns="tableColumns" @refresh="onSearch">
       <template #buttons>
-        <el-button type="primary" @click="openStoreForm()">新增组织</el-button>
+        <el-button type="primary" @click="openCreate">新增组织</el-button>
       </template>
       <template v-slot="{ size, dynamicColumns }">
         <div
@@ -149,7 +167,7 @@ onMounted(() => {
               type="primary"
               link
               :size="size"
-              @click="openStoreForm(row.id)"
+              @click="openEdit(row.id, row.user_id)"
             >
               编辑
             </el-button>
@@ -173,23 +191,46 @@ onMounted(() => {
         </pure-table>
       </template>
     </PureTableBar>
-    <PlusDrawerForm
-      ref="storeRef"
-      v-model="storeValues"
-      :visible="showStore"
-      :form="{
-        columns: storeColumns,
-        rules,
-        labelPosition: 'right',
-        labelSuffix: ''
-      }"
-      :size="drawerSize"
-      :closeOnClickModal="true"
-      :title="storeId > 0 ? '编辑组织' : '新增组织'"
-      confirmText="提交"
-      cancelText="取消"
-      @confirm="confirmStoreForm"
-      @cancel="closeStoreForm"
+    <!-- 选择目标用户弹窗（新增时使用） -->
+    <el-dialog
+      v-model="userPickerVisible"
+      title="选择目标用户"
+      width="400px"
+      :close-on-click-modal="true"
+      destroy-on-close
+      append-to-body
+    >
+      <re-remote-select
+        v-model="pickedUserId"
+        uri="/user"
+        search-field="quickSearch"
+        label-field="username"
+        value-field="id"
+        items-field="items"
+        total-field="total"
+        placeholder="请搜索并选择用户"
+        style="width: 100%"
+      />
+      <template #footer>
+        <el-button @click="userPickerVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!pickedUserId"
+          @click="confirmUserPicker"
+        >
+          下一步
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 企业 / 联系人 Editor -->
+    <organization-editor
+      v-model:visible="editorVisible"
+      role="admin"
+      :organization-id="editingOrgId"
+      :user-id="editingUserId"
+      :country-options="countryCodes"
+      @success="onEditorSaved"
     />
   </div>
 </template>

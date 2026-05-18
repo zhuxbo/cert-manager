@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\Contact;
 use App\Models\Organization;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -105,6 +106,30 @@ test('管理员可以更新组织信息', function () {
 
     $organization->refresh();
     expect($organization->name)->toBe('Updated Organization');
+});
+
+test('管理员更新组织时未传联系人字段会保留原绑定', function () {
+    $contact = Contact::factory()->create(['user_id' => $this->user->id]);
+    $organization = Organization::factory()->create([
+        'user_id' => $this->user->id,
+        'contact_id' => $contact->id,
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)->putJson("/api/admin/organization/$organization->id", [
+        'user_id' => $this->user->id,
+        'name' => 'Updated Organization',
+        'registration_number' => $organization->registration_number,
+        'country' => $organization->country,
+        'state' => $organization->state,
+        'city' => $organization->city,
+        'address' => $organization->address,
+        'postcode' => $organization->postcode,
+        'phone' => $organization->phone,
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+
+    expect($organization->fresh()->contact_id)->toBe($contact->id);
 });
 
 test('管理员可以删除组织', function () {

@@ -1,7 +1,9 @@
 <?php
 
 use App\Models\Cert;
+use App\Models\Contact;
 use App\Models\Order;
+use App\Models\Organization;
 use App\Models\Product;
 use App\Models\User;
 use Tests\Traits\ActsAsUser;
@@ -337,4 +339,57 @@ test('批量获取订单详情-全为其他用户订单返回不存在', functio
 test('订单列表-未认证', function () {
     $this->getJson('/api/order')
         ->assertUnauthorized();
+});
+
+test('新建订单-OV 未传 contact 时自动从企业反查联系人', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create(['validation_type' => 'ov']);
+    $contact = Contact::factory()->create(['user_id' => $user->id]);
+    $org = Organization::factory()->create([
+        'user_id' => $user->id,
+        'contact_id' => $contact->id,
+    ]);
+
+    $this->mockSdk();
+
+    $resp = $this->actingAsUser($user)
+        ->postJson('/api/order/new', [
+            'product_id' => $product->id,
+            'period' => 12,
+            'domains' => 'example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+            'organization' => $org->id,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $order = Order::withoutGlobalScopes()->find($resp->json('data.order_id'));
+    expect($order->contact)->not->toBeNull()
+        ->and($order->contact['email'] ?? null)->toBe($contact->email);
+});
+
+test('新建订单-OV 企业未绑定联系人时报错', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create(['validation_type' => 'ov']);
+    $org = Organization::factory()->create([
+        'user_id' => $user->id,
+        'contact_id' => null,
+    ]);
+
+    $this->mockSdk();
+
+    $resp = $this->actingAsUser($user)
+        ->postJson('/api/order/new', [
+            'product_id' => $product->id,
+            'period' => 12,
+            'domains' => 'example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+            'organization' => $org->id,
+        ])
+        ->assertOk();
+
+    expect($resp->json('code'))->toBe(0)
+        ->and($resp->json('msg'))->toContain('联系人');
 });

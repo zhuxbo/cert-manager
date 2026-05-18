@@ -12,6 +12,7 @@ use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DatabaseBackupController;
 use App\Http\Controllers\Admin\DelegationController;
 use App\Http\Controllers\Admin\DeployTokenController;
+use App\Http\Controllers\Admin\EnterpriseLookupController;
 use App\Http\Controllers\Admin\FundController;
 use App\Http\Controllers\Admin\LogsController;
 use App\Http\Controllers\Admin\MetricsController;
@@ -29,6 +30,7 @@ use App\Http\Controllers\Admin\TransactionController;
 use App\Http\Controllers\Admin\UpgradeController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\UserLevelController;
+use App\Http\Controllers\Admin\ZipcodeLookupController;
 use App\Utils\RouteHelper;
 use Illuminate\Support\Facades\Route;
 
@@ -269,4 +271,13 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('opcache-reset', [UpgradeController::class, 'opcacheReset']);
         Route::post('smoke', [UpgradeController::class, 'smoke']);
     });
+
+    // 工商信息查询
+    Route::get('enterprise-lookup/status', [EnterpriseLookupController::class, 'status']);
+    Route::post('enterprise-lookup', [EnterpriseLookupController::class, 'lookup'])
+        ->middleware('throttle:enterprise-lookup');
+
+    // 邮编查询(本地数据)
+    Route::post('zipcode-lookup', [ZipcodeLookupController::class, 'lookup'])
+        ->middleware('throttle:zipcode-lookup');
 });

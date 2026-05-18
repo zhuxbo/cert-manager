@@ -50,6 +50,8 @@ class RateLimiter
         // IP 限流相对宽松，主要防止暴力攻击
         $limit = match ($limiter) {
             'v1', 'v2', 'deploy', 'acme' => 120,
+            'enterprise-lookup' => 30,
+            'zipcode-lookup' => 60,
             default => 60,
         };
 
