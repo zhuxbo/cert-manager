@@ -311,7 +311,6 @@ trait OrderController
             ],
             'deploy' => "sslctl setup --url $deployUrl --token $token --order $orderIds",
             'iis_install' => [
-                'download' => "$releaseUrl/sslctlw/latest/sslctlw.exe",
                 'windows' => "irm $releaseUrl/sslctlw/install.ps1 -OutFile install.ps1; .\\install.ps1 -ReleaseHost $releaseDomain",
             ],
             'iis_deploy' => "sslctlw setup --url $deployUrl --token $token --order $orderIds",
