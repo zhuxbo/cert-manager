@@ -1,9 +1,10 @@
 <script setup lang="tsx">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { PlusDrawerForm } from "plus-pro-components";
+import { ElButton, ElPopconfirm, ElTabs, ElTabPane } from "element-plus";
 import { getAllSettings, destroyGroup, clearCache } from "@/api/setting";
 import { useSettingGroupStore } from "./groupStore";
-import { ElButton, ElPopconfirm } from "element-plus";
 import SettingGroup from "./SettingGroup.vue";
 import { message } from "@shared/utils";
 import { useDrawerSize } from "@/views/system/drawer";
@@ -12,14 +13,22 @@ defineOptions({
   name: "Setting"
 });
 
-// 使用统一的响应式抽屉宽度
+const route = useRoute();
+const router = useRouter();
+
+// 从 route.query.tab 取首个值，处理 string[]/null/undefined
+const readQueryTab = (): string => {
+  const raw = route.query.tab;
+  if (Array.isArray(raw)) return (raw[0] as string) || "";
+  return (raw as string) || "";
+};
+
 const { drawerSize } = useDrawerSize();
 
-// 加载状态
 const loading = ref(false);
-// 设置组列表
-const groups = ref([]);
-// 创建设置组表单
+const groups = ref<any[]>([]);
+const activeTab = ref<string>("");
+
 const {
   groupFormRef,
   showGroupForm,
@@ -30,36 +39,79 @@ const {
   openGroupForm,
   confirmGroupForm,
   closeGroupForm
-} = useSettingGroupStore(() => loadSettings());
+} = useSettingGroupStore((newGroupName?: string) => loadSettings(newGroupName));
 
-// 加载所有设置
-const loadSettings = () => {
+// 加载所有设置；preferTab 指定加载完成后优先选中的 tab name
+const loadSettings = (preferTab?: string) => {
   loading.value = true;
   getAllSettings().then(({ data }) => {
     groups.value = data.groups || [];
+    syncActiveTab(preferTab);
     loading.value = false;
   });
 };
 
-// 添加新设置组
+// 校正 activeTab：优先 preferTab → 当前 activeTab → URL query → 第一个分组
+const syncActiveTab = (preferTab?: string) => {
+  const names = groups.value.map(g => g.name);
+  const candidates = [preferTab, activeTab.value, readQueryTab()];
+  const chosen = candidates.find(n => n && names.includes(n)) || names[0] || "";
+  if (activeTab.value !== chosen) {
+    activeTab.value = chosen;
+  }
+  // URL 同步
+  const currentQueryTab = readQueryTab();
+  if (chosen && currentQueryTab !== chosen) {
+    router.replace({ query: { ...route.query, tab: chosen } });
+  } else if (!chosen && currentQueryTab) {
+    const { tab: _tab, ...rest } = route.query;
+    router.replace({ query: rest });
+  }
+};
+
+// activeTab 变更（用户点 tab）→ 同步到 URL
+watch(activeTab, newName => {
+  if (!newName) return;
+  const currentQueryTab = readQueryTab();
+  if (currentQueryTab !== newName) {
+    router.replace({ query: { ...route.query, tab: newName } });
+  }
+});
+
+// URL query.tab 变更（后退/前进按钮、外部链接）→ 同步到 activeTab
+watch(
+  () => route.query.tab,
+  newTab => {
+    const name = Array.isArray(newTab)
+      ? (newTab[0] as string) || ""
+      : (newTab as string) || "";
+    const names = groups.value.map(g => g.name);
+    if (name && names.includes(name) && activeTab.value !== name) {
+      activeTab.value = name;
+    }
+  }
+);
+
 const handleAddGroup = () => {
   openGroupForm(0);
 };
 
-// 编辑设置组
-const handleEditGroup = id => {
+const handleEditGroup = (id: number) => {
   openGroupForm(id);
 };
 
-// 删除设置组
-const handleDeleteGroup = id => {
+const handleDeleteGroup = (id: number) => {
   destroyGroup(id).then(() => {
     message("删除成功", { type: "success" });
+    // 当前 tab 是被删的就清空，让 syncActiveTab 回落到第一个
+    const deleted = groups.value.find(g => g.id === id);
+    const preferTab =
+      deleted && deleted.name === activeTab.value ? "" : activeTab.value;
+    activeTab.value = preferTab;
     loadSettings();
   });
 };
 
-// 清除缓存
 const handleClearCache = () => {
   clearCache().then(() => {
     message("缓存已清除", { type: "success" });
@@ -91,19 +143,26 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-loading="loading" class="setting-groups">
+    <div v-loading="loading" class="setting-groups bg-bg_color rounded">
       <template v-if="groups.length > 0">
-        <SettingGroup
-          v-for="group in groups"
-          :key="group.id"
-          :group="group"
-          :onRefresh="loadSettings"
-          @edit-group="handleEditGroup"
-          @delete-group="handleDeleteGroup"
-        />
+        <el-tabs v-model="activeTab" tab-position="top" class="setting-tabs">
+          <el-tab-pane
+            v-for="group in groups"
+            :key="group.id"
+            :label="group.title"
+            :name="group.name"
+          >
+            <SettingGroup
+              :group="group"
+              :onRefresh="() => loadSettings()"
+              @edit-group="handleEditGroup"
+              @delete-group="handleDeleteGroup"
+            />
+          </el-tab-pane>
+        </el-tabs>
       </template>
 
-      <div v-else class="empty-groups text-center py-8 bg-bg_color rounded">
+      <div v-else class="empty-groups text-center py-8">
         <p class="text-gray-500 mb-4">暂无设置组</p>
         <el-button type="primary" @click="handleAddGroup">添加设置组</el-button>
       </div>
@@ -137,5 +196,9 @@ onMounted(() => {
 
 .setting-header {
   border-radius: 4px;
+}
+
+.setting-tabs {
+  padding: 8px 16px 16px;
 }
 </style>

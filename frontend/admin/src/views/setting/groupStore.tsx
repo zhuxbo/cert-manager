@@ -112,7 +112,7 @@ export function useSettingGroupStore(onSuccess) {
     storeGroup(groupValues.value).then(() => {
       message("添加成功", { type: "success" });
       showGroupForm.value = false;
-      onSuccess && onSuccess();
+      onSuccess && onSuccess(groupValues.value.name);
     });
   };
 
@@ -120,7 +120,7 @@ export function useSettingGroupStore(onSuccess) {
     updateGroup(groupId.value, groupValues.value).then(() => {
       message("更新成功", { type: "success" });
       showGroupForm.value = false;
-      onSuccess && onSuccess();
+      onSuccess && onSuccess(groupValues.value.name);
     });
   };
 
