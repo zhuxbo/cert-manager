@@ -111,7 +111,7 @@ function something()
 function setEnterpriseLookupSetting(string $key, mixed $value, string $type = 'string'): void
 {
     $group = SettingGroup::firstOrCreate(
-        ['name' => 'enterprise_lookup'],
+        ['name' => 'enterprise'],
         ['title' => '工商信息查询', 'weight' => 9],
     );
     $setting = Setting::where('group_id', $group->id)->where('key', $key)->first();

@@ -13,9 +13,9 @@ class AliyunDriver implements LookupInterface
     {
         // cacheKey 含 fieldMap 指纹:fieldMap 变更后旧缓存自动失效,
         // 避免"配置改了但 24h 缓存返回旧 schema 数据"导致的字段缺失
-        $fieldMap = (array) get_system_setting('enterprise_lookup', 'fieldMap', []);
+        $fieldMap = (array) get_system_setting('enterprise', 'fieldMap', []);
         $fpHash = substr(md5((string) json_encode($fieldMap)), 0, 8);
-        $cacheKey = "enterprise_lookup:$fpHash:".md5("aliyun:$name");
+        $cacheKey = "enterprise:$fpHash:".md5("aliyun:$name");
 
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
@@ -45,10 +45,10 @@ class AliyunDriver implements LookupInterface
 
     private function call(string $name): array
     {
-        $url = (string) get_system_setting('enterprise_lookup', 'url', '');
-        $appCode = (string) get_system_setting('enterprise_lookup', 'appCode', '');
-        $fieldMap = (array) get_system_setting('enterprise_lookup', 'fieldMap', []);
-        $queryField = (string) get_system_setting('enterprise_lookup', 'queryField', 'name') ?: 'name';
+        $url = (string) get_system_setting('enterprise', 'url', '');
+        $appCode = (string) get_system_setting('enterprise', 'appCode', '');
+        $fieldMap = (array) get_system_setting('enterprise', 'fieldMap', []);
+        $queryField = (string) get_system_setting('enterprise', 'queryField', 'name') ?: 'name';
 
         if ($url === '' || $appCode === '') {
             throw new LookupException('工商查询未配置', 400);
@@ -86,13 +86,13 @@ class AliyunDriver implements LookupInterface
      */
     private function enforceAndIncrementDailyQuota(): void
     {
-        $limit = (int) get_system_setting('enterprise_lookup', 'dailyLimit', 100);
+        $limit = (int) get_system_setting('enterprise', 'dailyLimit', 100);
         if ($limit <= 0) {
             return;
         }
 
         $today = now()->format('Y-m-d');
-        $key = "enterprise_lookup:daily:$today";
+        $key = "enterprise:daily:$today";
         $ttl = max(60, now()->diffInSeconds(now()->endOfDay(), false));
 
         Cache::add($key, 0, $ttl);

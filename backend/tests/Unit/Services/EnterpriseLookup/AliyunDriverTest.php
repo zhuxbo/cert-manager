@@ -126,7 +126,7 @@ test('daily quota blocks call after limit reached and does not hit upstream', fu
     expect($threw)->toBeTrue('第 3 次应被额度拦截');
 
     // 限额返回后,counter 不应被错误地多 +1(decrement 回退)
-    expect((int) Cache::get('enterprise_lookup:daily:'.now()->format('Y-m-d')))->toBe(2);
+    expect((int) Cache::get('enterprise:daily:'.now()->format('Y-m-d')))->toBe(2);
 
     // 上游仅被前 2 次调用,第 3 次未发出请求
     Http::assertSentCount(2);
@@ -146,7 +146,7 @@ test('cache hit does not consume daily quota', function () {
     app(AliyunDriver::class)->lookup('A');
     app(AliyunDriver::class)->lookup('A');
 
-    expect((int) Cache::get('enterprise_lookup:daily:'.now()->format('Y-m-d')))->toBe(1);
+    expect((int) Cache::get('enterprise:daily:'.now()->format('Y-m-d')))->toBe(1);
     Http::assertSentCount(1);
 });
 
@@ -161,7 +161,7 @@ test('dailyLimit zero is treated as unlimited', function () {
     }
 
     // 0 视为无限制,计数 key 也不应创建
-    expect(Cache::get('enterprise_lookup:daily:'.now()->format('Y-m-d')))->toBeNull();
+    expect(Cache::get('enterprise:daily:'.now()->format('Y-m-d')))->toBeNull();
 });
 
 test('429 quota exhaustion does not poison failure cache', function () {
@@ -180,7 +180,7 @@ test('429 quota exhaustion does not poison failure cache', function () {
     }
 
     // 模拟次日重置:清空配额计数器,提升 limit
-    Cache::forget('enterprise_lookup:daily:'.now()->format('Y-m-d'));
+    Cache::forget('enterprise:daily:'.now()->format('Y-m-d'));
     setEnterpriseLookupSetting('dailyLimit', 10, 'integer');
 
     // 此时 SECOND 应能正常查询(未被失败缓存污染)

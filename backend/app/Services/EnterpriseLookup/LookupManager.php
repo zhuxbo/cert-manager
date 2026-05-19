@@ -11,10 +11,10 @@ class LookupManager
 
     public function enabled(): bool
     {
-        $url = (string) get_system_setting('enterprise_lookup', 'url', '');
-        $appCode = (string) get_system_setting('enterprise_lookup', 'appCode', '');
-        $queryField = (string) get_system_setting('enterprise_lookup', 'queryField', '');
-        $fieldMap = (array) get_system_setting('enterprise_lookup', 'fieldMap', []);
+        $url = (string) get_system_setting('enterprise', 'url', '');
+        $appCode = (string) get_system_setting('enterprise', 'appCode', '');
+        $queryField = (string) get_system_setting('enterprise', 'queryField', '');
+        $fieldMap = (array) get_system_setting('enterprise', 'fieldMap', []);
 
         if ($url === '' || $appCode === '' || $queryField === '') {
             return false;
