@@ -520,7 +520,7 @@ class Action
             && ($data['status'] ?? null) === 'cancelled'
             && in_array($cert->status, ['processing', 'approving', 'cancelling'])
             && in_array($cert->action, ['new', 'renew'])
-            && get_system_setting('site', 'autoRefundOnSyncedCancel')
+            && get_system_setting('site', 'autoRefundOnSync')
         ) {
             // helper 内完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
             $this->refundForSyncedCancel($order, $data);
@@ -962,7 +962,7 @@ class Action
             if (! in_array($cert->action, ['new', 'renew'])) {
                 return;
             }
-            if (! get_system_setting('site', 'autoRefundOnSyncedCancel')) {
+            if (! get_system_setting('site', 'autoRefundOnSync')) {
                 return;
             }
 

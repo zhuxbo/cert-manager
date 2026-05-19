@@ -43,7 +43,7 @@ class SettingSeeder extends Seeder
                 ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '站点名称', 'weight' => 2],
                 ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
                 ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
-                ['key' => 'autoRefundOnSyncedCancel', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
+                ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
             ],
             'ca' => [
                 ['key' => 'sources', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['default' => 'Default'], 'description' => '来源', 'weight' => 1],

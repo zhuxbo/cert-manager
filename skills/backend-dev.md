@@ -444,14 +444,14 @@ Schema::table('products', function (Blueprint $table) {
 
 ---
 
-## 同步取消退款开关（site.autoRefundOnSyncedCancel）
+## 同步取消退款开关（site.autoRefundOnSync）
 
 多级代理场景下，上级 Manager 可能先取消订单（如其自身的 PurgeCommand 触发）；下级 Manager 的 `Order\Action::sync` 同步上游状态时，默认仅更新本地 `cert.status='cancelled'`，**不退款**。是否退款给末端用户由各级 Manager 管理员自决。
 
 ### 开关
 
-- 分组：`site`，key：`autoRefundOnSyncedCancel`，type：`boolean`，默认 `false`
-- 后端读取：`get_system_setting('site', 'autoRefundOnSyncedCancel')`
+- 分组：`site`，key：`autoRefundOnSync`，type：`boolean`，默认 `false`
+- 后端读取：`get_system_setting('site', 'autoRefundOnSync')`
 - 前端：admin 站点设置页面自动按 SettingGroup 渲染 boolean toggle
 
 ### 触发条件（四个必须全部成立）
@@ -459,7 +459,7 @@ Schema::table('products', function (Blueprint $table) {
 1. 上游返回 `data.status === 'cancelled'`
 2. `cert.status ∈ {processing, approving, cancelling}`（过渡态；排除 active 已签发 / 终态）
 3. `cert.action ∈ {new, renew}`（排除 reissue 重签）
-4. 开关 `site.autoRefundOnSyncedCancel === true`
+4. 开关 `site.autoRefundOnSync === true`
 
 ### 资金路径
 

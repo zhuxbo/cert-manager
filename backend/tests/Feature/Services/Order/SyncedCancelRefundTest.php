@@ -13,7 +13,7 @@ use Tests\Traits\CreatesTestData;
 uses(CreatesTestData::class);
 
 /**
- * 在当前测试事务内预置 autoRefundOnSyncedCancel 设置项
+ * 在当前测试事务内预置 autoRefundOnSync 设置项
  * Setting::setValue 依赖 SettingGroup + Setting 记录，测试 DB 仅跑 migration 不跑 seeder
  */
 function setupAutoRefundSetting(bool $enabled = false): void
@@ -24,11 +24,11 @@ function setupAutoRefundSetting(bool $enabled = false): void
     );
 
     Setting::firstOrCreate(
-        ['group_id' => $group->id, 'key' => 'autoRefundOnSyncedCancel'],
+        ['group_id' => $group->id, 'key' => 'autoRefundOnSync'],
         ['type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '同步退款开关', 'weight' => 8]
     );
 
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', $enabled);
+    Setting::setValue('site', 'autoRefundOnSync', $enabled);
 }
 
 beforeEach(function () {
@@ -117,7 +117,7 @@ test('#1 开关关 + 上游 cancelled + action=new：cert.status 变为 cancelle
 });
 
 test('#2 开关开 + 上游 cancelled + action=new + cert.status=processing：触发退款', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，createOrderTransaction(-100) 扣费 → balance=0，退款+100 → balance=100
     $user = $this->createTestUser(['balance' => '100.00']);
@@ -140,7 +140,7 @@ test('#2 开关开 + 上游 cancelled + action=new + cert.status=processing：�
 });
 
 test('#3 开关开 + 上游 cancelled + action=new + cert.status=approving：触发退款', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，createOrderTransaction(-100) 扣费 → balance=0，退款+100 → balance=100
     $user = $this->createTestUser(['balance' => '100.00']);
@@ -163,7 +163,7 @@ test('#3 开关开 + 上游 cancelled + action=new + cert.status=approving：触
 });
 
 test('#4 开关开 + 上游 cancelled + action=new + cert.status=cancelling：触发退款', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，createOrderTransaction(-100) 扣费 → balance=0，退款+100 → balance=100
     $user = $this->createTestUser(['balance' => '100.00']);
@@ -189,7 +189,7 @@ test('#4 开关开 + 上游 cancelled + action=new + cert.status=cancelling：�
 });
 
 test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：触发退款', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 80，createOrderTransaction(-80) 扣费 → balance=0，退款+80 → balance=80
     $user = $this->createTestUser(['balance' => '80.00']);
@@ -212,7 +212,7 @@ test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：
 });
 
 test('#6 开关开 + 上游 cancelled + action=reissue：不触发退款', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户初始余额 100，order Transaction 扣 100 → balance=0，reissue 不退款
     $user = $this->createTestUser(['balance' => '100.00']);
@@ -237,7 +237,7 @@ test('#6 开关开 + 上游 cancelled + action=reissue：不触发退款', funct
 });
 
 test('#7 开关开 + 上游 cancelled + cert.status=active（非过渡态）：cert.status 变 cancelled 但无退款', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 200，下单扣 100 → balance=100；active 状态不在过渡态，不退款
     $user = $this->createTestUser(['balance' => '200.00']);
@@ -265,7 +265,7 @@ test('#7 开关开 + 上游 cancelled + cert.status=active（非过渡态）：c
 });
 
 test('#8 开关开 + 幂等：已是 cancelled + force sync 不重复创建 Transaction', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，createOrderTransaction(-100) 扣费 → balance=0，退款+100 → balance=100
     $user = $this->createTestUser(['balance' => '100.00']);
@@ -297,7 +297,7 @@ test('#8 开关开 + 幂等：已是 cancelled + force sync 不重复创建 Tran
 });
 
 test('#9 开关开 + 0 元订单：Transaction amount=0 短路，无 cancel Transaction 创建', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     $user = $this->createTestUser(['balance' => '0.00']);
     $product = $this->createTestProduct(['refund_period' => 30]);
@@ -319,7 +319,7 @@ test('#9 开关开 + 0 元订单：Transaction amount=0 短路，无 cancel Tran
 });
 
 test('#10 并发幂等：连续两次 sync 仅 1 笔 cancel Transaction', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，createOrderTransaction(-100) 扣费 → balance=0，退款+100 → balance=100
     $user = $this->createTestUser(['balance' => '100.00']);
@@ -346,7 +346,7 @@ test('#10 并发幂等：连续两次 sync 仅 1 笔 cancel Transaction', functi
 });
 
 test('#11 开关开 + 已有 cancel Transaction + cert.status=cancelling：sync 检测防重，仅改 cert.status', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     $user = $this->createTestUser(['balance' => '100.00']);
     $product = $this->createTestProduct(['refund_period' => 30]);
@@ -386,7 +386,7 @@ test('#11 开关开 + 已有 cancel Transaction + cert.status=cancelling：sync 
 });
 
 test('#12 上游 revoked + action=new + 开关开：走 sync 默认路径，不触发退款分支', function () {
-    Setting::setValue('site', 'autoRefundOnSyncedCancel', true);
+    Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，下单扣 100 → balance=0；revoked 不触发 cancelled 退款分支
     $user = $this->createTestUser(['balance' => '100.00']);
