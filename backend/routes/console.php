@@ -14,9 +14,10 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote')->hourly()->skip($skipWhenFrozen);
 
 // SSL证书管理系统定时任务调度
-// 证书验证任务 - 每分钟执行
+// 证书验证任务 - 每 30 秒执行（Laravel sub-minute 调度，无需外部 30 秒 cron）
+// 互斥由 ValidateCommand 内部 Cache::add + Cache::put 心跳续期实现（支持长任务，不在此处加 withoutOverlapping）
 Schedule::command('schedule:validate')
-    ->everyMinute()
+    ->everyThirtySeconds()
     ->skip($skipWhenFrozen)
     ->name('validate-certificates')
     ->description('自动验证处理中的证书');
@@ -24,6 +25,7 @@ Schedule::command('schedule:validate')
 // 证书过期通知任务 - 每天上午9点执行
 Schedule::command('schedule:expire')
     ->dailyAt('09:00')
+    ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('expire-certificates')
     ->description('处理证书过期通知');
@@ -31,6 +33,7 @@ Schedule::command('schedule:expire')
 // 缓存清理任务 - 每天凌晨2点执行
 Schedule::command('schedule:purge')
     ->dailyAt('02:00')
+    ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('purge-expired-data')
     ->description('清理过期数据');
@@ -38,6 +41,7 @@ Schedule::command('schedule:purge')
 // CNAME委托DNS清理任务 - 每天凌晨6点执行
 Schedule::command('delegation:cleanup')
     ->dailyAt('06:00')
+    ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('cleanup-delegation-dns')
     ->description('清理非processing状态订单的委托DNS记录');
@@ -45,6 +49,7 @@ Schedule::command('delegation:cleanup')
 // 自动续费/重签任务 - 每天0点执行，commit 分散在0~8点
 Schedule::command('schedule:auto-renew')
     ->dailyAt('00:00')
+    ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('auto-renew-certificates')
     ->description('自动续费/重签即将到期的证书');
