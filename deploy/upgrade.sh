@@ -41,6 +41,10 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+# upgrade.sh 所在目录 + 同级 scripts/ 子目录（用于 source bt-automate.sh 等）
+UPGRADE_SH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$UPGRADE_SH_DIR/scripts"
+
 # ========================================
 # 工具函数
 # ========================================
@@ -96,6 +100,92 @@ file_sha256() {
         shasum -a 256 "$file" | cut -d' ' -f1
     else
         openssl dgst -sha256 "$file" | awk '{print $NF}'
+    fi
+}
+
+# 把宝塔 PHP 目录名（如 83/84/810）渲染为友好版本号（如 8.3.21）。
+# CLI 不可用时回落到目录名拼接。
+#
+# 与 deploy/scripts/common.sh::_php_pretty_version 对称。upgrade.sh 是独立部署入口
+# （站在 install dir 顶层），不 source common.sh —— 因 common.sh 的 confirm 没有
+# AUTO_YES 分支会覆盖本脚本的 confirm 函数。修改时请同步两处。
+_php_pretty_version() {
+    local ver="$1"
+    local php_bin="/www/server/php/$ver/bin/php"
+    if [ -x "$php_bin" ]; then
+        local actual
+        actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null)
+        [ -n "$actual" ] && {
+            echo "$actual"
+            return 0
+        }
+    fi
+    # 仅当 ver 为 2 位（83/84）时拼成 X.Y；3 位（810）直接打目录名
+    if [ "${#ver}" -eq 2 ]; then
+        echo "${ver:0:1}.${ver:1}"
+    else
+        echo "$ver"
+    fi
+}
+
+# 探测一个可用的 PHP CLI（任意版本，仅用作工具：解析 JSON 等）。
+# 成功设置全局 PHP_PROBE_BIN 并 return 0；找不到 return 1。
+# 与 common.sh::_probe_any_php 对称，修改时请同步。
+_probe_any_php() {
+    if [ -n "${PHP_PROBE_BIN:-}" ] && [ -x "$PHP_PROBE_BIN" ]; then
+        return 0
+    fi
+    local ver_dir php_bin
+    for ver_dir in /www/server/php/*; do
+        [ -d "$ver_dir" ] || continue
+        php_bin="$ver_dir/bin/php"
+        if [ -x "$php_bin" ]; then
+            PHP_PROBE_BIN="$php_bin"
+            return 0
+        fi
+    done
+    if command -v php &>/dev/null; then
+        PHP_PROBE_BIN=$(command -v php)
+        return 0
+    fi
+    return 1
+}
+
+# 从 stdin 读单行 JSON 并提取顶层字段值（用于 BT API list 流式解析）。
+# 用法：echo '{"id":1,"name":"foo"}' | _json_field name
+# 调用方必须确保 PHP_CMD 已就绪（detect_php_cmd 之后）。
+_json_field() {
+    local field="$1"
+    FIELD="$field" "$PHP_CMD" -r '
+$d = @json_decode(stream_get_contents(STDIN), true);
+echo is_array($d) && isset($d[getenv("FIELD")]) ? $d[getenv("FIELD")] : "";
+' 2>/dev/null
+}
+
+# 从 php-requirements.json 读取顶层标量字段。
+# 用法：_read_req_field <req_file> <field> [fallback]
+# 与 common.sh::_read_req_field 对称，修改时请同步。
+_read_req_field() {
+    local req_file="$1"
+    local field="$2"
+    local fallback="${3:-}"
+    if [ ! -f "$req_file" ]; then
+        echo "$fallback"
+        return 0
+    fi
+    if ! _probe_any_php; then
+        echo "$fallback"
+        return 0
+    fi
+    local result
+    result=$(REQ_FILE="$req_file" FIELD="$field" "$PHP_PROBE_BIN" -r '
+$d = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+echo is_array($d) && isset($d[getenv("FIELD")]) ? $d[getenv("FIELD")] : "";
+' 2>/dev/null)
+    if [ -n "$result" ]; then
+        echo "$result"
+    else
+        echo "$fallback"
     fi
 }
 
@@ -288,28 +378,41 @@ detect_php_cmd() {
         if [ -n "$matched_vhost" ]; then
             found_ver=$(grep -oE 'enable-php-[0-9]+' "$matched_vhost" | head -1 | grep -oE '[0-9]+$')
             if [ -n "$found_ver" ]; then
-                log_info "从 BT vhost $(basename "$matched_vhost") 识别 PHP 版本: 8.${found_ver: -1}"
+                log_info "从 BT vhost $(basename "$matched_vhost") 识别 PHP 版本: $(_php_pretty_version "$found_ver")"
             fi
         fi
     fi
 
-    # 2. fallback：系统单版本
+    # 2. fallback：扫 /www/server/php/* 并按 php-requirements.json 中 php_min 筛选（默认 8.3.0）
+    # 多版本但 vhost 反查失败 → 报错，要求显式 export PHP_CMD（不瞎猜）
     if [ -z "$found_ver" ]; then
+        local req_file="$UPGRADE_SH_DIR/php-requirements.json"
+        local php_min
+        php_min=$(_read_req_field "$req_file" "php_min" "8.3.0")
+
         local available=()
-        for ver in 84 83; do
-            [ -x "/www/server/php/$ver/bin/php" ] && available+=("$ver")
+        for ver_dir in /www/server/php/*; do
+            [ -d "$ver_dir" ] || continue
+            local php_bin="$ver_dir/bin/php"
+            [ -x "$php_bin" ] || continue
+            local actual
+            actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null) || continue
+            if "$php_bin" -r "exit(version_compare('$actual','$php_min','>=')?0:1);" 2>/dev/null; then
+                available+=("$(basename "$ver_dir")")
+            fi
         done
+
         if [ ${#available[@]} -eq 1 ]; then
             found_ver="${available[0]}"
-            log_info "系统仅装一个 PHP 版本: 8.${found_ver: -1}"
+            log_info "系统仅装一个符合 >= $php_min 的 PHP 版本: $(_php_pretty_version "$found_ver")"
         elif [ ${#available[@]} -gt 1 ]; then
-            log_error "系统装有多个 PHP 版本（${available[*]}），但无法从 BT vhost 反查站点对应版本"
+            log_error "系统装有多个符合要求的 PHP 版本（${available[*]}），但无法从 BT vhost 反查站点对应版本"
             log_info "INSTALL_DIR=$INSTALL_DIR"
             log_info "请手工指定: export PHP_CMD=/www/server/php/<ver>/bin/php"
             return 1
         else
-            log_error "未检测到 PHP 8.3 或 8.4（/www/server/php/{83,84}/bin/php 均不存在）"
-            log_info "请确认宝塔已安装 PHP 8.3 或 8.4"
+            log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+            log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
             return 1
         fi
     fi
@@ -543,6 +646,361 @@ EOF
     echo "$backup_path"
 }
 
+# 内部：跑一次 PHP 环境校验，把结果放到全局变量供 check_php_environment 主循环消费
+# 输出变量：
+#   PHP_ENV_OK              全部通过时 true
+#   PHP_ENV_VERSION_ERROR   true 表示 PHP 版本不达标
+#   PHP_ENV_MISSING_EXT     空格分隔的缺失必需扩展
+#   PHP_ENV_DISABLED_FN     空格分隔的被禁用必需函数
+#   PHP_ENV_MISSING_REC     空格分隔的缺失推荐扩展（warning）
+#   PHP_ENV_CURRENT_PHP / PHP_ENV_PHP_MIN / PHP_ENV_PHP_RECOMMENDED
+_php_env_run_checks() {
+    local req_file="$1"
+
+    PHP_ENV_OK=true
+    PHP_ENV_VERSION_ERROR=false
+    PHP_ENV_MISSING_EXT=""
+    PHP_ENV_DISABLED_FN=""
+    PHP_ENV_MISSING_REC=""
+    PHP_ENV_CURRENT_PHP=$("$PHP_CMD" -r 'echo PHP_VERSION;' 2>/dev/null)
+    # 用 env var 传 req_file（与 _read_req_field 一致），避免路径含单引号/空格时 PHP 字符串拼接断开
+    PHP_ENV_PHP_MIN=$(REQ_FILE="$req_file" "$PHP_CMD" -r '
+$d = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+echo is_array($d) && isset($d["php_min"]) ? $d["php_min"] : "";
+' 2>/dev/null)
+    PHP_ENV_PHP_RECOMMENDED=$(REQ_FILE="$req_file" "$PHP_CMD" -r '
+$d = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+echo is_array($d) && isset($d["php_recommended"]) ? $d["php_recommended"] : "";
+' 2>/dev/null)
+
+    # PHP 版本
+    if [ -n "$PHP_ENV_PHP_MIN" ]; then
+        if ! PHP_MIN="$PHP_ENV_PHP_MIN" "$PHP_CMD" -r 'exit(version_compare(PHP_VERSION, getenv("PHP_MIN"), ">=") ? 0 : 1);' 2>/dev/null; then
+            PHP_ENV_VERSION_ERROR=true
+            PHP_ENV_OK=false
+        fi
+    fi
+
+    # 必需扩展
+    local missing_ext=()
+    while IFS= read -r ext; do
+        [ -z "$ext" ] && continue
+        if ! EXT="$ext" "$PHP_CMD" -r 'exit(extension_loaded(getenv("EXT")) ? 0 : 1);' 2>/dev/null; then
+            missing_ext+=("$ext")
+        fi
+    done < <(REQ_FILE="$req_file" "$PHP_CMD" -r '
+$r = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+foreach ($r["extensions"]["required"] ?? [] as $x) { echo $x . PHP_EOL; }
+' 2>/dev/null)
+    if [ ${#missing_ext[@]} -gt 0 ]; then
+        PHP_ENV_MISSING_EXT="${missing_ext[*]}"
+        PHP_ENV_OK=false
+    fi
+
+    # 推荐扩展（warning，不阻断）
+    local missing_rec=()
+    while IFS= read -r ext; do
+        [ -z "$ext" ] && continue
+        if ! EXT="$ext" "$PHP_CMD" -r 'exit(extension_loaded(getenv("EXT")) ? 0 : 1);' 2>/dev/null; then
+            missing_rec+=("$ext")
+        fi
+    done < <(REQ_FILE="$req_file" "$PHP_CMD" -r '
+$r = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+foreach ($r["extensions"]["recommended"] ?? [] as $x) { echo $x . PHP_EOL; }
+' 2>/dev/null)
+    if [ ${#missing_rec[@]} -gt 0 ]; then
+        PHP_ENV_MISSING_REC="${missing_rec[*]}"
+    fi
+
+    # 必需函数（function_exists 对 disable_functions 中的函数返回 false）
+    local disabled_fn=()
+    while IFS= read -r fn; do
+        [ -z "$fn" ] && continue
+        if ! FN="$fn" "$PHP_CMD" -r 'exit(function_exists(getenv("FN")) ? 0 : 1);' 2>/dev/null; then
+            disabled_fn+=("$fn")
+        fi
+    done < <(REQ_FILE="$req_file" "$PHP_CMD" -r '
+$r = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+foreach ($r["functions"]["required"] ?? [] as $x) { echo $x . PHP_EOL; }
+' 2>/dev/null)
+    if [ ${#disabled_fn[@]} -gt 0 ]; then
+        PHP_ENV_DISABLED_FN="${disabled_fn[*]}"
+        PHP_ENV_OK=false
+    fi
+}
+
+# 打印手工修复指引
+_php_env_print_manual() {
+    log_error "请通过宝塔面板（或包管理器）修复："
+    if [ "$PHP_ENV_VERSION_ERROR" = true ]; then
+        log_error "  1. PHP 版本：宝塔 → 软件商店 → 安装 PHP ${PHP_ENV_PHP_RECOMMENDED:-${PHP_ENV_PHP_MIN%.*}}+，网站设置切换 PHP 版本"
+    fi
+    if [ -n "$PHP_ENV_MISSING_EXT" ]; then
+        log_error "  - 扩展：宝塔 → 软件商店 → PHP 管理 → 安装扩展（$PHP_ENV_MISSING_EXT）"
+    fi
+    if [ -n "$PHP_ENV_DISABLED_FN" ]; then
+        log_error "  - 函数：编辑对应 PHP 版本的 php.ini，从 disable_functions 删除（$PHP_ENV_DISABLED_FN），保存后重启 PHP-FPM"
+    fi
+}
+
+# 询问并通过宝塔 API 自动修复（仅扩展/函数；PHP 版本切换不在自动范围）
+# return 0 修复完成（含部分失败）；1 用户拒绝 / 没有 BT API 可用 / 验证失败
+_php_env_try_bt_fix() {
+    echo ""
+    log_info "可通过宝塔 API 自动安装扩展、启用被禁函数、重启 PHP-FPM"
+    log_info "需要 API key：宝塔面板 → 设置 → API 密钥（并确认当前 IP 在白名单内）"
+    # 走 confirm 函数统一处理：AUTO_YES=true 自动同意；交互模式从 /dev/tty 读避免管道场景误退
+    if ! confirm "是否使用宝塔 API 自动修复？" "n"; then
+        log_info "已选择手工修复"
+        return 1
+    fi
+
+    if [ ! -f "$SCRIPT_DIR/bt-automate.sh" ]; then
+        log_warning "未找到 $SCRIPT_DIR/bt-automate.sh，无法自动修复"
+        return 1
+    fi
+
+    # shellcheck source=scripts/bt-automate.sh
+    source "$SCRIPT_DIR/bt-automate.sh"
+
+    # 与 install.sh detect_bt_key 对齐：自动从 /www/server/panel/config/api.json 探测
+    # 探测失败直接走手工，不当场 read 收 key（避免明文 key 进终端历史 + 行为一致）
+    if ! bt_resolve_key 2>/dev/null; then
+        log_warning "未探测到宝塔 API key"
+        log_info "请到面板 → 设置 → API 接口 启用并把当前 IP 加入白名单，然后重跑 upgrade.sh"
+        return 1
+    fi
+
+    if ! bt_verify_api_key; then
+        log_error "宝塔 API key 验证失败（无效 key / IP 不在白名单 / 面板关闭 API）"
+        return 1
+    fi
+    log_success "宝塔 API 就绪"
+
+    local php_ver_compact
+    php_ver_compact=$(_bt_php_ver_compact "$PHP_ENV_CURRENT_PHP")
+
+    # 装扩展
+    if [ -n "$PHP_ENV_MISSING_EXT" ]; then
+        for ext in $PHP_ENV_MISSING_EXT; do
+            bt_install_php_extension "$php_ver_compact" "$ext" || true
+        done
+    fi
+
+    # 启用函数
+    if [ -n "$PHP_ENV_DISABLED_FN" ]; then
+        # shellcheck disable=SC2086
+        bt_enable_php_functions "$php_ver_compact" $PHP_ENV_DISABLED_FN || true
+    fi
+
+    # 重启 PHP-FPM
+    bt_reload_php_fpm "$php_ver_compact" || log_warning "PHP-FPM 重启失败，请手工 reload"
+
+    return 0
+}
+
+# 校验 PHP 环境是否满足新版本需求
+# 检测失败时分类处理：
+#   - PHP 版本不达标 → 必须手工切换 PHP 版本，输出指引后 exit 1
+#   - 仅扩展/函数不达标 → 询问宝塔 API 自动修复；不愿/失败回落手工指引 exit 1
+check_php_environment() {
+    local src_dir="$1"
+    local req_file="$src_dir/php-requirements.json"
+
+    if [ ! -f "$req_file" ]; then
+        log_info "未找到 php-requirements.json，跳过 PHP 环境检测（旧版本兼容）"
+        return 0
+    fi
+
+    log_step "校验 PHP 运行环境..."
+    _php_env_run_checks "$req_file"
+    log_info "当前 PHP: $PHP_ENV_CURRENT_PHP; 最低要求: ${PHP_ENV_PHP_MIN:-N/A}"
+
+    # 推荐项警告（每次都输出，不阻断）
+    if [ -n "$PHP_ENV_MISSING_REC" ]; then
+        log_warning "缺失推荐扩展: $PHP_ENV_MISSING_REC（不阻断升级，但建议安装以获得最佳性能/功能）"
+    fi
+
+    if [ "$PHP_ENV_OK" = true ]; then
+        log_success "PHP 环境校验通过"
+        return 0
+    fi
+
+    # 输出失败摘要
+    log_error "═══════════════════════════════════════════════════════"
+    log_error "PHP 环境校验失败："
+    if [ "$PHP_ENV_VERSION_ERROR" = true ]; then
+        log_error "  - PHP 版本过低：当前 $PHP_ENV_CURRENT_PHP，需要 >= $PHP_ENV_PHP_MIN"
+    fi
+    if [ -n "$PHP_ENV_MISSING_EXT" ]; then
+        log_error "  - 缺失必需扩展: $PHP_ENV_MISSING_EXT"
+    fi
+    if [ -n "$PHP_ENV_DISABLED_FN" ]; then
+        log_error "  - 必需函数被禁用: $PHP_ENV_DISABLED_FN"
+    fi
+
+    # PHP 版本错误 → 必须手工
+    if [ "$PHP_ENV_VERSION_ERROR" = true ]; then
+        log_error ""
+        log_error "PHP 版本切换敏感（影响整个站点），不在自动修复范围。请按以下步骤："
+        log_error "  1. 宝塔 → 软件商店 → 安装 PHP ${PHP_ENV_PHP_RECOMMENDED:-${PHP_ENV_PHP_MIN%.*}}+"
+        log_error "  2. 网站设置 → 把当前站点 PHP 版本切到新版本"
+        log_error "  3. 切换后重新执行：bash upgrade.sh <版本号>"
+        log_error "  4. 重新执行时本脚本会再次检测，如扩展/函数仍不达标会引导自动修复"
+        log_error "═══════════════════════════════════════════════════════"
+        exit 1
+    fi
+
+    # 仅扩展/函数错误 → 询问 BT API 自动修复
+    if _php_env_try_bt_fix; then
+        log_info "等待 PHP-FPM 重载 (3 秒) ..."
+        sleep 3
+        log_step "重新校验 PHP 环境..."
+        _php_env_run_checks "$req_file"
+
+        if [ "$PHP_ENV_OK" = true ]; then
+            log_success "PHP 环境校验通过"
+            return 0
+        fi
+
+        # 仍未通过 → 手工指引退出
+        log_error ""
+        log_error "自动修复后仍有问题："
+        [ -n "$PHP_ENV_MISSING_EXT" ] && log_error "  - 缺失必需扩展: $PHP_ENV_MISSING_EXT"
+        [ -n "$PHP_ENV_DISABLED_FN" ] && log_error "  - 必需函数被禁用: $PHP_ENV_DISABLED_FN"
+        log_error ""
+        _php_env_print_manual
+        log_error "═══════════════════════════════════════════════════════"
+        exit 1
+    fi
+
+    # 用户拒绝自动修复 → 手工指引退出
+    log_error ""
+    _php_env_print_manual
+    log_error "═══════════════════════════════════════════════════════"
+    exit 1
+}
+
+# 扫 cron / supervisor 中的 PHP 绝对路径，列出与当前 PHP_CMD 不一致的项
+# 不自动改用户配置（cron/supervisor 重建有丢任务/丢消息的风险），仅输出列表 + 修改指引
+# 通常在切换 PHP 版本后才有不一致；常规升级是 no-op
+update_jobs_php_path() {
+    local target_php="$PHP_CMD"
+
+    # 需要 bt-automate + BT_KEY
+    if [ ! -f "$SCRIPT_DIR/bt-automate.sh" ]; then
+        return 0
+    fi
+
+    if ! declare -f bt_list_crontab_all >/dev/null 2>&1; then
+        # shellcheck source=scripts/bt-automate.sh
+        source "$SCRIPT_DIR/bt-automate.sh"
+    fi
+
+    # check_php_environment 走 BT 自动修复分支时已经探测过 BT_KEY；这里再尝试一次以覆盖直接通过 PHP 检测的场景
+    if [ -z "$BT_KEY" ]; then
+        bt_resolve_key 2>/dev/null || {
+            log_info "未探测到宝塔 API key，跳过 cron/supervisor PHP 路径检查"
+            log_info "（如最近切换了 PHP 版本，请手工到宝塔面板核对计划任务和 Supervisor 守护进程的 PHP 路径）"
+            return 0
+        }
+    fi
+
+    if ! bt_verify_api_key 2>/dev/null; then
+        log_info "宝塔 API key 不可用，跳过 cron/supervisor PHP 路径检查"
+        return 0
+    fi
+
+    log_step "扫描 cron / supervisor 的 PHP 绝对路径..."
+    log_info "  期望 PHP: $target_php"
+
+    local cron_mismatched=()
+    local supervisor_mismatched=()
+
+    # cron
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local body id name
+        body=$(echo "$line" | _json_field "sBody")
+        [ -z "$body" ] && continue
+        if echo "$body" | grep -qE '/www/server/php/[0-9]+/bin/php'; then
+            local found_paths has_mismatch=false p
+            found_paths=$(echo "$body" | grep -oE '/www/server/php/[0-9]+/bin/php' | sort -u)
+            for p in $found_paths; do
+                if [ "$p" != "$target_php" ]; then
+                    has_mismatch=true
+                    break
+                fi
+            done
+            if [ "$has_mismatch" = true ]; then
+                id=$(echo "$line" | _json_field "id")
+                name=$(echo "$line" | _json_field "name")
+                cron_mismatched+=("$id|$name|$found_paths|$body")
+            fi
+        fi
+    done < <(bt_list_crontab_all 2>/dev/null)
+
+    # supervisor
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local command name
+        command=$(echo "$line" | _json_field "command")
+        [ -z "$command" ] && continue
+        if echo "$command" | grep -qE '/www/server/php/[0-9]+/bin/php'; then
+            local found_paths has_mismatch=false p
+            found_paths=$(echo "$command" | grep -oE '/www/server/php/[0-9]+/bin/php' | sort -u)
+            for p in $found_paths; do
+                if [ "$p" != "$target_php" ]; then
+                    has_mismatch=true
+                    break
+                fi
+            done
+            if [ "$has_mismatch" = true ]; then
+                name=$(echo "$line" | _json_field "name")
+                supervisor_mismatched+=("$name|$found_paths|$command")
+            fi
+        fi
+    done < <(bt_list_supervisor_all 2>/dev/null)
+
+    local total=$((${#cron_mismatched[@]} + ${#supervisor_mismatched[@]}))
+    if [ "$total" -eq 0 ]; then
+        log_success "  cron / supervisor 的 PHP 路径与当前一致"
+        return 0
+    fi
+
+    log_warning "═══════════════════════════════════════════════════════"
+    log_warning "检测到 $total 个任务使用的 PHP 路径与当前不一致："
+    log_warning ""
+
+    if [ ${#cron_mismatched[@]} -gt 0 ]; then
+        log_warning "Cron 任务 (${#cron_mismatched[@]} 个) — 宝塔面板 → 计划任务 → 编辑命令："
+        for entry in "${cron_mismatched[@]}"; do
+            local id name paths body
+            IFS='|' read -r id name paths body <<<"$entry"
+            log_warning "  [id=$id] $name"
+            log_warning "    旧路径: $paths"
+            log_warning "    命令:  $body"
+        done
+        log_warning ""
+    fi
+
+    if [ ${#supervisor_mismatched[@]} -gt 0 ]; then
+        log_warning "Supervisor 守护进程 (${#supervisor_mismatched[@]} 个) — 宝塔 → 软件商店 → Supervisor → 编辑："
+        for entry in "${supervisor_mismatched[@]}"; do
+            local name paths command
+            IFS='|' read -r name paths command <<<"$entry"
+            log_warning "  $name"
+            log_warning "    旧路径: $paths"
+            log_warning "    命令:  $command"
+        done
+        log_warning ""
+    fi
+
+    log_warning "请将上述命令中的旧路径替换为：$target_php"
+    log_warning "（不自动替换以避免误改用户配置；cron/supervisor 改完会自动生效，无需重启服务）"
+    log_warning "═══════════════════════════════════════════════════════"
+}
+
 # 执行升级
 perform_upgrade() {
     local target_version="$1"
@@ -565,12 +1023,32 @@ perform_upgrade() {
     # 2. 创建备份
     local backup_path=$(create_backup)
 
-    # 3. 进入维护模式（必须在移动 vendor 之前）
+    # 3. 提前解压升级包（任何 mv/rm 之前；保证 PHP 环境检测失败时现场未被破坏）
+    log_step "解压升级包..."
+    local extract_dir="$TEMP_DIR/extract"
+    mkdir -p "$extract_dir"
+    unzip -q "$upgrade_file" -d "$extract_dir"
+
+    # 查找解压后的目录结构
+    local src_dir="$extract_dir"
+    if [ -d "$extract_dir/ssl-manager" ]; then
+        src_dir="$extract_dir/ssl-manager"
+    elif [ -d "$extract_dir/upgrade" ]; then
+        src_dir="$extract_dir/upgrade"
+    elif [ -d "$extract_dir/full" ]; then
+        src_dir="$extract_dir/full"
+    fi
+
+    # 4. PHP 环境检测（必须在 maintenance mode / mv storage / rm 旧代码之前；
+    # 不达标立即 exit 1 → trap cleanup 只删 TEMP_DIR，原安装目录完整未动）
+    check_php_environment "$src_dir"
+
+    # 5. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan down --retry=60 || true
 
-    # 4. 提取需要保留的文件到临时目录
+    # 6. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."
     local preserve_dir="$TEMP_DIR/preserve"
     mkdir -p "$preserve_dir"
@@ -617,7 +1095,7 @@ perform_upgrade() {
         [ "$has_custom" = true ] && log_info "已保留自定义 API 适配器"
     fi
 
-    # 5. 删除旧代码
+    # 7. 删除旧代码
     log_step "清理旧代码..."
     # 只删除后端代码目录（保留 storage 已移走）
     rm -rf "$INSTALL_DIR/backend/app"
@@ -638,23 +1116,7 @@ perform_upgrade() {
     rm -rf "$INSTALL_DIR/admin" 2>/dev/null || true
     rm -rf "$INSTALL_DIR/user" 2>/dev/null || true
 
-    # 6. 解压升级包
-    log_step "解压升级包..."
-    local extract_dir="$TEMP_DIR/extract"
-    mkdir -p "$extract_dir"
-    unzip -q "$upgrade_file" -d "$extract_dir"
-
-    # 查找解压后的目录结构
-    local src_dir="$extract_dir"
-    if [ -d "$extract_dir/ssl-manager" ]; then
-        src_dir="$extract_dir/ssl-manager"
-    elif [ -d "$extract_dir/upgrade" ]; then
-        src_dir="$extract_dir/upgrade"
-    elif [ -d "$extract_dir/full" ]; then
-        src_dir="$extract_dir/full"
-    fi
-
-    # 7. 复制新代码（使用 /. 确保复制隐藏文件如 .ssl-manager）
+    # 8. 复制新代码（使用 /. 确保复制隐藏文件如 .ssl-manager）
     log_step "应用新版本..."
     if [ -d "$src_dir/backend" ]; then
         cp -r "$src_dir/backend/." "$INSTALL_DIR/backend/"
@@ -703,17 +1165,12 @@ perform_upgrade() {
         local old_release_url=""
         local old_version_json="$INSTALL_DIR/version.json"
 
-        # 使用 Python 读取旧的 release_url（正确处理 JSON 转义）
-        if [ -f "$old_version_json" ] && command -v python3 &>/dev/null; then
-            old_release_url=$(python3 -c "
-import json
-try:
-    with open('$old_version_json', 'r') as f:
-        data = json.load(f)
-    print(data.get('release_url', ''))
-except:
-    pass
-" 2>/dev/null)
+        # 用 PHP 读取旧的 release_url（正确处理 JSON 转义）
+        if [ -f "$old_version_json" ] && [ -x "$PHP_CMD" ]; then
+            old_release_url=$(OLD_VJ="$old_version_json" "$PHP_CMD" -r '
+$d = @json_decode(@file_get_contents(getenv("OLD_VJ")), true);
+echo is_array($d) && isset($d["release_url"]) ? $d["release_url"] : "";
+' 2>/dev/null)
         fi
 
         # 复制新的 version.json
@@ -721,20 +1178,19 @@ except:
 
         # 如果存在旧的 release_url，合并到新的 version.json
         if [ -n "$old_release_url" ]; then
-            # 使用 Python 处理 JSON 合并（管理员手工运行，变量来自可信的本地文件）
-            python3 <<PYEOF
-import json
-with open("$INSTALL_DIR/version.json", "r") as f:
-    data = json.load(f)
-data["release_url"] = "$old_release_url"
-with open("$INSTALL_DIR/version.json", "w") as f:
-    json.dump(data, f, indent=2)
-PYEOF
+            # 用 PHP 处理 JSON 合并（管理员手工运行，变量来自可信的本地文件）
+            NEW_VJ="$INSTALL_DIR/version.json" RELEASE_URL="$old_release_url" "$PHP_CMD" -r '
+$path = getenv("NEW_VJ");
+$d = @json_decode(@file_get_contents($path), true);
+if (! is_array($d)) { exit(1); }
+$d["release_url"] = getenv("RELEASE_URL");
+file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+' 2>/dev/null
             log_info "保留 release_url 配置: $old_release_url"
         fi
     fi
 
-    # 8. 恢复保留的文件
+    # 9. 恢复保留的文件
     log_step "恢复保留文件..."
     [ -f "$preserve_dir/.env" ] && cp "$preserve_dir/.env" "$INSTALL_DIR/backend/"
     # 注意：不恢复 version.json，使用升级包中的新版本
@@ -773,7 +1229,7 @@ PYEOF
         log_info "已恢复自定义 API 适配器"
     fi
 
-    # 8.1 预先修复权限（在执行 artisan 命令前）
+    # 9.1 预先修复权限（在执行 artisan 命令前）
     log_step "预设权限..."
 
     # backend/storage（Laravel storage）和根目录 backups（备份、升级包）
@@ -796,7 +1252,7 @@ PYEOF
     # .env 文件（让 www 可读，用于升级时备份）
     [ -f "$INSTALL_DIR/backend/.env" ] && chown www:www "$INSTALL_DIR/backend/.env" && chmod 600 "$INSTALL_DIR/backend/.env"
 
-    # 9. 检测依赖变化，决定是否运行 composer install
+    # 10. 检测依赖变化，决定是否运行 composer install
     log_step "检测依赖变化..."
     local new_composer_json_hash=""
     local new_composer_lock_hash=""
@@ -821,20 +1277,21 @@ PYEOF
         log_info "依赖未变化，跳过 composer install"
     fi
 
+    # 探测 composer phar 路径（无论 install/dump-autoload 都要用，提前到 if 块外）
+    # 用 $PHP_CMD 显式驱动，避免 shebang #!/usr/bin/env php 走错版本
+    local composer_bin=""
+    if [ -x "/usr/local/bin/composer" ]; then
+        composer_bin="/usr/local/bin/composer"
+    elif command -v composer &>/dev/null; then
+        composer_bin="$(command -v composer)"
+    else
+        log_error "未找到 composer（已检查 /usr/local/bin/composer 和 PATH）"
+        exit 1
+    fi
+    log_info "使用 composer: $composer_bin"
+
     if [ "$need_composer" = true ]; then
         log_step "安装 Composer 依赖..."
-
-        # 探测 composer phar 路径（用 $PHP_CMD 显式驱动，避免 shebang #!/usr/bin/env php 走错版本）
-        local composer_bin=""
-        if [ -x "/usr/local/bin/composer" ]; then
-            composer_bin="/usr/local/bin/composer"
-        elif command -v composer &>/dev/null; then
-            composer_bin="$(command -v composer)"
-        else
-            log_error "未找到 composer（已检查 /usr/local/bin/composer 和 PATH）"
-            exit 1
-        fi
-        log_info "使用 composer: $composer_bin"
 
         # 从 version.json 读取网络配置（安装时用户选择）
         local use_china_mirror=false
@@ -857,6 +1314,11 @@ PYEOF
                 "$PHP_CMD" "$composer_bin" config -g repo.packagist composer https://mirrors.aliyun.com/composer/
         fi
 
+        # 与后台 UpgradeService::runComposerInstall 不对称：此处保留 scripts（不加 --no-scripts）。
+        # 原因：upgrade.sh 是 root SSH 入口，调用时 web 流量已隔离 / 维护模式生效，
+        #       即使 package:discover 加载老代码 fatal，也只在终端报错而非死锁前端轮询；
+        #       而后台升级走 PHP-FPM www 用户，必须 --no-scripts 防止 fatal 让 vendor 半成品。
+        # 同时下方有无条件 dump-autoload --no-scripts 作为兜底，覆盖 classmap 漂移场景。
         local rc=0
         COMPOSER_ALLOW_SUPERUSER=1 HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
             "$PHP_CMD" "$composer_bin" install --no-dev --optimize-autoloader || rc=$?
@@ -872,17 +1334,40 @@ PYEOF
         chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
     fi
 
-    # 10. 运行数据库迁移
+    # 无条件重新生成 autoload（修复 classmap 漂移；对健康部署无害，秒级完成）
+    # 场景：跨小版本升级未触发 composer install，但 vendor 内文件路径/PSR-4 映射可能已变
+    # （如 Laravel 13.8.0 ReflectsClosures 跨目录），旧 classmap 还指向旧路径会撞 Failed to open stream。
+    # 这里强制重建一次保证 autoload 与 vendor 现状一致。
+    log_step "重新生成 autoload..."
+    local autoload_home
+    autoload_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
+    cd "$INSTALL_DIR/backend"
+    local dump_rc=0
+    COMPOSER_ALLOW_SUPERUSER=1 HOME="$autoload_home" COMPOSER_HOME="$autoload_home" \
+        "$PHP_CMD" "$composer_bin" dump-autoload --optimize --no-scripts || dump_rc=$?
+    rm -rf "$autoload_home"
+    if [ "$dump_rc" -ne 0 ]; then
+        # 与 backend UpgradeService::runDumpAutoload 对齐：autoload 不一致让后续 migrate 加载到
+        # 不存在的类，必须 fail-fast。此时 storage/vendor 已通过"恢复保留文件"步骤移回 INSTALL_DIR，
+        # trap cleanup 仅删 TEMP_DIR 不会丢数据；用户修好后重跑 upgrade.sh 即可（dump-autoload 幂等）
+        log_error "dump-autoload 失败（autoload 不一致后续 migrate 必然 ClassNotFound，已中止）"
+        log_info "请手工执行: cd $INSTALL_DIR/backend && composer dump-autoload --optimize --no-scripts"
+        log_info "然后重跑 bash upgrade.sh"
+        exit 1
+    fi
+    chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
+
+    # 11. 运行数据库迁移
     log_step "运行数据库迁移..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan migrate --force
 
-    # 10.1 初始化/更新数据
+    # 11.1 初始化/更新数据
     log_step "更新数据..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan db:seed --force || true
 
-    # 10.2 数据库结构校验
+    # 11.2 数据库结构校验
     log_step "数据库结构校验..."
     local structure_check_result=0
     local structure_output=""
@@ -908,13 +1393,13 @@ PYEOF
         echo " $PHP_CMD artisan db:structure --fix # 自动修复"
     fi
 
-    # 11. 清理缓存
+    # 12. 清理缓存
     log_step "清理缓存..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan config:cache || true
     "$PHP_CMD" artisan route:cache || true
 
-    # 12. 完整性校验
+    # 13. 完整性校验
     log_step "完整性校验..."
     local check_passed=true
 
@@ -939,10 +1424,13 @@ PYEOF
         log_warning "部分校验未通过，请检查"
     fi
 
-    # 13. 退出维护模式
+    # 14. 退出维护模式
     log_step "退出维护模式..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan up
+
+    # 15. 扫描 cron / supervisor 的 PHP 绝对路径（PHP 版本切换后保护性检查）
+    update_jobs_php_path
 
     # 最终权限检查
     log_step "确认文件权限..."

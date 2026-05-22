@@ -140,12 +140,12 @@ test('get total steps uses config when no expected steps', function () {
     $manager = new UpgradeStatusManager;
     $manager->start('v1.0.0');
 
-    // 基础步骤 7 + backup 1 + maintenance 2 + migrate 1 + cache 1 + structure_check 1 + seed 1 = 14
+    // 基础步骤 8 (含 check_environment) + backup 1 + maintenance 2 + migrate 1 + cache 1 + structure_check 1 + seed 1 = 15
     $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('getTotalSteps');
 
     $totalSteps = $method->invoke($manager);
-    expect($totalSteps)->toBe(14);
+    expect($totalSteps)->toBe(15);
 });
 
 test('update step updates existing step', function () {

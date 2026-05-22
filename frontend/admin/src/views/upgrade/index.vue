@@ -15,7 +15,8 @@ import {
   type ReleaseInfo,
   type BackupInfo,
   type UpgradeStep,
-  type UpgradeStatus
+  type UpgradeStatus,
+  type PhpEnvironmentErrorDetails
 } from "@/api/upgrade";
 import { message } from "@shared/utils";
 import {
@@ -28,7 +29,8 @@ import {
   ElEmpty,
   ElTooltip,
   ElSelect,
-  ElOption
+  ElOption,
+  ElDialog
 } from "element-plus";
 import { useRouter } from "vue-router";
 
@@ -79,6 +81,15 @@ const structureWarning = ref<{
   autoFixed: false,
   message: "",
   manualActions: []
+});
+
+// PHP 环境检测失败弹窗（后台升级仅检测，不能自动修复 PHP；引导用户用 upgrade.sh）
+const phpEnvError = ref<{
+  visible: boolean;
+  details: PhpEnvironmentErrorDetails | null;
+}>({
+  visible: false,
+  details: null
 });
 
 // 步骤名称映射
@@ -292,7 +303,17 @@ const pollUpgradeStatus = async () => {
       upgrading.value = false;
       const errorMsg = data.error || "未知错误（请查看服务器日志）";
       console.error("[Upgrade] 升级失败:", errorMsg);
-      message("升级失败: " + errorMsg, { type: "error" });
+
+      // PHP 环境检测失败 → 弹窗展示详细缺失项 + 引导用 upgrade.sh
+      const details = data.error_details as
+        | PhpEnvironmentErrorDetails
+        | undefined;
+      if (details?.type === "php_environment") {
+        phpEnvError.value.details = details;
+        phpEnvError.value.visible = true;
+      } else {
+        message("升级失败: " + errorMsg, { type: "error" });
+      }
     } else if (data.status === "idle") {
       // 状态文件不存在，可能进程启动失败或还未创建
       if (pollCount.value > 5) {
@@ -783,6 +804,142 @@ onUnmounted(() => {
       </div>
       <el-empty v-else description="暂无备份" />
     </el-card>
+
+    <!-- PHP 环境检测失败弹窗 -->
+    <el-dialog
+      v-model="phpEnvError.visible"
+      title="PHP 环境不满足新版本要求"
+      width="640px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <div v-if="phpEnvError.details" class="php-env-error">
+        <el-alert
+          type="error"
+          :closable="false"
+          :title="phpEnvError.details.message || '环境校验失败'"
+          show-icon
+        />
+
+        <div class="env-detail-block">
+          <div class="env-detail-row">
+            <span class="env-label">当前 PHP：</span>
+            <el-tag type="info">{{
+              phpEnvError.details.current_php || "未知"
+            }}</el-tag>
+          </div>
+          <div v-if="phpEnvError.details.required_php" class="env-detail-row">
+            <span class="env-label">需要至少：</span>
+            <el-tag type="danger">{{
+              phpEnvError.details.required_php
+            }}</el-tag>
+          </div>
+          <div
+            v-if="phpEnvError.details.recommended_php"
+            class="env-detail-row"
+          >
+            <span class="env-label">推荐版本：</span>
+            <el-tag type="success">{{
+              phpEnvError.details.recommended_php
+            }}</el-tag>
+          </div>
+        </div>
+
+        <div
+          v-if="phpEnvError.details.missing_extensions?.length"
+          class="env-detail-block"
+        >
+          <div class="env-label">缺失必需扩展：</div>
+          <div class="env-tag-row">
+            <el-tag
+              v-for="ext in phpEnvError.details.missing_extensions"
+              :key="ext"
+              type="danger"
+              effect="plain"
+            >
+              {{ ext }}
+            </el-tag>
+          </div>
+        </div>
+
+        <div
+          v-if="phpEnvError.details.recommended_missing_extensions?.length"
+          class="env-detail-block"
+        >
+          <div class="env-label">建议安装的扩展（不阻断）：</div>
+          <div class="env-tag-row">
+            <el-tag
+              v-for="ext in phpEnvError.details.recommended_missing_extensions"
+              :key="ext"
+              type="warning"
+              effect="plain"
+            >
+              {{ ext }}
+            </el-tag>
+          </div>
+        </div>
+
+        <div
+          v-if="phpEnvError.details.disabled_functions?.length"
+          class="env-detail-block"
+        >
+          <div class="env-label">必需函数被禁用（disable_functions）：</div>
+          <div class="env-tag-row">
+            <el-tag
+              v-for="fn in phpEnvError.details.disabled_functions"
+              :key="fn"
+              type="danger"
+              effect="plain"
+            >
+              {{ fn }}
+            </el-tag>
+          </div>
+        </div>
+
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          class="env-remediation"
+        >
+          <template #title>如何修复</template>
+          <div>
+            <p>
+              后台升级<strong>仅检测</strong>不修复 PHP 环境。请 SSH
+              登录服务器，执行：
+            </p>
+            <pre class="env-cmd">bash upgrade.sh &lt;版本号&gt;</pre>
+            <p>
+              upgrade.sh
+              包含同样的环境检测，会输出每一项的修复指引（宝塔面板路径 /
+              包管理器命令）。 或者参考下面的手动方式：
+            </p>
+            <ul class="env-remediation-list">
+              <li v-if="phpEnvError.details.required_php">
+                <strong>PHP 版本</strong>：宝塔 → 软件商店 → 安装 PHP
+                {{
+                  phpEnvError.details.recommended_php ||
+                  phpEnvError.details.required_php
+                }}， 再到网站设置切换 PHP 版本
+              </li>
+              <li v-if="phpEnvError.details.missing_extensions?.length">
+                <strong>扩展</strong>：宝塔 → PHP 管理 → 安装扩展
+              </li>
+              <li v-if="phpEnvError.details.disabled_functions?.length">
+                <strong>函数禁用</strong>：编辑对应 PHP 版本的
+                <code>php.ini</code>，从
+                <code>disable_functions</code>
+                删除上述函数后重启 PHP-FPM
+              </li>
+            </ul>
+          </div>
+        </el-alert>
+      </div>
+
+      <template #footer>
+        <el-button @click="phpEnvError.visible = false">我知道了</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -801,5 +958,53 @@ onUnmounted(() => {
 
 .structure-warning-content code {
   font-family: "SF Mono", Monaco, "Courier New", monospace;
+}
+
+.php-env-error {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.env-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.env-detail-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.env-label {
+  font-weight: 500;
+  color: var(--el-text-color-regular);
+}
+
+.env-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.env-remediation {
+  margin-top: 4px;
+}
+
+.env-remediation-list {
+  padding-left: 20px;
+  margin: 8px 0 0;
+  line-height: 1.8;
+}
+
+.env-cmd {
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-family: "SF Mono", Monaco, "Courier New", monospace;
+  user-select: all;
+  background: rgb(0 0 0 / 5%);
+  border-radius: 4px;
 }
 </style>

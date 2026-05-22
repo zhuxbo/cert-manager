@@ -142,14 +142,20 @@ class UpgradeStatusManager
 
     /**
      * 标记升级失败
+     *
+     * @param  string  $error  错误信息（短文本，前端默认展示）
+     * @param  array|null  $details  结构化失败上下文（如 PHP 环境检测：{type, current_php, required_php, missing_extensions, ...}）
      */
-    public function fail(string $error): void
+    public function fail(string $error, ?array $details = null): void
     {
         $data = $this->get();
         if ($data) {
             $data['status'] = 'failed';
             $data['error'] = $error;
             $data['failed_at'] = date('Y-m-d H:i:s');
+            if ($details !== null) {
+                $data['error_details'] = $details;
+            }
             $this->save($data);
         }
 
@@ -248,8 +254,8 @@ class UpgradeStatusManager
         }
 
         // 基本步骤（必须执行）
-        // fetch_release, check_version, download, extract, apply, update_version, cleanup
-        $steps = 7;
+        // fetch_release, check_version, download, extract, check_environment, apply, update_version, cleanup
+        $steps = 8;
 
         // 可选步骤（根据配置）
         if (Config::get('upgrade.behavior.force_backup', true)) {

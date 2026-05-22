@@ -29,6 +29,29 @@ class UpgradeRunCommand extends Command
         // 标记升级开始
         $statusManager->start($version);
 
+        // Fatal error 兜底：try-finally 挡不住 Class not found / 内存溢出等 fatal，
+        // 用 register_shutdown_function 捕获 error_get_last，避免 status.json 卡 running
+        register_shutdown_function(static function () use ($statusManager) {
+            $err = error_get_last();
+            if (! $err || ! in_array($err['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE, E_RECOVERABLE_ERROR], true)) {
+                return;
+            }
+            if (! $statusManager->isRunning()) {
+                return;
+            }
+            try {
+                $statusManager->fail(sprintf(
+                    '升级进程异常退出（fatal error）: %s (%s:%d)',
+                    $err['message'],
+                    $err['file'],
+                    $err['line'],
+                ));
+            } catch (\Throwable $t) {
+                // shutdown 阶段尽量静默，写日志兜底
+                Log::error('[Upgrade] shutdown handler 写 status 失败: '.$t->getMessage());
+            }
+        });
+
         try {
             // 执行升级，传入状态管理器用于实时更新进度
             $result = $upgradeService->performUpgradeWithStatus($version, $statusManager);

@@ -2,6 +2,7 @@
 
 use App\Services\Upgrade\BackupManager;
 use App\Services\Upgrade\DatabaseStructureService;
+use App\Services\Upgrade\EnvironmentChecker;
 use App\Services\Upgrade\PackageExtractor;
 use App\Services\Upgrade\ReleaseClient;
 use App\Services\Upgrade\UpgradeService;
@@ -39,7 +40,8 @@ test('check for update returns no update when same version', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->checkForUpdate();
@@ -75,7 +77,8 @@ test('check for update returns update available', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->checkForUpdate();
@@ -103,7 +106,8 @@ test('check for update handles no release', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->checkForUpdate();
@@ -132,7 +136,8 @@ test('get release history returns releases', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->getReleaseHistory(5);
@@ -155,7 +160,8 @@ test('get backups returns backup list', function () {
         Mockery::mock(ReleaseClient::class),
         $backupManager,
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->getBackups();
@@ -175,7 +181,8 @@ test('rollback fails for missing backup', function () {
         Mockery::mock(ReleaseClient::class),
         $backupManager,
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->rollback('invalid_backup');
@@ -196,7 +203,8 @@ test('delete backup calls backup manager', function () {
         Mockery::mock(ReleaseClient::class),
         $backupManager,
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->deleteBackup('backup_123');

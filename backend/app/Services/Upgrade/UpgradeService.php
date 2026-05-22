@@ -2,6 +2,7 @@
 
 namespace App\Services\Upgrade;
 
+use App\Exceptions\PhpEnvironmentException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -15,6 +16,7 @@ class UpgradeService
         protected BackupManager $backupManager,
         protected PackageExtractor $packageExtractor,
         protected DatabaseStructureService $databaseStructureService,
+        protected EnvironmentChecker $environmentChecker,
     ) {}
 
     /**
@@ -188,6 +190,11 @@ class UpgradeService
                 $steps[count($steps) - 1]['status'] = 'completed';
             } else {
                 Log::info('[Upgrade] No composer changes detected, skipping composer install');
+            }
+
+            // 无条件重建 autoload（修复跨小版本升级时 classmap 漂移；对齐 upgrade.sh 策略）
+            if (! $this->runDumpAutoload()) {
+                throw new RuntimeException('Composer autoload 重建失败');
             }
 
             // 步骤 9: 清理 opcache 以便加载新代码
@@ -393,6 +400,23 @@ class UpgradeService
             $this->packageExtractor->validatePackage($extractedPath);
             $statusManager->completeStep('extract');
 
+            // 步骤 6.5: PHP 环境检测（仅检测，不修复；不通过提示用 upgrade.sh）
+            // 重要：必须在 packageExtractor->applyUpgrade 之前完成；该方法会切换代码目录
+            // ——破坏现场之前先拦下不满足环境的升级
+            $statusManager->startStep('check_environment');
+            $requirementsPath = $this->packageExtractor->findRequirementsJson($extractedPath)
+                ?? "$extractedPath/php-requirements.json"; // 兜底：让 check() 命中 file_missing 走 skipped
+            $envReport = $this->environmentChecker->check($requirementsPath);
+            if (! $envReport['ok']) {
+                $details = $this->environmentChecker->summarize($envReport);
+                $statusManager->failStep('check_environment', $details['message']);
+                throw new PhpEnvironmentException($details['message'], $details);
+            }
+            if (! empty($envReport['skipped'])) {
+                Log::info('[Upgrade] check_environment skipped: '.($envReport['reason'] ?? 'unknown'));
+            }
+            $statusManager->completeStep('check_environment');
+
             // 记录当前 composer 文件的 hash（用于检测变化）
             $oldComposerHashes = $this->getComposerHashes(base_path());
             Log::info('[Upgrade] Current composer hashes', $oldComposerHashes);
@@ -417,6 +441,11 @@ class UpgradeService
                 $statusManager->completeStep('composer_install');
             } else {
                 Log::info('[Upgrade] No composer changes detected, skipping composer install');
+            }
+
+            // 无条件重建 autoload（修复跨小版本升级时 classmap 漂移；对齐 upgrade.sh 策略）
+            if (! $this->runDumpAutoload()) {
+                throw new RuntimeException('Composer autoload 重建失败');
             }
 
             // 步骤 9: 清理 opcache
@@ -517,11 +546,14 @@ class UpgradeService
             }
 
             Log::error("升级失败: {$e->getMessage()}");
-            $statusManager->fail($e->getMessage());
+            // PHP 环境检测失败时，把结构化 details 一并写入 status.json，前端据此引导用户用 upgrade.sh
+            $details = $e instanceof PhpEnvironmentException ? $e->getDetails() : null;
+            $statusManager->fail($e->getMessage(), $details);
 
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
+                'error_details' => $details,
             ];
         }
     }
@@ -748,8 +780,15 @@ class UpgradeService
         // 自动检测并切换镜像
         $mirrorConfigured = $this->configureComposerMirror($basePath, $composerCmd);
 
+        // 关键：composer install 加 --no-scripts 防止 post-autoload-dump 触发 package:discover
+        // 旧 vendor 残留时跑 package:discover 会加载老代码导致 fatal，进而把 vendor 写成半成品
+        // 改为：composer install 仅装包 → 单独跑 dump-autoload 重建 autoload → 再跑 package:discover
+        //
+        // 与 deploy/upgrade.sh 不对称：shell 入口走 root SSH，流量已隔离/维护模式生效，fatal 只
+        // 影响终端不会死锁前端，故保留 scripts 让 composer 跑完默认流程。本路径走 PHP-FPM www
+        // 用户，必须 --no-scripts 兜底，避免 vendor 半成品后请求轮询全员瘫痪。
         $command = sprintf(
-            'cd %s && %s install --no-dev --optimize-autoloader --no-interaction 2>&1',
+            'cd %s && %s install --no-dev --no-scripts --no-interaction 2>&1',
             escapeshellarg($basePath),
             $composerCmd
         );
@@ -773,6 +812,54 @@ class UpgradeService
         }
 
         Log::info('[Upgrade] Composer install completed successfully');
+
+        return true;
+    }
+
+    /**
+     * 无条件重建 autoload + package:discover。
+     *
+     * 由主流程在 applyUpgrade 之后调用，不依赖 composer.json 是否变化 —— 对齐
+     * deploy/upgrade.sh 的"无条件 dump-autoload"策略，修复跨小版本升级时 PSR-4
+     * 映射 / classmap 漂移导致的 ClassNotFoundException（如 Laravel 13.7→13.8
+     * 内部文件路径调整但 composer 依赖未变）。
+     *
+     * dump-autoload 失败必须 fail-fast：autoload 不一致会让后续 migrate / seed
+     * 加载到不存在的类。package:discover 失败仅 warn（缓存可在 clear_cache 时重生）。
+     */
+    protected function runDumpAutoload(): bool
+    {
+        $basePath = base_path();
+
+        $composerCmd = $this->findComposerCommand();
+        if (! $composerCmd) {
+            Log::error('[Upgrade] Composer not found (runDumpAutoload)');
+
+            return false;
+        }
+
+        $dumpCommand = sprintf(
+            'cd %s && %s dump-autoload --optimize --no-scripts --no-interaction 2>&1',
+            escapeshellarg($basePath),
+            $composerCmd
+        );
+        Log::info("[Upgrade] Running: $dumpCommand");
+        exec($dumpCommand, $dumpOutput, $dumpReturnCode);
+        Log::info('[Upgrade] dump-autoload output: '.implode("\n", $dumpOutput));
+        if ($dumpReturnCode !== 0) {
+            Log::error("[Upgrade] dump-autoload failed with code: $dumpReturnCode");
+
+            return false;
+        }
+
+        // package:discover 生成 bootstrap/cache/packages.php（新版代码 + 新 autoload 已就绪）
+        // 失败仅警告不阻断（package 缓存可在下一次清缓存时重生成）
+        $discoverResult = $this->runArtisanInSubprocess('package:discover', ['--ansi']);
+        if ($discoverResult['exit_code'] !== 0) {
+            Log::warning("[Upgrade] package:discover failed (non-blocking) exit={$discoverResult['exit_code']} output: ".$discoverResult['output']);
+        } else {
+            Log::info('[Upgrade] package:discover ok output: '.$discoverResult['output']);
+        }
 
         return true;
     }
@@ -886,9 +973,16 @@ class UpgradeService
         $phpBinary = $this->findPhpBinary();
         $artisan = base_path('artisan');
 
+        // 三种合法形态：
+        //   1. 位置参数 ['--ansi', '--force']                  → numeric key, value 即 flag
+        //   2. flag 形态 ['--force' => true]                   → key 即 flag
+        //   3. key=value 形态 ['--except' => 'view']           → "key=value"
+        // 历史代码漏了形态 1，导致 ['--ansi'] 被拼成 '0=--ansi' 让 artisan 报"参数不识别"
         $argString = '';
         foreach ($args as $key => $value) {
-            if ($value === true) {
+            if (is_int($key)) {
+                $argString .= ' '.escapeshellarg((string) $value);
+            } elseif ($value === true) {
                 $argString .= ' '.escapeshellarg($key);
             } else {
                 $argString .= ' '.escapeshellarg("$key=$value");

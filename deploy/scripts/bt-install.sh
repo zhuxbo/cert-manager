@@ -209,29 +209,47 @@ check_environment() {
     log_success "检测到宝塔面板环境"
 }
 
-# 选择 PHP 版本（仅支持 8.3/8.4）
 select_php_version() {
     log_step "检测 PHP 版本"
 
-    local php_versions=()
+    # 读 php-requirements.json 的 php_min（与版本绑定）；缺失兜底 8.3.0
+    local req_file="$DEPLOY_DIR/php-requirements.json"
+    local php_min
+    php_min=$(_read_req_field "$req_file" "php_min" "8.3.0")
+    if [ -f "$req_file" ]; then
+        log_info "需求 PHP >= $php_min"
+    fi
 
-    for ver in 84 83; do
-        if [ -d "/www/server/php/$ver" ] && [ -x "/www/server/php/$ver/bin/php" ]; then
-            php_versions+=("$ver")
+    # 扫描 /www/server/php/* 目录，按 PHP_VERSION 对比 php_min 筛选
+    local php_versions=()
+    for ver_dir in /www/server/php/*; do
+        [ -d "$ver_dir" ] || continue
+        local php_bin="$ver_dir/bin/php"
+        [ -x "$php_bin" ] || continue
+        local actual
+        actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null) || continue
+        # 用 PHP 自身比较（避免 bash 处理语义化版本不准）
+        if "$php_bin" -r "exit(version_compare('$actual','$php_min','>=')?0:1);" 2>/dev/null; then
+            php_versions+=("$(basename "$ver_dir")")
         fi
     done
 
+    # 按版本号倒序（高版本优先展示）
+    if [ ${#php_versions[@]} -gt 1 ]; then
+        readarray -t php_versions < <(printf '%s\n' "${php_versions[@]}" | sort -rn)
+    fi
+
     if [ ${#php_versions[@]} -eq 0 ]; then
-        log_error "未检测到 PHP 8.3 或 8.4"
-        log_info "请在宝塔面板中安装 PHP 8.3 或 8.4"
+        log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+        log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
         exit 1
     elif [ ${#php_versions[@]} -eq 1 ]; then
         PHP_VERSION="${php_versions[0]}"
     else
-        log_info "检测到多个可用的 PHP 版本："
+        log_info "检测到多个符合要求的 PHP 版本："
         for i in "${!php_versions[@]}"; do
             local ver="${php_versions[$i]}"
-            echo " $((i + 1)). PHP 8.${ver: -1}"
+            echo " $((i + 1)). PHP $(_php_pretty_version "$ver")"
         done
 
         while true; do
@@ -245,7 +263,7 @@ select_php_version() {
     fi
 
     PHP_CMD="/www/server/php/$PHP_VERSION/bin/php"
-    log_success "使用 PHP 8.${PHP_VERSION: -1}"
+    log_success "使用 PHP $(_php_pretty_version "$PHP_VERSION")"
 }
 
 # 检测依赖
@@ -1028,7 +1046,7 @@ show_manual_site_hint() {
     echo " 网站 → 添加站点"
     echo " 域名: ${SITE_DOMAIN:-<您的域名>}"
     echo " 网站目录: $INSTALL_DIR"
-    echo " PHP 版本: 8.${PHP_VERSION: -1}"
+    echo " PHP 版本: $(_php_pretty_version "$PHP_VERSION")"
     echo " 建站后到 网站 → ${SITE_DOMAIN:-<域名>} → 配置文件，在 root 行下方加："
     echo " include $INSTALL_DIR/nginx/manager.conf;"
     echo
@@ -1202,7 +1220,7 @@ show_complete_info() {
     echo "============================================"
     echo
     echo "安装目录: $INSTALL_DIR"
-    echo "PHP 版本: 8.${PHP_VERSION: -1}"
+    echo "PHP 版本: $(_php_pretty_version "$PHP_VERSION")"
     if [ -n "${SITE_DOMAIN:-}" ]; then
         echo "站点域名: $SITE_DOMAIN"
         echo

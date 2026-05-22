@@ -70,22 +70,42 @@ backend/
 
 ### 关键服务
 
-| 服务                   | 职责                                     |
-| ---------------------- | ---------------------------------------- |
-| `UpgradeService`       | 升级主逻辑，`performUpgradeWithStatus()` |
-| `UpgradeStatusManager` | 状态管理，动态步骤计算                   |
-| `PackageExtractor`     | 包解压和应用，权限检查                   |
-| `ReleaseClient`        | Release 获取                             |
-| `BackupManager`        | 备份和恢复                               |
-| `VersionManager`       | 版本比较，环境检测                       |
+| 服务                   | 职责                                                                   |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `UpgradeService`       | 升级主逻辑，`performUpgradeWithStatus()`                               |
+| `UpgradeStatusManager` | 状态管理，动态步骤计算；`fail($msg, $details)` 支持结构化失败上下文    |
+| `EnvironmentChecker`   | 读 `php-requirements.json`，校验 PHP 版本/扩展/函数；产出结构化 report |
+| `PackageExtractor`     | 包解压和应用，权限检查                                                 |
+| `ReleaseClient`        | Release 获取                                                           |
+| `BackupManager`        | 备份和恢复                                                             |
+| `VersionManager`       | 版本比较，环境检测                                                     |
 
 ### 升级模式
 
-| 特性     | PHP API 升级  | Shell 脚本升级      |
-| -------- | ------------- | ------------------- |
-| 触发方式 | 管理后台 API  | `deploy/upgrade.sh` |
-| 升级包   | `upgrade` 包  | `full` 包           |
-| 维护模式 | 自动进入/退出 | 自动进入/退出       |
+| 特性             | PHP API 升级                      | Shell 脚本升级                                        |
+| ---------------- | --------------------------------- | ----------------------------------------------------- |
+| 触发方式         | 管理后台 API                      | `deploy/upgrade.sh`                                   |
+| 升级包           | `upgrade` 包                      | `full` 包                                             |
+| 维护模式         | 自动进入/退出                     | 自动进入/退出                                         |
+| PHP 环境不达标   | 仅检测；前端弹窗指引用 upgrade.sh | 询问 BT API key 自动装扩展/启用函数；否则手工指引     |
+| composer install | `--no-scripts` + 单独 discover    | `--no-dev --optimize-autoloader` + 兜底 dump-autoload |
+
+### PHP 环境检测
+
+- **需求清单**：`build/php-requirements.json`（与版本绑定）。build 时同时复制到 release zip 根（`full`/`upgrade` 包，供升级流程读）+ script zip 根（与 `install.sh`/`upgrade.sh` 同级，供安装流程读）。字段：`php_min` / `php_recommended` / `extensions.required[]` / `extensions.recommended[]` / `functions.required[]` / `functions.recommended[]`
+- **install.sh 入口（安装时）**：
+  - `bt-install.sh::select_php_version` 读 `php_min`，扫 `/www/server/php/*` 用 `version_compare` 过滤符合版本的 PHP（取代 hardcode `[84 83]`）
+  - `bt-deps.sh::check_php_extensions` 读 `extensions.required[]`（剔除 PHP 内置 `bcmath/ctype/dom/...` 等不需要 BT 单独装的），用于扩展存在性校验和自动安装
+  - `bt-deps.sh::check_disabled_functions` 读 `functions.required[]`，扫 php.ini + php-cli.ini 的 `disable_functions`，自动 sed 移除（备份原 ini）+ 重启 PHP-FPM
+- **upgrade.sh 入口（升级时）**：
+  - 解压后、切代码前调 `check_php_environment "$src_dir"`：读 release zip 内 `$src_dir/php-requirements.json`
+  - PHP 版本错 → 手工指引 exit；仅扩展/函数错 → 询问是否走 BT API 自动修复
+  - BT API 自动修复：`bt_resolve_key`（仅自动读 `api.json`，不当场 read 收 key）→ `bt_install_php_extension` / `bt_enable_php_functions` / `bt_reload_php_fpm` → sleep 3 → 重新检测
+  - 未探测到 BT key → 提示用户到面板"设置 → API 接口"启用并加 IP 白名单后重跑（与 install.sh `detect_bt_key` 一致，避免明文 key 进终端历史）
+- **后端 web 入口（管理后台触发）**：`UpgradeService::performUpgradeWithStatus()` 的 `check_environment` 步骤（extract 之后、apply 之前）。不通过抛 `PhpEnvironmentException`，catch 块把 `details` 写入 `status.json.error_details`，前端 ElDialog 弹窗展示
+- **cron/supervisor PHP 路径**：upgrade.sh 升级末尾调 `update_jobs_php_path`，扫 `bt_list_crontab_all` + `bt_list_supervisor_all` 中含 `/www/server/php/XX/bin/php` 与当前 `$PHP_CMD` 不一致的项，输出列表 + 引导手工修改（不自动重建以避免丢任务/丢消息）
+- **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function`，捕获 `E_ERROR / E_PARSE` 等 fatal，若 status 仍 running 则写 failed，避免卡 running 死锁
+- **classmap 自愈**：upgrade.sh composer 块后**无条件**跑 `dump-autoload --optimize --no-scripts`，修复跨小版本升级时 vendor 路径变更（如 `Pdo\Mysql` polyfill / `ReflectsClosures` 跨目录）导致的 classmap 漂移
 
 ### 数据库结构校验
 

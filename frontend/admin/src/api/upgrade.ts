@@ -97,6 +97,19 @@ export interface StructureCheckResult {
 }
 
 // 升级状态类型（轮询获取）
+// PHP 环境检测失败时的结构化失败上下文（由后端 EnvironmentChecker::summarize 产出）
+export interface PhpEnvironmentErrorDetails {
+  type: "php_environment";
+  current_php?: string;
+  required_php?: string | null;
+  recommended_php?: string | null;
+  missing_extensions?: string[];
+  recommended_missing_extensions?: string[];
+  disabled_functions?: string[];
+  message?: string;
+  remediation?: string;
+}
+
 export interface UpgradeStatus {
   status: "idle" | "running" | "completed" | "failed";
   version?: string;
@@ -109,6 +122,7 @@ export interface UpgradeStatus {
   from_version?: string;
   to_version?: string;
   error?: string;
+  error_details?: PhpEnvironmentErrorDetails | Record<string, unknown>;
   message?: string;
   structure_check?: StructureCheckResult;
 }

@@ -13,17 +13,37 @@ PHP_INI=""
 NEED_MANUAL_ACTION=false
 MANUAL_ACTIONS=()
 
-# 检测并选择 PHP 版本（仅支持 8.3/8.4）
+# 检测并选择 PHP 版本。
+# 从 php-requirements.json 读 php_min（缺失兜底 8.3.0），扫 /www/server/php/* 并用
+# PHP 自身 version_compare 过滤，最后选最高版本。与 bt-install.sh::select_php_version 对齐，
+# 但本函数是 noninteractive（被 bt-install.sh 通过子进程调用），多版本时静默选最高。
 detect_php_version() {
-    for ver in 84 83; do
-        if [ -d "/www/server/php/$ver" ] && [ -x "/www/server/php/$ver/bin/php" ]; then
-            PHP_VERSION="$ver"
-            PHP_CMD="/www/server/php/$ver/bin/php"
-            PHP_INI="/www/server/php/$ver/etc/php.ini"
-            return 0
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local php_min
+    php_min=$(_read_req_field "$req_file" "php_min" "8.3.0")
+
+    local php_versions=()
+    for ver_dir in /www/server/php/*; do
+        [ -d "$ver_dir" ] || continue
+        local php_bin="$ver_dir/bin/php"
+        [ -x "$php_bin" ] || continue
+        local actual
+        actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null) || continue
+        if "$php_bin" -r "exit(version_compare('$actual','$php_min','>=')?0:1);" 2>/dev/null; then
+            php_versions+=("$(basename "$ver_dir")")
         fi
     done
-    return 1
+
+    [ ${#php_versions[@]} -eq 0 ] && return 1
+
+    # 多版本时按目录名数字倒序选最高
+    if [ ${#php_versions[@]} -gt 1 ]; then
+        readarray -t php_versions < <(printf '%s\n' "${php_versions[@]}" | sort -rn)
+    fi
+    PHP_VERSION="${php_versions[0]}"
+    PHP_CMD="/www/server/php/$PHP_VERSION/bin/php"
+    PHP_INI="/www/server/php/$PHP_VERSION/etc/php.ini"
+    return 0
 }
 
 # 从配置文件中解除禁用函数
@@ -59,11 +79,19 @@ check_disabled_functions() {
     local php_ini="$PHP_INI"
     local php_cli_ini="/www/server/php/$PHP_VERSION/etc/php-cli.ini"
 
-    # 必需的函数：Composer 和 Laravel 运行所需
-    # - putenv, proc_*: Composer 依赖安装
-    # - exec, shell_exec: 系统命令执行
-    # - pcntl_*: Laravel 队列和进程管理
-    local required_functions=("putenv" "proc_open" "proc_close" "proc_get_status" "proc_terminate" "exec" "shell_exec" "pcntl_signal" "pcntl_alarm" "pcntl_async_signals")
+    # 必需函数从 php-requirements.json 的 functions.required[] 读取（与版本绑定）
+    # fallback 到内置兜底列表：putenv/proc_* 是 Composer/Laravel 运行所需；pcntl_* 是队列管理
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local required_functions=()
+    local from_req
+    from_req=$(_read_req_array "$req_file" "functions.required")
+    if [ -n "$from_req" ]; then
+        readarray -t required_functions <<<"$from_req"
+    fi
+
+    if [ ${#required_functions[@]} -eq 0 ]; then
+        required_functions=("putenv" "proc_open" "proc_close" "proc_get_status" "proc_terminate" "exec" "shell_exec" "pcntl_signal" "pcntl_alarm" "pcntl_async_signals")
+    fi
 
     # 检查两个配置文件中的禁用函数
     local all_disabled=""
@@ -185,24 +213,58 @@ bt_install_so_via_api() {
 
 # 自动安装缺失扩展
 # 用法：./bt-deps.sh auto_install_ext [extra_ext1 extra_ext2 ...]
-# - base 扩展：fileinfo / intl / mbstring / calendar（Laravel 11 必备 + cal_days_in_month）
-# - extra 参数：额外扩展（bt-install.sh 在调用时显式追加 pdo_mysql）
+# - 基础列表从 php-requirements.json 的 extensions.required[] 全量读取（与 check_php_extensions 同源）
+# - extra 参数：补充清单之外的扩展（如 bt-install.sh 按数据库类型动态追加 pdo_mysql / pdo_pgsql）
+# - 已加载的扩展自动 skip（循环内 $PHP_CMD -m 检查），无副作用
 # - 优先用 BT 11.x API（/files?action=InstallSoft）
 # - fallback 1: 老版 BT install.sh 路径（向后兼容）
 # - fallback 2: 已编译 .so 直接 sed 启用 php.ini（PHP 内置扩展如 calendar 已随 BT 编译进 extension_dir，
 #                BT API 不可用时直接 enable 即可生效）
 # 失败的扩展回填 MANUAL_ACTIONS
-# 注：redis 不在 base 列表（项目默认 CACHE_DRIVER=file；BT 11.x 装 phpredis 还要先装 igbinary 依赖链复杂）
+# 注：redis 不在 required 清单（项目默认 CACHE_DRIVER=file；BT 11.x 装 phpredis 还要先装 igbinary 依赖链复杂）
 auto_install_ext() {
     local extra_exts=("$@")
-    local target_extensions=("fileinfo" "intl" "mbstring" "calendar" "${extra_exts[@]}")
-
-    log_step "尝试自动安装缺失的 PHP 扩展: ${target_extensions[*]}"
 
     if [ -z "$PHP_VERSION" ] || [ -z "$PHP_CMD" ]; then
         log_error "PHP 版本未检测，请先运行 detect_php_version"
         return 1
     fi
+
+    # 从 php-requirements.json 读完整 required 清单（单一来源；不同 PHP 版本默认扩展不同，
+    # 用清单驱动避免 hardcode 跨版本不准）
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local target_extensions=()
+    local all_required
+    all_required=$(_read_req_array "$req_file" "extensions.required")
+    if [ -n "$all_required" ]; then
+        readarray -t target_extensions <<<"$all_required"
+    fi
+    # 追加 extra（如 pdo_mysql；放后面让清单内的扩展先尝试）
+    if [ ${#extra_exts[@]} -gt 0 ]; then
+        target_extensions+=("${extra_exts[@]}")
+    fi
+
+    # 去重（extra 与 requirements.json 可能有重叠，去重避免日志噪音）
+    local seen_exts="|"
+    local dedup_ext=()
+    for ext in "${target_extensions[@]}"; do
+        [ -z "$ext" ] && continue
+        case "$seen_exts" in
+            *"|$ext|"*) ;;
+            *)
+                dedup_ext+=("$ext")
+                seen_exts="$seen_exts$ext|"
+                ;;
+        esac
+    done
+    target_extensions=("${dedup_ext[@]}")
+
+    if [ ${#target_extensions[@]} -eq 0 ]; then
+        log_warning "php-requirements.json 不可读且未传入 extra 扩展，无目标"
+        return 0
+    fi
+
+    log_step "尝试自动安装缺失的 PHP 扩展: ${target_extensions[*]}"
 
     # fallback 老版 BT install.sh 路径
     local legacy_install_cmd=""
@@ -292,7 +354,7 @@ auto_install_ext() {
 
     if [ ${#failed_ext[@]} -gt 0 ]; then
         log_warning "以下扩展自动安装失败: ${failed_ext[*]}"
-        log_info "请到宝塔面板 → 软件商店 → PHP 8.${PHP_VERSION: -1} → 设置 → 安装扩展 手工安装"
+        log_info "请到宝塔面板 → 软件商店 → PHP $(_php_pretty_version "$PHP_VERSION") → 设置 → 安装扩展 手工安装"
         NEED_MANUAL_ACTION=true
         MANUAL_ACTIONS+=("以下扩展自动安装失败，请在宝塔面板手工安装:")
         for ext in "${failed_ext[@]}"; do
@@ -306,37 +368,31 @@ auto_install_ext() {
 }
 
 # 检测 PHP 扩展
+# 部署环境固定为 BT（宝塔面板）；BT 不同 PHP 版本默认编译的扩展不同（如 PHP 8.4 vs 8.3 默认集合可能变化），
+# 故按 php-requirements.json 的 extensions.required[] 全量检测，不再 hardcode 排除/手工列表。
+# 缺失的扩展统一引导用户运行 auto_install_ext（BT API 自动安装），失败时回落到宝塔面板手工安装。
 check_php_extensions() {
     log_step "检测 PHP 扩展"
 
-    # 必要扩展分类
-    # - 可自动安装：宝塔面板可直接安装
-    # - 需手工处理：某些版本需要手工编译或特殊处理
-    # - pdo_mysql：Laravel 连 MySQL 必备；bt-install.sh check_dependencies 调用时
-    #   通过 auto_install_ext 显式装上，缺它会让 artisan migrate 直接失败
-    # - 不含 redis：项目默认 CACHE_DRIVER=file，redis 是可选优化
-    #   而非 Laravel 11 必备；用户切到 redis driver 时再装。BT 11.x 装 phpredis 还要先装
-    #   igbinary 依赖链复杂，硬性要求会卡住绝大多数无 redis 需求的部署
-    # - calendar：composer.json require ext-calendar（cal_days_in_month 在 Date.php 用）；
-    #   PHP 内置扩展，BT 编译时已生成 calendar.so，仅需在 ini 启用（auto_install_ext 走 path 3）
-    local required_ext=("gd" "zip" "bcmath" "pcntl" "intl" "fileinfo" "openssl" "mbstring" "curl" "xml" "calendar" "pdo_mysql")
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local required_ext=()
+    local all_required
+    all_required=$(_read_req_array "$req_file" "extensions.required")
+    if [ -n "$all_required" ]; then
+        readarray -t required_ext <<<"$all_required"
+    fi
 
-    # 需要手工在宝塔面板安装的扩展（无法自动安装）
-    local manual_ext=("fileinfo" "intl")
+    # fallback：requirements.json 缺失或解析失败时用兜底列表
+    if [ ${#required_ext[@]} -eq 0 ]; then
+        # pdo_mysql：Laravel 连 MySQL 必备；calendar：composer.json require ext-calendar
+        # 不含 redis：项目默认 CACHE_DRIVER=file，redis 切到 redis driver 时再装
+        required_ext=("gd" "zip" "bcmath" "pcntl" "intl" "fileinfo" "openssl" "mbstring" "curl" "xml" "calendar" "pdo_mysql")
+    fi
 
     local missing_ext=()
-    local missing_manual=()
-
     for ext in "${required_ext[@]}"; do
         if ! $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
             missing_ext+=("$ext")
-            # 检查是否需要手工安装
-            for m in "${manual_ext[@]}"; do
-                if [ "$ext" = "$m" ]; then
-                    missing_manual+=("$ext")
-                    break
-                fi
-            done
         fi
     done
 
@@ -346,17 +402,10 @@ check_php_extensions() {
     fi
 
     log_warning "缺少扩展: ${missing_ext[*]}"
-
-    # 检查是否有需要手工安装的扩展
-    if [ ${#missing_manual[@]} -gt 0 ]; then
-        NEED_MANUAL_ACTION=true
-        MANUAL_ACTIONS+=("请在宝塔面板中安装以下 PHP 扩展:")
-        for ext in "${missing_manual[@]}"; do
-            MANUAL_ACTIONS+=("  - $ext")
-        done
-        MANUAL_ACTIONS+=("")
-        MANUAL_ACTIONS+=("安装路径: 宝塔面板 → 软件商店 → PHP 8.${PHP_VERSION: -1} → 设置 → 安装扩展")
-    fi
+    NEED_MANUAL_ACTION=true
+    MANUAL_ACTIONS+=("缺少 PHP 扩展，请运行: bash $SCRIPT_DIR/bt-deps.sh auto_install_ext")
+    MANUAL_ACTIONS+=("  缺失列表: ${missing_ext[*]}")
+    MANUAL_ACTIONS+=("自动安装失败的扩展请到宝塔面板 → 软件商店 → PHP $(_php_pretty_version "$PHP_VERSION") → 设置 → 安装扩展")
 
     return 1
 }
@@ -450,11 +499,11 @@ main() {
     # 检测 PHP 版本
     log_step "检测 PHP 环境"
     if ! detect_php_version; then
-        log_error "未找到 PHP 8.3+"
-        log_info "请在宝塔面板安装 PHP 8.3 或更高版本"
+        log_error "未找到符合要求的 PHP 版本"
+        log_info "请在宝塔面板安装 PHP（最低 php-requirements.json 中 php_min，默认 8.3.0）"
         exit 1
     fi
-    log_success "PHP 8.${PHP_VERSION: -1}: $($PHP_CMD -v | head -1)"
+    log_success "PHP $(_php_pretty_version "$PHP_VERSION"): $($PHP_CMD -v | head -1)"
 
     # 检测并修复禁用函数
     check_disabled_functions
@@ -489,10 +538,10 @@ case "${1:-}" in
     auto_install_ext)
         log_step "检测 PHP 环境"
         if ! detect_php_version; then
-            log_error "未找到 PHP 8.3+"
+            log_error "未找到符合要求的 PHP 版本"
             exit 1
         fi
-        log_success "PHP 8.${PHP_VERSION: -1}: $($PHP_CMD -v | head -1)"
+        log_success "PHP $(_php_pretty_version "$PHP_VERSION"): $($PHP_CMD -v | head -1)"
         auto_install_ext
         exit $?
         ;;

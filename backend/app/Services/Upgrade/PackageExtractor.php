@@ -530,6 +530,28 @@ class PackageExtractor
     }
 
     /**
+     * 查找 php-requirements.json（与 findBackendDir 同样的两层兼容策略）。
+     * 解压形态可能是 $extractedPath/php-requirements.json 或 $extractedPath/{upgrade,full}/php-requirements.json。
+     * 找不到返回 null，由 EnvironmentChecker 走 skipped 路径（向后兼容旧版本不含清单的升级包）。
+     */
+    public function findRequirementsJson(string $extractedPath): ?string
+    {
+        $candidate = "$extractedPath/php-requirements.json";
+        if (File::isFile($candidate)) {
+            return $candidate;
+        }
+
+        foreach (File::directories($extractedPath) as $dir) {
+            $candidate = "$dir/php-requirements.json";
+            if (File::isFile($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * 查找后端目录
      */
     protected function findBackendDir(string $extractedPath): ?string

@@ -987,6 +987,214 @@ bt_inject_vhost_include() {
 }
 
 # ========================================
+# 6. PHP 自动化（安装扩展 / 启用函数 / 重启 PHP-FPM）
+# ========================================
+
+# 把 PHP 完整版本号转成宝塔紧凑形式（如 8.3.21 → 83）
+_bt_php_ver_compact() {
+    local full="$1"
+    echo "$full" | awk -F. '{print $1$2}'
+}
+
+# 安装 PHP 扩展（通过宝塔 → PHP 管理 → 安装扩展）
+# 用法：bt_install_php_extension <php_ver_compact> <extension_name>
+# 例：bt_install_php_extension 83 redis
+# return 0 安装成功 / 已安装；1 失败
+bt_install_php_extension() {
+    local php_ver="$1"
+    local ext="$2"
+
+    if [ -z "$php_ver" ] || [ -z "$ext" ]; then
+        log_error "bt_install_php_extension 参数不全（php_ver / ext）"
+        return 1
+    fi
+
+    log_step "BT 安装 PHP 扩展: php$php_ver/$ext"
+
+    # BT 11.x 安装 PHP 扩展端点（同步执行 install 脚本，可能耗时长）
+    local resp
+    resp=$(BT_API_TIMEOUT=600 _bt_api_post "/plugin?action=a&name=php&s=InstallSoft" \
+        "--data-urlencode 'type=1' --data-urlencode 'version=$php_ver' --data-urlencode 'name=$ext'") || {
+        log_warning "BT API InstallSoft 调用失败（扩展 $ext）"
+        return 1
+    }
+
+    local status msg
+    status="$(_bt_json_get "$resp" "status")"
+    msg="$(_bt_json_get "$resp" "msg")"
+
+    # 成功响应：status=true，或 msg 含"已安装"/"安装成功"
+    if [ "$status" = "true" ]; then
+        log_success "  扩展 $ext 已就绪"
+        return 0
+    fi
+    if [ -n "$msg" ] && echo "$msg" | grep -qE '已安装|已经存在|installed'; then
+        log_success "  扩展 $ext 已存在"
+        return 0
+    fi
+
+    log_warning "BT 安装扩展失败: ${msg:-未知错误}"
+    log_info "原始响应: $resp"
+    return 1
+}
+
+# 启用 PHP 函数（从 disable_functions 移除）
+# 用法：bt_enable_php_functions <php_ver_compact> <fn1> [fn2] [fn3] ...
+# 例：bt_enable_php_functions 83 exec proc_open putenv
+# return 0 成功；1 失败
+bt_enable_php_functions() {
+    local php_ver="$1"
+    shift
+    local funcs=("$@")
+
+    if [ -z "$php_ver" ] || [ ${#funcs[@]} -eq 0 ]; then
+        log_error "bt_enable_php_functions 参数不全（php_ver / funcs）"
+        return 1
+    fi
+
+    log_step "BT 启用 PHP 函数: php$php_ver, ${funcs[*]}"
+
+    # 1. 读当前 disable_functions
+    local resp
+    resp=$(_bt_api_post "/config?action=GetPHPConfig" \
+        "--data-urlencode 'version=$php_ver'") || {
+        log_warning "BT API GetPHPConfig 调用失败"
+        return 1
+    }
+
+    local current_disabled
+    current_disabled="$(_bt_json_get "$resp" "disable_functions")"
+    if [ -z "$current_disabled" ]; then
+        log_info "  disable_functions 已为空，无需修改"
+        return 0
+    fi
+    log_info "  当前 disable_functions: $current_disabled"
+
+    # 2. 从 current_disabled 移除要启用的函数（用 python 处理 CSV）
+    local new_disabled
+    new_disabled=$(FN_JOINED="${funcs[*]}" CUR="$current_disabled" python3 -c "
+import os
+cur = [x.strip() for x in os.environ.get('CUR', '').split(',') if x.strip()]
+remove = set(os.environ.get('FN_JOINED', '').split())
+print(','.join(x for x in cur if x not in remove))
+" 2>/dev/null)
+
+    if [ "$new_disabled" = "$current_disabled" ]; then
+        log_info "  目标函数已不在 disable_functions 中，无需修改"
+        return 0
+    fi
+
+    log_info "  新 disable_functions: $new_disabled"
+
+    # 3. 写回
+    resp=$(_bt_api_post "/config?action=SavePHPConfig" \
+        "--data-urlencode 'version=$php_ver' --data-urlencode 'disabled=$new_disabled'") || {
+        log_warning "BT API SavePHPConfig 调用失败"
+        return 1
+    }
+
+    local status msg
+    status="$(_bt_json_get "$resp" "status")"
+    msg="$(_bt_json_get "$resp" "msg")"
+
+    if [ "$status" = "true" ]; then
+        log_success "  函数启用完成"
+        return 0
+    fi
+
+    log_warning "BT SavePHPConfig 失败: ${msg:-未知错误}"
+    log_info "原始响应: $resp"
+    return 1
+}
+
+# 重启 PHP-FPM
+# 用法：bt_reload_php_fpm <php_ver_compact>
+# return 0 成功；1 失败
+bt_reload_php_fpm() {
+    local php_ver="$1"
+
+    if [ -z "$php_ver" ]; then
+        log_error "bt_reload_php_fpm 缺少 php_ver"
+        return 1
+    fi
+
+    log_step "BT 重启 PHP-FPM $php_ver"
+
+    local resp
+    resp=$(_bt_api_post "/system?action=ServiceAdmin" \
+        "--data-urlencode 'name=php-fpm-$php_ver' --data-urlencode 'type=reload'") || {
+        log_warning "BT API ServiceAdmin 调用失败"
+        return 1
+    }
+
+    local status
+    status="$(_bt_json_get "$resp" "status")"
+    if [ "$status" = "true" ]; then
+        log_success "  PHP-FPM $php_ver 已重启"
+        return 0
+    fi
+
+    log_warning "BT ServiceAdmin 失败"
+    log_info "原始响应: $resp"
+    return 1
+}
+
+# ========================================
+# 7. cron / supervisor 的 PHP 绝对路径扫描与替换
+# ========================================
+
+# 列出所有 cron 任务（用于扫描 PHP 路径）
+# 输出：每行 JSON 形式 {"id":N,"name":"...","sBody":"..."}
+bt_list_crontab_all() {
+    local resp
+    resp=$(_bt_api_post "/crontab?action=GetCrontab" \
+        "--data-urlencode 'p=1' --data-urlencode 'limit=500'") || return 1
+
+    echo "$resp" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    items = d.get('data', []) if isinstance(d, dict) else d
+    if isinstance(items, dict):
+        items = items.get('data', [])
+    for it in items:
+        print(json.dumps({
+            'id': it.get('id'),
+            'name': it.get('name', ''),
+            'sBody': it.get('sBody', it.get('cmd', '')),
+        }, ensure_ascii=False))
+except Exception:
+    pass
+" 2>/dev/null
+}
+
+# 列出 supervisor 进程（队列 worker 检测）
+# 输出：每行 JSON 形式 {"name":"...","command":"...","user":"...","path":"...","numprocs":N}
+bt_list_supervisor_all() {
+    local resp
+    resp=$(_bt_api_post "/plugin?action=a&name=supervisor&s=GetProcessList" "") || return 1
+
+    echo "$resp" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    items = d if isinstance(d, list) else d.get('data', d.get('message', []))
+    if not isinstance(items, list):
+        items = []
+    for it in items:
+        print(json.dumps({
+            'name': it.get('name', ''),
+            'command': it.get('command', ''),
+            'user': it.get('user', 'www'),
+            'path': it.get('path', ''),
+            'numprocs': it.get('numprocs', 1),
+        }, ensure_ascii=False))
+except Exception:
+    pass
+" 2>/dev/null
+}
+
+# ========================================
 # 主入口（独立运行时使用；source 时跳过）
 # ========================================
 

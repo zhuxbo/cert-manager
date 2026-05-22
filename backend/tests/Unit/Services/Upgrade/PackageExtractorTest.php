@@ -153,6 +153,52 @@ test('find backend dir with app', function () {
     expect($result)->toBe($packageDir);
 });
 
+test('find requirements json in root', function () {
+    // 形态 1: 解压目录根直接有 php-requirements.json
+    // 例如 script 包解压后 $extractDir/php-requirements.json
+    $packageDir = "$this->testDir/pkg_root";
+    File::makeDirectory($packageDir, 0755, true);
+    File::put("$packageDir/php-requirements.json", '{"php_min":"8.3.0"}');
+
+    $result = $this->extractor->findRequirementsJson($packageDir);
+
+    expect($result)->toBe("$packageDir/php-requirements.json");
+});
+
+test('find requirements json in subdirectory', function () {
+    // 形态 2: zip 解压后顶层带 upgrade/ 目录（package.sh 默认产出形态）
+    // 例如 $extractDir/upgrade/php-requirements.json
+    $packageDir = "$this->testDir/pkg_sub";
+    File::makeDirectory("$packageDir/upgrade", 0755, true);
+    File::put("$packageDir/upgrade/php-requirements.json", '{"php_min":"8.3.0"}');
+
+    $result = $this->extractor->findRequirementsJson($packageDir);
+
+    expect($result)->toBe("$packageDir/upgrade/php-requirements.json");
+});
+
+test('find requirements json returns null when missing', function () {
+    // 形态 3: 老版本升级包不带清单 — 必须返回 null 让 EnvironmentChecker 走 skipped 路径（向后兼容）
+    $packageDir = "$this->testDir/pkg_empty";
+    File::makeDirectory("$packageDir/backend", 0755, true);
+
+    $result = $this->extractor->findRequirementsJson($packageDir);
+
+    expect($result)->toBeNull();
+});
+
+test('find requirements json prefers root over subdirectory', function () {
+    // 优先级：根目录命中优先于子目录（避免子目录内的旧清单覆盖根的新清单）
+    $packageDir = "$this->testDir/pkg_both";
+    File::makeDirectory("$packageDir/upgrade", 0755, true);
+    File::put("$packageDir/php-requirements.json", '{"php_min":"9.0.0"}');
+    File::put("$packageDir/upgrade/php-requirements.json", '{"php_min":"8.0.0"}');
+
+    $result = $this->extractor->findRequirementsJson($packageDir);
+
+    expect($result)->toBe("$packageDir/php-requirements.json");
+});
+
 test('cleanup removes extract directory', function () {
     $extractDir = "$this->testDir/extract_test123";
     File::makeDirectory($extractDir, 0755, true);

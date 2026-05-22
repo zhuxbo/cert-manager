@@ -206,3 +206,13 @@ log_success "version.json 已生成"
 log_info "版本: $VERSION"
 log_info "通道: $RELEASE_CHANNEL"
 log_info "Monorepo commit: ${MONOREPO_COMMIT:-N/A}"
+
+# 复制 PHP 环境需求清单到生产代码根（后续 package.sh 会随 rsync 带入 FULL/UPGRADE 包）
+# 后台升级 EnvironmentChecker / upgrade.sh 启动前都从这里读
+PHP_REQ_SRC="$SOURCE_DIR/build/php-requirements.json"
+if [ -f "$PHP_REQ_SRC" ]; then
+    cp "$PHP_REQ_SRC" "$PRODUCTION_DIR/php-requirements.json"
+    log_success "php-requirements.json 已生成"
+else
+    log_warning "未找到 build/php-requirements.json，跳过（旧版本无此文件时升级流程会自动 skip 检测）"
+fi

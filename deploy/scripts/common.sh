@@ -239,6 +239,112 @@ download_release_file() {
     return 1
 }
 
+# ========================================
+# PHP 工具（版本探测 / requirements.json 解析）
+# ========================================
+
+# 把宝塔 PHP 目录名（如 83/84/810）渲染为友好版本号（如 8.3.21）。
+# CLI 不可用时回落到目录名拼接（83 → 8.3，810 → 810）。
+#
+# 注意：upgrade.sh 独立部署，不 source common.sh，需自带同步副本；
+#       修改本函数时请同步检查 deploy/upgrade.sh::_php_pretty_version。
+_php_pretty_version() {
+    local ver="$1"
+    local php_bin="/www/server/php/$ver/bin/php"
+    if [ -x "$php_bin" ]; then
+        local actual
+        actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null)
+        [ -n "$actual" ] && {
+            echo "$actual"
+            return 0
+        }
+    fi
+    # 仅当 ver 为 2 位（83/84）时拼成 8.X；3 位（810）直接打目录名
+    if [ "${#ver}" -eq 2 ]; then
+        echo "${ver:0:1}.${ver:1}"
+    else
+        echo "$ver"
+    fi
+}
+
+# 探测一个可用的 PHP CLI（任意版本，仅用作工具：解析 JSON / 版本比较）。
+# 成功设置全局 PHP_PROBE_BIN 并 return 0；找不到 return 1。
+# 已设置 PHP_PROBE_BIN 时直接复用，避免重复扫描。
+_probe_any_php() {
+    if [ -n "${PHP_PROBE_BIN:-}" ] && [ -x "$PHP_PROBE_BIN" ]; then
+        return 0
+    fi
+    local ver_dir php_bin
+    for ver_dir in /www/server/php/*; do
+        [ -d "$ver_dir" ] || continue
+        php_bin="$ver_dir/bin/php"
+        if [ -x "$php_bin" ]; then
+            PHP_PROBE_BIN="$php_bin"
+            return 0
+        fi
+    done
+    if command -v php &>/dev/null; then
+        PHP_PROBE_BIN=$(command -v php)
+        return 0
+    fi
+    return 1
+}
+
+# 从 php-requirements.json 读取顶层标量字段（如 php_min / php_recommended）。
+# 用法：_read_req_field <req_file> <field> [fallback]
+# 文件不存在 / 探测不到 PHP / 字段缺失 → 输出 fallback（默认空）。
+_read_req_field() {
+    local req_file="$1"
+    local field="$2"
+    local fallback="${3:-}"
+    if [ ! -f "$req_file" ]; then
+        echo "$fallback"
+        return 0
+    fi
+    if ! _probe_any_php; then
+        echo "$fallback"
+        return 0
+    fi
+    local result
+    result=$(REQ_FILE="$req_file" FIELD="$field" "$PHP_PROBE_BIN" -r '
+$d = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+echo is_array($d) && isset($d[getenv("FIELD")]) ? $d[getenv("FIELD")] : "";
+' 2>/dev/null)
+    if [ -n "$result" ]; then
+        echo "$result"
+    else
+        echo "$fallback"
+    fi
+}
+
+# 从 php-requirements.json 读取数组字段，每行一个元素（如 extensions.required）。
+# 用法：_read_req_array <req_file> <dot.path>
+# 文件不存在 / 探测不到 PHP / 路径缺失 → 输出空。
+_read_req_array() {
+    local req_file="$1"
+    local path="$2"
+    if [ ! -f "$req_file" ]; then
+        return 0
+    fi
+    if ! _probe_any_php; then
+        return 0
+    fi
+    REQ_FILE="$req_file" PATHSPEC="$path" "$PHP_PROBE_BIN" -r '
+$d = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
+foreach (explode(".", getenv("PATHSPEC")) as $k) {
+    if (! is_array($d) || ! isset($d[$k])) { exit(0); }
+    $d = $d[$k];
+}
+if (is_array($d)) {
+    foreach ($d as $x) { echo $x . "\n"; }
+}
+' 2>/dev/null
+}
+
+# ========================================
+# 下载（续）
+# ========================================
+
 # 下载 releases.json（全局唯一真相源，含所有版本 + 每个 asset 的 sha256）
 # install.sh / upgrade.sh / bt-install 强校验从此读 sha256
 download_releases_json() {
