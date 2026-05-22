@@ -327,4 +327,80 @@ git status --short | grep "^??"
 
 ---
 
-逐项检查完毕后输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。
+## 8. 独立 Review 循环（必跑，不可跳过）
+
+**目的**：用干净上下文的独立 reviewer subagent 以"破坏模式"找毛病，避开主智能体改完测试通过就停手的天然偏差。
+
+**质量门定义**：声明"完成"前必须满足 — reviewer 输出过 **`REVIEW_PASS: 未发现新 critical/high 问题`** 这串可 grep 的签字。
+
+### 8.1 执行结构（循环到收敛，最多 5 轮）
+
+```
+loop:
+  ① 派 reviewer subagent（见 §8.2 调用方式）
+  ② 主智能体读 reviewer 报告
+     ├─ Critical / High：必须修 → 修完跳回 §2/§3（只对改动文件）→ 重新执行 §8
+     ├─ Medium：报告给用户决议（当场修 / follow-up issue / 接受）—— 主智能体不擅自处理
+     │   └─ 用户选"当场修"：视同 Critical/High 处理（修完跳回 §2/§3 → 重新执行 §8）
+     └─ Low / Nit：默认 follow-up，不阻塞
+  ③ reviewer 输出 REVIEW_PASS 字符串 → 主智能体 grep 验证 → 退出循环
+  ④ 第 5 轮结束仍有 critical/high 未收敛 → 主智能体停止执行，
+     输出 REVIEW_STALLED 标记，由用户决定拆 PR / 接受残留 / 强行继续
+```
+
+**强制约束**：
+
+- 声明完成前**必须用 `grep -F "REVIEW_PASS:"` 检测 reviewer 输出**，并在最终报告中引用该行。没有这行 grep 命中 → 流程未完成。
+- Reviewer 输出 `REVIEW_FAIL: 发现 <N> 个 critical/high 问题需修复` → 等同于有 critical/high 问题，**必须按"修 critical/high → 重跑 §8"路径处理**，不允许只读 `REVIEW_PASS:` 缺失就推断"继续循环"。
+- Medium 问题不允许主智能体擅自修或忽略 — 必须列给用户决议。**用户选"当场修"时视同 Critical/High：修完必须重新执行 §8**，不允许跳过下一轮 review。
+- 第 5 轮硬停 — 不论是否还有问题，主智能体必须停下来等用户指令，不允许进入第 6 轮。停止时**必须输出可 grep 标记**：`REVIEW_STALLED: 已达 5 轮上限，等待用户决策` —— 与 `REVIEW_PASS:` / `REVIEW_FAIL:` 对称，便于用户和外部工具感知流程实际卡在哪一步。
+
+### 8.2 Reviewer Subagent 调用方式
+
+用 Claude Code 的 Agent tool 派出独立子对话：
+
+```
+Agent({
+  subagent_type: "feature-dev:code-reviewer",
+  description: "<3-5 字描述>",
+  prompt: <prompt 模板见 skills/review-checklist.md "Reviewer Subagent 任务模板" 章节>
+})
+```
+
+**Fallback**：若 `feature-dev:code-reviewer` 不可用（subagent_type 未注册 / 报错），改用通用 reviewer：
+
+```
+Agent({
+  description: "<3-5 字描述>",
+  prompt: <同上>
+})
+```
+
+**Prompt 模板的单一来源**：`skills/review-checklist.md` 中 "Reviewer Subagent 任务模板" 章节是唯一权威。本文件不内嵌模板内容，避免漂移。主智能体派 reviewer 前先读该章节，按模板填空（改动范围 / 已知 review 历史 / 主要功能背景）。
+
+### 8.3 终止防御机制
+
+防无限循环和噪音：
+
+1. **传"已知问题 + 决议"给下一轮 reviewer**：每轮把上一轮发现作为 context，让它不要重复报告同一处
+2. **置信度阈值**：`confidence ≥ 80` 才报告（过滤理论问题）
+3. **轮次硬上限**：5 轮；第 5 轮后无论结果主智能体停止，输出 `REVIEW_STALLED:` 标记等用户决策（拆 PR / 接受残留 / 强行继续）
+4. **三类机器可验证标记**（固定前缀，全程用 `grep -F` 验证，不允许凭语义判断近义句）：
+   - `REVIEW_PASS: 未发现新 critical/high 问题` — reviewer 通过签字，主智能体见到即退出循环
+   - `REVIEW_FAIL: 发现 <N> 个 critical/high 问题需修复` — reviewer 失败签字，主智能体进入"修 → 重跑 §8"路径
+   - `REVIEW_STALLED: 已达 5 轮上限，等待用户决策` — 主智能体自己输出，标记流程卡住等用户接管
+
+### 8.4 真实参考
+
+`feat: 升级链路加入 PHP 环境检测与流程加固`（commit `9dd8ce1d`）实际跑了 4 轮 review 才收敛：
+
+- 第 1 轮 → DRY / 跨脚本工具复制 / python3 → PHP / 一致性问题（5-6 条）
+- 第 2 轮 → 防御机制完全失效（清单未打进升级包）/ 数据丢失风险（检测过晚导致 storage 被 trap cleanup 删）/ shell 函数名笔误（log_warn vs log_warning）
+- 第 3 轮 → 字符串拼接路径不安全 / autoload 兜底对称性缺失 / 新方法无单测
+- 第 4 轮 → 0 new → 通过
+
+每一轮的发现都对应 `skills/review-checklist.md` 反模式 1-8 的某条，案例锚定可双向验证。本节就是把这次自然形成的流程显式化，防止下次"跑一次就停"。
+
+---
+
+逐项检查完毕、阶段 8 reviewer 输出 `REVIEW_PASS: 未发现新 critical/high 问题` 并被主智能体 grep 命中后，输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。

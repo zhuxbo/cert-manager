@@ -26,21 +26,24 @@ skills/ # 开发规范（详细文档）
   - Shell：`git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -w`（`brew install shfmt`）
 - **PHP 8.3+** - 双引号变量不加大括号（如 `"$var"` 而非 `"{$var}"`）；例外：变量后紧跟中文等非 ASCII 字符时必须加花括号（`"{$var}，中文"` 而非 `"$var，中文"`），因为 PHP 变量名匹配 `\x80-\xff` 字节
 - **测试发现 bug 必须修复代码** - 测试的目的是发现 bug 并修复，绝不修改测试去迎合错误的代码
+- **Plan 文档必须含杀手场景 + 对端检查** - 写 `.superpowers/` 下 plan 前先填这两栏（见 `skills/review-checklist.md` 设计期清单）；回答不出来视为设计未完成，不开始写代码
+- **完成检查必跑 reviewer 循环** - `/finish-check` 阶段 8 强制委派 reviewer subagent，直到输出 `REVIEW_PASS: 未发现新 critical/high 问题` 这串可 grep 签字才算通过
 
 ## 开发规范
 
 详细规范见 `skills/SKILL.md`，按领域组织：
 
-| Skill                     | 内容                                      |
-| ------------------------- | ----------------------------------------- |
-| `skills/backend-dev.md`   | Laravel API、升级系统、迁移幂等           |
-| `skills/acme-module.md`   | ACME 订阅管理（封装下单 + 交付 EAB 模式） |
-| `skills/source-api.md`    | 新增上游来源（Order\\Api / Acme\\Api）    |
-| `skills/frontend-dev.md`  | Vue 3、Monorepo、共享组件                 |
-| `skills/deploy-ops.md`    | 宝塔部署、安全基线                        |
-| `skills/build-release.md` | 版本发布、打包、releases.json 校验链      |
-| `skills/plugin-dev.md`    | 插件系统、IIFE 打包、安装/更新/卸载       |
-| `skills/acme-e2e-test/`   | certbot 端到端测试（Manager + 上游系统）  |
+| Skill                        | 内容                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `skills/backend-dev.md`      | Laravel API、升级系统、迁移幂等                                         |
+| `skills/acme-module.md`      | ACME 订阅管理（封装下单 + 交付 EAB 模式）                               |
+| `skills/source-api.md`       | 新增上游来源（Order\\Api / Acme\\Api）                                  |
+| `skills/frontend-dev.md`     | Vue 3、Monorepo、共享组件                                               |
+| `skills/deploy-ops.md`       | 宝塔部署、安全基线                                                      |
+| `skills/build-release.md`    | 版本发布、打包、releases.json 校验链                                    |
+| `skills/plugin-dev.md`       | 插件系统、IIFE 打包、安装/更新/卸载                                     |
+| `skills/acme-e2e-test/`      | certbot 端到端测试（Manager + 上游系统）                                |
+| `skills/review-checklist.md` | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描 |
 
 ## 知识积累
 
