@@ -41,8 +41,14 @@ class BinaryLocator
         'curl' => ['--version', 'curl '],
     ];
 
-    /** @var array<string, string> tool name → 解析结果（路径或命令串） */
+    /** @var array<string, string> tool name → 解析路径（或 composer 的完整命令串） */
     protected array $resolved = [];
+
+    /** @var array{ini_path: ?string, disable_functions: string, disable_functions_ok: bool}|null */
+    protected ?array $fpmIniCache = null;
+
+    /** @var array{ini_path: ?string, disable_functions: ?string, disable_functions_ok: bool, error?: string}|null */
+    protected ?array $cliIniCache = null;
 
     public function php(): string
     {
@@ -309,7 +315,7 @@ class BinaryLocator
      */
     public function inspectFpmIni(): array
     {
-        return $this->resolved['__fpm_ini'] ??= $this->buildIniInfo(
+        return $this->fpmIniCache ??= $this->buildIniInfo(
             php_ini_loaded_file() ?: null,
             (string) ini_get('disable_functions'),
         );
@@ -322,8 +328,8 @@ class BinaryLocator
      */
     public function inspectCliIni(): array
     {
-        if (isset($this->resolved['__cli_ini'])) {
-            return $this->resolved['__cli_ini'];
+        if ($this->cliIniCache !== null) {
+            return $this->cliIniCache;
         }
 
         $php = $this->php();
@@ -335,7 +341,7 @@ class BinaryLocator
             $pipes
         );
         if (! is_resource($proc)) {
-            return $this->resolved['__cli_ini'] = [
+            return $this->cliIniCache = [
                 'ini_path' => null,
                 'disable_functions' => null,
                 'disable_functions_ok' => false,
@@ -350,7 +356,7 @@ class BinaryLocator
 
         [$iniPath, $disableFunctions] = array_pad(explode('|', $out, 2), 2, null);
 
-        return $this->resolved['__cli_ini'] = $this->buildIniInfo(
+        return $this->cliIniCache = $this->buildIniInfo(
             $iniPath !== '' ? $iniPath : null,
             $disableFunctions ?? '',
         );

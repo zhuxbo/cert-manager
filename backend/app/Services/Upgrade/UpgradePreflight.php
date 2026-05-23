@@ -42,7 +42,10 @@ class UpgradePreflight
                     'fix' => '使用 upgrade.sh 升级',
                 ]],
                 'items' => [],
-                'ini' => ['fpm' => [], 'cli' => []],
+                'ini' => [
+                    'fpm' => ['disable_functions_ok' => false, 'ini_path' => null],
+                    'cli' => ['disable_functions_ok' => false, 'ini_path' => null],
+                ],
             ];
         }
     }
@@ -57,7 +60,7 @@ class UpgradePreflight
         $fpmIni = $this->locator->inspectFpmIni();
 
         // ① FPM disable_functions
-        if (! ($fpmIni['disable_functions_ok'] ?? false)) {
+        if (! $fpmIni['disable_functions_ok']) {
             $blocking[] = [
                 'code' => 'fpm_proc_open_disabled',
                 'reason' => 'PHP-FPM disable_functions 已禁用 proc_open / exec，升级所需的子进程调用无法执行',
@@ -97,9 +100,9 @@ class UpgradePreflight
         // 依赖 php()，php 失败时用兜底字典跳过探测但仍报告 cli ini 阻塞
         $cliIni = $phpOk
             ? $this->locator->inspectCliIni()
-            : ['ini_path' => null, 'disable_functions_ok' => false, 'error' => 'php_not_resolved'];
+            : ['ini_path' => null, 'disable_functions' => null, 'disable_functions_ok' => false, 'error' => 'php_not_resolved'];
 
-        if (! ($cliIni['disable_functions_ok'] ?? false)) {
+        if (! $cliIni['disable_functions_ok']) {
             $blocking[] = [
                 'code' => 'cli_proc_open_disabled',
                 'reason' => $phpOk
@@ -116,12 +119,12 @@ class UpgradePreflight
             'items' => $items,
             'ini' => [
                 'fpm' => [
-                    'disable_functions_ok' => $fpmIni['disable_functions_ok'] ?? false,
-                    'ini_path' => $fpmIni['ini_path'] ?? null,
+                    'disable_functions_ok' => $fpmIni['disable_functions_ok'],
+                    'ini_path' => $fpmIni['ini_path'],
                 ],
                 'cli' => [
-                    'disable_functions_ok' => $cliIni['disable_functions_ok'] ?? false,
-                    'ini_path' => $cliIni['ini_path'] ?? null,
+                    'disable_functions_ok' => $cliIni['disable_functions_ok'],
+                    'ini_path' => $cliIni['ini_path'],
                 ],
             ],
         ];
