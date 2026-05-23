@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\Cert;
 use App\Observers\CertObserver;
+use App\Services\Binary\BinaryLocator;
 use App\Services\LogBuffer;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Queue\Events\JobFailed;
@@ -33,6 +34,9 @@ class AppServiceProvider extends ServiceProvider
         $numericOffset = sprintf('%s%02d:%02d', $sign, intdiv($absSec, 3600), intdiv($absSec, 60) % 60);
 
         config(['database.connections.mysql.timezone' => $numericOffset]);
+
+        // 系统二进制定位器（探测 + memoize，全进程复用）
+        $this->app->singleton(BinaryLocator::class);
     }
 
     /**
