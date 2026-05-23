@@ -312,13 +312,16 @@ check_dependencies() {
     # 自动安装 base 扩展（fileinfo / intl / mbstring / calendar）+ pdo_mysql
     # pdo_mysql 是 Laravel 连 MySQL 的强需扩展，缺它会让 artisan migrate 失败
     # 失败仍走原 manual_actions 兜底
+    # 子进程必须接受父进程选好的 PHP_VERSION/PHP_CMD，否则子进程独立扫描会选最高版本
     if [ -f "$SCRIPT_DIR/bt-deps.sh" ]; then
-        bash "$SCRIPT_DIR/bt-deps.sh" auto_install_ext pdo_mysql || true
+        PHP_VERSION="$PHP_VERSION" PHP_CMD="$PHP_CMD" \
+            bash "$SCRIPT_DIR/bt-deps.sh" auto_install_ext pdo_mysql || true
     fi
 
     # 运行依赖检测脚本（manual_actions 兜底，强校验 MySQL + pdo_mysql）
     if [ -f "$SCRIPT_DIR/bt-deps.sh" ]; then
-        if ! bash "$SCRIPT_DIR/bt-deps.sh"; then
+        if ! PHP_VERSION="$PHP_VERSION" PHP_CMD="$PHP_CMD" \
+            bash "$SCRIPT_DIR/bt-deps.sh"; then
             log_error "依赖检测未通过，请按提示处理后重试"
             exit 1
         fi
@@ -1262,12 +1265,14 @@ main() {
     # 注：仅选 driver，mysql 连接信息收集留在 collect_db_credentials
     select_db_driver
 
-    # 4-7. 依赖 / BT API 预检 / 目录 / 下载 / Composer（check_dependencies 已知 DB_DRIVER）
-    # detect_bt_key 在 check_dependencies 之后；其结果决定 select_install_dir 走的单一路径
-    # BT API 可用 → 仅问站点域名（已存在询问是否复用）
-    # BT API 不可用 → 仅问安装目录绝对路径
-    check_dependencies
+    # 4. BT API 预检（提前到 check_dependencies 之前；子进程 bt-deps.sh 通过 env 继承 BT_KEY 复用）
+    # 探测结果决定 select_install_dir 走的单一路径：
+    #   BT API 可用 → 仅问站点域名（已存在询问是否复用）
+    #   BT API 不可用 → 仅问安装目录绝对路径
     detect_bt_key
+
+    # 5-7. 依赖 / 目录 / 下载 / Composer（check_dependencies 已知 DB_DRIVER + BT_KEY）
+    check_dependencies
     select_install_dir
     download_application
     check_composer

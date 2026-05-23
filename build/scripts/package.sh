@@ -354,6 +354,25 @@ if [ -f "$PHP_REQ_FILE" ]; then
     cp "$PHP_REQ_FILE" "$FULL_DIR/php-requirements.json"
 fi
 
+# 复制 deploy/scripts/*.sh（upgrade.sh 解压后重定向 SCRIPT_DIR 到这里使用 bt-automate.sh 等）
+# 升级流程结束后会清理 TEMP_DIR，不持久化到 INSTALL_DIR
+# 显式校验：升级链路实际依赖 bt-automate.sh / bt-deps.sh / common.sh（缺一不可）
+# 其他 .sh 文件（如 bt-install.sh）随同复制以保持包结构对称，但不在硬校验清单
+DEPLOY_SCRIPTS_SRC="$PROJECT_ROOT/deploy/scripts"
+DEPLOY_SCRIPTS_REQUIRED=(bt-automate.sh bt-deps.sh common.sh)
+if [ ! -d "$DEPLOY_SCRIPTS_SRC" ]; then
+    log_error "deploy/scripts/ 目录不存在: $DEPLOY_SCRIPTS_SRC"
+    exit 1
+fi
+mkdir -p "$FULL_DIR/scripts"
+cp "$DEPLOY_SCRIPTS_SRC"/*.sh "$FULL_DIR/scripts/"
+for required in "${DEPLOY_SCRIPTS_REQUIRED[@]}"; do
+    if [ ! -f "$FULL_DIR/scripts/$required" ]; then
+        log_error "升级包缺少关键脚本: scripts/$required（升级时 SCRIPT_DIR 重定向会失败）"
+        exit 1
+    fi
+done
+
 # 清理系统文件后打包
 cleanup_os_files "$FULL_DIR"
 cd "$WORK_DIR"
@@ -430,6 +449,16 @@ EOF
 if [ -f "$PHP_REQ_FILE" ]; then
     cp "$PHP_REQ_FILE" "$UPGRADE_DIR/php-requirements.json"
 fi
+
+# 复制 deploy/scripts/*.sh（与完整包同源校验）
+mkdir -p "$UPGRADE_DIR/scripts"
+cp "$DEPLOY_SCRIPTS_SRC"/*.sh "$UPGRADE_DIR/scripts/"
+for required in "${DEPLOY_SCRIPTS_REQUIRED[@]}"; do
+    if [ ! -f "$UPGRADE_DIR/scripts/$required" ]; then
+        log_error "升级包缺少关键脚本: scripts/$required（升级时 SCRIPT_DIR 重定向会失败）"
+        exit 1
+    fi
+done
 
 # 创建升级说明
 cat >"$UPGRADE_DIR/UPGRADE.md" <<EOF

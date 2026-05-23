@@ -101,6 +101,7 @@ const stepNames: Record<string, string> = {
   maintenance_on: "进入维护模式",
   download: "下载升级包",
   extract: "解压升级包",
+  check_environment: "环境检测",
   apply: "应用升级",
   composer_install: "安装依赖",
   migrate: "运行数据库迁移",

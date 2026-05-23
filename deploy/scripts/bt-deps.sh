@@ -7,9 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 # 全局变量
-PHP_VERSION=""
-PHP_CMD=""
-PHP_INI=""
+# 允许父进程（bt-install.sh）通过环境变量传入选好的版本；缺失时为空，待 detect_php_version 自行扫描填充
+PHP_VERSION="${PHP_VERSION:-}"
+PHP_CMD="${PHP_CMD:-}"
+PHP_INI="${PHP_INI:-}"
 NEED_MANUAL_ACTION=false
 MANUAL_ACTIONS=()
 
@@ -17,7 +18,18 @@ MANUAL_ACTIONS=()
 # 从 php-requirements.json 读 php_min（缺失兜底 8.3.0），扫 /www/server/php/* 并用
 # PHP 自身 version_compare 过滤，最后选最高版本。与 bt-install.sh::select_php_version 对齐，
 # 但本函数是 noninteractive（被 bt-install.sh 通过子进程调用），多版本时静默选最高。
+#
+# 子进程语义：父进程（bt-install.sh）通过环境变量 PHP_VERSION/PHP_CMD 传递已交互选择的版本，
+# 优先使用；缺失才走独立扫描（直接 bt-deps.sh 入口或测试时）。否则子进程独立选最高版本
+# 会和父进程选择不一致（如父选 8.4，子重扫选最高 8.5）。
 detect_php_version() {
+    # 父进程已选好 PHP 版本时直接复用
+    if [ -n "${PHP_VERSION:-}" ] && [ -x "/www/server/php/$PHP_VERSION/bin/php" ]; then
+        PHP_CMD="${PHP_CMD:-/www/server/php/$PHP_VERSION/bin/php}"
+        PHP_INI="/www/server/php/$PHP_VERSION/etc/php.ini"
+        return 0
+    fi
+
     local req_file="$SCRIPT_DIR/../php-requirements.json"
     local php_min
     php_min=$(_read_req_field "$req_file" "php_min" "8.3.0")
@@ -46,6 +58,15 @@ detect_php_version() {
     return 0
 }
 
+# 提取 ini 文件的 disable_functions 值（截断行尾注释 + 去空白和引号）
+# 用法：_ini_disabled_functions <ini_file>
+# stdout：函数名逗号分隔字符串（如 exec,shell_exec），无禁用或文件无该字段时输出空
+_ini_disabled_functions() {
+    grep -E "^disable_functions[[:space:]]*=" "$1" |
+        sed -e 's/disable_functions[[:space:]]*=[[:space:]]*//' -e 's/[[:space:]]*;.*//' |
+        tr -d ' "'
+}
+
 # 从配置文件中解除禁用函数
 enable_functions_in_ini() {
     local ini_file="$1"
@@ -59,7 +80,8 @@ enable_functions_in_ini() {
     cp "$ini_file" "$ini_file.bak.$(date +%Y%m%d%H%M%S)"
 
     # 获取当前禁用函数列表
-    local disabled_functions=$(grep -E "^disable_functions\s*=" "$ini_file" | sed 's/disable_functions\s*=\s*//' | tr -d ' ')
+    local disabled_functions
+    disabled_functions=$(_ini_disabled_functions "$ini_file")
     local new_disabled="$disabled_functions"
 
     # 移除指定的函数
@@ -67,8 +89,8 @@ enable_functions_in_ini() {
         new_disabled=$(echo "$new_disabled" | sed "s/,$func,/,/g" | sed "s/^$func,//g" | sed "s/,$func$//g" | sed "s/^$func$//g")
     done
 
-    # 更新配置文件
-    sed -i "s/^disable_functions\s*=.*/disable_functions = $new_disabled/" "$ini_file"
+    # 更新配置文件（POSIX [[:space:]]，兼容 BusyBox sed）
+    sed -i "s/^disable_functions[[:space:]]*=.*/disable_functions = $new_disabled/" "$ini_file"
 }
 
 # 检测禁用函数
@@ -96,10 +118,10 @@ check_disabled_functions() {
     # 检查两个配置文件中的禁用函数
     local all_disabled=""
     if [ -f "$php_ini" ]; then
-        all_disabled="$all_disabled,$(grep -E "^disable_functions\s*=" "$php_ini" | sed 's/disable_functions\s*=\s*//' | tr -d ' ')"
+        all_disabled="$all_disabled,$(_ini_disabled_functions "$php_ini")"
     fi
     if [ -f "$php_cli_ini" ]; then
-        all_disabled="$all_disabled,$(grep -E "^disable_functions\s*=" "$php_cli_ini" | sed 's/disable_functions\s*=\s*//' | tr -d ' ')"
+        all_disabled="$all_disabled,$(_ini_disabled_functions "$php_cli_ini")"
     fi
 
     if [ -z "$all_disabled" ] || [ "$all_disabled" = "," ]; then
@@ -159,6 +181,7 @@ _resolve_bt_api_key() {
     local api_json="/www/server/panel/config/api.json"
     if [ -r "$api_json" ]; then
         # token_crypt 是 BT 11.x 对外 API key（用于 MD5 签名）
+        # 项目最低要求 BT 11.5+，不再回落旧版 token 字段
         BT_KEY=$(awk -F'"' '/"token_crypt"/{for(i=1;i<=NF;i++) if($i=="token_crypt"){print $(i+2); exit}}' "$api_json" 2>/dev/null)
     fi
     # 默认面板端口（BT 11.x 自定义端口存在 /www/server/panel/data/port.pl）
@@ -171,6 +194,23 @@ _resolve_bt_api_key() {
     [ -n "$BT_KEY" ]
 }
 
+# BT API 基础 URL 探测（协议自适应；BT 11.x 默认 http，启用面板 SSL 后改 https）
+# 与 bt-automate.sh::_resolve_bt_api_base 对称；不复用是为了 bt-deps.sh 独立可跑
+# 必须在 _resolve_bt_api_key 设置 BT_PANEL_PORT 之后调用
+_resolve_bt_api_base() {
+    if [ -n "${BT_API_BASE:-}" ]; then return 0; fi
+    local proto status_line
+    for proto in https http; do
+        status_line=$(curl -ksI --connect-timeout 3 --max-time 3 "$proto://127.0.0.1:$BT_PANEL_PORT/" 2>/dev/null | head -1)
+        if echo "$status_line" | grep -qE "^HTTP/"; then
+            BT_API_BASE="$proto://127.0.0.1:$BT_PANEL_PORT"
+            return 0
+        fi
+    done
+    # 都失败兜底 https（让后续 curl 错误暴露具体问题）
+    BT_API_BASE="https://127.0.0.1:$BT_PANEL_PORT"
+}
+
 # 通过 BT 11.x API 安装 PHP 扩展
 # 端点：POST /files?action=InstallSoft, name=<ext>&version=<phpv>&type=1（type=1 表示 PHP 扩展）
 # 用法：bt_install_so_via_api <ext_name>
@@ -180,6 +220,7 @@ bt_install_so_via_api() {
     if ! _resolve_bt_api_key; then
         return 1
     fi
+    _resolve_bt_api_base
 
     local key_md5
     key_md5=$(printf %s "$BT_KEY" | md5sum | awk '{print $1}')
@@ -188,13 +229,27 @@ bt_install_so_via_api() {
     local token
     token=$(printf %s "${now}${key_md5}" | md5sum | awk '{print $1}')
 
-    local resp
-    resp=$(curl -sk -X POST "https://127.0.0.1:${BT_PANEL_PORT}/files?action=InstallSoft" \
+    local resp curl_exit=0
+    resp=$(curl -sk --show-error -X POST "${BT_API_BASE}/files?action=InstallSoft" \
         -d "request_time=${now}&request_token=${token}&name=${ext}&version=${PHP_VERSION}&type=1" \
-        -m 30 2>/dev/null)
+        -m 30 2>&1) || curl_exit=$?
+
+    if [ "$curl_exit" -ne 0 ]; then
+        log_warning "BT API curl 失败 (exit=$curl_exit) url=${BT_API_BASE}/files?action=InstallSoft"
+        [ -n "$resp" ] && log_warning "curl 输出: $(echo "$resp" | head -c 200)"
+        return 1
+    fi
 
     if ! echo "$resp" | grep -q '"status":[[:space:]]*true'; then
-        log_warning "BT API 返回未成功: $(echo "$resp" | head -c 200)"
+        # HTML 响应（404 / nginx 错误页）单独识别，避免多行 HTML 把日志撑爆
+        # 已知触发场景：重装已卸载的扩展、BT 内部短时状态等；不下根因结论，fallback 会处理
+        if echo "$resp" | grep -qi '<html'; then
+            local title
+            title=$(echo "$resp" | grep -oE '<title>[^<]+</title>' | sed -E 's|</?title>||g' | head -1)
+            log_info "  BT API 装扩展未成功（${title:-HTML 错误页}），将走 fallback"
+        else
+            log_info "  BT API 装扩展未成功: $(echo "$resp" | tr -d '\n\r' | head -c 200)，将走 fallback"
+        fi
         return 1
     fi
     log_info "  → BT 装扩展任务已入队: $ext"
@@ -264,7 +319,26 @@ auto_install_ext() {
         return 0
     fi
 
-    log_step "尝试自动安装缺失的 PHP 扩展: ${target_extensions[*]}"
+    # 先一次性查已加载模块，把 target_extensions 拆为待装 / 已装两组（避免 log_step 误列全量清单）
+    local installed_modules
+    installed_modules=$("$PHP_CMD" -m 2>/dev/null)
+    local to_install=()
+    local skipped_ext=()
+    for ext in "${target_extensions[@]}"; do
+        if echo "$installed_modules" | grep -qi "^$ext$"; then
+            skipped_ext+=("$ext")
+        else
+            to_install+=("$ext")
+        fi
+    done
+
+    if [ ${#to_install[@]} -eq 0 ]; then
+        log_success "所有 required 扩展均已加载（共 ${#skipped_ext[@]} 项）"
+        return 0
+    fi
+
+    log_step "尝试自动安装缺失的 PHP 扩展: ${to_install[*]}"
+    [ ${#skipped_ext[@]} -gt 0 ] && log_info "已装跳过: ${skipped_ext[*]}"
 
     # fallback 老版 BT install.sh 路径
     local legacy_install_cmd=""
@@ -283,15 +357,8 @@ auto_install_ext() {
 
     local installed_any=false
     local failed_ext=()
-    local skipped_ext=()
 
-    for ext in "${target_extensions[@]}"; do
-        # 已装则跳过
-        if $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
-            skipped_ext+=("$ext")
-            continue
-        fi
-
+    for ext in "${to_install[@]}"; do
         log_info "正在安装扩展: $ext"
         local installed=false
 
@@ -339,9 +406,7 @@ auto_install_ext() {
         fi
     done
 
-    if [ ${#skipped_ext[@]} -gt 0 ]; then
-        log_info "已装跳过: ${skipped_ext[*]}"
-    fi
+    # 已装跳过日志已在 log_step 之前打印（避免循环结束后重复列出）
 
     if [ "$installed_any" = "true" ]; then
         log_info "重启 PHP-FPM 让新扩展生效"
@@ -528,7 +593,7 @@ main() {
         exit 1
     fi
 
-    log_info "依赖检测完成"
+    # 末尾不再打"依赖检测完成"——父进程 bt-install.sh::check_dependencies 会统一打 [OK] 依赖检测完成
 }
 
 # 子命令派发
@@ -536,14 +601,42 @@ main() {
 # - auto_install_ext：先 detect_php_version，再调 auto_install_ext
 case "${1:-}" in
     auto_install_ext)
-        log_step "检测 PHP 环境"
+        # 子命令场景：父进程 bt-install.sh 已经打过 [STEP] 检测系统依赖 + PHP 版本，不重复输出
         if ! detect_php_version; then
             log_error "未找到符合要求的 PHP 版本"
             exit 1
         fi
-        log_success "PHP $(_php_pretty_version "$PHP_VERSION"): $($PHP_CMD -v | head -1)"
         auto_install_ext
         exit $?
+        ;;
+    enable_functions)
+        # 子命令：从 disable_functions 移除指定函数（同时改 php.ini + php-cli.ini）
+        # 用法：PHP_VERSION=84 PHP_CMD=... bash bt-deps.sh enable_functions fn1 fn2 ...
+        # 直接 sed ini 文件，绕过 BT API GetPHPConfig（在 CLI ini 单独配置时返回不准）
+        shift
+        if [ $# -eq 0 ]; then
+            log_error "enable_functions 至少需要一个函数名"
+            exit 1
+        fi
+        if ! detect_php_version; then
+            log_error "未找到符合要求的 PHP 版本"
+            exit 1
+        fi
+        functions_str="$*"
+        log_step "解除 PHP 函数禁用: $functions_str"
+        updated_any=false
+        for ini_file in "/www/server/php/$PHP_VERSION/etc/php.ini" "/www/server/php/$PHP_VERSION/etc/php-cli.ini"; do
+            [ -f "$ini_file" ] || continue
+            enable_functions_in_ini "$ini_file" "$functions_str"
+            log_info "  已更新: $(basename "$ini_file")"
+            updated_any=true
+        done
+        if [ "$updated_any" = false ]; then
+            log_warning "未找到 PHP ini 文件，跳过函数启用"
+            exit 1
+        fi
+        log_success "函数启用完成（FPM 重启由调用方负责）"
+        exit 0
         ;;
     "")
         main "$@"
@@ -551,8 +644,9 @@ case "${1:-}" in
     *)
         echo "未知子命令: $1"
         echo "用法:"
-        echo "  $0                  # 检测依赖（默认）"
-        echo "  $0 auto_install_ext # 自动安装缺失 PHP 扩展（fileinfo/intl/redis）"
+        echo "  $0                              # 检测依赖（默认）"
+        echo "  $0 auto_install_ext [ext...]    # 自动安装缺失 PHP 扩展"
+        echo "  $0 enable_functions <fn...>     # 从 disable_functions 移除指定函数"
         exit 1
         ;;
 esac

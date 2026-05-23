@@ -180,7 +180,7 @@ class PackageExtractor
         }
 
         // 同步根目录文件
-        $rootFiles = ['composer.json', 'composer.lock'];
+        $rootFiles = ['composer.json', 'composer.lock', 'php-requirements.json'];
         foreach ($rootFiles as $file) {
             $sourceFile = "$sourceDir/$file";
             $targetFile = "$targetDir/$file";
@@ -203,10 +203,32 @@ class PackageExtractor
     ];
 
     /**
-     * API 适配器目录中的核心文件（可被升级覆盖）
-     * 其他文件/目录为用户自定义适配器，需要保护
+     * API 适配器目录中的核心文件（升级时覆盖，不保留）
+     * 包含核心入口、默认实现、接口契约文件 — 新增接口时显式登记到此处
      */
-    protected array $coreApiAdapterFiles = ['Api.php', 'default'];
+    protected array $coreApiAdapterFiles = [
+        'Api.php',
+        'default',
+        'OrderSourceApiInterface.php',
+        'AcmeSourceApiInterface.php',
+    ];
+
+    /**
+     * 自定义 API 适配器扫描的目录列表（Order / Acme 对称）
+     * key 用于备份归档命名空间，避免两个目录内同名子目录冲突
+     */
+    protected array $apiAdapterDirs = [
+        'order' => 'app/Services/Order/Api',
+        'acme' => 'app/Services/Acme/Api',
+    ];
+
+    /**
+     * 判断是否为核心 API 适配器文件（升级时覆盖，不保留）
+     */
+    protected function isCoreApiAdapterFile(string $name): bool
+    {
+        return in_array($name, $this->coreApiAdapterFiles, true);
+    }
 
     /**
      * 应用前端升级
@@ -272,43 +294,45 @@ class PackageExtractor
     protected function preserveCustomApiAdapters(string $targetDir): array
     {
         $preserved = [];
-        $apiAdapterDir = "$targetDir/app/Services/Order/Api";
 
-        if (! File::isDirectory($apiAdapterDir)) {
-            return $preserved;
-        }
-
-        // 遍历 Api 目录下的所有文件和目录
-        $items = array_merge(
-            File::files($apiAdapterDir),
-            File::directories($apiAdapterDir)
-        );
-
-        foreach ($items as $item) {
-            $name = is_string($item) ? basename($item) : $item->getFilename();
-
-            // 跳过核心文件
-            if (in_array($name, $this->coreApiAdapterFiles)) {
+        foreach ($this->apiAdapterDirs as $bucket => $relDir) {
+            $apiAdapterDir = "$targetDir/$relDir";
+            if (! File::isDirectory($apiAdapterDir)) {
                 continue;
             }
 
-            $itemPath = is_string($item) ? $item : $item->getRealPath();
+            $bucketItems = [];
+            $items = array_merge(
+                File::files($apiAdapterDir),
+                File::directories($apiAdapterDir)
+            );
 
-            // 保存自定义适配器
-            if (File::isDirectory($itemPath)) {
-                // 目录：递归复制到临时数组
-                $preserved[$name] = [
-                    'type' => 'directory',
-                    'files' => $this->getDirectoryContents($itemPath),
-                ];
-                Log::info("保留自定义 API 适配器目录: $name");
-            } else {
-                // 文件
-                $preserved[$name] = [
-                    'type' => 'file',
-                    'content' => File::get($itemPath),
-                ];
-                Log::info("保留自定义 API 适配器文件: $name");
+            foreach ($items as $item) {
+                $name = is_string($item) ? basename($item) : $item->getFilename();
+
+                if ($this->isCoreApiAdapterFile($name)) {
+                    continue;
+                }
+
+                $itemPath = is_string($item) ? $item : $item->getRealPath();
+
+                if (File::isDirectory($itemPath)) {
+                    $bucketItems[$name] = [
+                        'type' => 'directory',
+                        'files' => $this->getDirectoryContents($itemPath),
+                    ];
+                    Log::info("保留自定义 API 适配器目录: $bucket/$name");
+                } else {
+                    $bucketItems[$name] = [
+                        'type' => 'file',
+                        'content' => File::get($itemPath),
+                    ];
+                    Log::info("保留自定义 API 适配器文件: $bucket/$name");
+                }
+            }
+
+            if (! empty($bucketItems)) {
+                $preserved[$bucket] = $bucketItems;
             }
         }
 
@@ -340,33 +364,38 @@ class PackageExtractor
             return;
         }
 
-        $apiAdapterDir = "$targetDir/app/Services/Order/Api";
+        foreach ($preserved as $bucket => $bucketItems) {
+            $relDir = $this->apiAdapterDirs[$bucket] ?? null;
+            if ($relDir === null) {
+                Log::warning("未知 API 适配器 bucket，跳过: $bucket");
 
-        // 确保目录存在
-        if (! File::isDirectory($apiAdapterDir)) {
-            File::makeDirectory($apiAdapterDir, 0755, true);
-        }
+                continue;
+            }
+            $apiAdapterDir = "$targetDir/$relDir";
 
-        foreach ($preserved as $name => $data) {
-            $targetPath = "$apiAdapterDir/$name";
+            if (! File::isDirectory($apiAdapterDir)) {
+                File::makeDirectory($apiAdapterDir, 0755, true);
+            }
 
-            if ($data['type'] === 'directory') {
-                // 恢复目录
-                foreach ($data['files'] as $relativePath => $content) {
-                    $filePath = "$targetPath/$relativePath";
-                    $fileDir = dirname($filePath);
+            foreach ($bucketItems as $name => $data) {
+                $targetPath = "$apiAdapterDir/$name";
 
-                    if (! File::isDirectory($fileDir)) {
-                        File::makeDirectory($fileDir, 0755, true);
+                if ($data['type'] === 'directory') {
+                    foreach ($data['files'] as $relativePath => $content) {
+                        $filePath = "$targetPath/$relativePath";
+                        $fileDir = dirname($filePath);
+
+                        if (! File::isDirectory($fileDir)) {
+                            File::makeDirectory($fileDir, 0755, true);
+                        }
+
+                        File::put($filePath, $content);
                     }
-
-                    File::put($filePath, $content);
+                    Log::info("恢复自定义 API 适配器目录: $bucket/$name");
+                } else {
+                    File::put($targetPath, $data['content']);
+                    Log::info("恢复自定义 API 适配器文件: $bucket/$name");
                 }
-                Log::info("恢复自定义 API 适配器目录: $name");
-            } else {
-                // 恢复文件
-                File::put($targetPath, $data['content']);
-                Log::info("恢复自定义 API 适配器文件: $name");
             }
         }
     }
