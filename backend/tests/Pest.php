@@ -126,7 +126,7 @@ function setEnterpriseLookupSetting(string $key, mixed $value, string $type = 's
 
 /**
  * 造一个 shell 脚本，模拟 mysql/mysqldump 的 --version 输出，供
- * BackupService::ensureMysqlClient 的 proc_open 探测识别为合法 mysql 客户端。
+ * BinaryLocator::probeWith 的 proc_open 探测识别为合法 mysql 客户端。
  *
  * 返回脚本绝对路径。注册 shutdown 时自动清理。
  */

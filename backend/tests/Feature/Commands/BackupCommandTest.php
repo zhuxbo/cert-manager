@@ -1,5 +1,7 @@
 <?php
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Support\Facades\Artisan;
 
@@ -143,12 +145,15 @@ test('未支持的驱动时立即中止', function () {
     }
 });
 
-test('mysqldump 不可用（绝对路径不存在）时立即中止', function () {
+test('mysqldump 不可用（BinaryLocator 抛 BinaryNotFoundException）时立即中止', function () {
     if (config('database.connections.'.config('database.default').'.driver') !== 'mysql') {
         test()->markTestSkipped('mysql-only');
     }
 
-    config(['database.backup.mysqldump_bin' => '/nonexistent/path/to/mysqldump']);
+    // delegate 后通过 mock BinaryLocator 模拟"找不到 mysqldump"（不再依赖 config 路径）
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andThrow(new BinaryNotFoundException(tool: 'mysqldump', triedPaths: ['/nonexistent']));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $exit = Artisan::call('schedule:backup', [
         '--path' => $this->testDir,
@@ -156,5 +161,5 @@ test('mysqldump 不可用（绝对路径不存在）时立即中止', function (
 
     $output = Artisan::output();
     expect($exit)->not->toBe(0)
-        ->and($output)->toContain('mysqldump 不可执行');
+        ->and($output)->toContain('未找到 mysqldump 命令');
 });

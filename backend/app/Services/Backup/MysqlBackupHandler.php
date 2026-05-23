@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\Backup;
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 
@@ -15,15 +17,19 @@ use Symfony\Component\Process\Process;
  *  2. mysqldump 流式输出 → gzip 文件
  *  3. 删除临时凭据
  *
- * 客户端探测复用 {@see BackupService::ensureMysqlClient}（含 open_basedir 解锁逻辑）。
+ * 客户端探测直接走 {@see BinaryLocator::mysqldump()}，与全项目二进制定位逻辑一致。
+ * BinaryNotFoundException 转抛为 RuntimeException('未找到 mysqldump 命令') 保留调用方
+ * （BackupCommand）原有 message 兼容。
  */
 class MysqlBackupHandler implements BackupHandlerInterface
 {
-    public function __construct(private BackupService $backupService) {}
-
     public function ensureClient(): string
     {
-        return $this->backupService->ensureMysqlClient('mysqldump');
+        try {
+            return app(BinaryLocator::class)->mysqldump();
+        } catch (BinaryNotFoundException $e) {
+            throw new RuntimeException('未找到 mysqldump 命令', previous: $e);
+        }
     }
 
     public function backup(array $config, string $outputPath, array $ignoreTables): string

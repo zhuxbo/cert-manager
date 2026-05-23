@@ -5,11 +5,12 @@ namespace App\Http\Controllers\Admin;
 use App\Jobs\CreateBackupJob;
 use App\Jobs\RestoreBackupJob;
 use App\Services\Backup\BackupService;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
-use Throwable;
 
 /**
  * 数据库备份管理（admin 端）。
@@ -44,9 +45,9 @@ class DatabaseBackupController extends BaseController
     public function store(): void
     {
         try {
-            $this->service->ensureMysqlClient('mysqldump');
-        } catch (Throwable $e) {
-            $this->error($e->getMessage(), BackupService::installHintLines());
+            app(BinaryLocator::class)->mysqldump();
+        } catch (BinaryNotFoundException $e) {
+            $this->error('未找到 mysqldump 命令', $e->diagnose());
         }
 
         $token = $this->service->newJobToken();
@@ -169,10 +170,11 @@ class DatabaseBackupController extends BaseController
         }
 
         try {
-            $this->service->ensureMysqlClient('mysqldump');
-            $this->service->ensureMysqlClient('mysql');
-        } catch (Throwable $e) {
-            $this->error($e->getMessage(), BackupService::installHintLines());
+            $locator = app(BinaryLocator::class);
+            $locator->mysqldump();
+            $locator->mysql();
+        } catch (BinaryNotFoundException $e) {
+            $this->error('未找到 '.$e->getTool().' 命令', $e->diagnose());
         }
 
         $token = $this->service->newJobToken();

@@ -7,6 +7,8 @@ namespace App\Jobs;
 use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -59,10 +61,11 @@ class RestoreBackupJob implements ShouldQueue
 
         // 二进制缺失时入口直接失败，避免拿锁后才发现
         try {
-            $service->ensureMysqlClient('mysqldump');
-            $service->ensureMysqlClient('mysql');
-        } catch (Throwable $e) {
-            $this->progress($service, 'failed', 'init', $e->getMessage());
+            $locator = app(BinaryLocator::class);
+            $locator->mysqldump();
+            $locator->mysql();
+        } catch (BinaryNotFoundException $e) {
+            $this->progress($service, 'failed', 'init', '未找到 '.$e->getTool().' 命令');
 
             return;
         }
@@ -204,7 +207,7 @@ class RestoreBackupJob implements ShouldQueue
 
     private function newMysqlProcess(string $cnfPath): Process
     {
-        $bin = (string) config('database.backup.mysql_bin', 'mysql');
+        $bin = app(BinaryLocator::class)->mysql();
         $database = config('database.connections.'.config('database.default').'.database');
 
         return new Process([

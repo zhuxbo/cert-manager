@@ -7,7 +7,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use RuntimeException;
-use Symfony\Component\Process\ExecutableFinder;
 
 /**
  * 数据库备份服务：列表/删除/进度读写/下载 token。
@@ -60,72 +59,6 @@ class BackupService
         return storage_path('databak');
     }
 
-    /** 候选 mysql 客户端二进制目录（按宝塔/Linux 发行版/macOS Homebrew 顺序） */
-    private const CANDIDATE_BIN_DIRS = [
-        // 宝塔面板默认 MySQL 安装路径（www 用户的 PATH 不含此目录，且大概率被 open_basedir 锁外）
-        '/www/server/mysql/bin',
-        // Linux 包管理器 / 自编译
-        '/usr/bin',
-        '/usr/local/bin',
-        '/usr/local/mysql/bin',
-        '/opt/mysql/bin',
-        // macOS Homebrew (Apple Silicon)
-        '/opt/homebrew/bin',
-        '/opt/homebrew/opt/mysql-client/bin',
-        '/opt/homebrew/opt/mysql/bin',
-        // macOS Homebrew (Intel)
-        '/usr/local/opt/mysql-client/bin',
-        '/usr/local/opt/mysql/bin',
-    ];
-
-    /**
-     * 确认 mysql 客户端二进制可用，返回真实路径。
-     *
-     * 探测策略（按顺序）：
-     * 1. 配置含路径分隔符（绝对/相对路径）→ 直接 proc_open 验证
-     * 2. 配置是相对名 → ExecutableFinder 走 PATH（成本低，先试）
-     * 3. PATH 查不到 → 遍历 CANDIDATE_BIN_DIRS，逐个 proc_open --version 探测
-     *
-     * 关键：**全程不用 is_executable / file_exists**，因为它们受 open_basedir 限制
-     * （宝塔站点默认把 /www/server/mysql/bin/ 锁在白名单外，这两个调用会静默 false）。
-     * 而 proc_open 不在 open_basedir 检查列表，可直接启动子进程探测。
-     *
-     * 找不到时抛 RuntimeException，message 仅含简短失败原因；详细安装指引由调用方
-     * 通过 {@see installHintLines()} 拼到响应 errors 字段。
-     *
-     * @param  string  $tool  'mysqldump' 或 'mysql'
-     */
-    public function ensureMysqlClient(string $tool): string
-    {
-        $configured = $tool === 'mysqldump'
-        ? (string) config('database.backup.mysqldump_bin', 'mysqldump')
-        : (string) config('database.backup.mysql_bin', 'mysql');
-
-        // 1. 含路径分隔符 → 视为绝对/相对路径，直接 proc_open 验证（不能用 is_executable）
-        if (str_contains($configured, '/') || str_contains($configured, '\\')) {
-            if (self::probeExecutable($configured)) {
-                return $configured;
-            }
-            throw new RuntimeException("$tool 不可执行: $configured");
-        }
-
-        // 2. 相对名 → 先走 PATH（覆盖正常环境，几乎无成本）
-        $found = (new ExecutableFinder)->find($configured);
-        if ($found !== null && self::probeExecutable($found)) {
-            return $found;
-        }
-
-        // 3. PATH 失败（多见于 open_basedir 限制）→ 遍历候选目录用 proc_open 探测
-        foreach (self::CANDIDATE_BIN_DIRS as $dir) {
-            $candidate = "$dir/$configured";
-            if (self::probeExecutable($candidate)) {
-                return $candidate;
-            }
-        }
-
-        throw new RuntimeException("未找到 $tool 命令");
-    }
-
     /**
      * 按 driver 选择对应的 BackupHandler（仅 mysql）。
      *
@@ -137,36 +70,9 @@ class BackupService
         $driver = $driver ?? (string) config('database.connections.'.config('database.default').'.driver');
 
         return match ($driver) {
-            'mysql', 'mariadb' => new MysqlBackupHandler($this),
+            'mysql', 'mariadb' => new MysqlBackupHandler,
             default => throw new RuntimeException("不支持的备份 driver: {$driver}（仅支持 mysql）"),
         };
-    }
-
-    /**
-     * 用 proc_open 启动 `$path --version` 验证二进制是否可执行。
-     *
-     * 必须用 array 形式调用，避免 shell 解释；array 形式 PHP 内部走 execve，
-     * 不受 open_basedir 影响，且天然防注入（不会展开变量/通配符）。
-     *
-     * 返回 true 仅当：proc_open 启动成功 + 退出码 0 + stdout 含 "Distrib"/"Ver "（mysql 客户端 --version 输出特征）。
-     */
-    private static function probeExecutable(string $path): bool
-    {
-        $proc = @proc_open(
-            [$path, '--version'],
-            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes
-        );
-        if (! is_resource($proc)) {
-            return false;
-        }
-        $stdout = (string) stream_get_contents($pipes[1]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $exit = proc_close($proc);
-
-        // mysql/mysqldump --version 输出特征，避免误识别同名占位文件
-        return $exit === 0 && (str_contains($stdout, 'Distrib') || str_contains($stdout, 'Ver '));
     }
 
     /**
@@ -241,13 +147,11 @@ class BackupService
             $lines[] = '宝塔面板：自带 mysql-client，已将 /www/server/mysql/bin 加入查找路径。';
         } elseif ($family === 'Darwin') {
             $lines[] = 'macOS 安装命令： brew install mysql-client';
-            $lines[] = '安装后将 mysql-client 的 bin 路径加入 PATH，或在 .env 中设置 MYSQLDUMP_BIN/MYSQL_BIN 绝对路径。';
+            $lines[] = '安装后将 mysql-client 的 bin 路径加入 PATH。';
         } else {
             $lines[] = '请安装 MySQL 官方客户端工具，并确保 mysqldump/mysql 在 PATH 中。';
         }
-        $lines[] = '若已安装但仍报错，请在 .env 中显式指定路径：';
-        $lines[] = ' MYSQLDUMP_BIN=/path/to/mysqldump';
-        $lines[] = ' MYSQL_BIN=/path/to/mysql';
+        $lines[] = '若已安装但仍报错，运行 `php artisan tinker` 后调用 `app(\App\Services\Binary\BinaryLocator::class)->diagnose("mysqldump")` 查看候选路径与试探日志。';
 
         return $lines;
     }

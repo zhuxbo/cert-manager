@@ -3,6 +3,8 @@
 use App\Jobs\RestoreBackupJob;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 
@@ -41,7 +43,7 @@ afterEach(function () {
     }
 });
 
-test('未知 driver 直接 failed，不拿锁也不调 ensureMysqlClient', function () {
+test('未知 driver 直接 failed，不拿锁也不调 BinaryLocator', function () {
     // 注：Unit 测试不走 RefreshDatabase，config('database.default') 修改不会触发实际连接重建
     config(['database.default' => 'unknown']);
     config(['database.connections.unknown' => ['driver' => 'unknown']]);
@@ -61,12 +63,14 @@ test('未知 driver 直接 failed，不拿锁也不调 ensureMysqlClient', funct
     $lock->release();
 });
 
-test('mariadb driver 不被守门拦截（保留路径，进入后续 ensureMysqlClient）', function () {
+test('mariadb driver 不被守门拦截（保留路径，进入后续 BinaryLocator 探测）', function () {
     config(['database.default' => 'mariadb']);
-    // 故意配置一个不存在的 mysqldump bin，让 ensureMysqlClient 抛错；
-    // 关键：错误信息应是 "mysqldump 不可执行"（说明已通过守门），而非 "暂不支持"
     config(['database.connections.mariadb' => ['driver' => 'mariadb']]);
-    config(['database.backup.mysqldump_bin' => '/nonexistent/mysqldump']);
+    // mock BinaryLocator->mysqldump() 抛 BinaryNotFoundException，让 Job 在二进制探测处失败；
+    // 关键：错误信息应含 "未找到 mysqldump 命令"（说明已通过守门），而非 "暂不支持"
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andThrow(new BinaryNotFoundException(tool: 'mysqldump', triedPaths: ['/nonexistent']));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $token = 'tok_'.uniqid();
     (new RestoreBackupJob($token, 'backup_20260424_120000', 'full', adminId: 1))

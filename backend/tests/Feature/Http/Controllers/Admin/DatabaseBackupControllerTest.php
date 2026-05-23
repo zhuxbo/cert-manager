@@ -4,6 +4,8 @@ use App\Jobs\CreateBackupJob;
 use App\Jobs\RestoreBackupJob;
 use App\Models\Admin;
 use App\Services\Backup\BackupService;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -301,12 +303,20 @@ test('schemaDiff: schema 与当前不一致时 has_diff=true 含 missing/extra/m
 
 test('store 在 mysqldump 不可用时立即返回错误，不入队 Job', function () {
     Queue::fake();
-    config(['database.backup.mysqldump_bin' => '/nonexistent/path/to/mysqldump']);
+    // delegate 后通过 mock BinaryLocator 模拟"找不到 mysqldump"（不再依赖 config 路径）
+    // diagnose 参数模拟 BinaryLocator::diagnose() 含 "mysql-client" 的安装提示
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andThrow(new BinaryNotFoundException(
+        tool: 'mysqldump',
+        triedPaths: ['/nonexistent'],
+        diagnose: ['推荐安装命令:', '  macOS: brew install mysql-client'],
+    ));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $resp = $this->actingAsAdmin($this->admin)->postJson('/api/admin/database/backups');
 
     $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('mysqldump 不可执行')
+    expect($resp->json('msg'))->toContain('未找到 mysqldump 命令')
         ->and($resp->json('msg'))->not->toContain('mysql-client');
     expect($resp->json('errors'))->toBeArray()
         ->and(implode("\n", $resp->json('errors')))->toContain('mysql-client');
@@ -317,13 +327,22 @@ test('store 在 mysqldump 不可用时立即返回错误，不入队 Job', funct
 test('restore 在 mysql 不可用时立即返回错误，不入队 Job', function () {
     Queue::fake();
     createFakeBackup($this->testDir, 'backup_20260424_120000');
-    config(['database.backup.mysql_bin' => '/nonexistent/path/to/mysql']);
+    // Controller 顺序探测 mysqldump → mysql，mysqldump 在真实环境可能找到（mock 必须显式返回）
+    // 让 mysqldump 返回任意路径以通过第一道探测，mysql 抛 BinaryNotFoundException 触发分支
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andReturn('/fake/mysqldump');
+    $mock->shouldReceive('mysql')->andThrow(new BinaryNotFoundException(
+        tool: 'mysql',
+        triedPaths: ['/nonexistent'],
+        diagnose: ['推荐安装命令:', '  macOS: brew install mysql-client'],
+    ));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $resp = $this->actingAsAdmin($this->admin)
         ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'full']);
 
     $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('mysql 不可执行')
+    expect($resp->json('msg'))->toContain('未找到 mysql 命令')
         ->and($resp->json('msg'))->not->toContain('mysql-client');
     expect($resp->json('errors'))->toBeArray()
         ->and(implode("\n", $resp->json('errors')))->toContain('mysql-client');

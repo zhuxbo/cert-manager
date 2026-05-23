@@ -3,6 +3,8 @@
 use App\Jobs\RestoreBackupJob;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Support\Facades\Cache;
 
 beforeEach(function () {
@@ -40,7 +42,10 @@ afterEach(function () {
 });
 
 test('mysqldump/mysql 不可用时入口直接 failed，不拿锁', function () {
-    config(['database.backup.mysqldump_bin' => '/nonexistent/mysqldump']);
+    // delegate 后通过 mock BinaryLocator 模拟"找不到 mysqldump"（Job 先调 mysqldump）
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andThrow(new BinaryNotFoundException(tool: 'mysqldump', triedPaths: ['/nonexistent']));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $token = 'tok_'.uniqid();
     (new RestoreBackupJob($token, 'backup_20260424_120000', 'full', adminId: 1))
@@ -48,7 +53,7 @@ test('mysqldump/mysql 不可用时入口直接 failed，不拿锁', function () 
 
     $progress = app(BackupService::class)->getJobProgress($token);
     expect($progress['status'])->toBe('failed')
-        ->and($progress['message'])->toContain('mysqldump 不可执行');
+        ->and($progress['message'])->toContain('未找到 mysqldump 命令');
 
     // 锁未被持有
     $lock = Cache::lock(BackupService::MUTEX_LOCK_KEY, 60);
@@ -57,9 +62,11 @@ test('mysqldump/mysql 不可用时入口直接 failed，不拿锁', function () 
 });
 
 test('互斥锁被占用时写 failed 进度', function () {
-    // 让 ensureMysqlClient 通过：fake mysql 客户端脚本（输出符合 --version 特征）
-    config(['database.backup.mysqldump_bin' => fakeMysqlClientBin('mysqldump')]);
-    config(['database.backup.mysql_bin' => fakeMysqlClientBin('mysql')]);
+    // 让二进制探测通过：mock BinaryLocator 返回 fake mysql 客户端脚本路径
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andReturn(fakeMysqlClientBin('mysqldump'));
+    $mock->shouldReceive('mysql')->andReturn(fakeMysqlClientBin('mysql'));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $existing = Cache::lock(BackupService::MUTEX_LOCK_KEY, 60);
     $existing->get();
@@ -76,8 +83,10 @@ test('互斥锁被占用时写 failed 进度', function () {
 });
 
 test('备份不存在时写 failed 进度并释放锁', function () {
-    config(['database.backup.mysqldump_bin' => fakeMysqlClientBin('mysqldump')]);
-    config(['database.backup.mysql_bin' => fakeMysqlClientBin('mysql')]);
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andReturn(fakeMysqlClientBin('mysqldump'));
+    $mock->shouldReceive('mysql')->andReturn(fakeMysqlClientBin('mysql'));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $token = 'tok_'.uniqid();
     (new RestoreBackupJob($token, 'backup_19990101_000000', 'full', adminId: 1))
