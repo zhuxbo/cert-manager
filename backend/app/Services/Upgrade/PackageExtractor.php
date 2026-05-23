@@ -473,50 +473,10 @@ class PackageExtractor
      */
     protected function syncDirectory(string $source, string $target): void
     {
-        // 确保目标目录存在
         if (! File::isDirectory($target)) {
             File::makeDirectory($target, 0755, true);
         }
 
-        // 使用 rsync 如果可用（不使用 --delete，只覆盖文件）
-        if ($this->isRsyncAvailable()) {
-            $command = sprintf(
-                'rsync -av %s/ %s/ 2>&1',
-                escapeshellarg($source),
-                escapeshellarg($target)
-            );
-            exec($command, $output, $returnCode);
-
-            if ($returnCode !== 0) {
-                $errorOutput = implode("\n", $output);
-                Log::error('rsync 同步失败', [
-                    'source' => $source,
-                    'target' => $target,
-                    'return_code' => $returnCode,
-                    'output' => $errorOutput,
-                ]);
-
-                // rsync 失败时降级到 PHP 方式
-                Log::info('rsync 失败，降级到 PHP 文件复制');
-                $this->syncDirectoryPhp($source, $target);
-            }
-        } else {
-            // 降级到 PHP 文件操作
-            $this->syncDirectoryPhp($source, $target);
-        }
-    }
-
-    /**
-     * PHP 原生目录同步（只覆盖，不删除目标中的多余文件）
-     */
-    protected function syncDirectoryPhp(string $source, string $target): void
-    {
-        // 确保目标目录存在
-        if (! File::isDirectory($target)) {
-            File::makeDirectory($target, 0755, true);
-        }
-
-        // 复制源目录中的所有文件（覆盖已存在的）
         $files = File::allFiles($source);
         foreach ($files as $file) {
             $relativePath = $file->getRelativePathname();
@@ -530,7 +490,6 @@ class PackageExtractor
             File::copy($file->getRealPath(), $targetFile);
         }
 
-        // 删除空目录
         $this->removeEmptyDirectories($target);
     }
 
@@ -546,16 +505,6 @@ class PackageExtractor
                 File::deleteDirectory($dir);
             }
         }
-    }
-
-    /**
-     * 检查 rsync 是否可用
-     */
-    protected function isRsyncAvailable(): bool
-    {
-        exec('which rsync 2>/dev/null', $output, $returnCode);
-
-        return $returnCode === 0;
     }
 
     /**
