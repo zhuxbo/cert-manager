@@ -2,7 +2,8 @@
 
 namespace App\Services\Upgrade;
 
-use App\Traits\ResolvesExecutablePath;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -14,8 +15,6 @@ use RuntimeException;
  */
 class ReleaseClient
 {
-    use ResolvesExecutablePath;
-
     protected ?string $baseUrl = null;
 
     public function __construct()
@@ -268,8 +267,9 @@ class ReleaseClient
      */
     protected function downloadWithCurl(string $url, string $savePath, int $timeout): bool
     {
-        $curlPath = $this->resolveExecutablePath('curl');
-        if ($curlPath === null) {
+        try {
+            $curlPath = app(BinaryLocator::class)->curl();
+        } catch (BinaryNotFoundException) {
             return false;
         }
 

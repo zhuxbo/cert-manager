@@ -2,8 +2,9 @@
 
 namespace App\Services\Plugin;
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\VersionManager;
-use App\Traits\ResolvesExecutablePath;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
@@ -16,8 +17,6 @@ use ZipArchive;
 
 class PluginManager
 {
-    use ResolvesExecutablePath;
-
     protected string $pluginsPath;
 
     protected string $downloadPath;
@@ -504,8 +503,9 @@ class PluginManager
      */
     protected function downloadWithCurl(string $url, string $savePath, int $timeout): bool
     {
-        $curlPath = $this->resolveExecutablePath('curl');
-        if ($curlPath === null) {
+        try {
+            $curlPath = app(BinaryLocator::class)->curl();
+        } catch (BinaryNotFoundException) {
             return false;
         }
 

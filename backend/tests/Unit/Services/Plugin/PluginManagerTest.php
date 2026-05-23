@@ -673,15 +673,3 @@ test('getPluginReleaseUrl 无 release_url 时回退到系统地址', function ()
 
     File::deleteDirectory($pluginsPath);
 });
-
-test('resolveExecutablePath 对不存在命令返回 null', function () {
-    $versionManager = Mockery::mock(VersionManager::class);
-    $manager = new PluginManager($versionManager);
-
-    $reflection = new ReflectionClass($manager);
-    $method = $reflection->getMethod('resolveExecutablePath');
-
-    $result = $method->invoke($manager, 'cmd-not-exists-'.uniqid());
-
-    expect($result)->toBeNull();
-});

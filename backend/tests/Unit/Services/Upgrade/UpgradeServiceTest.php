@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\Binary\BinaryLocator;
 use App\Services\Upgrade\BackupManager;
 use App\Services\Upgrade\DatabaseStructureService;
 use App\Services\Upgrade\EnvironmentChecker;
@@ -212,16 +213,11 @@ test('delete backup calls backup manager', function () {
     expect($result)->toBeTrue();
 });
 
-test('find composer command', function () {
-    $service = app(UpgradeService::class);
+test('binary locator resolves composer command', function () {
+    // 在开发环境中，composer 应该是可用的；BinaryLocator::composer() 返回完整 "{php} {phar}" 命令串
+    $cmd = app(BinaryLocator::class)->composer();
 
-    $reflection = new ReflectionClass($service);
-    $method = $reflection->getMethod('findComposerCommand');
-
-    $result = $method->invoke($service);
-
-    // 在开发环境中，composer 应该是可用的
-    expect($result)->not->toBeNull();
+    expect($cmd)->toBeString()->not->toBeEmpty();
 });
 
 test('check network access method', function () {

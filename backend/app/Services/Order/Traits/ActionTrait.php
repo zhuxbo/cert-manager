@@ -13,6 +13,8 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Task;
 use App\Models\Transaction;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Delegation\CnameDelegationService;
 use App\Services\Delegation\DelegationDnsService;
 use App\Services\Order\Utils\CsrUtil;
@@ -28,6 +30,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 trait ActionTrait
@@ -456,11 +459,16 @@ trait ActionTrait
 
         $csrDerFile = $tempDir.'/csr.der';
 
-        // 构建 OpenSSL 命令行命令
-        $cmd = 'openssl req -in '.escapeshellarg($csrPemFile).' -outform der -out '.escapeshellarg($csrDerFile);
-        @exec($cmd.' > /dev/null 2>&1');
-
-        $der = file_exists($csrDerFile) ? file_get_contents($csrDerFile) : null;
+        // openssl 不可用时降级返回仅含 method 的数组，保持与 $der === null 分支一致；DCV 单点失败不阻断订单流程
+        try {
+            $openssl = app(BinaryLocator::class)->openssl();
+            $cmd = escapeshellarg($openssl).' req -in '.escapeshellarg($csrPemFile).' -outform der -out '.escapeshellarg($csrDerFile);
+            @exec($cmd.' > /dev/null 2>&1');
+            $der = file_exists($csrDerFile) ? file_get_contents($csrDerFile) : null;
+        } catch (BinaryNotFoundException $e) {
+            Log::warning('openssl 不可用，无法生成 Sectigo DCV', ['diagnose' => $e->diagnose()]);
+            $der = null;
+        }
 
         // 使用 Laravel File 方法清理，更可靠
         if (file_exists($csrPemFile)) {

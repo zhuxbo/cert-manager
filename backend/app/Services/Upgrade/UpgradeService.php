@@ -3,6 +3,8 @@
 namespace App\Services\Upgrade;
 
 use App\Exceptions\PhpEnvironmentException;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -515,10 +517,10 @@ class UpgradeService
     {
         $basePath = base_path();
 
-        // 尝试查找 composer 命令
-        $composerCmd = $this->findComposerCommand();
-        if (! $composerCmd) {
-            Log::error('[Upgrade] Composer not found');
+        try {
+            $composerCmd = app(BinaryLocator::class)->composer();
+        } catch (BinaryNotFoundException $e) {
+            Log::error('[Upgrade] Composer not found: '.$e->getMessage());
 
             return false;
         }
@@ -577,9 +579,10 @@ class UpgradeService
     {
         $basePath = base_path();
 
-        $composerCmd = $this->findComposerCommand();
-        if (! $composerCmd) {
-            Log::error('[Upgrade] Composer not found (runDumpAutoload)');
+        try {
+            $composerCmd = app(BinaryLocator::class)->composer();
+        } catch (BinaryNotFoundException $e) {
+            Log::error('[Upgrade] Composer not found (runDumpAutoload): '.$e->getMessage());
 
             return false;
         }
@@ -716,7 +719,7 @@ class UpgradeService
      */
     protected function runArtisanInSubprocess(string $command, array $args = []): array
     {
-        $phpBinary = $this->findPhpBinary();
+        $phpBinary = app(BinaryLocator::class)->php();
         $artisan = base_path('artisan');
 
         // 三种合法形态：
@@ -752,73 +755,6 @@ class UpgradeService
             'exit_code' => $exitCode,
             'command' => $cmd,
         ];
-    }
-
-    /**
-     * 查找 PHP CLI 二进制
-     *
-     * HTTP 入口（如回滚）下 PHP_BINARY 是 php-fpm，不能直接 exec，需要查找真实 CLI。
-     * CLI 入口（upgrade:run 子进程）下 PHP_BINARY 即 php，直接返回。
-     */
-    protected function findPhpBinary(): string
-    {
-        if (! str_contains(PHP_BINARY, 'fpm')) {
-            return PHP_BINARY;
-        }
-
-        // 从 php-fpm 路径推断 php 路径（宝塔/aapanel 通常在 open_basedir 允许范围内）
-        $phpFpmPath = PHP_BINARY;
-        $phpPath = str_replace(['php-fpm', 'sbin'], ['php', 'bin'], $phpFpmPath);
-        if ($phpPath !== $phpFpmPath && @file_exists($phpPath) && @is_executable($phpPath)) {
-            return $phpPath;
-        }
-
-        // 常见路径兜底（最低 PHP 8.3）
-        $candidates = [
-            '/www/server/php/84/bin/php',
-            '/www/server/php/83/bin/php',
-            '/usr/bin/php',
-            '/usr/local/bin/php',
-            '/opt/php/bin/php',
-        ];
-        foreach ($candidates as $path) {
-            if (@file_exists($path) && @is_executable($path)) {
-                return $path;
-            }
-        }
-
-        // PATH 中查找
-        $output = [];
-        @exec('which php 2>/dev/null', $output);
-        if (! empty($output[0]) && @file_exists($output[0])) {
-            return $output[0];
-        }
-
-        return 'php';
-    }
-
-    /**
-     * 查找 Composer 命令
-     */
-    protected function findComposerCommand(): ?string
-    {
-        // 检查常见的 composer 命令
-        $commands = ['composer', 'composer.phar', '/usr/local/bin/composer', '/usr/bin/composer'];
-
-        foreach ($commands as $cmd) {
-            exec("which $cmd 2>/dev/null", $output, $returnCode);
-            if ($returnCode === 0 && ! empty($output)) {
-                return $cmd;
-            }
-        }
-
-        // 检查当前目录是否有 composer.phar
-        $pharPath = base_path('composer.phar');
-        if (file_exists($pharPath)) {
-            return "php $pharPath";
-        }
-
-        return null;
     }
 
     /**
