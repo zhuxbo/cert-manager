@@ -161,6 +161,11 @@ class BinaryLocator
      * 返回 composer 完整命令串：escapeshellarg($php).' '.escapeshellarg($phar)。
      * 始终以本进程解析出的 PHP 为前缀，避开多版本 PHP 系统下 phar 自带
      * `#!/usr/bin/env php` shebang 找错版本（spec § 4）。
+     *
+     * **安全契约**：返回值两段路径已 escapeshellarg，可安全嵌入 `sprintf('cd %s && %s install', ...)`
+     * 等 shell 命令。调用方在拼接命令时 **绝不允许把任何用户输入或非可信变量** 加到此命令串前后；
+     * 如需追加可控参数（如 --no-dev / --optimize），直接字面量拼接即可（这些参数无变量插值，
+     * 当前 UpgradeService 4 处调用均符合此模式）。
      */
     public function composer(): string
     {
