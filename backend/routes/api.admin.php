@@ -270,6 +270,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('unfreeze', [UpgradeController::class, 'unfreeze']);
         Route::post('opcache-reset', [UpgradeController::class, 'opcacheReset']);
         Route::post('smoke', [UpgradeController::class, 'smoke']);
+        Route::get('binary-health', [UpgradeController::class, 'binaryHealth']);
     });
 
     // 工商信息查询

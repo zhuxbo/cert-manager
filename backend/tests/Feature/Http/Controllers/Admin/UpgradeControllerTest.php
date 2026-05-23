@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\Admin;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\UpgradeStatusManager;
 use App\Services\Upgrade\VersionManager;
@@ -216,4 +218,153 @@ test('未认证用户无法访问升级管理', function () {
     $response = $this->getJson('/api/admin/upgrade/version');
 
     $response->assertUnauthorized();
+});
+
+test('POST upgrade/execute 在 FPM disable_functions 禁了 proc_open 时返回 503', function () {
+    $statusMock = Mockery::mock(UpgradeStatusManager::class);
+    $statusMock->shouldReceive('isRunning')->once()->andReturn(false);
+    $this->app->instance(UpgradeStatusManager::class, $statusMock);
+
+    $locatorMock = Mockery::mock(BinaryLocator::class);
+    $locatorMock->shouldReceive('inspectFpmIni')->andReturn([
+        'disable_functions_ok' => false,
+        'disable_functions' => 'proc_open',
+        'ini_path' => '/etc/php.ini',
+    ]);
+    $locatorMock->shouldReceive('php')->andReturn('/usr/bin/php');
+    $locatorMock->shouldReceive('composer')->andReturn('/usr/bin/php /usr/local/bin/composer');
+    $locatorMock->shouldReceive('inspectCliIni')->andReturn([
+        'disable_functions_ok' => true,
+        'ini_path' => '/etc/php-cli.ini',
+    ]);
+    $this->app->instance(BinaryLocator::class, $locatorMock);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/upgrade/execute', [
+        'version' => 'latest',
+    ]);
+
+    $response->assertStatus(503);
+    $codes = collect($response->json('data.blocking'))->pluck('code')->all();
+    expect($codes)->toContain('fpm_proc_open_disabled');
+});
+
+test('POST upgrade/execute 在 PHP CLI 找不到时返回 503', function () {
+    $statusMock = Mockery::mock(UpgradeStatusManager::class);
+    $statusMock->shouldReceive('isRunning')->once()->andReturn(false);
+    $this->app->instance(UpgradeStatusManager::class, $statusMock);
+
+    $locatorMock = Mockery::mock(BinaryLocator::class);
+    $locatorMock->shouldReceive('inspectFpmIni')->andReturn([
+        'disable_functions_ok' => true,
+        'ini_path' => '/etc/php.ini',
+    ]);
+    $locatorMock->shouldReceive('php')->andThrow(new BinaryNotFoundException(
+        tool: 'php',
+        triedPaths: ['/usr/bin/php'],
+        diagnose: ['php cli missing'],
+    ));
+    $locatorMock->shouldReceive('composer')->andReturn('/usr/bin/php /usr/local/bin/composer');
+    $this->app->instance(BinaryLocator::class, $locatorMock);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/upgrade/execute', [
+        'version' => 'latest',
+    ]);
+
+    $response->assertStatus(503);
+    $codes = collect($response->json('data.blocking'))->pluck('code')->all();
+    expect($codes)->toContain('php_cli_missing');
+});
+
+test('POST upgrade/execute 在 composer 找不到时返回 503', function () {
+    $statusMock = Mockery::mock(UpgradeStatusManager::class);
+    $statusMock->shouldReceive('isRunning')->once()->andReturn(false);
+    $this->app->instance(UpgradeStatusManager::class, $statusMock);
+
+    $locatorMock = Mockery::mock(BinaryLocator::class);
+    $locatorMock->shouldReceive('inspectFpmIni')->andReturn([
+        'disable_functions_ok' => true,
+        'ini_path' => '/etc/php.ini',
+    ]);
+    $locatorMock->shouldReceive('inspectCliIni')->andReturn([
+        'disable_functions_ok' => true,
+        'ini_path' => '/etc/php-cli.ini',
+    ]);
+    $locatorMock->shouldReceive('php')->andReturn('/usr/bin/php');
+    $locatorMock->shouldReceive('composer')->andThrow(new BinaryNotFoundException(
+        tool: 'composer',
+        triedPaths: [],
+        diagnose: [],
+    ));
+    $this->app->instance(BinaryLocator::class, $locatorMock);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/upgrade/execute', [
+        'version' => 'latest',
+    ]);
+
+    $response->assertStatus(503);
+    $codes = collect($response->json('data.blocking'))->pluck('code')->all();
+    expect($codes)->toContain('composer_missing');
+});
+
+test('POST upgrade/execute 在 CLI disable_functions 禁了 proc_open 时返回 503', function () {
+    $statusMock = Mockery::mock(UpgradeStatusManager::class);
+    $statusMock->shouldReceive('isRunning')->once()->andReturn(false);
+    $this->app->instance(UpgradeStatusManager::class, $statusMock);
+
+    $locatorMock = Mockery::mock(BinaryLocator::class);
+    $locatorMock->shouldReceive('inspectFpmIni')->andReturn([
+        'disable_functions_ok' => true,
+        'ini_path' => '/etc/php.ini',
+    ]);
+    $locatorMock->shouldReceive('inspectCliIni')->andReturn([
+        'disable_functions_ok' => false,
+        'disable_functions' => 'proc_open',
+        'ini_path' => '/www/server/php/84/etc/php-cli.ini',
+    ]);
+    $locatorMock->shouldReceive('php')->andReturn('/usr/bin/php');
+    $locatorMock->shouldReceive('composer')->andReturn('/usr/bin/php /usr/local/bin/composer');
+    $this->app->instance(BinaryLocator::class, $locatorMock);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/upgrade/execute', [
+        'version' => 'latest',
+    ]);
+
+    $response->assertStatus(503);
+    $codes = collect($response->json('data.blocking'))->pluck('code')->all();
+    expect($codes)->toContain('cli_proc_open_disabled');
+});
+
+test('GET upgrade/binary-health 返回所有工具状态 + ini 两段', function () {
+    $locatorMock = Mockery::mock(BinaryLocator::class);
+    $locatorMock->shouldReceive('php')->andReturn('/usr/bin/php');
+    $locatorMock->shouldReceive('composer')->andReturn('/usr/bin/php /usr/local/bin/composer');
+    $locatorMock->shouldReceive('openssl')->andReturn('/usr/bin/openssl');
+    $locatorMock->shouldReceive('java')->andThrow(
+        new BinaryNotFoundException(tool: 'java', triedPaths: [], diagnose: ['no java'])
+    );
+    $locatorMock->shouldReceive('keytool')->andThrow(
+        new BinaryNotFoundException(tool: 'keytool', triedPaths: [], diagnose: [])
+    );
+    $locatorMock->shouldReceive('mysqldump')->andReturn('/usr/bin/mysqldump');
+    $locatorMock->shouldReceive('mysql')->andReturn('/usr/bin/mysql');
+    $locatorMock->shouldReceive('curl')->andReturn('/usr/bin/curl');
+    $locatorMock->shouldReceive('inspectFpmIni')->andReturn(['disable_functions_ok' => true, 'ini_path' => '/etc/php.ini']);
+    $locatorMock->shouldReceive('inspectCliIni')->andReturn(['disable_functions_ok' => true, 'ini_path' => '/etc/php-cli.ini']);
+    $this->app->instance(BinaryLocator::class, $locatorMock);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->getJson('/api/admin/upgrade/binary-health')
+        ->assertOk();
+
+    $items = collect($response->json('data.items'));
+    expect($items)->toHaveCount(8);
+
+    expect($items->firstWhere('tool', 'php'))->toMatchArray(['tool' => 'php', 'status' => 'ok', 'path' => '/usr/bin/php']);
+    expect($items->firstWhere('tool', 'composer'))->toMatchArray(['tool' => 'composer', 'status' => 'ok', 'path' => '/usr/bin/php /usr/local/bin/composer']);
+
+    expect($items->firstWhere('tool', 'java'))->toMatchArray(['tool' => 'java', 'status' => 'missing']);
+    expect($items->firstWhere('tool', 'keytool'))->toMatchArray(['tool' => 'keytool', 'status' => 'missing']);
+
+    expect($response->json('data.ini.fpm.ini_path'))->toBe('/etc/php.ini');
+    expect($response->json('data.ini.cli.ini_path'))->toBe('/etc/php-cli.ini');
 });

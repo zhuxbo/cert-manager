@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\SmokeChecker;
+use App\Services\Upgrade\UpgradePreflight;
 use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\UpgradeStatusManager;
 use App\Services\Upgrade\VersionManager;
@@ -59,7 +62,7 @@ class UpgradeController extends BaseController
     /**
      * 启动升级任务（后台执行）
      */
-    public function execute(Request $request): void
+    public function execute(Request $request, UpgradePreflight $preflight): ?JsonResponse
     {
         $version = $request->input('version', 'latest');
 
@@ -68,11 +71,26 @@ class UpgradeController extends BaseController
             $this->error('已有升级任务在运行中');
         }
 
+        // binary preflight：一次性跑 4 项检查（FPM ini / php / composer / CLI ini），
+        // 任一阻塞返回 503 + 完整 blocking/items/ini，让运维一次看到所有问题再修
+        $preflightResult = $preflight->check();
+        if (! empty($preflightResult['blocking'])) {
+            return new JsonResponse([
+                'code' => 0,
+                'msg' => '升级前置检查未通过',
+                'data' => [
+                    'blocking' => $preflightResult['blocking'],
+                    'items' => $preflightResult['items'],
+                    'ini' => $preflightResult['ini'],
+                ],
+            ], Response::HTTP_SERVICE_UNAVAILABLE);
+        }
+
         // 清理旧的状态文件
         $this->statusManager->clear();
 
-        // 启动后台升级进程，输出重定向到日志文件
-        $phpBinary = $this->findPhpBinary();
+        // preflight 已保证 php CLI 可用，BinaryLocator 是 singleton，此处命中缓存零成本
+        $phpBinary = app(BinaryLocator::class)->php();
         $artisan = base_path('artisan');
         $logFile = storage_path('logs/upgrade-process.log');
 
@@ -344,48 +362,31 @@ class UpgradeController extends BaseController
     }
 
     /**
-     * 查找 PHP CLI 二进制路径
-     * PHP_BINARY 在 PHP-FPM 环境下返回 php-fpm 路径，需要找到 php CLI
-     * 注意：宝塔面板有 open_basedir 限制，需要优先检查允许范围内的路径
+     * 二进制工具健康检查
+     *
+     * 遍历 8 个升级链路依赖的 binary（php / composer / openssl / java / keytool /
+     * mysqldump / mysql / curl），逐项探测；并附 FPM/CLI 两段 ini 探测结果。
+     * 任一项失败转 status=missing + diagnose，本端点不阻塞、不抛异常，
+     * 供升级页面展示完整环境健康度，运维一次看清所有问题再修。
      */
-    protected function findPhpBinary(): string
+    public function binaryHealth(BinaryLocator $locator): void
     {
-        // 如果 PHP_BINARY 不是 php-fpm，直接使用
-        if (! str_contains(PHP_BINARY, 'fpm')) {
-            return PHP_BINARY;
-        }
-
-        // 优先：从 php-fpm 路径推断 php 路径（在宝塔环境下通常在 open_basedir 允许范围内）
-        $phpFpmPath = PHP_BINARY;
-        $phpPath = str_replace(['php-fpm', 'sbin'], ['php', 'bin'], $phpFpmPath);
-        if ($phpPath !== $phpFpmPath && @file_exists($phpPath) && @is_executable($phpPath)) {
-            return $phpPath;
-        }
-
-        // 尝试常见的 PHP CLI 路径（最低支持 PHP 8.3）
-        // 使用 @ 抑制 open_basedir 限制错误
-        $candidates = [
-            '/www/server/php/84/bin/php',  // 宝塔 PHP 8.4（优先新版本）
-            '/www/server/php/83/bin/php',  // 宝塔 PHP 8.3
-            '/usr/bin/php',
-            '/usr/local/bin/php',
-            '/opt/php/bin/php',
-        ];
-
-        foreach ($candidates as $path) {
-            if (@file_exists($path) && @is_executable($path)) {
-                return $path;
+        $tools = ['php', 'composer', 'openssl', 'java', 'keytool', 'mysqldump', 'mysql', 'curl'];
+        $items = [];
+        foreach ($tools as $tool) {
+            try {
+                $items[] = ['tool' => $tool, 'status' => 'ok', 'path' => $locator->$tool()];
+            } catch (BinaryNotFoundException $e) {
+                $items[] = ['tool' => $tool, 'status' => 'missing', 'diagnose' => $e->diagnose()];
             }
         }
 
-        // 尝试从 PATH 中查找
-        $output = [];
-        @exec('which php 2>/dev/null', $output);
-        if (! empty($output[0]) && @file_exists($output[0])) {
-            return $output[0];
-        }
-
-        // 最后尝试直接使用 'php' 命令
-        return 'php';
+        $this->success([
+            'items' => $items,
+            'ini' => [
+                'fpm' => $locator->inspectFpmIni(),
+                'cli' => $locator->inspectCliIni(),
+            ],
+        ]);
     }
 }
