@@ -68,12 +68,12 @@ test('有 L1 违反 → 命令成功 + NotificationCenter dispatch 被调', func
         ],
     ]);
 
-    // 期望 NotificationCenter::dispatch 被调一次，code = finance_audit_alert
+    // 期望 NotificationCenter::dispatch 被调一次，code = finance_audit
     $this->notificationCenter->shouldReceive('dispatch')
         ->once()
         ->with(Mockery::on(function ($intent) {
             return $intent instanceof NotificationIntent
-                && $intent->code === 'finance_audit_alert'
+                && $intent->code === 'finance_audit'
                 && $intent->notifiableType === 'admin'
                 && ($intent->context['violation_count'] ?? 0) === 1
                 && isset($intent->context['violations'][0]['layer'])

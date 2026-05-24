@@ -36,7 +36,7 @@ if (! function_exists('fundAuditGuardExcludedTestPaths')) {
             'Feature/Models/TransactionTest.php',
             'Unit/FundAuditGuardCoverageTest.php',
             'Unit/Models/FundCasTransactionGuardTest.php',
-            'Unit/Services/Notification/Builders/FinanceAuditAlertMailNotificationBuilderTest.php',
+            'Unit/Services/Notification/Builders/FinanceAuditMailNotificationBuilderTest.php',
         ];
     }
 }

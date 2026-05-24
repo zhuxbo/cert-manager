@@ -90,9 +90,9 @@ class NotificationTemplateSeeder extends Seeder
             ],
             // 资金审计告警 - 邮件版（finance:audit 命令每天 03:00 触发）
             [
-                'code' => 'finance_audit_alert',
+                'code' => 'finance_audit',
                 'name' => '资金审计告警',
-                'content' => $this->getFinanceAuditAlertHtml(),
+                'content' => $this->getFinanceAuditHtml(),
                 'variables' => [
                     'violation_count',
                     'violations',
@@ -588,7 +588,7 @@ HTML;
      * @noinspection XmlDeprecatedElement
      * @noinspection CssReplaceWithShorthandSafely
      */
-    private function getFinanceAuditAlertHtml(): string
+    private function getFinanceAuditHtml(): string
     {
         return <<<'HTML'
 <!DOCTYPE html>

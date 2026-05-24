@@ -92,7 +92,7 @@ class SettingSeeder extends Seeder
             'enterprise' => [
                 ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '接口URL', 'weight' => 1],
                 ['key' => 'appCode', 'type' => 'base64', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => 'AppCode（加密）', 'weight' => 2],
-                ['key' => 'queryField', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => 'name', 'description' => '请求参数名（如 name / company / keyword）', 'weight' => 3],
+                ['key' => 'queryField', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => 'company', 'description' => '请求参数名', 'weight' => 3],
                 ['key' => 'fieldMap', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['name' => 'result.basic.name', 'registration_number' => 'result.basic.creditno', 'address' => 'result.basic.regaddress', 'state' => 'result.basic.province', 'city' => 'result.basic.city', 'regionname' => 'result.basic.regionname', 'legal_person' => 'result.basic.legalperson'], 'description' => '字段映射', 'weight' => 4],
                 ['key' => 'dailyLimit', 'type' => 'integer', 'options' => null, 'is_multiple' => 0, 'value' => 100, 'description' => '全局每日查询接口上限（0 为无限）', 'weight' => 5],
             ],
