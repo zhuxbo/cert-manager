@@ -275,9 +275,10 @@ _resolve_version() {
 }
 
 # 版本比较（v1 > v2 返回 0）
+# 保留预发标识参与比较：GNU sort -V 对 0.5.2-beta.2 < 0.5.2-beta.3 < 0.5.2 符合 SemVer 预期
 version_gt() {
-    local v1=$(echo "$1" | sed 's/^v//' | sed 's/-.*//')
-    local v2=$(echo "$2" | sed 's/^v//' | sed 's/-.*//')
+    local v1=${1#v}
+    local v2=${2#v}
 
     if [ "$v1" = "$v2" ]; then
         return 1
