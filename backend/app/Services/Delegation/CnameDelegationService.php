@@ -220,7 +220,8 @@ class CnameDelegationService
                 $delegation->fail_count = 0;
                 $delegation->last_error = '';
             } else {
-                $delegation->fail_count++;
+                // 硬截断 100：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出
+                $delegation->fail_count = min($delegation->fail_count + 1, 100);
                 $delegation->last_error = 'CNAME记录不匹配或未配置';
                 Log::warning('CNAME委托健康检查失败', [
                     'id' => $delegation->id,
@@ -235,8 +236,9 @@ class CnameDelegationService
             return $valid;
         } catch (Throwable $e) {
             $delegation->valid = false;
-            $delegation->fail_count++;
-            $delegation->last_error = $e->getMessage();
+            $delegation->fail_count = min($delegation->fail_count + 1, 100);
+            // 截断异常消息，避免 SQLSTATE 报错回显嵌套 SQL 把 VARCHAR(255) 撑爆
+            $delegation->last_error = mb_substr($e->getMessage(), 0, 200);
             $delegation->last_checked_at = now();
             $delegation->save();
 
