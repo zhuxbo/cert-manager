@@ -189,6 +189,40 @@ echo is_array($d) && isset($d[getenv("FIELD")]) ? $d[getenv("FIELD")] : "";
     fi
 }
 
+# 检查 backend/.env 的 cache/queue 是否启用 redis
+# Laravel 实际读取：CACHE_DRIVER（config/cache.php）、QUEUE_CONNECTION（config/queue.php）
+# 同时兼容 Laravel 11+ 的 CACHE_STORE 别名（虽然本项目未启用，但升级时 .env 可能已切到新 key）
+# 返回 0=任一启用 redis；1=未启用 / .env 缺失 / PHP_CMD 不可用
+# 用 PHP 解析以正确处理引号、行内注释、CRLF
+_redis_required_from_env() {
+    local env_file="$INSTALL_DIR/backend/.env"
+    [ -f "$env_file" ] || return 1
+    [ -n "$PHP_CMD" ] && [ -x "$PHP_CMD" ] || return 1
+
+    ENV_FILE="$env_file" "$PHP_CMD" -r '
+$content = @file_get_contents(getenv("ENV_FILE"));
+if ($content === false) { exit(1); }
+$keys = ["CACHE_DRIVER", "CACHE_STORE", "QUEUE_CONNECTION"];
+foreach (preg_split("/\r?\n/", $content) as $line) {
+    if (! preg_match("/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/", $line, $m)) continue;
+    if (! in_array($m[1], $keys, true)) continue;
+    $v = rtrim($m[2]);
+    if ($v !== "" && ($v[0] === "\"" || $v[0] === "\x27")) {
+        // 带引号：取首个匹配引号之间的内容
+        $q = $v[0];
+        $end = strpos($v, $q, 1);
+        $v = $end === false ? substr($v, 1) : substr($v, 1, $end - 1);
+    } else {
+        // 裸值：行内注释 / 尾部空白裁掉
+        $v = preg_replace("/\s+#.*$/", "", $v);
+        $v = preg_split("/\s/", $v)[0];
+    }
+    if (strtolower(trim($v)) === "redis") { exit(0); }
+}
+exit(1);
+' 2>/dev/null
+}
+
 # 把 latest/dev 占位符解析成具体版本号（与 install.sh _resolve_version 对齐）
 # 用法：_resolve_version <releases.json file> <input_version: latest|dev|X.Y.Z[-beta]>
 # 返回：解析后的具体版本号（如 0.4.23-beta）
@@ -648,12 +682,13 @@ EOF
 
 # 内部：跑一次 PHP 环境校验，把结果放到全局变量供 check_php_environment 主循环消费
 # 输出变量：
-#   PHP_ENV_OK              全部通过时 true
-#   PHP_ENV_VERSION_ERROR   true 表示 PHP 版本不达标
-#   PHP_ENV_MISSING_EXT     空格分隔的缺失必需扩展
-#   PHP_ENV_DISABLED_FN     空格分隔的被禁用必需函数
-#   PHP_ENV_MISSING_REC     空格分隔的缺失推荐扩展（warning）
+#   PHP_ENV_OK                  全部通过时 true
+#   PHP_ENV_VERSION_ERROR       true 表示 PHP 版本不达标
+#   PHP_ENV_MISSING_EXT         空格分隔的缺失必需扩展（含 .env 推断出的 redis）
+#   PHP_ENV_DISABLED_FN         空格分隔的被禁用必需函数
+#   PHP_ENV_MISSING_REC         空格分隔的缺失推荐扩展（warning）
 #   PHP_ENV_CURRENT_PHP / PHP_ENV_PHP_MIN / PHP_ENV_PHP_RECOMMENDED
+#   PHP_ENV_REDIS_DYN_REQUIRED  true 表示 backend/.env 启用 redis，已把 redis 升级为必装
 _php_env_run_checks() {
     local req_file="$1"
 
@@ -692,15 +727,32 @@ echo is_array($d) && isset($d["php_recommended"]) ? $d["php_recommended"] : "";
 $r = @json_decode(@file_get_contents(getenv("REQ_FILE")), true);
 foreach ($r["extensions"]["required"] ?? [] as $x) { echo $x . PHP_EOL; }
 ' 2>/dev/null)
+
+    # 动态必装：backend/.env 中 cache/queue 任一启用 redis 时，redis 升级为必装扩展
+    # 用全局变量记录判定结果，下面推荐扩展循环用同一值跳过 redis，避免重复报告
+    PHP_ENV_REDIS_DYN_REQUIRED=false
+    if _redis_required_from_env; then
+        PHP_ENV_REDIS_DYN_REQUIRED=true
+        if ! EXT="redis" "$PHP_CMD" -r 'exit(extension_loaded(getenv("EXT")) ? 0 : 1);' 2>/dev/null; then
+            # 防御性去重：php-requirements.json 未来若把 redis 移到 required 也不会重复
+            local _already_listed=false
+            for e in "${missing_ext[@]}"; do
+                [ "$e" = "redis" ] && _already_listed=true && break
+            done
+            [ "$_already_listed" = false ] && missing_ext+=("redis")
+        fi
+    fi
+
     if [ ${#missing_ext[@]} -gt 0 ]; then
         PHP_ENV_MISSING_EXT="${missing_ext[*]}"
         PHP_ENV_OK=false
     fi
 
-    # 推荐扩展（warning，不阻断）
+    # 推荐扩展（warning，不阻断）；redis 若已被升级为必装，从推荐路径跳过避免重复报告
     local missing_rec=()
     while IFS= read -r ext; do
         [ -z "$ext" ] && continue
+        [ "$ext" = "redis" ] && [ "$PHP_ENV_REDIS_DYN_REQUIRED" = true ] && continue
         if ! EXT="$ext" "$PHP_CMD" -r 'exit(extension_loaded(getenv("EXT")) ? 0 : 1);' 2>/dev/null; then
             missing_rec+=("$ext")
         fi
@@ -867,6 +919,11 @@ check_php_environment() {
     log_step "校验 PHP 运行环境..."
     _php_env_run_checks "$req_file"
     log_info "当前 PHP: $PHP_ENV_CURRENT_PHP; 最低要求: ${PHP_ENV_PHP_MIN:-N/A}"
+
+    # 提示 redis 动态升级为必装（仅在 .env 启用 redis 时输出，避免无关项目刷屏）
+    if [ "$PHP_ENV_REDIS_DYN_REQUIRED" = true ]; then
+        log_info "backend/.env 中 cache/queue 已启用 redis，redis 扩展按必装处理"
+    fi
 
     # 推荐项警告（每次都输出，不阻断）
     if [ -n "$PHP_ENV_MISSING_REC" ]; then

@@ -602,11 +602,13 @@ main() {
 case "${1:-}" in
     auto_install_ext)
         # 子命令场景：父进程 bt-install.sh 已经打过 [STEP] 检测系统依赖 + PHP 版本，不重复输出
+        # shift 把子命令名移出，剩余参数（extra 扩展，如 redis）原样转发给函数
+        shift
         if ! detect_php_version; then
             log_error "未找到符合要求的 PHP 版本"
             exit 1
         fi
-        auto_install_ext
+        auto_install_ext "$@"
         exit $?
         ;;
     enable_functions)
