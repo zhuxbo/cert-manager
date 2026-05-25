@@ -4,10 +4,21 @@
 >
 > **两处共同引用**:
 >
-> - `/finish-check` 阶段 8 Review 循环 — reviewer subagent 必查清单(反模式 1-8)
+> - `/finish-check` 阶段 8 Review 循环 — reviewer subagent 必查清单(反模式 1-13)
 > - plan / 设计阶段 — 写实现前的"杀手场景 + 对端检查"两栏(设计期清单章节)
 >
 > **维护原则**:每次真实回归后,把根因抽象成"反模式"加进来,带案例锚定;不写空泛规则。
+
+---
+
+## 反模式分级（reviewer 应用范围）
+
+- **核心层**（每轮 reviewer 必扫，与改动无关）：反模式 1（失败路径数据安全）、2（端到端机制可达性）、3（对称性）、6（现有正确范式优先）、9（资金路径四道网）
+- **条件层**（按改动目录/文件类型触发）：
+  - 改 backend → 加 10（锁顺序）、11（afterCommit）、13（Transaction 事务）
+  - 改 .sh / 部署脚本 → 加 4（同类扩散）、7（set -e 笔误）
+  - 改外部命令调用 → 加 12（BinaryLocator）
+  - 改公开 API / 新增 public 方法 → 加 5（新方法边界测试）、8（数组键类型混淆）
 
 ---
 
@@ -66,6 +77,16 @@
 **第二例(对称注释失效)**:`_php_pretty_version` 收敛后 upgrade.sh 作为独立部署入口保留一份副本,两边用注释互相提示"修改时同步";但 commit 9dd8ce1d 实际写了两种算法 — `upgrade.sh` `echo "8.${ver: -1}"`(硬编码大版本号 "8")vs `common.sh` `echo "${ver:0:1}.${ver:1}"`(通用),PHP 8.x 时输出相同、PHP 9.x 时代会出错,第 5 轮独立 reviewer 才看出。
 **教训**:注释 ≠ 技术保证 — 保留"对称副本"时,reviewer 必须实际 diff 两份代码逐行比对,不能因注释说"对称"就信;build 时加 grep 等价校验更可靠。
 
+**强制配套**（commit 9dd8ce1d 第 5 轮 reviewer 教训的二次防御）：
+
+凡在多处保留"对称副本"（如 upgrade.sh 与 common.sh 中各保留一份 `_php_pretty_version`），必须满足以下两条之一：
+
+1. **build 时 grep 等价校验**：CI / package.sh 加一行 `diff <(sed -n 'PATTERN' upgrade.sh) <(sed -n 'PATTERN' common.sh)`，不等就 fail build
+2. **运行时输出等价测试**：写一个 bash 用例同时调两个副本，断言输出一致；纳入 finish-check §2.3 测试集
+
+仅靠注释"修改时同步" 是 **不够** 的（commit 9dd8ce1d 第 5 轮发现两份算法已经漂移但注释仍声称对称）。
+新增对称副本 PR 必须在 finish-check 总结的"已知局限性"段列出"对端校验机制"。
+
 ---
 
 ## 反模式 5: 新方法必有边界测试
@@ -116,6 +137,56 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 
 ---
 
+## 反模式 9: 资金路径四道网必须齐全
+
+新增 / 修改 `funds` / `transactions` / `users.balance` 写入路径时,**四道网缺一即资金错乱**:
+
+1. **DB 唯一索引**:`funds(pay_method, pay_sn)` + `transactions(type, transaction_id) WHERE type != 'order'` — 物理阻断重复入账
+2. **CAS UPDATE 完整字段匹配**:`Fund::transitionToSuccessful` 走 5 字段 WHERE(id + amount + type + pay_method + status=0)而非 SELECT-then-UPDATE;CAS WHERE 不能简化为 status 单一条件(否则金额/支付方式不匹配的回调也会把本地 fund 标成功)
+3. **`DB::transaction` 内 `lockForUpdate` + 锁内二次状态校验**:锁外校验会被并发绕过;支付路径必须同时锁 user 行(否则同一用户跨订单并发支付会绕过 credit_limit)
+4. **Pest invariant 测试登记**:动了 funds/transactions/users.balance 的测试自动跑 `FundInvariants::all()` 4 条 SQL(账目恒等 / 事件唯一 / 状态-事件配对 / 金额配对)
+
+**真实案例**:commit `4afe7313` (feat: 资金安全确定性体系（4 道网）)系统化补齐这四道网 — 在此之前应用层 `exists` 防重 + SELECT-then-UPDATE 状态转换均有竞态窗口,删除已入账 fund 等"删除 SQL 本身合法"的路径也无法被 CAS / 唯一索引拦截。
+**修复**:四道网逐项核查,缺一不可。物理阻断(网 1-3)不能被替代为事后发现(网 4) — 已删除的 fund 即便 invariant 报 orphan transaction,钱已入账、订单已消失,损失已发生。
+
+---
+
+## 反模式 10: 锁顺序违反 = 死锁
+
+`TaskJob::handle` 是 **task → order/acme** 顺序(先锁 task,action 内再锁业务行)。业务路径若反向(先锁 order 再锁 task) = InnoDB 周期性死锁回滚,用户看到随机失败。
+
+**真实案例**:commit `3dd44b84` (fix: 资金/状态变更路径全面加行锁,消除并发竞态)统一所有修改 task 的业务路径(`Order::revokeCancel` / `commitCancel(active)` / `batchCommitCancel` / `Acme::revokeCancel` 等)按 task → 业务行 顺序,并修复 `TaskJob::handle` 整体包事务(否则 `lockForUpdate` 在自动提交模式下是"假锁",SELECT 返回即释放)。
+**修复**:所有 DELETE / 修改 task 的业务路径,必须先 `Task::where(...)->lockForUpdate()->get()` 拿 task 锁,再锁业务行,再做 DELETE。新增涉及 task + order/acme 的事务路径,先 grep 现有路径确认锁顺序与之对齐。
+
+---
+
+## 反模式 11: 事务内 dispatch Job 缺 `->afterCommit()`
+
+`config/queue.php` 所有连接默认 `after_commit=false`,事务内 `dispatch` 的 Job 会**立即入队**;worker 可能在事务提交前消费 Job,读不到事务内新建的行 / 状态,导致任务静默丢失(task 状态查无记录直接跳过)。
+
+**真实案例**:commit `3dd44b84` 收尾时把所有事务内 `TaskJob::dispatch` 调用统一加 `->afterCommit()`(`createTask` / `createTasks` / 业务路径内手动 dispatch),避免 worker 抢跑外层事务。
+**修复**:所有 `TaskJob::dispatch(...)` 调用必须 `->afterCommit()`;新增 Job dispatch 点也要跟进。grep 验证:`git grep -n "TaskJob::dispatch" backend/ | grep -v afterCommit` 应为空。
+
+---
+
+## 反模式 12: 外部命令未走 BinaryLocator
+
+`exec("openssl ...")` / `exec("php ...")` / `exec("composer ...")` / `exec("mysqldump ...")` / `exec("curl ...")` 等裸命令在多版本 PHP 系统(如宝塔多 PHP 版本)/ open_basedir 限制 / `is_executable` 误判等场景会**走错 CLI 或假装找不到** — 探测必须走 `proc_open` 子进程,不能用 `is_executable` / `file_exists`。
+
+**真实案例**:commit `9dd8ce1d` (feat: 升级链路加入 PHP 环境检测与流程加固)引入 `App\Services\Binary\BinaryLocator`,把所有外部命令调用收口 — 在此之前多版本 PHP 系统升级时 `exec("php artisan ...")` 走的是 system 默认 PHP(可能是 7.4)而非项目所需的 8.3+,导致升级运行时崩溃。
+**修复**:所有 `exec` 类调用必须 `app(\App\Services\Binary\BinaryLocator::class)->find('tool')` 解析路径 + `escapeshellarg($path).' arg1 arg2'`,不允许变量插值或裸命令。失败抛 `BinaryNotFoundException`,调用方按场景 catch 静默降级(如 keytool 找不到跳过 JKS)或向上抛(升级流程内 PHP/composer 失败应阻塞)。
+
+---
+
+## 反模式 13: `Transaction::create` 在 `DB::transaction` 外
+
+`Transaction::creating` 钩子内不再开自己的嵌套事务 / savepoint — 直接使用外层事务保证 `balance` 修改与 INSERT 的原子性。**非事务内调用会抛异常**,但新增资金路径若漏写 `DB::transaction` 闭包,会在生产命中异常导致请求 500。
+
+**真实案例**:commit `3dd44b84` 把 `Transaction::creating` / `Fund::createRecord` 内嵌事务移除,改为强制调用方在 `DB::transaction` 内调用;同时新增异常提示"`Transaction::create` 必须在 `DB::transaction` 内调用(防止 balance 修改与 INSERT 非原子)"。
+**修复**:所有 `Transaction::create` 调用前确认包在 `DB::transaction(fn)` 闭包内;`Fund::updating` 同理。资金事务优先用 `DB::transaction(fn)` 闭包(Laravel 自动管 commit/rollback),避免"`$row=null` 控制流穿透"导致的事务计数器漂移;如必须手写 `DB::beginTransaction` + try/catch,所有控制流分支必须 commit 或 rollback(含 no-row、early-return、异常路径),并补单元测试覆盖这些分支。
+
+---
+
 # 设计期清单(写 plan / 改动前)
 
 进入实现前,显式回答下面两组问题。**回答不出来 → 设计未完成,不要开始写代码**。
@@ -137,7 +208,7 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 
 | 维度            | 当前改动   | 对端需要同步?      |
 | --------------- | ---------- | ------------------ |
-| backend ↔ shell | (具体什么) | (是 / 否 / 已对齐) |
+| backend ↔ shell | (具体什么) | (是/否/已对齐) |
 | admin ↔ user    | ...        | ...                |
 | 同文件已有范式  | ...        | (列出参考函数)     |
 
@@ -153,16 +224,20 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 你是带着怀疑的独立 reviewer,目标是找毛病而非确认正确。
 
 ## 改动范围
-- diff:<由主智能体填,如 `git diff <base>..HEAD` 输出>
-- 主要功能背景:<由主智能体填,1-3 句话说明这次 PR 想解决什么>
+- diff：<由主智能体填，如 `git diff <base>..HEAD` 输出>
+- 主要功能背景：<由主智能体填，1-3 句话说明这次 PR 想解决什么>
+- 相关 plan 文档（无则填'无'）：<由主智能体填 `.superpowers/plans/<filename>.md` 的相对路径；reviewer 可选阅读以理解设计决策；本次改动确实无 plan 时显式填"无"，需补充上下文可附若干 commit SHA 供 reviewer 用 `git show` 翻历史>
+- 相关 spec/brainstorm 文档（如果有）：<由主智能体填 `.superpowers/specs/<filename>.md` 的路径；同上>
 
-## 已知 review 历史(避免重复报告)
-- 上一轮发现:<由主智能体填,如"P1.1 机制失效 / P1.2 数据丢失"或"无 — 首轮">
-- 决议:<由主智能体填,如"P1.1 已修 / P1.2 已修 / M4 follow-up">
-- 重要:同一处已修复的问题不要重复报告
+## 已知 review 历史（避免重复报告）
+- 上一轮 critical/high 列表：<由主智能体填，如 "P1.1 机制失效（已修，commit abc1234）/ P1.2 数据丢失（已修，commit def5678）" 或 "无 — 首轮">
+- 上一轮 medium 用户决议为'当场修'的项：<由主智能体填，同上格式；用户选 follow-up/接受 的不列>
+- 当前是第 N 轮 / 共 5 轮：<由主智能体填，如 "第 2 轮 / 共 5 轮"；临近第 5 轮除非 critical/high 否则应倾向 REVIEW_PASS>
+- 重要：同一处已修复的问题不要重复报告
 
 ## 必查反模式清单
-读 `skills/review-checklist.md` 反模式 1-8 + 设计期清单。当前项目特有反模式由该文件保持单一来源。
+读 `skills/review-checklist.md` "反模式分级" 章节 + 设计期清单，按本次改动确定本轮扫描范围（核心层 5 条必扫 + 条件层按改动目录触发）。当前项目特有反模式由该文件保持单一来源。
+- 反模式 4 特别强调：遇到"对称副本"模式（多处保留同名函数 / 同语义算法）→ 必须验证是否有 build 时 grep 等价校验或运行时输出等价测试；只靠注释提示同步 = 报 high
 
 ## 必须实际跑(不只是静态推理!)
 1. `cd backend && ./vendor/bin/pint --test`(PHP 格式)
@@ -173,22 +248,24 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
    - 删一个新引入的配置文件 / 给个非法输入 / mock 命令失败
    - 看防御机制是否真的拦住
    - 这条曾经漏掉过"防御机制完全失效"(产出物没打进包,整套机制等于不存在)
+6. **挑 3-5 个 §2.5-§2.7 / §1.5 / §2.6 与本次 diff 相关的复选框做反向断言验证**(如改了 ACME → 验证"Action 无 userId 构造参数";改了资金 → 验证"CAS UPDATE 完整字段")。证据不足或与主智能体声称不符 → 报 critical
 
 ## 输出格式
 - 按 **Critical / High / Medium / Low/Nit** 分级
-- **置信度 ≥ 80 才报告**(过滤理论问题,避免噪音)
-- 每条带 `文件:行` + 真实案例锚定
+- 每条必须附 `confidence: NN`（0-100），**仅 ≥ 80 才列出**（过滤理论问题，避免噪音）
+- 每条带 `文件:行` + 真实案例锚定（参照 review-checklist.md 反模式格式）
+- 主智能体会 spot-check `Critical|High` 评级条目，故意降级为 Medium 规避会被退回
 
-## 退出签字(必须 — 机器可 grep 验证)
+## 退出签字（必须 — 机器可 grep 前缀验证）
 
-最后一行必须是下面两种之一,**前缀必须原样**:
+最后一行必须是下面两种之一，**前缀（含冒号）必须原样**，前缀后可附简短人读说明：
 
-- 有新发现 → 列完所有问题后,最后一行写:
-  `REVIEW_FAIL: 发现 <N> 个 critical/high 问题需修复`
-- 无新发现 → 最后一行写:
-  `REVIEW_PASS: 未发现新 critical/high 问题`
+- critical/high 清零 → 最后一行写：
+  `REVIEW_PASS: critical/high 已清零（medium N 条 / low N 条，列于上方供用户决议）`
+- critical/high > 0 → 列完所有问题后，最后一行写：
+  `REVIEW_FAIL: 发现 N 个 critical/high 问题需修复`
 
-主智能体会 `grep -F "REVIEW_PASS:"` 验证。任何近义句(如"看起来通过"、"没有新问题")**不被接受**,流程会卡住。
+主智能体会 `grep -F "REVIEW_PASS:"` / `grep -F "REVIEW_FAIL:"` 仅匹配前缀验证。任何近义句（如"看起来通过"、"没有新问题"）**不被接受**。
 
 报告控制在 1500 字内。
 ```
