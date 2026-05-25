@@ -156,10 +156,15 @@ php artisan db:structure --export       # 导出标准结构
 
 ### 探测策略（不要碰）
 
-- 全部走 `proc_open([$path, '--version'])` 校验，**不能用 `is_executable` / `file_exists`**（FPM 下走 `open_basedir` 检查，宝塔白名单外的路径会被误判为不可用）
-- `proc_open` 用 array 形式调用（execve），不走 shell，天然防注入 + 避开 `open_basedir`
-- 候选路径优先级：`ExecutableFinder->find()` → 工具专属候选路径常量（**composer 是反过来：候选 → PATH**，因为宝塔 / Linux 站点 `/usr/local/bin/composer` 优先级更高，PATH 上可能挂着旧版本副本）
-- 版本探测参数因工具而异：`java -version` 输出到 stderr、`keytool` 中文 locale 不含 'keytool' 字符串 —— 这两个仅校验 exit 0，不校验 stdout 内容
+- 全部走 `proc_open([$path, $flag])` 数组形式校验，**不能用 `is_executable` / `file_exists`**（FPM 下走 `open_basedir` 检查，宝塔白名单外的路径会被误判为不可用）
+- `proc_open` 数组形式调用（execve），不走 shell，天然防注入 + 避开 `open_basedir`
+- **探测顺序统一两条腿**：候选路径常量（绝对路径列表） → shell PATH 兜底，FPM/CLI 走完全一致路径。**不再用 Symfony `ExecutableFinder`** —— open_basedir 非空时它强制只在 open_basedir 内目录找命令，FPM 下永远 miss、CLI 下被候选路径覆盖，留着只让"开发机能跑、生产挂"的差异被偷偷接住
+- **shell 兜底**（`probeViaShell`）：候选路径全 miss 时跑 `sh -c 'command -v $tool'` 拿绝对路径 + probeWith 二次校验工具行为。**显式传 env `SHELL_FALLBACK_PATH`** 给 sh —— 宝塔 PHP-FPM 默认 `clear_env=yes` 不传 PATH，不显式注入子 sh 拿不到 PATH 必然失败。**返回绝对路径**而非裸名 —— 调用方按绝对路径 exec，不依赖调用方进程 env PATH
+- `SHELL_FALLBACK_PATH` 顺序：`/opt/homebrew/{sbin,bin}` 排在 `/usr/bin` 前面 —— macOS `/usr/bin/openssl` 是 LibreSSL（`openssl version` 输出 "LibreSSL ..." 不含 "OpenSSL"，探测假阳性失败），Homebrew 提前避开；生产 Linux 无 `/opt/homebrew/` 自动跳过
+- 版本探测参数因工具而异：
+  - `openssl version`（子命令，不是 `--version` 全局选项）—— OpenSSL 3.0.x 不识别 `--version`（3.2+ 才加），但 `version` 子命令 1.x/2.x/3.x 全系列支持；Ubuntu 24.04 默认 3.0.13 是踩过的坑
+  - `java -version` 输出到 stderr、`keytool` 中文 locale 不含 'keytool' 字符串 —— 这两个仅校验 exit 0，不校验 stdout 内容
+- composer 探测同样是 `候选路径 → shell PATH 兜底`（与其他工具对齐，不再特殊处理"候选 vs PATH 反向"）
 - 进程内 memoize（`$resolved[$tool]` 字典）
 
 ### 宝塔 PHP-FPM / PHP-CLI ini 分离

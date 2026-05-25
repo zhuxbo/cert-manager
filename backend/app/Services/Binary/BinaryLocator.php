@@ -3,7 +3,6 @@
 namespace App\Services\Binary;
 
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
-use Symfony\Component\Process\ExecutableFinder;
 
 class BinaryLocator
 {
@@ -33,13 +32,27 @@ class BinaryLocator
      * SOFT 档版本探测参数 [flag, expectedOutput]；expectedOutput 为空仅校验 exit code。
      */
     private const SOFT_VERSION_PROBES = [
-        'openssl' => ['--version', 'OpenSSL'],
+        'openssl' => ['version', 'OpenSSL'], // 用子命令而非 --version：OpenSSL 3.0.x 不支持 --version 全局选项（3.2+ 才加），但 version 子命令 1.x/2.x/3.x 全系列支持
         'java' => ['-version', ''],          // java -version 输出到 stderr，仅校验 exit 0
         'keytool' => ['-help', ''],          // keytool 无 --version；中文 locale 输出不含 'keytool'，仅校验 exit 0
         'mysqldump' => ['--version', 'Ver '],
         'mysql' => ['--version', 'Ver '],
         'curl' => ['--version', 'curl '],
     ];
+
+    /**
+     * shell 兜底探测时显式注入的 PATH。
+     *
+     * 宝塔 PHP-FPM 默认 clear_env=yes、pool 配置 env[PATH] 默认注释掉，
+     * worker 进程 getenv('PATH') 为空，子 sh 拿不到 PATH 必然找不到命令。
+     * 这里显式给一个覆盖 Linux 标准位置 + macOS Homebrew 的 PATH，
+     * 让 shell 兜底在生产/开发机都能工作（不依赖部署环境的 env[PATH] 配置）。
+     *
+     * 顺序：Homebrew → /usr/local → 系统目录。macOS `/usr/bin/openssl` 是 LibreSSL，
+     * `openssl version` 输出 "LibreSSL ..." 不含 "OpenSSL"，会让探测假阳性失败；
+     * 把 Homebrew 提前确保开发机命中真正的 OpenSSL。生产 Linux 无 /opt/homebrew/，无影响。
+     */
+    private const SHELL_FALLBACK_PATH = '/opt/homebrew/sbin:/opt/homebrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
     /** @var array<string, string> tool name → 解析路径（或 composer 的完整命令串） */
     protected array $resolved = [];
@@ -84,8 +97,56 @@ class BinaryLocator
     }
 
     /**
+     * 用 sh 解析 PATH 兜底，定位命令的绝对路径并校验探测输出。
+     *
+     * 候选路径全部 miss 时启用（如 binary 装在常规路径之外）。两步走：
+     * 1) `sh -c 'command -v $tool'` 拿到 PATH 上命令的绝对路径
+     * 2) 用该绝对路径走 probeWith 校验版本输出符合预期
+     *
+     * **返回绝对路径而非裸名**：调用方按绝对路径 exec/proc_open，
+     * 不依赖调用方进程的 env PATH —— 宝塔 PHP-FPM 默认 clear_env=yes、
+     * worker 进程 PATH 空，调用方启动的子 sh 拿不到 PATH 必然失败；
+     * 探测阶段显式注入 SHELL_FALLBACK_PATH 给 sh，调用阶段不再需要。
+     *
+     * @return string|null 找到的绝对路径；null 表示找不到或版本校验失败
+     */
+    protected function probeViaShell(string $tool, string $flag, string $expectedOutput): ?string
+    {
+        // env 传 array 时是 execve 语义（完全替换、不合并），用 array_replace
+        // 把父进程 env（HOME/LANG/JAVA_HOME 等）保留，只覆盖 PATH。
+        // 父进程 PATH 空时（宝塔 FPM）也无害：PATH key 仍被 SHELL_FALLBACK_PATH 覆盖到。
+        $env = array_replace(getenv() ?: [], ['PATH' => self::SHELL_FALLBACK_PATH]);
+        $resolveCmd = 'command -v '.escapeshellarg($tool).' 2>/dev/null';
+        $proc = @proc_open(
+            $resolveCmd,
+            [1 => ['pipe', 'w']],
+            $pipes,
+            null,
+            $env,
+        );
+        if (! is_resource($proc)) {
+            return null;
+        }
+        $path = trim((string) stream_get_contents($pipes[1]));
+        fclose($pipes[1]);
+        if (proc_close($proc) !== 0 || $path === '') {
+            return null;
+        }
+
+        // command -v 找到了路径，但仍要走 probeWith 校验工具行为符合预期
+        // （防 alias / wrapper script / 不同实现 like LibreSSL 等假阳性）
+        return $this->probeWith([$path, $flag], $expectedOutput) ? $path : null;
+    }
+
+    /**
      * 解析 php 二进制：优先 PHP_BINARY（CLI），FPM 进程下推断同级 bin/php，
-     * 再退到 ExecutableFinder，最后遍历候选路径，全部失败抛 BinaryNotFoundException。
+     * 再遍历候选路径，最后 shell PATH 兜底，全部失败抛 BinaryNotFoundException。
+     *
+     * 不再用 Symfony ExecutableFinder：open_basedir 非空时它强制只在
+     * open_basedir 内目录找命令（参 Symfony 7.x ExecutableFinder 源码），
+     * 宝塔站点的 open_basedir 必定不含 /usr/bin/，FPM 下永远 miss；
+     * CLI 下又被候选路径覆盖。让 FPM 和 CLI 走完全一致的探测路径，
+     * 避免"开发机能跑、生产挂"被 ExecutableFinder 这条路偷偷接住的差异。
      *
      * @return string 可执行的 php 绝对路径
      */
@@ -109,21 +170,18 @@ class BinaryLocator
             }
         }
 
-        // 3) PATH 查找
-        $found = (new ExecutableFinder)->find('php');
-        if ($found !== null) {
-            $tried[] = $found;
-            if ($this->probeWith([$found, '-v'], 'PHP ')) {
-                return $found;
-            }
-        }
-
-        // 4) 遍历常见安装路径
+        // 3) 遍历常见安装路径
         foreach (self::PHP_CANDIDATE_PATHS as $path) {
             $tried[] = $path;
             if ($this->probeWith([$path, '-v'], 'PHP ')) {
                 return $path;
             }
+        }
+
+        // 4) shell 兜底：候选路径未覆盖时让 sh 解析 PATH 找绝对路径
+        $tried[] = 'php (shell PATH)';
+        if (($path = $this->probeViaShell('php', '-v', 'PHP ')) !== null) {
+            return $path;
         }
 
         throw new BinaryNotFoundException(
@@ -191,20 +249,14 @@ class BinaryLocator
     }
 
     /**
-     * 走 PATH 找 $tool，独立成方法便于子类强制返回 null 覆盖兜底分支。
-     */
-    protected function pathFinderResult(string $tool): ?string
-    {
-        return (new ExecutableFinder)->find($tool);
-    }
-
-    /**
      * 解析 composer phar 路径。
      *
-     * 顺序与 SOFT 档相反（候选 → PATH 而非 PATH → 候选）：宝塔 / Linux 站点的
-     * /usr/local/bin/composer 通常是站点 composer，优先选择能避开 PATH 上的旧版本副本。
+     * 候选路径全部 miss 时走 shell PATH 兜底。注意 composer 是 phar，
+     * shell 兜底用 `composer --version` 探测会依赖 phar 自带 shebang
+     * `#!/usr/bin/env php` —— 多版本 PHP 系统下可能选错 PHP；但只有
+     * 候选路径都未覆盖时才走到这步，能跑通就是收益，可接受。
      *
-     * @throws BinaryNotFoundException 候选路径与 PATH 都未找到可用 composer
+     * @throws BinaryNotFoundException 候选路径与 shell PATH 都未找到 composer
      */
     protected function resolveComposerPhar(): string
     {
@@ -216,12 +268,9 @@ class BinaryLocator
             }
         }
 
-        $found = $this->pathFinderResult('composer');
-        if ($found !== null) {
-            $tried[] = $found;
-            if ($this->probeComposerPhar($found)) {
-                return $found;
-            }
+        $tried[] = 'composer (shell PATH)';
+        if (($path = $this->probeViaShell('composer', '--version', 'Composer')) !== null) {
+            return $path;
         }
 
         throw new BinaryNotFoundException(
@@ -281,7 +330,10 @@ class BinaryLocator
     }
 
     /**
-     * SOFT 档通用解析：PATH → 候选路径（与 spec § 4 一致），全部失败抛 BinaryNotFoundException。
+     * SOFT 档通用解析：候选路径 → shell PATH 兜底，全部失败抛 BinaryNotFoundException。
+     *
+     * 不再走 ExecutableFinder：FPM 下 open_basedir 锁死 Symfony Finder、CLI 下被候选路径覆盖，
+     * 留着只会让"开发机有/生产无"这种差异被偷偷接住。统一两条路径：候选明确路径 + shell 兜底。
      */
     protected function resolveSoft(string $tool): string
     {
@@ -292,18 +344,16 @@ class BinaryLocator
         [$flag, $expected] = self::SOFT_VERSION_PROBES[$tool] ?? ['--version', ''];
         $tried = [];
 
-        if (($path = $this->pathFinderResult($tool)) !== null) {
-            $tried[] = $path;
-            if ($this->probeWith([$path, $flag], $expected)) {
-                return $this->resolved[$tool] = $path;
-            }
-        }
-
         foreach ($this->candidatePathsFor($tool) as $candidate) {
             $tried[] = $candidate;
             if ($this->probeWith([$candidate, $flag], $expected)) {
                 return $this->resolved[$tool] = $candidate;
             }
+        }
+
+        $tried[] = "$tool (shell PATH)";
+        if (($path = $this->probeViaShell($tool, $flag, $expected)) !== null) {
+            return $this->resolved[$tool] = $path;
         }
 
         throw new BinaryNotFoundException(

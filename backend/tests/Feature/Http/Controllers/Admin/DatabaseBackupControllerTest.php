@@ -74,6 +74,13 @@ test('列表返回所有备份及配套 schema 标记', function () {
 test('store 入队 CreateBackupJob 并返回 token', function () {
     Queue::fake();
 
+    // mock BinaryLocator 让 mysqldump 探测通过（解耦本地环境：开发机/CI 是否装 mysqldump
+    // 不应影响 controller 行为测试。之前隐式依赖 ExecutableFinder + shell PATH 找到本地
+    // mysqldump，是"开发机能跑、生产挂"的典型隐患）
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andReturn('/usr/bin/mysqldump');
+    $this->app->instance(BinaryLocator::class, $mock);
+
     $resp = $this->actingAsAdmin($this->admin)->postJson('/api/admin/database/backups');
 
     $resp->assertOk();
@@ -100,6 +107,13 @@ test('恢复要求 mode 参数合法', function () {
 test('恢复入队 RestoreBackupJob 并返回 token', function () {
     Queue::fake();
     createFakeBackup($this->testDir, 'backup_20260424_120000');
+
+    // mock BinaryLocator 让 mysqldump+mysql 探测通过（restore 路径同时探测两个）
+    // 同上，解耦本地环境依赖
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andReturn('/usr/bin/mysqldump');
+    $mock->shouldReceive('mysql')->andReturn('/usr/bin/mysql');
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $resp = $this->actingAsAdmin($this->admin)
         ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'incremental']);
