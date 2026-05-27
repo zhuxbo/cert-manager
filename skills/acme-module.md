@@ -110,7 +110,10 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 上游系统 端点（RPC 风格，通过 `order_id` 传参）：
 
-- `POST /api/acme/new` — 创建订单（入参：customer/product_code/plus/refer_id）
+- `POST /api/acme/new` — 创建订单
+  - 字段集（manager 视角完整 schema）：`contact_email` / `product_code` / `period`(int) / `plus`(int 0/1) / `refer_id`
+  - `period` 当前 gateway 暂不接收（由 `product.periods[0]` 决定），manager 稳定外发等其升级多年期产品后自然贯通
+  - `source` 是 manager 内部 Api 路由参数，作为 `Api::new($data, $source)` 第二个独立参数，不混入 data
 - `GET /api/acme/get?order_id=` — 查询订单（响应含 directory_url）
 - `POST /api/acme/cancel` — 取消订单
 - `GET /api/acme/get-products` — 获取 ACME 产品列表

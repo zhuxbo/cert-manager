@@ -21,15 +21,46 @@
 
 登录用户端 → ACME 订阅列表 → 详情页 → "ACME 凭据" 标签页。页面展示三项可一键复制，并直接给出适配 certbot / acme.sh 的命令模板。
 
-### 方式二：Deploy Token（推荐自动化场景）
+### 方式二：API Token（标准 ACME 子账户场景）
 
 ```bash
-# 一步到位创建 + 支付 + 提交（首次使用，无现有订阅时）
+# 一步到位创建 + 支付 + 提交
+curl -sS -X POST http://your-platform/api/acme/new \
+  -H "Authorization: Bearer <api-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product_code": "cnssl-acme-dv-standard",
+    "contact_email": "you@example.com",
+    "period": 12,
+    "plus": 1,
+    "refer_id": "your-idempotency-key"
+  }' | jq .
+# 返回：{"code":1,"data":{"order_id":...,"eab_kid":"...","eab_hmac":"...","directory_url":"https://acme.test.certum.pl/directory/","status":"active"}}
+```
+
+入参字段：
+
+| 字段            | 必填 | 类型          | 默认 | 说明                                                                     |
+| --------------- | ---- | ------------- | ---- | ------------------------------------------------------------------------ |
+| `product_code`  | 是   | string max:50 | —    | 产品代码（`products.code`，product_type=acme）                           |
+| `contact_email` | 是   | email max:254 | —    | ACME 账号邮箱（RFC 8555 contact）                                        |
+| `period`        | 否   | integer       | 12   | 订阅时长（月）；预留 Certum 多年期产品，需在 `product.periods` 内        |
+| `plus`          | 否   | integer 0\|1  | 1    | 赠送时间（与传统 V2 API 一致）                                           |
+| `refer_id`      | 否   | string max:64 | —    | 幂等键，按当前用户范围内去重；同 user 重复返回 `Refer id already exists` |
+
+### 方式三：Deploy Token（推荐自动化部署场景）
+
+```bash
+# 一步到位创建 + 支付 + 提交（入参与 /api/acme/new 同构）
 curl -sS -X POST http://your-platform/api/deploy/acme/new \
   -H "Authorization: Bearer <deploy-token>" \
   -H "Content-Type: application/json" \
-  -d '{"product_id": 57, "period": 12, "plus": 1}' | jq .
-# 返回：{"code":1,"data":{"order_id":...,"eab_kid":"...","eab_hmac":"...","directory_url":"https://acme.test.certum.pl/directory/","status":"active"}}
+  -d '{
+    "product_code": "cnssl-acme-dv-standard",
+    "contact_email": "deploy@example.com",
+    "period": 12,
+    "plus": 1
+  }' | jq .
 
 # 已有订阅时获取详情（含 EAB + directory_url）
 curl -sS -H "Authorization: Bearer <deploy-token>" \

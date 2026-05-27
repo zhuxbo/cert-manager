@@ -550,6 +550,8 @@ class Action
      * 创建订单（内部方法）
      *
      * 额度按产品的 standard_max / wildcard_max 自动推断：ACME 当前只保留单域名 / 单通配符两种
+     * period 未传则用 product.periods[0]（对外 API 与 gateway 对齐，不接 period 入参）
+     * refer_id 支持外部透传（端到端幂等键）；未传则 manager 内部生成
      */
     private function createOrder(array $params): Acme
     {
@@ -561,9 +563,13 @@ class Action
             $this->error('产品不存在或不支持 ACME');
         }
 
-        $period = (int) ($params['period'] ?? 0);
-        if (! in_array($period, $product->periods)) {
-            $this->error('无效的购买时长');
+        if (isset($params['period'])) {
+            $period = (int) $params['period'];
+            if (! in_array($period, $product->periods)) {
+                $this->error('无效的购买时长');
+            }
+        } else {
+            $period = (int) ($product->periods[0] ?? 12);
         }
 
         [$standardCount, $wildcardCount] = $this->resolveDomainCounts($product);
@@ -589,7 +595,7 @@ class Action
             'plus' => (int) ($params['plus'] ?? 1) === 0 ? 0 : 1,
             'purchased_standard_count' => $standardCount,
             'purchased_wildcard_count' => $wildcardCount,
-            'refer_id' => bin2hex(random_bytes(16)),
+            'refer_id' => $params['refer_id'] ?? bin2hex(random_bytes(16)),
             'contact_email' => $params['contact_email'] ?? null,
             'amount' => $amount,
             'status' => Acme::STATUS_UNPAID,
@@ -725,7 +731,12 @@ class Action
     /**
      * 提交订单到 Gateway（内部方法）
      *
-     * 对齐上游系统 /acme/new 接口：只传 customer / product_code / refer_id
+     * data 字段集（manager 视角的完整 schema）：
+     * product_code / contact_email / period / plus(int 0/1) / refer_id
+     * source 是 manager 内部 Api 路由参数，作为 (new Api)->new 的第二个独立参数，不混入 data
+     * plus 与传统 Order 一致用 int 0/1（gateway 端 (bool) cast 兼容）
+     * period 当前 gateway /api/acme/new validate 暂不接收（由 product.periods[0] 决定）；
+     * 但 manager 这一侧视为完整 schema 一部分稳定外发，等 gateway 升级多年期后自然贯通
      */
     private function commitOrder(Acme $acme): Acme
     {
@@ -740,18 +751,16 @@ class Action
             $this->error('ACME 账号邮箱缺失，无法提交订单');
         }
 
-        // source 用于 Api 路由到对应 source 实现类（上游接收端会忽略多余字段）
-        // contact_email 为 RFC 8555 contact 字段，整条代理链路字段名一致
         $data = [
-            'source' => $product->source,
             'contact_email' => $acme->contact_email,
             'product_code' => $product->code,
+            'period' => (int) $acme->period,
             'plus' => (int) $acme->plus,
             'refer_id' => $acme->refer_id,
         ];
 
         try {
-            $result = (new Api)->new($data);
+            $result = (new Api)->new($data, (string) $product->source);
         } catch (ApiResponseException $e) {
             throw $e;
         } catch (\Throwable $e) {

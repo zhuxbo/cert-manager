@@ -4,37 +4,62 @@ namespace App\Http\Controllers\Deploy;
 
 use App\Http\Controllers\Controller;
 use App\Models\Acme;
+use App\Models\Product;
 use App\Services\Acme\Action;
+use App\Traits\AcmeReferIdCheck;
 use Illuminate\Http\Request;
 
 class AcmeController extends Controller
 {
+    use AcmeReferIdCheck;
+
     /**
      * 创建 ACME 订单（一步到位：创建 + 支付 + 提交）
+     *
+     * 入参与上游 /api/acme/new 字段对齐：product_code / contact_email / plus / refer_id
+     * + period（manager 提前增加，预留 Certum 多年期产品；未传默认 12）
      */
     public function new(Request $request): void
     {
         $request->validate([
-            'product_id' => 'required|integer|exists:products,id',
-            'period' => 'required|integer',
+            'product_code' => 'required|string|max:50',
+            'period' => 'sometimes|integer',
             'plus' => 'nullable|integer|in:0,1',
             'contact_email' => 'required|email|max:254',
+            'refer_id' => 'sometimes|string|max:64',
         ]);
 
-        $userId = $request->attributes->get('authenticated_user_id');
+        $userId = (int) $request->attributes->get('authenticated_user_id');
 
         if (! $userId) {
             $this->error('Unauthorized');
         }
 
-        app(Action::class)->newAndCommit([
+        $product = Product::where('code', $request->input('product_code'))
+            ->where('product_type', Product::TYPE_ACME)
+            ->where('status', 1)
+            ->first();
+
+        if (! $product) {
+            $this->error('Product not found');
+        }
+
+        $this->checkAcmeReferId((string) $request->input('refer_id', ''), $userId);
+
+        // period 不传则不注入键，让 Action::createOrder 走 product.periods[0] 兜底
+        $params = [
             'user_id' => $userId,
-            'product_id' => $request->input('product_id'),
-            'period' => $request->input('period'),
+            'product_id' => $product->id,
             'plus' => (int) $request->input('plus', 1),
             'contact_email' => $request->input('contact_email'),
+            'refer_id' => $request->input('refer_id') ?: null,
             'channel' => 'deploy',
-        ]);
+        ];
+        if ($request->filled('period')) {
+            $params['period'] = (int) $request->input('period');
+        }
+
+        app(Action::class)->newAndCommit($params);
     }
 
     /**

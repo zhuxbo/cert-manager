@@ -6,17 +6,21 @@
           <div class="box">
             <el-tabs v-model="activeTab">
               <el-tab-pane label="ACME" name="acme">
-                <!-- 订单详情 -->
+                <!-- 订单详情（状态按钮 + 操作下拉 + 刷新一并放在标题旁） -->
                 <el-card shadow="never" :style="{ border: 'none' }">
-                  <h2 class="title flex items-center gap-3">
-                    <span>订单详情</span>
-                    <AcmeButtons
-                      :row="acme"
-                      :show-view="false"
-                      :link="false"
+                  <h2 class="title">
+                    <span style="margin-right: 12px">订单详情</span>
+                    <el-button
+                      ref="statusButton"
+                      :type="statusType[acme.status] || 'info'"
                       size="small"
-                      @refresh="getDetails"
-                    />
+                      class="no-hover-effect"
+                    >
+                      {{ status[acme.status] || acme.status }}
+                    </el-button>
+                    <span style="margin-left: 15px">
+                      <AcmeOperate :acme="acme" @refresh="handleRefresh" />
+                    </span>
                   </h2>
                   <table class="descriptions">
                     <tbody>
@@ -77,14 +81,6 @@
                         </td>
                       </tr>
                       <tr>
-                        <td class="label">状态</td>
-                        <td class="content">
-                          <el-tag :type="statusType[acme.status] || 'info'">
-                            {{ status[acme.status] || acme.status }}
-                          </el-tag>
-                        </td>
-                      </tr>
-                      <tr>
                         <td class="label">创建时间</td>
                         <td class="content">
                           {{ formatDate(acme.created_at) }}
@@ -120,7 +116,7 @@
                             link
                             size="small"
                             class="copy-btn"
-                            @click="remarkDialogVisible = true"
+                            @click="openRemarkDialog"
                           >
                             编辑
                           </el-button>
@@ -232,14 +228,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { nextTick, onMounted, onBeforeUnmount, ref } from "vue";
 import { getAcmeDetail, remarkAcme } from "@/api/acme";
 import type { Acme } from "@/api/acme";
 import { status, statusType, getChannelLabel } from "./dictionary";
 import { useRoute } from "vue-router";
 import { message } from "@shared/utils";
 import { DocumentCopy } from "@element-plus/icons-vue";
-import AcmeButtons from "./buttons.vue";
+import { ElButton } from "element-plus";
+import AcmeOperate from "./operate.vue";
 import dayjs from "dayjs";
 
 defineOptions({
@@ -250,6 +247,7 @@ const acme = ref<Acme | null>(null);
 const activeTab = ref("acme");
 const remarkDialogVisible = ref(false);
 const remarkInput = ref("");
+const statusButton = ref<InstanceType<typeof ElButton> | null>(null);
 
 const formatDate = (date: string | null) => {
   return date ? dayjs(date).format("YYYY-MM-DD HH:mm:ss") : "-";
@@ -266,6 +264,13 @@ const handleCopy = (text: string) => {
     });
 };
 
+// 弹窗打开时才读 acme.admin_remark 到 remarkInput，
+// 避免 3 分钟自动刷新覆盖正在编辑中的输入（与 user 端 openRemarkDialog 风格对齐）
+const openRemarkDialog = () => {
+  remarkInput.value = acme.value?.admin_remark || "";
+  remarkDialogVisible.value = true;
+};
+
 const handleRemark = () => {
   if (!acme.value) return;
   remarkAcme(acme.value.id, remarkInput.value).then(() => {
@@ -277,18 +282,52 @@ const handleRemark = () => {
 
 const route = useRoute();
 
-const getDetails = () => {
+// 与传统 SSL process.vue 一致：把当前状态按钮的"原始"颜色记到 CSS 变量，
+// 再用 .no-hover-effect 还原，避免 hover/focus/active 时颜色变化（状态按钮只是展示态）
+const lockStatusButtonColors = () => {
+  nextTick(() => {
+    if (!statusButton.value) return;
+    const el = statusButton.value.$el as HTMLElement;
+    const styles = window.getComputedStyle(el);
+    el.style.setProperty("--original-bg-color", styles.backgroundColor);
+    el.style.setProperty("--original-border-color", styles.borderColor);
+    el.style.setProperty("--original-text-color", styles.color);
+  });
+};
+
+const getDetails = (showMessage = false) => {
   const ids = route.params.ids;
   if (ids) {
     getAcmeDetail(Number(ids)).then(res => {
       acme.value = res.data;
-      remarkInput.value = res.data?.admin_remark || "";
+      lockStatusButtonColors();
+      showMessage && message("刷新成功", { type: "success" });
     });
   }
 };
 
+// operate 组件 emit('refresh', showMessage?)
+const handleRefresh = (showMessage = false) => getDetails(showMessage);
+
+// 与传统订单详情一致：3 分钟自动刷新
+type TimerRef = ReturnType<typeof setInterval>;
+let autoRefreshIntervalId: TimerRef | null = null;
+
 onMounted(() => {
   getDetails();
+  autoRefreshIntervalId = setInterval(
+    () => {
+      getDetails();
+    },
+    3 * 60 * 1000
+  );
+});
+
+onBeforeUnmount(() => {
+  if (autoRefreshIntervalId !== null) {
+    clearInterval(autoRefreshIntervalId);
+    autoRefreshIntervalId = null;
+  }
 });
 </script>
 
@@ -348,6 +387,22 @@ onMounted(() => {
   padding: 0 5px;
   margin-left: 6px;
   border: 0;
+}
+
+/* 与 SSL 详情页一致：状态按钮 hover/focus/active 时保持原色 */
+.no-hover-effect {
+  --original-bg-color: initial;
+  --original-border-color: initial;
+  --original-text-color: initial;
+}
+
+.no-hover-effect:hover,
+.no-hover-effect:focus,
+.no-hover-effect:active {
+  color: var(--original-text-color) !important;
+  background-color: var(--original-bg-color) !important;
+  border-color: var(--original-border-color) !important;
+  box-shadow: none !important;
 }
 
 .horizontal-scrollbar {
