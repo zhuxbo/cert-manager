@@ -313,6 +313,87 @@ test('describe column differences reports multiple changes', function () {
     expect($result)->toContain('默认值');
 });
 
+test('describe index differences reports unique change', function () {
+    $standard = ['unique' => true, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]];
+    $current = ['unique' => false, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]];
+
+    $result = $this->service->describeIndexDifferences($standard, $current);
+
+    expect($result)->toBe('INDEX => UNIQUE');
+});
+
+test('describe index differences reports columns change', function () {
+    $standard = ['unique' => false, 'type' => 'BTREE', 'columns' => ['email', 'name'], 'sub_parts' => [null, null]];
+    $current = ['unique' => false, 'type' => 'BTREE', 'columns' => ['email'], 'sub_parts' => [null]];
+
+    $result = $this->service->describeIndexDifferences($standard, $current);
+
+    expect($result)->toContain('列 (email) => (email,name)');
+});
+
+test('describe index differences reports sub_parts change', function () {
+    $standard = ['unique' => false, 'type' => 'BTREE', 'columns' => ['url'], 'sub_parts' => [null]];
+    $current = ['unique' => false, 'type' => 'BTREE', 'columns' => ['url'], 'sub_parts' => [191]];
+
+    $result = $this->service->describeIndexDifferences($standard, $current);
+
+    expect($result)->toContain('前缀长度');
+});
+
+test('describe index differences reports multiple changes', function () {
+    $standard = ['unique' => true, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]];
+    $current = ['unique' => false, 'type' => 'FULLTEXT', 'columns' => ['code'], 'sub_parts' => [null]];
+
+    $result = $this->service->describeIndexDifferences($standard, $current);
+
+    expect($result)->toContain('INDEX => UNIQUE');
+    expect($result)->toContain('类型 FULLTEXT => BTREE');
+});
+
+test('describe index differences returns unknown when identical', function () {
+    $standard = ['unique' => true, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]];
+    $current = ['unique' => true, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]];
+
+    $result = $this->service->describeIndexDifferences($standard, $current);
+
+    expect($result)->toBe('(未知差异)');
+});
+
+test('summary records modified_indexes as manual_actions', function () {
+    $standard = [
+        'tables' => [
+            't' => [
+                'columns' => [],
+                'indexes' => [
+                    'idx_code' => ['unique' => true, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]],
+                ],
+                'foreign_keys' => [],
+            ],
+        ],
+    ];
+    $current = [
+        'tables' => [
+            't' => [
+                'columns' => [],
+                'indexes' => [
+                    'idx_code' => ['unique' => false, 'type' => 'BTREE', 'columns' => ['code'], 'sub_parts' => [null]],
+                ],
+                'foreign_keys' => [],
+            ],
+        ],
+    ];
+
+    $diff = $this->service->compareStructures($standard, $current);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('generateSummary');
+    $summary = $method->invoke($this->service, $diff);
+
+    expect($summary['modified_indexes'])->toContain('t.idx_code');
+    expect($summary['can_auto_fix'])->toBeFalse();
+    expect($summary['manual_actions'])->toContain('修改索引 t.idx_code');
+});
+
 test('compare structures detects missing and extra tables', function () {
     $standard = [
         'tables' => [

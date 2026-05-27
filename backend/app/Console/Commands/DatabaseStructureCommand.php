@@ -659,6 +659,22 @@ class DatabaseStructureCommand extends Command
                     ));
                 }
             }
+
+            if (! empty($tableDiff['modified_indexes'])) {
+                if (! $hasModify) {
+                    $hasModify = true;
+                    $this->warn('[WARNING]  需手动处理（MODIFY）:');
+                }
+                foreach ($tableDiff['modified_indexes'] as $indexName => $indexDiff) {
+                    $differences = $this->structureService->describeIndexDifferences($indexDiff['standard'], $indexDiff['current']);
+                    $this->line(sprintf(
+                        '  - 索引 <comment>%s.%s</comment>: %s',
+                        $tableName,
+                        $indexName,
+                        $differences
+                    ));
+                }
+            }
         }
 
         if ($hasModify) {
@@ -813,6 +829,21 @@ class DatabaseStructureCommand extends Command
                 $this->warn('列修改（MODIFY）:');
                 foreach ($tableDiff['modified_columns'] as $columnName => $columnDiff) {
                     $this->line("$tableName.$columnName: {$columnDiff['current']['type']} => {$columnDiff['standard']['type']}");
+                }
+            }
+
+            if (! empty($tableDiff['modified_indexes'])) {
+                if (! $hasManual) {
+                    $this->newLine();
+                    $this->warn('以下项目需要手动处理:');
+                    $this->newLine();
+                    $hasManual = true;
+                }
+
+                $this->warn('索引修改（MODIFY）:');
+                foreach ($tableDiff['modified_indexes'] as $indexName => $indexDiff) {
+                    $diffDesc = $this->structureService->describeIndexDifferences($indexDiff['standard'], $indexDiff['current']);
+                    $this->line("$tableName.$indexName: $diffDesc");
                 }
             }
         }

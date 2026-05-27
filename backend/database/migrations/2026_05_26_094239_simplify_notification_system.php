@@ -83,10 +83,13 @@ return new class extends Migration
             return;
         }
 
+        // SHOW INDEX 不支持服务端 prepared 参数绑定（Laravel 默认 EMULATE_PREPARES=false），
+        // 全量取回后用 Collection 过滤，避免 SQLSTATE[42000] 1064
+        $codeIndexes = collect(DB::select('SHOW INDEX FROM notification_templates'))
+            ->where('Column_name', 'code');
+
         // 已是唯一索引则跳过（幂等）
-        $existing = collect(DB::select('SHOW INDEX FROM notification_templates WHERE Column_name = ?', ['code']))
-            ->firstWhere('Non_unique', 0);
-        if ($existing) {
+        if ($codeIndexes->firstWhere('Non_unique', 0)) {
             return;
         }
 
@@ -104,9 +107,14 @@ return new class extends Migration
                 ->delete();
         }
 
-        Schema::table('notification_templates', function (Blueprint $table) {
-            $table->dropIndex('notification_templates_code_index');
-        });
+        // 旧索引存在才删，容错索引名被改/删的环境
+        $oldIndexExists = $codeIndexes->firstWhere('Key_name', 'notification_templates_code_index') !== null;
+
+        if ($oldIndexExists) {
+            Schema::table('notification_templates', function (Blueprint $table) {
+                $table->dropIndex('notification_templates_code_index');
+            });
+        }
 
         Schema::table('notification_templates', function (Blueprint $table) {
             $table->unique('code', 'notification_templates_code_index');
