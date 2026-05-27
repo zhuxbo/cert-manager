@@ -13,7 +13,6 @@ return new class extends Migration
                 $table->unsignedInteger('id')->autoIncrement()->comment('ID');
                 $table->string('name', 100)->index()->comment('模板名称');
                 $table->string('code', 50)->index()->comment('模板标识');
-                $table->text('channels')->nullable()->comment('可用通道');
                 $table->text('content')->nullable()->comment('模板内容');
                 $table->text('variables')->nullable()->comment('变量说明');
                 $table->text('example')->nullable()->comment('示例');

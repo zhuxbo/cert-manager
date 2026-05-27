@@ -8,7 +8,6 @@ export interface TemplateItem {
   variables: string[];
   example?: string;
   status: number;
-  channels: string[];
   updated_at: string;
   created_at: string;
 }
@@ -19,7 +18,6 @@ export interface TemplateQuery {
   name?: string;
   type?: string;
   status?: number | "";
-  channel?: string | "";
 }
 
 export interface TemplateForm {
@@ -29,7 +27,6 @@ export interface TemplateForm {
   variables: string[];
   example?: string;
   status: number;
-  channels: string[];
 }
 
 export function index(params: TemplateQuery) {

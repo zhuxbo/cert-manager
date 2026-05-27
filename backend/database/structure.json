@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.0.46",
-    "generated_at": "2026-05-19 01:07:40",
+    "generated_at": "2026-05-27 12:03:45",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -3005,16 +3005,8 @@
                     "extra": "",
                     "comment": "模板标识"
                 },
-                "channels": {
-                    "position": 4,
-                    "type": "text",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "可用通道"
-                },
                 "content": {
-                    "position": 5,
+                    "position": 4,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -3022,7 +3014,7 @@
                     "comment": "模板内容"
                 },
                 "variables": {
-                    "position": 6,
+                    "position": 5,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -3030,7 +3022,7 @@
                     "comment": "变量说明"
                 },
                 "example": {
-                    "position": 7,
+                    "position": 6,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -3038,7 +3030,7 @@
                     "comment": "示例"
                 },
                 "status": {
-                    "position": 8,
+                    "position": 7,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "1",
@@ -3046,7 +3038,7 @@
                     "comment": "状态:1=启用,0=禁用"
                 },
                 "created_at": {
-                    "position": 9,
+                    "position": 8,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3054,7 +3046,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 10,
+                    "position": 9,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3064,7 +3056,7 @@
             },
             "indexes": {
                 "notification_templates_code_index": {
-                    "unique": false,
+                    "unique": true,
                     "type": "BTREE",
                     "columns": [
                         "code"
@@ -3655,7 +3647,7 @@
                     "nullable": true,
                     "default": null,
                     "extra": "",
-                    "comment": ""
+                    "comment": "联系人ID"
                 },
                 "name": {
                     "position": 4,

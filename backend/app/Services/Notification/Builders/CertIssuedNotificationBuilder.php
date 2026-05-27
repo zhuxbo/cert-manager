@@ -14,7 +14,7 @@ use RuntimeException;
 use Throwable;
 use ZipArchive;
 
-class CertIssuedMailNotificationBuilder implements NotificationBuilderInterface
+class CertIssuedNotificationBuilder implements NotificationBuilderInterface
 {
     use ActionFileTrait;
 
@@ -70,7 +70,10 @@ class CertIssuedMailNotificationBuilder implements NotificationBuilderInterface
             'product_type' => $productType,
             'has_attachment' => $hasAttachment,
             'subject' => $subject,
-            '_meta' => [],
+            '_meta' => [
+                'subject' => $subject,
+                'is_html' => true,
+            ],
         ];
 
         // SSL 证书才生成 ZIP 附件
@@ -92,17 +95,15 @@ class CertIssuedMailNotificationBuilder implements NotificationBuilderInterface
                 throw new RuntimeException('生成证书附件失败');
             }
 
-            $data['_meta'] = [
-                'attachments' => [
-                    [
-                        'path' => $attachmentPath,
-                        'name' => basename($attachmentPath),
-                    ],
+            $data['_meta']['attachments'] = [
+                [
+                    'path' => $attachmentPath,
+                    'name' => basename($attachmentPath),
                 ],
-                'cleanup_paths' => [$tempDir],
             ];
+            $data['_meta']['cleanup_paths'] = [$tempDir];
         }
 
-        return new NotificationPayload($data, ['mail']);
+        return new NotificationPayload($data);
     }
 }

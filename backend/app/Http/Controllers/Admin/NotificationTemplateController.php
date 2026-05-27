@@ -31,9 +31,6 @@ class NotificationTemplateController extends BaseController
         if ($request->filled('name')) {
             $query->where('name', 'like', '%'.$request->input('name').'%');
         }
-        if ($request->filled('channel')) {
-            $query->whereJsonContains('channels', $request->input('channel'));
-        }
 
         $total = $query->count();
         $items = $query->orderBy('id', 'desc')

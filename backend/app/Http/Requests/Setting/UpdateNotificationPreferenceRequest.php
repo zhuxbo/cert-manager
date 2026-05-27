@@ -14,14 +14,10 @@ class UpdateNotificationPreferenceRequest extends FormRequest
     public function rules(): array
     {
         $rules = [];
-        $preferences = config('notification.user_default_preferences', []);
+        $defaults = config('notification.user_default_preferences', []);
 
-        foreach ($preferences as $channel => $types) {
-            $rules[$channel] = ['sometimes', 'array'];
-
-            foreach ($types as $type => $default) {
-                $rules[$channel.'.'.$type] = ['sometimes', 'boolean'];
-            }
+        foreach ($defaults as $code => $_) {
+            $rules[$code] = ['sometimes', 'boolean'];
         }
 
         return $rules;

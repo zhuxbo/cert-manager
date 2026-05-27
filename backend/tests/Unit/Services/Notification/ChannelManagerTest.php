@@ -1,43 +1,55 @@
 <?php
 
+use App\Models\Notification;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\Channels\ChannelInterface;
 use App\Services\Notification\Channels\MailChannel;
-use App\Services\Notification\Channels\SmsChannel;
+use Illuminate\Database\Eloquent\Model;
 
 afterEach(function () {
     Mockery::close();
 });
 
-test('获取已注册的 mail 通道', function () {
+test('构造时内置 mail 通道', function () {
     $mailChannel = Mockery::mock(MailChannel::class);
-    $smsChannel = Mockery::mock(SmsChannel::class);
 
-    $manager = new ChannelManager($mailChannel, $smsChannel);
+    $manager = new ChannelManager($mailChannel);
 
-    $channel = $manager->channel('mail');
-
-    expect($channel)->toBe($mailChannel);
-    expect($channel)->toBeInstanceOf(ChannelInterface::class);
+    expect($manager->channels())->toHaveKey('mail');
+    expect($manager->channel('mail'))->toBe($mailChannel);
 });
 
-test('获取已注册的 sms 通道', function () {
+test('register 注入新通道', function () {
     $mailChannel = Mockery::mock(MailChannel::class);
-    $smsChannel = Mockery::mock(SmsChannel::class);
+    $manager = new ChannelManager($mailChannel);
 
-    $manager = new ChannelManager($mailChannel, $smsChannel);
+    $pluginChannel = new class implements ChannelInterface
+    {
+        public function send(Notification $notification): array
+        {
+            return ['code' => 1];
+        }
 
-    $channel = $manager->channel('sms');
+        public function isAvailable(): bool
+        {
+            return true;
+        }
 
-    expect($channel)->toBe($smsChannel);
-    expect($channel)->toBeInstanceOf(ChannelInterface::class);
+        public function shouldSend(Model $notifiable, string $code): bool
+        {
+            return true;
+        }
+    };
+
+    $manager->register('feishu', $pluginChannel);
+
+    expect($manager->channels())->toHaveKeys(['mail', 'feishu']);
+    expect($manager->channel('feishu'))->toBe($pluginChannel);
 });
 
 test('获取不存在的通道时抛出异常', function () {
     $mailChannel = Mockery::mock(MailChannel::class);
-    $smsChannel = Mockery::mock(SmsChannel::class);
+    $manager = new ChannelManager($mailChannel);
 
-    $manager = new ChannelManager($mailChannel, $smsChannel);
-
-    $manager->channel('wechat');
-})->throws(InvalidArgumentException::class, '未知的通知通道: wechat');
+    $manager->channel('feishu');
+})->throws(InvalidArgumentException::class, '未知的通知通道: feishu');

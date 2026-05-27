@@ -2,7 +2,7 @@
 
 use App\Models\Admin;
 use App\Models\User;
-use App\Services\Notification\Builders\FinanceAuditMailNotificationBuilder;
+use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
 use Database\Seeders\NotificationTemplateSeeder;
@@ -22,7 +22,7 @@ afterEach(function () {
 });
 
 test('接收者非 Admin 时抛出异常', function () {
-    $builder = new FinanceAuditMailNotificationBuilder;
+    $builder = new FinanceAuditNotificationBuilder;
     $intent = new NotificationIntent('finance_audit', 'admin', 1, [
         'admin_email' => 'a@b.c',
     ]);
@@ -32,7 +32,7 @@ test('接收者非 Admin 时抛出异常', function () {
 })->throws(RuntimeException::class, '通知接收者必须为管理员');
 
 test('admin_email 与 admin->email 都为空时抛出异常', function () {
-    $builder = new FinanceAuditMailNotificationBuilder;
+    $builder = new FinanceAuditNotificationBuilder;
     $intent = new NotificationIntent('finance_audit', 'admin', 1, []);
 
     $admin = Mockery::mock(Admin::class)->makePartial();
@@ -42,7 +42,7 @@ test('admin_email 与 admin->email 都为空时抛出异常', function () {
 })->throws(RuntimeException::class, '管理员邮箱为空');
 
 test('正常构建时输出 email / subject / is_html / violations 透传', function () {
-    $builder = new FinanceAuditMailNotificationBuilder;
+    $builder = new FinanceAuditNotificationBuilder;
 
     $violations = [
         [
@@ -66,7 +66,6 @@ test('正常构建时输出 email / subject / is_html / violations 透传', func
     $payload = $builder->build($intent, $admin);
 
     expect($payload)->toBeInstanceOf(NotificationPayload::class);
-    expect($payload->channels)->toBe(['mail']);
     expect($payload->data['email'])->toBe('admin@test.local');
     expect($payload->data['violation_count'])->toBe(1);
     expect($payload->data['violations'])->toBe($violations);
@@ -77,7 +76,7 @@ test('正常构建时输出 email / subject / is_html / violations 透传', func
 });
 
 test('admin_email 缺失时回落到 notifiable->email', function () {
-    $builder = new FinanceAuditMailNotificationBuilder;
+    $builder = new FinanceAuditNotificationBuilder;
 
     $intent = new NotificationIntent('finance_audit', 'admin', 1, [
         'violation_count' => 0,

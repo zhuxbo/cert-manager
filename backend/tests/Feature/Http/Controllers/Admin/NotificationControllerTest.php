@@ -69,7 +69,6 @@ test('管理员可以发送测试通知', function () {
     $template = NotificationTemplate::factory()->create([
         'code' => 'test_template',
         'status' => 1,
-        'channels' => ['site'],
     ]);
 
     $mockCenter = Mockery::mock(NotificationCenter::class);
@@ -80,7 +79,6 @@ test('管理员可以发送测试通知', function () {
         'template_type' => 'test_template',
         'notifiable_type' => 'user',
         'notifiable_id' => $this->user->id,
-        'channels' => ['mail'],
     ]);
 
     $response->assertOk()->assertJson(['code' => 1]);
@@ -108,9 +106,7 @@ test('管理员可以重发通知', function () {
     $mockCenter->shouldReceive('dispatch')->once();
     $this->app->instance(NotificationCenter::class, $mockCenter);
 
-    $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/notification/$notification->id/resend", [
-        'channels' => ['mail'],
-    ]);
+    $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/notification/$notification->id/resend");
 
     $response->assertOk()->assertJson(['code' => 1]);
 });

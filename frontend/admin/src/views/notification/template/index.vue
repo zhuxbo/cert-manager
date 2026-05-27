@@ -6,7 +6,6 @@ import { useNotificationTemplate } from "./hook";
 import { useNotificationTemplateSearch } from "./search";
 import { useNotificationTemplateTable } from "./table";
 import { useNotificationTemplateStore } from "./store";
-import { channelOptions } from "./dictionary";
 
 defineOptions({
   name: "NotificationTemplate"
@@ -143,20 +142,6 @@ onMounted(() => {
             :active-value="1"
             :inactive-value="0"
           />
-        </el-form-item>
-        <el-form-item label="通道" prop="channels">
-          <el-select
-            v-model="formModel.channels"
-            multiple
-            placeholder="请选择发送通道"
-          >
-            <el-option
-              v-for="item in channelOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
         </el-form-item>
         <el-form-item label="变量" prop="variables">
           <el-select

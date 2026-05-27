@@ -8,7 +8,6 @@ readonly class NotificationIntent
         public string $code,
         public string $notifiableType,
         public int $notifiableId,
-        public array $context = [],
-        public ?array $preferredChannels = null
+        public array $context = []
     ) {}
 }

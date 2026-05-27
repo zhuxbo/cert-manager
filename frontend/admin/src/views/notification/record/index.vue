@@ -6,7 +6,6 @@ import { useNotificationRecord } from "./hook";
 import { useNotificationRecordSearch } from "./search";
 import { useNotificationRecordTable } from "./table";
 import { useNotificationRecordStore, notifiableOptions } from "./store";
-import { availableChannels } from "./dictionary";
 import { ReRemoteSelect } from "@shared/components/ReRemoteSelect";
 
 defineOptions({
@@ -30,7 +29,6 @@ const {
   openDetail,
   showPayload,
   resendDialogVisible,
-  resendChannels,
   openResend,
   confirmResend,
   closeResend
@@ -46,7 +44,6 @@ const {
   testPayload,
   currentNotifiableOption,
   templateVariables,
-  availableChannelsForTemplate,
   openTestDialog,
   confirmTestSend,
   closeTestDialog,
@@ -150,25 +147,14 @@ onMounted(() => {
       </div>
     </el-dialog>
 
-    <!-- 重发对话框 -->
+    <!-- 重发确认对话框 -->
     <el-dialog
       v-model="resendDialogVisible"
-      title="选择重发通道"
+      title="确认重发"
       width="420px"
       destroy-on-close
     >
-      <el-select
-        v-model="resendChannels"
-        multiple
-        placeholder="不选择则使用用户默认配置"
-      >
-        <el-option
-          v-for="channel in availableChannels"
-          :key="channel"
-          :label="channel"
-          :value="channel"
-        />
-      </el-select>
+      <p>确认要重新发送该通知吗？</p>
       <template #footer>
         <el-button @click="closeResend">取消</el-button>
         <el-button type="primary" @click="confirmResend">确定</el-button>
@@ -231,27 +217,12 @@ onMounted(() => {
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="通道" required>
-          <el-select
-            v-model="testForm.channel"
-            clearable
-            placeholder="请选择发送通道（必选）"
-            :disabled="!testForm.template_type"
-          >
-            <el-option
-              v-for="channel in availableChannelsForTemplate"
-              :key="channel"
-              :label="channel"
-              :value="channel"
-            />
-          </el-select>
-        </el-form-item>
         <el-divider content-position="left">模板变量</el-divider>
         <el-alert
           v-if="!templateVariables.length"
           type="info"
           :closable="false"
-          description="请选择模板和通道后填写所需的变量。未填写的变量将在发送时留空。"
+          description="请选择模板后填写所需的变量。未填写的变量将在发送时留空。"
           class="mb-4"
         />
         <div v-else class="flex flex-col gap-2">

@@ -273,8 +273,7 @@ class AutoRenewCommand extends Command
                     'action' => $action,
                     'reason' => $reason,
                     'email' => $user->email,
-                ],
-                ['mail']
+                ]
             ));
         } catch (Throwable $e) {
             $this->error("发送通知失败: {$e->getMessage()}");

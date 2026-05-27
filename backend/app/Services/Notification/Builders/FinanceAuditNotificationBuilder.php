@@ -8,7 +8,7 @@ use App\Services\Notification\DTOs\NotificationPayload;
 use Illuminate\Database\Eloquent\Model;
 use RuntimeException;
 
-class FinanceAuditMailNotificationBuilder implements NotificationBuilderInterface
+class FinanceAuditNotificationBuilder implements NotificationBuilderInterface
 {
     public function build(NotificationIntent $intent, Model $notifiable): NotificationPayload
     {
@@ -37,6 +37,6 @@ class FinanceAuditMailNotificationBuilder implements NotificationBuilderInterfac
             ],
         ];
 
-        return new NotificationPayload($data, ['mail']);
+        return new NotificationPayload($data);
     }
 }

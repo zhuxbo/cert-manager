@@ -78,8 +78,7 @@ class ExpireCommand extends Command
                     $user->id,
                     [
                         'email' => $user->email,
-                    ],
-                    ['mail']
+                    ]
                 ));
                 $this->info("User $user->id email $user->email certificate expiration notification task created");
             }

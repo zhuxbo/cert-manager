@@ -146,8 +146,7 @@ trait OrderController
             [
                 'order_id' => $order->id,
                 'email' => $targetEmail,
-            ],
-            ['mail']
+            ]
         ));
         $this->success();
     }

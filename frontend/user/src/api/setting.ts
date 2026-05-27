@@ -1,6 +1,6 @@
 import { http } from "@/utils/http";
 
-export type NotificationPreferences = Record<string, Record<string, boolean>>;
+export type NotificationPreferences = Record<string, boolean>;
 
 export function getApiToken() {
   return http.get<

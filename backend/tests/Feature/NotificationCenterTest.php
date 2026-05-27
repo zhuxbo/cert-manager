@@ -6,10 +6,10 @@ use App\Models\NotificationTemplate;
 use App\Models\User;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\Channels\MailChannel;
-use App\Services\Notification\Channels\SmsChannel;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use Database\Seeders\DatabaseSeeder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 
@@ -20,9 +20,6 @@ beforeEach(function () {
     $this->seeder = DatabaseSeeder::class;
 });
 
-/**
- * 创建用户（NotificationCenter 测试用）
- */
 function createNotifUser(array $overrides = []): User
 {
     $notificationSettings = $overrides['notification_settings'] ?? null;
@@ -50,45 +47,19 @@ function createNotifUser(array $overrides = []): User
     return $user;
 }
 
-/**
- * 创建或更新模板
- */
-function seedNotifTemplate(string $code, string $name, string $content, array $channels = ['mail']): void
+function seedNotifTemplate(string $code, string $name, string $content): void
 {
-    $existing = NotificationTemplate::query()
-        ->where('code', $code)
-        ->get()
-        ->first(function ($item) use ($channels) {
-            $existingChannels = collect($item->channels)->sort()->values()->toArray();
-            $target = collect($channels)->sort()->values()->toArray();
-
-            return $existingChannels === $target;
-        });
-
-    if ($existing) {
-        $existing->update([
+    NotificationTemplate::updateOrCreate(
+        ['code' => $code],
+        [
             'name' => $name,
             'content' => $content,
             'variables' => ['username'],
             'status' => 1,
-        ]);
-
-        return;
-    }
-
-    NotificationTemplate::create([
-        'code' => $code,
-        'name' => $name,
-        'content' => $content,
-        'variables' => ['username'],
-        'status' => 1,
-        'channels' => $channels,
-    ]);
+        ]
+    );
 }
 
-/**
- * 获取对象的私有属性
- */
 function getPrivateProperty(object $object, string $property): mixed
 {
     $reflection = new ReflectionClass($object);
@@ -97,9 +68,6 @@ function getPrivateProperty(object $object, string $property): mixed
     return $prop->getValue($object);
 }
 
-/**
- * Mock MailChannel
- */
 function mockNotifMailChannel(): void
 {
     app()->bind(MailChannel::class, fn () => new class extends MailChannel
@@ -113,13 +81,26 @@ function mockNotifMailChannel(): void
         {
             return true;
         }
+
+        public function shouldSend(Model $notifiable, string $code): bool
+        {
+            if (empty($notifiable->email)) {
+                return false;
+            }
+
+            if (method_exists($notifiable, 'allowsNotification')) {
+                return (bool) $notifiable->allowsNotification($code);
+            }
+
+            return true;
+        }
     });
     app()->forgetInstance(ChannelManager::class);
 }
 
-test('dispatches job when guard passes', function () {
+test('模板存在 + 通道可用 + 偏好允许 → 派 Job', function () {
     Queue::fake();
-    $user = createNotifUser(['mobile' => substr('1380'.uniqid(), 0, 20)]);
+    $user = createNotifUser();
     seedNotifTemplate('test_mail', '测试模板', 'Hi {{ $username }}');
 
     mockNotifMailChannel();
@@ -132,73 +113,38 @@ test('dispatches job when guard passes', function () {
     });
 });
 
-test('guard blocks when contact missing', function () {
+test('收件邮箱缺失 → 不派 Job', function () {
     Queue::fake();
     $user = createNotifUser(['email' => null]);
     seedNotifTemplate('test_mail', '测试模板', 'Hi {{ $username }}');
+
+    mockNotifMailChannel();
 
     app(NotificationCenter::class)->dispatch(new NotificationIntent('test_mail', 'user', $user->id));
 
     Queue::assertNotPushed(NotificationJob::class);
 });
 
-test('dispatches with multi channels', function () {
+test('用户偏好关闭某事件 → 不派 Job', function () {
     Queue::fake();
-    $user = createNotifUser(['mobile' => substr('1380'.uniqid(), 0, 20)]);
-    seedNotifTemplate('test_multi', '多通道模板', 'Hi {{ $username }}', ['mail', 'sms']);
+    config(['notification.user_default_preferences' => ['test_mail' => true]]);
+    $user = createNotifUser(['notification_settings' => ['test_mail' => false]]);
+    seedNotifTemplate('test_mail', '测试模板', 'Hi {{ $username }}');
 
     mockNotifMailChannel();
-    app()->bind(SmsChannel::class, fn () => new class extends SmsChannel
-    {
-        public function send(Notification $notification): array
-        {
-            return ['success' => true, 'message' => null];
-        }
 
-        public function isAvailable(): bool
-        {
-            return true;
-        }
-    });
-    app()->forgetInstance(ChannelManager::class);
+    app(NotificationCenter::class)->dispatch(new NotificationIntent('test_mail', 'user', $user->id));
 
-    app(NotificationCenter::class)->dispatch(new NotificationIntent('test_multi', 'user', $user->id));
-
-    // 多通道会派发多个 Job，每个通道一个
-    Queue::assertPushed(NotificationJob::class, 2);
-
-    Queue::assertPushed(NotificationJob::class, function ($job) {
-        $channel = getPrivateProperty($job, 'channel');
-
-        return in_array($channel, ['mail', 'sms']);
-    });
+    Queue::assertNotPushed(NotificationJob::class);
 });
 
-test('uses preferred channels when provided', function () {
+test('模板不存在 → 不派 Job', function () {
     Queue::fake();
-    $user = createNotifUser(['mobile' => substr('1380'.uniqid(), 0, 20)]);
-    seedNotifTemplate('test_selective', '多通道模板', 'Hi {{ $username }}', ['mail', 'sms']);
+    $user = createNotifUser();
 
-    // Mock SmsChannel 使其可用
-    app()->bind(SmsChannel::class, fn () => new class extends SmsChannel
-    {
-        public function send(Notification $notification): array
-        {
-            return ['success' => true, 'message' => null];
-        }
+    mockNotifMailChannel();
 
-        public function isAvailable(): bool
-        {
-            return true;
-        }
-    });
-    app()->forgetInstance(ChannelManager::class);
+    app(NotificationCenter::class)->dispatch(new NotificationIntent('nonexistent_code', 'user', $user->id));
 
-    $intent = new NotificationIntent('test_selective', 'user', $user->id, [], ['sms']);
-    app(NotificationCenter::class)->dispatch($intent);
-
-    Queue::assertPushed(NotificationJob::class, 1);
-    Queue::assertPushed(NotificationJob::class, function ($job) {
-        return getPrivateProperty($job, 'channel') === 'sms';
-    });
+    Queue::assertNotPushed(NotificationJob::class);
 });

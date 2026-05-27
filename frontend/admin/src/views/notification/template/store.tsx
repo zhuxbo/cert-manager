@@ -14,23 +14,13 @@ export function useNotificationTemplateStore(onSearch: () => void) {
     content: "",
     variables: [],
     example: "",
-    status: 1,
-    channels: ["mail"]
+    status: 1
   });
 
   const formRules: FormRules = {
     name: [{ required: true, message: "请输入模板名称", trigger: "blur" }],
     code: [{ required: true, message: "请输入模板标识", trigger: "blur" }],
-    content: [{ required: true, message: "请输入模板内容", trigger: "blur" }],
-    channels: [
-      {
-        required: true,
-        type: "array",
-        min: 1,
-        message: "请选择至少一个通道",
-        trigger: "change"
-      }
-    ]
+    content: [{ required: true, message: "请输入模板内容", trigger: "blur" }]
   };
 
   const variableInput = computed(() => formModel.variables ?? []);
@@ -43,7 +33,6 @@ export function useNotificationTemplateStore(onSearch: () => void) {
     formModel.variables = [];
     formModel.example = "";
     formModel.status = 1;
-    formModel.channels = ["mail"];
   };
 
   // 打开创建表单
@@ -64,9 +53,6 @@ export function useNotificationTemplateStore(onSearch: () => void) {
       : [];
     formModel.example = row.example ?? "";
     formModel.status = row.status;
-    formModel.channels = Array.isArray(row.channels)
-      ? [...row.channels]
-      : ["mail"];
     formDialogVisible.value = true;
   };
 
@@ -76,8 +62,7 @@ export function useNotificationTemplateStore(onSearch: () => void) {
       if (!valid) return;
       const payload: TemplateForm = {
         ...formModel,
-        variables: (formModel.variables ?? []).filter(Boolean),
-        channels: (formModel.channels ?? []).filter(Boolean)
+        variables: (formModel.variables ?? []).filter(Boolean)
       };
       const action = editingId.value
         ? templateApi.update(editingId.value, payload)

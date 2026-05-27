@@ -6,6 +6,7 @@ use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Models\User;
 use App\Utils\Email;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
 use PHPMailer\PHPMailer\Exception;
@@ -55,7 +56,9 @@ class MailChannel implements ChannelInterface
             }
 
             if (! $mail->send()) {
-                return ['code' => 0, 'msg' => '邮件发送失败'];
+                $errorInfo = trim((string) $mail->ErrorInfo);
+
+                return ['code' => 0, 'msg' => $errorInfo !== '' ? "邮件发送失败: $errorInfo" : '邮件发送失败'];
             }
         } catch (Throwable $e) {
             return ['code' => 0, 'msg' => $e->getMessage()];
@@ -107,5 +110,18 @@ class MailChannel implements ChannelInterface
         }
 
         return $mail->configured;
+    }
+
+    public function shouldSend(Model $notifiable, string $code): bool
+    {
+        if (empty($notifiable->email)) {
+            return false;
+        }
+
+        if (method_exists($notifiable, 'allowsNotification')) {
+            return (bool) $notifiable->allowsNotification($code);
+        }
+
+        return true;
     }
 }

@@ -14,44 +14,27 @@ beforeEach(function () {
     $this->selector = new TemplateSelector;
 });
 
-test('按代码查询模板返回匹配的模板', function () {
+test('按代码查询启用的模板', function () {
     NotificationTemplate::create([
-        'code' => 'test_selector_mail',
+        'code' => 'test_selector_basic',
         'name' => '测试模板',
         'content' => 'Hello {{ $username }}',
         'variables' => ['username'],
         'status' => 1,
-        'channels' => ['mail'],
     ]);
 
-    $selection = $this->selector->select('test_selector_mail');
+    $selection = $this->selector->select('test_selector_basic');
 
     expect($selection)->toBeInstanceOf(TemplateSelection::class);
     expect($selection->isEmpty())->toBeFalse();
-    expect($selection->channels())->toContain('mail');
+    expect($selection->template()->code)->toBe('test_selector_basic');
 });
 
 test('查询不存在的代码返回空选择', function () {
     $selection = $this->selector->select('nonexistent_code_'.uniqid());
 
     expect($selection->isEmpty())->toBeTrue();
-    expect($selection->channels())->toBeEmpty();
-});
-
-test('按通道过滤只返回匹配的通道', function () {
-    NotificationTemplate::create([
-        'code' => 'test_filter_multi',
-        'name' => '多通道模板',
-        'content' => 'Hello',
-        'variables' => [],
-        'status' => 1,
-        'channels' => ['mail', 'sms'],
-    ]);
-
-    $selection = $this->selector->select('test_filter_multi', ['sms']);
-
-    expect($selection->isEmpty())->toBeFalse();
-    expect($selection->channels())->toBe(['sms']);
+    expect($selection->template())->toBeNull();
 });
 
 test('禁用的模板不会被选中', function () {
@@ -61,7 +44,6 @@ test('禁用的模板不会被选中', function () {
         'content' => 'Hello',
         'variables' => [],
         'status' => 0,
-        'channels' => ['mail'],
     ]);
 
     $selection = $this->selector->select('test_disabled_tpl');

@@ -299,8 +299,8 @@ window.__registerPlugin({
 | `order`                | `views/order/dictionary`                 | `channelOptions`、`channel`、`channelType`、`productTypeOptions`、`productType` |
 | `system`               | `views/system/dictionary`                | `brandOptionsAll`、`productTypeOptions`、`productTypeLabels`                    |
 | `task`                 | `views/task/dictionary`                  | `actionLabels`、`actionTypes`、`statusLabels`、`statusTypes`                    |
-| `notificationRecord`   | `views/notification/record/dictionary`   | `availableChannels`、`statusOptions`                                            |
-| `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`、`channelOptions`                                               |
+| `notificationRecord`   | `views/notification/record/dictionary`   | `statusOptions`、`multilineFields`                                              |
+| `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`                                                                 |
 
 合并规则：数组用 `push` 追加，对象用 `Object.assign` 合并。
 

@@ -13,9 +13,6 @@ export interface NotifiableOption {
   fetchDetail?: (id: number) => Promise<any>;
 }
 
-// 可用的通知渠道
-export const availableChannels = ["mail", "sms"];
-
 // 状态选项
 export const statusOptions = [
   { label: "全部", value: "" },

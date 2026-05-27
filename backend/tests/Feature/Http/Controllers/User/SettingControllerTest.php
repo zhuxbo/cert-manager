@@ -87,7 +87,8 @@ test('更新通知设置', function () {
 
     $this->actingAsUser($user)
         ->putJson('/api/setting/notification-preferences', [
-            'email_enabled' => true,
+            'cert_issued' => false,
+            'cert_expire' => true,
         ])
         ->assertOk()
         ->assertJson(['code' => 1]);

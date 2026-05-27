@@ -40,20 +40,6 @@ export function useNotificationRecordTable() {
       )
     },
     {
-      label: "状态",
-      prop: "status",
-      width: 120,
-      cellRenderer: ({ row, props }) => (
-        <el-tag
-          size={props.size}
-          type={statusMap[row.status]?.type}
-          effect="plain"
-        >
-          {statusMap[row.status]?.label || row.status}
-        </el-tag>
-      )
-    },
-    {
       label: "创建时间",
       prop: "created_at",
       minWidth: 160,
@@ -72,24 +58,18 @@ export function useNotificationRecordTable() {
       }
     },
     {
-      label: "通道结果",
-      prop: "result",
-      minWidth: 220,
-      cellRenderer: ({ row }) => {
-        const result = row.data?.result;
-        if (!result) {
-          return <span class="text-muted">-</span>;
-        }
-        return (
-          <el-tag
-            size="small"
-            type={result.status === "sent" ? "success" : "danger"}
-          >
-            {result.channel}: {result.status === "sent" ? "成功" : "失败"}
-            {result.message ? ` (${result.message})` : ""}
-          </el-tag>
-        );
-      }
+      label: "状态",
+      prop: "status",
+      width: 120,
+      cellRenderer: ({ row, props }) => (
+        <el-tag
+          size={props.size}
+          type={statusMap[row.status]?.type}
+          effect="plain"
+        >
+          {statusMap[row.status]?.label || row.status}
+        </el-tag>
+      )
     },
     {
       label: "操作",

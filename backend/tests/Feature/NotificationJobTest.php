@@ -51,7 +51,6 @@ function createJobTemplate(array $overrides = []): NotificationTemplate
         'content' => 'Hello {{ $username }}',
         'variables' => ['username'],
         'status' => 1,
-        'channels' => ['mail'],
     ], $overrides));
 }
 
@@ -85,7 +84,6 @@ test('handles notification successfully', function () {
 
     // 验证发送结果
     expect($notification->data)->toHaveKey('result');
-    expect($notification->data['result']['channel'])->toBe('mail');
     expect($notification->data['result']['status'])->toBe(Notification::STATUS_SENT);
 });
 
@@ -181,34 +179,8 @@ test('marks as failed when all channels fail', function () {
     expect($notification->sent_at)->toBeNull();
 
     // 验证发送结果
-    expect($notification->data['result']['channel'])->toBe('mail');
     expect($notification->data['result']['status'])->toBe(Notification::STATUS_FAILED);
     expect($notification->data['result']['message'])->toBe('发送失败');
-});
-
-test('skips when channel not supported by template', function () {
-    $user = createJobUser();
-    // 模板只支持 mail
-    $template = createJobTemplate(['channels' => ['mail']]);
-
-    // Job 尝试使用 sms（不在模板支持范围内）
-    $job = new NotificationJob(
-        'user',
-        $user->id,
-        $template->id,
-        'sms',
-        ['username' => $user->username],
-        DefaultNotificationBuilder::class
-    );
-
-    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
-
-    // 验证没有为这个模板和用户创建通知
-    $notification = Notification::where('template_id', $template->id)
-        ->where('notifiable_type', 'user')
-        ->where('notifiable_id', $user->id)
-        ->first();
-    expect($notification)->toBeNull();
 });
 
 test('handles channel exception gracefully', function () {
@@ -237,7 +209,6 @@ test('handles channel exception gracefully', function () {
     $notification = Notification::where('notifiable_id', $user->id)->first();
     expect($notification)->not->toBeNull();
     expect($notification->status)->toBe(Notification::STATUS_FAILED);
-    expect($notification->data['result']['channel'])->toBe('mail');
     expect($notification->data['result']['status'])->toBe(Notification::STATUS_FAILED);
     expect($notification->data['result']['message'])->toBe('发送失败，请稍后重试');
 });

@@ -4,7 +4,7 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
-use App\Services\Notification\Builders\CertExpireMailNotificationBuilder;
+use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
 use App\Services\Order\AutoRenewService;
@@ -52,9 +52,9 @@ function buildMockUser(?string $email = 'user@example.com'): User&MockInterface
     return $user;
 }
 
-function buildPartialBuilder(AutoRenewService $svc, Collection $orders): CertExpireMailNotificationBuilder&MockInterface
+function buildPartialBuilder(AutoRenewService $svc, Collection $orders): CertExpireNotificationBuilder&MockInterface
 {
-    $builder = Mockery::mock(CertExpireMailNotificationBuilder::class, [$svc])
+    $builder = Mockery::mock(CertExpireNotificationBuilder::class, [$svc])
         ->makePartial()
         ->shouldAllowMockingProtectedMethods();
     $builder->shouldReceive('fetchExpiringOrders')->andReturn($orders);
@@ -72,7 +72,7 @@ function buildPartialBuilder(AutoRenewService $svc, Collection $orders): CertExp
 test('接收者非 User 时抛出异常', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class);
 
-    $builder = new CertExpireMailNotificationBuilder($autoRenewService);
+    $builder = new CertExpireNotificationBuilder($autoRenewService);
     $intent = new NotificationIntent('cert_expire', 'user', 1);
 
     /** @var Model $notifiable */
@@ -84,7 +84,7 @@ test('接收者非 User 时抛出异常', function () {
 test('邮箱为空时抛出异常', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class);
 
-    $builder = new CertExpireMailNotificationBuilder($autoRenewService);
+    $builder = new CertExpireNotificationBuilder($autoRenewService);
     $intent = new NotificationIntent('cert_expire', 'user', 1);
 
     $builder->build($intent, buildMockUser(email: null));
@@ -128,7 +128,6 @@ test('委托无效（自动任务会执行但委托 fail）→ has_delegation_is
     $result = $builder->build($intent, buildMockUser());
 
     expect($result)->toBeInstanceOf(NotificationPayload::class);
-    expect($result->channels)->toBe(['mail']);
     expect($result->data['has_delegation_issue'])->toBeTrue();
     expect($result->data['certificates'])->toHaveCount(1);
     expect($result->data['certificates'][0]['domain'])->toBe('invalid.com');
@@ -136,6 +135,9 @@ test('委托无效（自动任务会执行但委托 fail）→ has_delegation_is
     expect($result->data['site_name'])->toBe('SSL证书管理系统');
     expect($result->data['email'])->toBe('user@example.com');
     expect($result->data['username'])->toBe('testuser');
+    // _meta 结构守护：与 FinanceAudit/TaskFailed/CertIssued 对齐，MailChannel 据此读 subject + is_html
+    expect($result->data['_meta']['subject'])->toContain('SSL证书到期提醒');
+    expect($result->data['_meta']['is_html'])->toBeTrue();
 });
 
 test('自动任务不会执行 → 加入通知列表，delegation_status=need_renew', function () {
@@ -176,11 +178,7 @@ test('intent.context.email 为空时回落 notifiable.email', function () {
 });
 
 test('NotificationPayload 正确构造', function () {
-    $payload = new NotificationPayload(
-        ['email' => 'test@example.com', 'username' => 'testuser'],
-        ['mail']
-    );
+    $payload = new NotificationPayload(['email' => 'test@example.com', 'username' => 'testuser']);
 
     expect($payload->data)->toBe(['email' => 'test@example.com', 'username' => 'testuser']);
-    expect($payload->channels)->toBe(['mail']);
 });

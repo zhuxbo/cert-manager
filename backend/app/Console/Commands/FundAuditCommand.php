@@ -139,8 +139,7 @@ class FundAuditCommand extends Command
                     'violation_count' => count($violations),
                     'violations' => $compact,
                     'detected_at' => now()->toDateTimeString(),
-                ],
-                ['mail']
+                ]
             );
 
             app(NotificationCenter::class)->dispatch($intent);

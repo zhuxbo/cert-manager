@@ -49,7 +49,7 @@ export function show(id: number) {
   );
 }
 
-export function resend(id: number, data: { channels?: string[] }) {
+export function resend(id: number, data: Record<string, never>) {
   return http.post<BaseResponse<{ notification_id: number }>, typeof data>(
     `/notification/${id}/resend`,
     { data }
@@ -60,7 +60,6 @@ export function sendTest(data: {
   notifiable_type: string;
   notifiable_id: number;
   template_type: string;
-  channels?: string[];
   data?: Record<string, any>;
 }) {
   return http.post<BaseResponse<{ notification_id: number }>, typeof data>(

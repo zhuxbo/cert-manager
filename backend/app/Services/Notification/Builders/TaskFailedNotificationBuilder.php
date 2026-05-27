@@ -9,7 +9,7 @@ use App\Services\Notification\DTOs\NotificationPayload;
 use Illuminate\Database\Eloquent\Model;
 use RuntimeException;
 
-class TaskFailedMailNotificationBuilder implements NotificationBuilderInterface
+class TaskFailedNotificationBuilder implements NotificationBuilderInterface
 {
     public function build(NotificationIntent $intent, Model $notifiable): NotificationPayload
     {
@@ -55,6 +55,7 @@ class TaskFailedMailNotificationBuilder implements NotificationBuilderInterface
             'params' => $params,
             'result' => $result,
             'admin_email' => $email,
+            'email' => $email,
             'subject' => $subject,
             '_meta' => [
                 'email' => $email,
@@ -62,6 +63,6 @@ class TaskFailedMailNotificationBuilder implements NotificationBuilderInterface
             ],
         ];
 
-        return new NotificationPayload($data, ['mail']);
+        return new NotificationPayload($data);
     }
 }

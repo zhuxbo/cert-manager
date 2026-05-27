@@ -156,8 +156,7 @@ class TaskJob implements ShouldQueue
                 'task_id' => $task->id,
                 'error_message' => $e->getMessage(),
                 'admin_email' => $targetEmail,
-            ],
-            ['mail']
+            ]
         );
 
         app(NotificationCenter::class)->dispatch($intent);

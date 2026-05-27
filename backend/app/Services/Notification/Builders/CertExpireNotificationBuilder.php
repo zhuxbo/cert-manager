@@ -14,7 +14,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use RuntimeException;
 
-class CertExpireMailNotificationBuilder implements NotificationBuilderInterface
+class CertExpireNotificationBuilder implements NotificationBuilderInterface
 {
     public function __construct(
         private readonly AutoRenewService $autoRenewService
@@ -94,9 +94,13 @@ class CertExpireMailNotificationBuilder implements NotificationBuilderInterface
             'certificates' => $certificates,
             'subject' => $subject,
             'has_delegation_issue' => $hasDelegationIssue,
+            '_meta' => [
+                'subject' => $subject,
+                'is_html' => true,
+            ],
         ];
 
-        return new NotificationPayload($data, ['mail']);
+        return new NotificationPayload($data);
     }
 
     /**

@@ -536,8 +536,7 @@ class Action
                 [
                     'order_id' => $order->id,
                     'email' => $user->email,
-                ],
-                ['mail']
+                ]
             ));
         }
 

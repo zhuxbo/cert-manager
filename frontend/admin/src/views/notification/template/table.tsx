@@ -1,11 +1,5 @@
 import { ref } from "vue";
 import dayjs from "dayjs";
-import { channelOptions } from "./dictionary";
-
-const channelMap = channelOptions.reduce<Record<string, string>>((acc, cur) => {
-  acc[cur.value] = cur.label;
-  return acc;
-}, {});
 
 export function useNotificationTemplateTable() {
   const tableRef = ref();
@@ -25,25 +19,6 @@ export function useNotificationTemplateTable() {
       label: "标识",
       prop: "code",
       minWidth: 180
-    },
-    {
-      label: "通道",
-      prop: "channels",
-      minWidth: 200,
-      cellRenderer: ({ row }) => {
-        if (!row.channels || row.channels.length === 0) {
-          return <span class="text-muted">-</span>;
-        }
-        return (
-          <div>
-            {row.channels.map((item: string) => (
-              <el-tag key={item} size="small" type="info" class="mr-1 mb-1">
-                {channelMap[item] ?? item}
-              </el-tag>
-            ))}
-          </div>
-        );
-      }
     },
     {
       label: "变量",
