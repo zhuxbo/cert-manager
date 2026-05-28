@@ -79,6 +79,16 @@ export function getAcmeDetail(id: number): Promise<BaseResponse> {
   return http.get<BaseResponse<null>, null>(`/acme/${id}`);
 }
 
+/** 批量获取 ACME 详情（聚合页） */
+export function batchShowAcmes(
+  ids: string | number | number[]
+): Promise<BaseResponse> {
+  return http.get<BaseResponse<null>, { ids: string | number | number[] }>(
+    "/acme/batch",
+    { params: { ids } }
+  );
+}
+
 /** 同步 ACME */
 export function syncAcme(id: number): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, null>(`/acme/sync/${id}`);

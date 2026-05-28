@@ -132,8 +132,10 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 - `commit` / `newAndCommit`：调上游 `/acme/new` 成功后，将响应 `directory_url` 写入/刷新 Cache；响应 payload 通过 `syncDirectoryUrl($acme)` 返回，此时缓存已命中
 - `sync`：调上游 `/acme/get`，顺便用响应中的 `directory_url` 刷新 Cache
-- `show` / `get`（Admin/User/Deploy）：调 `syncDirectoryUrl($acme)` —— 先读 Cache 命中直接返回；Cache 空且有 `api_id` 时回源上游 `get` 拉取并写 Cache（**一次性回填**，后续命中）；上游暂不可达静默降级为 null
+- `show` / `get` / `batchShow`（Admin/User/Deploy）：调 `syncDirectoryUrl($acme)` —— 先读 Cache 命中直接返回；Cache 空且有 `api_id` 时回源上游 `get` 拉取并写 Cache（**一次性回填**，后续命中）；上游暂不可达静默降级为 null
 - Cache 被清理不影响正确性，下次访问多一次上游同步即可恢复
+
+> ⚠ `syncDirectoryUrl` 内部读 `$acme->product->ca` 算 cache key —— 凡在 controller 用 `with(['product' => fn($q) => $q->select([...])])` 收窄 product 字段的地方，**select 必须包含 `ca`**，否则 cache key 退化为空串、`directory_url` 永远 null。User 端 `index` / `show` / `batchShow` 已显式 select `ca`
 
 **前端**：详情页"ACME 凭据" tab 显示端点（directory_url）、EAB KID、EAB HMAC 三项，每项带复制按钮
 
@@ -179,18 +181,19 @@ Admin/User `index()` 复用同套过滤器，对齐传统订单搜索：
 
 ## 批量操作
 
-列表页提供 6 个批量接口，路径格式均为 `POST /api/{admin,user}/acme/batch-*`。
+列表页提供 7 个批量接口：1 个 GET（聚合详情查询）+ 6 个 POST（写操作），路径格式 `/api/{admin,user}/acme/batch*`。
 
 ### 状态过滤规则
 
-| 接口                  | 允许状态                        | 备注                                                                                                                                     |
-| --------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `batch-pay`           | `unpaid`                        | 同步逐条执行，返回 `{success_count, errors}`                                                                                             |
-| `batch-commit`        | `pending`                       | 创建 `commit_acme` Task 立即入队；`checkRepeat` 存在 executing 任务时整体报错                                                            |
-| `batch-sync`          | `active` / `cancelling`         | 必须有 `api_id`；pending/unpaid 无 api_id 无法同步                                                                                       |
-| `batch-commit-cancel` | `unpaid` / `pending` / `active` | 同步逐条调单体 `commitCancel`；unpaid 无需 refund，pending 无 api_id 直接退费，active 走延时 Task                                        |
-| `batch-revoke-cancel` | `cancelling`                    | 同步逐条调单体 `revokeCancel`                                                                                                            |
-| `batch-copy-eab`      | 任意（纯读）                    | 返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行）；**Admin 端跨用户请求拒绝**，User 端由 UserScope 自动限制 |
+| 接口                  | 方法 | 允许状态                        | 备注                                                                                                                                     |
+| --------------------- | ---- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch`               | GET  | 任意（纯读）                    | 详情聚合，`?ids=1,2,3` 形式，返回 `{items:[...]}` 含 `directory_url`（按 ca 缓存）。User 端复用 show 的 `makeHidden`；Admin 端全字段     |
+| `batch-pay`           | POST | `unpaid`                        | 同步逐条执行，返回 `{success_count, errors}`                                                                                             |
+| `batch-commit`        | POST | `pending`                       | 创建 `commit_acme` Task 立即入队；`checkRepeat` 存在 executing 任务时整体报错                                                            |
+| `batch-sync`          | POST | `active` / `cancelling`         | 必须有 `api_id`；pending/unpaid 无 api_id 无法同步                                                                                       |
+| `batch-commit-cancel` | POST | `unpaid` / `pending` / `active` | 同步逐条调单体 `commitCancel`；unpaid 无需 refund，pending 无 api_id 直接退费，active 走延时 Task                                        |
+| `batch-revoke-cancel` | POST | `cancelling`                    | 同步逐条调单体 `revokeCancel`                                                                                                            |
+| `batch-copy-eab`      | POST | 任意（纯读）                    | 返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行）；**Admin 端跨用户请求拒绝**，User 端由 UserScope 自动限制 |
 
 ### checkRepeat 语义
 

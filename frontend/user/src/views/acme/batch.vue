@@ -1,5 +1,14 @@
 <template>
   <div class="batch-buttons">
+    <el-button
+      v-if="canView()"
+      type="primary"
+      size="small"
+      class="ml-2"
+      @click="view()"
+    >
+      批量查看
+    </el-button>
     <el-popconfirm
       v-if="canPay()"
       title="确定要为这些订单扣款支付吗？"
@@ -76,6 +85,9 @@
 import { message } from "@shared/utils";
 import * as acmeApi from "@/api/acme";
 import type { Acme } from "@/api/acme";
+import { useDetail } from "./detail";
+
+const { toDetail } = useDetail();
 
 const props = defineProps<{
   selectedRows: Acme[];
@@ -88,12 +100,11 @@ const emit = defineEmits<{
 
 const getSelectedRows = () => props.selectedRows || [];
 
+const canView = () => getSelectedRows().length > 0;
 const canPay = () => getSelectedRows().some(r => r.status === "unpaid");
 const canCommit = () => getSelectedRows().some(r => r.status === "pending");
 const canSync = () =>
-  getSelectedRows().some(
-    r => ["active", "cancelling"].includes(r.status) && r.api_id
-  );
+  getSelectedRows().some(r => ["active", "cancelling"].includes(r.status));
 const canCommitCancel = () =>
   getSelectedRows().some(r =>
     ["unpaid", "pending", "active"].includes(r.status)
@@ -125,6 +136,12 @@ const reportResult = (res: any, action: string) => {
   }
 };
 
+const view = () => {
+  const ids = getSelectedRows().map(r => r.id);
+  if (!ids.length) return message("请至少选择一个订单", { type: "error" });
+  toDetail({ ids: ids.join(",") }, "params");
+};
+
 const pay = () => {
   const ids = filterIdsByStatus(["unpaid"]);
   if (!ids.length)
@@ -149,7 +166,7 @@ const sync = () => {
   const ids: number[] = [];
   props.tableRef?.clearSelection();
   getSelectedRows().forEach(row => {
-    if (["active", "cancelling"].includes(row.status) && row.api_id) {
+    if (["active", "cancelling"].includes(row.status)) {
       ids.push(row.id);
       props.tableRef?.toggleRowSelection(row);
     }

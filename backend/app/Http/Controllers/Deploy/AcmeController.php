@@ -76,7 +76,11 @@ class AcmeController extends Controller
             $this->error('Order not found');
         }
 
-        $data = $acme->makeVisible('eab_hmac')->toArray();
+        // 隐藏内部桥接/计费/审计字段，保留 refer_id（客户端关联键，API contract 一部分）
+        $acme->makeVisible('eab_hmac')
+            ->makeHidden(['user_id', 'plus', 'api_id', 'admin_remark', 'channel']);
+
+        $data = $acme->toArray();
         $data['directory_url'] = app(Action::class)->syncDirectoryUrl($acme);
 
         $this->success($data);

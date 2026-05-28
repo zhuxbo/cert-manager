@@ -171,6 +171,109 @@ test('show 查看他人订单返回 null', function () {
         ->assertJson(['code' => 0]);
 });
 
+test('show 隐藏内部字段（user_id / plus / api_id / refer_id / admin_remark / channel）', function () {
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct();
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-internal',
+        'refer_id' => 'refer-x',
+        'admin_remark' => '内部备注',
+        'channel' => 'web',
+        'plus' => 1,
+    ]);
+
+    $response = $this->actingAsUser($user)
+        ->getJson("/api/acme/$acme->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    foreach (['user_id', 'plus', 'api_id', 'refer_id', 'admin_remark', 'channel'] as $hidden) {
+        expect($response->json("data.$hidden"))->toBeNull("字段 $hidden 不应暴露");
+    }
+    // 公开字段确认仍返回
+    expect($response->json('data.id'))->toBe($acme->id)
+        ->and($response->json('data.brand'))->not->toBeNull();
+});
+
+// ==================== batchShow ====================
+
+test('batchShow 仅返回自己的订单（UserScope 过滤）', function () {
+    $user = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $product = createUserAcmeProduct();
+
+    $own = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+    $others = Acme::factory()->active()->create([
+        'user_id' => $otherUser->id,
+        'product_id' => $product->id,
+    ]);
+
+    $response = $this->actingAsUser($user)
+        ->getJson("/api/acme/batch?ids=$own->id,$others->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $items = $response->json('data.items');
+    expect($items)->toHaveCount(1)
+        ->and($items[0]['id'])->toBe($own->id);
+});
+
+test('batchShow 多 ID 返回多条 + 隐藏内部字段 + 含 directory_url', function () {
+    $user = User::factory()->create();
+    $product = createUserAcmeProduct();
+
+    $a = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-1',
+        'plus' => 1,
+        'eab_kid' => 'kid-1',
+        'eab_hmac' => 'hmac-1',
+    ]);
+    $b = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-2',
+        'plus' => 0,
+        'eab_kid' => 'kid-2',
+        'eab_hmac' => 'hmac-2',
+    ]);
+
+    $response = $this->actingAsUser($user)
+        ->getJson("/api/acme/batch?ids=$a->id,$b->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $items = $response->json('data.items');
+    expect($items)->toHaveCount(2);
+
+    foreach ($items as $item) {
+        // 隐藏字段不应出现
+        foreach (['user_id', 'plus', 'api_id', 'refer_id', 'admin_remark', 'channel'] as $hidden) {
+            expect($item[$hidden] ?? null)->toBeNull("$hidden 不应暴露");
+        }
+        // 公开字段
+        expect($item['eab_kid'])->not->toBeNull()
+            ->and($item['eab_hmac'])->not->toBeNull()
+            ->and(array_key_exists('directory_url', $item))->toBeTrue();
+    }
+});
+
+test('batchShow 全部不存在的 ID 报错', function () {
+    $user = User::factory()->create();
+
+    $this->actingAsUser($user)
+        ->getJson('/api/acme/batch?ids=999999,888888')
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
 // ==================== new ====================
 
 test('new 成功创建订单', function () {
@@ -512,14 +615,15 @@ test('user batch-sync 仅处理 active 并入队 sync_acme', function () {
 
 // ==================== batch-copy-eab ====================
 
-test('user batch-copy-eab 返回含 eab_kid 的文本', function () {
+test('user batch-copy-eab 返回含 eab_kid + contact_email 的文本', function () {
     $user = User::factory()->create();
     $product = createUserAcmeProduct(['ca' => 'google']);
     setupUserGatewaySettings();
 
-    $a = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID1', 'eab_hmac' => 'HMAC1']);
+    $a = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID1', 'eab_hmac' => 'HMAC1', 'contact_email' => 'u@example.com']);
 
     $res = $this->actingAsUser($user)->postJson('/api/acme/batch-copy-eab', ['ids' => [$a->id]]);
     $res->assertJsonPath('code', 1);
-    expect($res->json('data.text'))->toContain('eab_kid=KID1');
+    expect($res->json('data.text'))->toContain('eab_kid=KID1')
+        ->and($res->json('data.text'))->toContain('contact_email=u@example.com');
 });

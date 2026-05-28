@@ -156,6 +156,70 @@ test('show 不存在返回错误', function () {
     $response->assertOk()->assertJson(['code' => 0]);
 });
 
+// ==================== batchShow ====================
+
+test('batchShow 返回多条 + 含 EAB + directory_url + 全字段（含 user_id / api_id / channel）', function () {
+    $a = Acme::factory()->active()->create([
+        'eab_kid' => 'kid-1',
+        'eab_hmac' => 'hmac-1',
+        'api_id' => 'upstream-1',
+        'channel' => 'web',
+    ]);
+    $b = Acme::factory()->active()->create([
+        'eab_kid' => 'kid-2',
+        'eab_hmac' => 'hmac-2',
+        'api_id' => 'upstream-2',
+        'channel' => 'admin',
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/acme/batch?ids=$a->id,$b->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $items = $response->json('data.items');
+    expect($items)->toHaveCount(2);
+
+    foreach ($items as $item) {
+        // Admin 端不隐藏字段
+        expect($item['eab_kid'])->not->toBeNull()
+            ->and($item['eab_hmac'])->not->toBeNull()
+            ->and(array_key_exists('user_id', $item))->toBeTrue()
+            ->and(array_key_exists('api_id', $item))->toBeTrue()
+            ->and(array_key_exists('channel', $item))->toBeTrue()
+            ->and(array_key_exists('directory_url', $item))->toBeTrue();
+    }
+});
+
+test('batchShow Admin 可跨用户查询', function () {
+    $u1 = User::factory()->create();
+    $u2 = User::factory()->create();
+    $product = createAcmeProduct();
+
+    $a1 = Acme::factory()->active()->create([
+        'user_id' => $u1->id,
+        'product_id' => $product->id,
+    ]);
+    $a2 = Acme::factory()->active()->create([
+        'user_id' => $u2->id,
+        'product_id' => $product->id,
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/acme/batch?ids=$a1->id,$a2->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($response->json('data.items'))->toHaveCount(2);
+});
+
+test('batchShow 全部不存在的 ID 报错', function () {
+    $this->actingAsAdmin($this->admin)
+        ->getJson('/api/admin/acme/batch?ids=999999,888888')
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
 // ==================== new ====================
 
 test('new 成功创建订单', function () {
@@ -446,19 +510,22 @@ test('admin batch-revoke-cancel 回滚 cancelling 至 active', function () {
 
 // ==================== batch-copy-eab ====================
 
-test('admin batch-copy-eab 同用户正常返回文本', function () {
+test('admin batch-copy-eab 同用户正常返回文本（含 contact_email，对齐 user 端）', function () {
     $user = User::factory()->create();
     $product = createAcmeProduct(['ca' => 'google']);
     setupAdminGatewaySettings();
 
-    $a1 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID1', 'eab_hmac' => 'HMAC1']);
-    $a2 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID2', 'eab_hmac' => 'HMAC2']);
+    $a1 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID1', 'eab_hmac' => 'HMAC1', 'contact_email' => 'a@example.com']);
+    $a2 = Acme::factory()->create(['user_id' => $user->id, 'product_id' => $product->id, 'eab_kid' => 'KID2', 'eab_hmac' => 'HMAC2', 'contact_email' => 'b@example.com']);
 
     $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-copy-eab', ['ids' => [$a1->id, $a2->id]]);
     $res->assertJsonPath('code', 1);
     $res->assertJsonPath('data.count', 2);
-    expect($res->json('data.text'))->toContain('eab_kid=KID1');
-    expect($res->json('data.text'))->toContain('eab_kid=KID2');
+    $text = $res->json('data.text');
+    expect($text)->toContain('eab_kid=KID1')
+        ->and($text)->toContain('eab_kid=KID2')
+        ->and($text)->toContain('contact_email=a@example.com')
+        ->and($text)->toContain('contact_email=b@example.com');
 });
 
 test('admin batch-copy-eab 跨用户拒绝', function () {

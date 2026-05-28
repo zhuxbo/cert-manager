@@ -200,6 +200,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     // ACME 路由
     Route::prefix('acme')->group(function () {
         Route::get('/', [AcmeController::class, 'index']);
+        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::get('{id}', [AcmeController::class, 'show'])->where('id', '[0-9]+');
         Route::post('new', [AcmeController::class, 'new']);
         Route::post('pay/{id}', [AcmeController::class, 'pay'])->where('id', '[0-9]+');

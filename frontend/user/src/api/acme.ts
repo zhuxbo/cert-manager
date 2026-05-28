@@ -14,16 +14,12 @@ function syncBalance(res: BaseResponse): BaseResponse {
 
 export interface Acme {
   id: number;
-  user_id: number;
   product_id: number;
   brand: string;
   period: number;
-  plus: number;
   amount: string;
   purchased_standard_count: number;
   purchased_wildcard_count: number;
-  refer_id: string | null;
-  api_id: string | null;
   vendor_id: string | null;
   contact_email: string | null;
   eab_kid: string | null;
@@ -32,7 +28,6 @@ export interface Acme {
   period_till: string | null;
   cancelled_at: string | null;
   status: string;
-  channel: string;
   directory_url: string | null;
   remark: string | null;
   created_at: string;
@@ -91,6 +86,16 @@ export function getAcmes(params: AcmeParams): Promise<BaseResponse> {
 /** 获取 ACME 订单详情 */
 export function getAcmeDetail(id: number): Promise<BaseResponse> {
   return http.get<BaseResponse<null>, null>(`/acme/${id}`);
+}
+
+/** 批量获取 ACME 订单（详情聚合页） */
+export function batchShowAcmes(
+  ids: string | number | number[]
+): Promise<BaseResponse> {
+  return http.get<BaseResponse<null>, { ids: string | number | number[] }>(
+    "/acme/batch",
+    { params: { ids } }
+  );
 }
 
 /** 取消 ACME 订单 */

@@ -15,7 +15,7 @@
           提交
         </el-dropdown-item>
         <el-dropdown-item
-          v-if="['active', 'cancelling'].includes(acme.status) && !!acme.api_id"
+          v-if="['active', 'cancelling'].includes(acme.status)"
           command="sync"
         >
           同步

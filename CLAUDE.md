@@ -94,19 +94,24 @@ skills/ # 开发规范（详细文档）
 - **产品导入**：`Order\Action::importProduct()` 同时查询 Order 和 ACME 两端产品，合并后按 `api_id` 去重
 - **控制器路由**：
   - API：`/api/acme/` — new, get, cancel, get-products（对下游代理，与 上游系统 对齐）
-  - Admin：`/api/admin/acme/` — index, show, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
-  - User：`/api/user/acme/` — index, show, new, pay, commit, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
+  - Admin：`/api/admin/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
+  - User：`/api/user/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
   - Deploy：`/api/deploy/acme/` — new（一步到位：创建+支付+提交）, get（含 EAB + directory_url）
+- **字段暴露策略**（参考传统 Order）：
+  - User Web `index` 走 select 白名单，`show`/`batchShow` 走 `makeHidden(['user_id','plus','api_id','refer_id','admin_remark','channel'])`；product 关联 select 含 `ca`（`syncDirectoryUrl` 取 cache key 需要）
+  - Deploy/V2 API `get` 走 `makeHidden(['user_id','plus','api_id','admin_remark','channel'])`；**保留 `refer_id`**（客户端关联键，contract 一部分）
+  - Admin 全字段返回，不做 makeHidden
 - **搜索**：Admin/User 控制器 `index` 支持 quickSearch / id / status / brand / period / **eab_kid 前缀匹配（走索引）** / amount 范围 / product_name / created_at / period_till 范围；Admin 额外 user_id/username
 - **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
 - **传统流程完全隔离**：ACME 通过独立控制器、服务和前端模块处理，与传统订单无交集；V2 API `new` 和 `Order\Action::initParams` 拒绝 ACME 产品
-- **批量操作**：列表页 6 个批量按钮
+- **批量操作**：列表页 7 个批量按钮
+  - `GET /api/{admin,user}/acme/batch?ids=1,2,3` — 批量详情聚合（纯读）；URL 可分享，前端 `details.vue` v-for 渲染。返回 `{items: [...]}` 含 directory_url（按 ca 缓存避免重复算）。User 端复用 show 的字段隐藏；Admin 端全字段
   - `POST /api/{admin,user}/acme/batch-pay` — 同步逐条扣费（pay autoCommit=false），成功的 id 批量入队 `commit_acme`；状态限 unpaid，返回 `{success_count, commit_count, errors}`
   - `POST /api/{admin,user}/acme/batch-commit` — 创建 `commit_acme` Task 立即入队，状态限 pending；`checkRepeat` 存在 executing 任务时整体报错
   - `POST /api/{admin,user}/acme/batch-sync` — 创建 `sync_acme` Task 立即入队，状态限 active/cancelling（必须有 api_id），pending/unpaid 无 api_id 无法同步
   - `POST /api/{admin,user}/acme/batch-commit-cancel` — 同步逐条调单体 commitCancel（混合直接退费 + 延时 Task），状态限 unpaid/pending/active；单体 commitCancel 已扩展支持 unpaid（未扣费无需 refund）
   - `POST /api/{admin,user}/acme/batch-revoke-cancel` — 同步逐条调单体 revokeCancel，状态限 cancelling
-  - `POST /api/{admin,user}/acme/batch-copy-eab` — 纯读返回 EAB 文本（`directory_url\neab_kid\neab_hmac`，条目间空行），**Admin 端跨用户拒绝**；User 端 UserScope 自动限制
+  - `POST /api/{admin,user}/acme/batch-copy-eab` — 纯读返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行），**Admin 端跨用户拒绝**；User 端 UserScope 自动限制
 - **TaskJob 分发**：`commit_acme / sync_acme / cancel_acme` 统一去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`；其余 action 走 `Order\Action`
 - **User 端同步**：`POST /api/user/acme/sync/{id}`（与 Admin 对齐）
 - **checkRepeat 并发限制**：与 Order 相同，`checkRepeat` 和 `createTasks` 之间无事务锁，并发情况下可能产生双份 executing Task；沿用 Order 设计，属已知限制

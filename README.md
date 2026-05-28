@@ -106,10 +106,10 @@ build/ # 构建系统（见 build/README.md）
 deploy/ # 部署脚本
 ```
 
-| 组件 | 技术栈                                    |
-| ---- | ----------------------------------------- |
+| 组件 | 技术栈                                           |
+| ---- | ------------------------------------------------ |
 | 后端 | Laravel 13, PHP 8.3/8.4/8.5, MySQL, Redis (可选) |
-| 前端 | Vue 3, TypeScript, Element Plus, Vite     |
+| 前端 | Vue 3, TypeScript, Element Plus, Vite            |
 
 ## 自动化部署
 
@@ -173,7 +173,7 @@ certbot certonly --server <directory_url> \
   -d example.com --preferred-challenges dns-01
 ```
 
-Web 端支持两步创建：先建立订阅（unpaid → pending），再从详情页提交到上游激活（active）。详情页展示 directory URL / EAB KID / EAB HMAC，每项可一键复制。列表页支持批量支付、提交、同步、取消、撤回取消、复制 EAB 等批量操作。
+Web 端支持两步创建：先建立订阅（unpaid → pending），再从详情页提交到上游激活（active）。详情页展示 directory URL / EAB KID / EAB HMAC，每项可一键复制。列表页支持批量查看（聚合详情页 v-for 渲染，URL 可分享）、批量支付、提交、同步、取消、撤回取消、复制 EAB 等批量操作。
 
 ## 文档
 
