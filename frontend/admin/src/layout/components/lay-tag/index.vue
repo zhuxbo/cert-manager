@@ -147,6 +147,7 @@ const handleScroll = (offset: number): void => {
 };
 
 const handleWheel = (event: WheelEvent): void => {
+  event.preventDefault();
   isScrolling.value = true;
   const scrollIntensity = Math.abs(event.deltaX) + Math.abs(event.deltaY);
   let offset = 0;
@@ -158,6 +159,13 @@ const handleWheel = (event: WheelEvent): void => {
 
   smoothScroll(offset);
 };
+
+// 手动绑定 wheel 监听 + 显式 { passive: false }，避免 Chrome 非 passive 警告
+// watch ref 会在 v-if 切换 showTags 时自动解旧绑新，组件卸载时 ref 变 null 触发解绑
+watch(scrollbarDom, (el, oldEl) => {
+  oldEl?.removeEventListener("wheel", handleWheel);
+  el?.addEventListener("wheel", handleWheel, { passive: false });
+});
 
 const smoothScroll = (offset: number): void => {
   // 每帧滚动的距离
@@ -567,7 +575,6 @@ onBeforeUnmount(() => {
       ref="scrollbarDom"
       class="scroll-container"
       :class="showModel === 'chrome' && 'chrome-scroll-container'"
-      @wheel.prevent="handleWheel"
     >
       <div ref="tabDom" class="tab select-none" :style="getTabStyle">
         <div
