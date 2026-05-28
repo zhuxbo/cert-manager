@@ -403,7 +403,11 @@ trait ActionTrait
             $method = 'txt';
         }
 
-        if (strtolower($ca) === 'sectigo' && in_array($method, ['cname', 'http', 'https'])) {
+        // site.sectigoDcv 开关：默认关闭，关闭时 Sectigo 走与其他 CA 相同的降级路径
+        // （仅返回 method，dns/file 字段由上游 API 回填，再经 mergeDcv 合并）
+        if (strtolower($ca) === 'sectigo'
+            && in_array($method, ['cname', 'http', 'https'])
+            && get_system_setting('site', 'sectigoDcv', false)) {
             $dcv = $this->generateSectigoDcv($method, $csr, $unique_value);
         } else {
             $dcv = ['method' => $method];
