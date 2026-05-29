@@ -132,7 +132,8 @@ export { routes };
 
 ```bash
 # 构建单端（在插件前端目录下）
-cd plugins/{name}/frontend/admin && pnpm install && pnpm build
+# install 必须加 --ignore-workspace（插件不在根 workspace 内，详见下方「依赖锁定」）
+cd plugins/{name}/frontend/admin && pnpm install --ignore-workspace && pnpm build
 
 # 或构建整个插件（admin + user）
 bash plugins/release-plugin.sh {name} --version x.y.z --build-only
@@ -141,6 +142,21 @@ bash plugins/release-plugin.sh {name} --version x.y.z --build-only
 **开发环境静态资源映射**：`plugin.json` 中的 bundle 路径（如 `frontend/admin/notice-plugin.iife.js`）不含 `dist/`，但 Vite 构建产物输出在 `frontend/{side}/dist/`。主系统 admin/user 的 `vite.config.ts` 中 `servePlugins()` 中间件自动将 `/plugins/{name}/frontend/{side}/{file}` 映射到 `dist/{file}`，开发环境无需手动复制。
 
 **版本号不入仓库**：`plugin.json` 源文件不含 `version` 字段，由 `release-plugin.sh --version x.y.z` 在打包时动态注入到临时副本。开发环境下 `PluginManager` 读取时回落为 `0.0.0`。
+
+### 依赖锁定（pnpm workspace 注意）
+
+根 `pnpm-workspace.yaml` 的 `packages` 只含 `frontend/{shared,admin,user}`，**不含 `plugins/`**。插件前端是 workspace 之外的独立项目：
+
+- 在插件子目录直接 `pnpm install` 会被根 workspace「劫持」（去装主前端依赖、忽略插件本身），**既不生成也不更新插件自己的 `pnpm-lock.yaml`**（`git status` 看不到新 lock，易误以为已锁定）
+- 生成或更新插件 lock 必须加 `--ignore-workspace`：
+
+```bash
+pnpm -C plugins/{name}/frontend/admin install --ignore-workspace
+pnpm -C plugins/{name}/frontend/user  install --ignore-workspace
+```
+
+- 每个有 `package.json` 的插件前端子项目都应提交对应 `pnpm-lock.yaml`（锁定依赖、CI/他人构建可复现）。`build.json` 的 `exclude` 已含 `pnpm-lock.yaml`，不打入发布 zip
+- 各子项目依赖不同（notice 极简、invoice 含 `@pureadmin/*`），lock **不可跨子项目复用**，须按各自 `package.json` 生成
 
 ### 共享依赖
 
