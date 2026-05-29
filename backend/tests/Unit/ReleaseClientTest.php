@@ -173,3 +173,79 @@ test('find package url no assets key', function () {
     expect($client->findUpgradePackageUrl($release))->toBeNull();
     expect($client->findFullPackageUrl($release))->toBeNull();
 });
+
+/**
+ * 构造一个内部 baseUrl 已设、fetchReleases 被 mock 的 ReleaseClient
+ */
+function makeClientWithReleases(array $releases): ReleaseClient
+{
+    $client = Mockery::mock(ReleaseClient::class)
+        ->makePartial()
+        ->shouldAllowMockingProtectedMethods();
+    $client->shouldReceive('fetchReleases')->andReturn($releases);
+
+    // 直接设置 protected baseUrl，跳过构造时读取 version.json 的 release_url
+    $ref = new ReflectionClass(ReleaseClient::class);
+    $prop = $ref->getProperty('baseUrl');
+    $prop->setAccessible(true);
+    $prop->setValue($client, 'https://example.com/releases');
+
+    return $client;
+}
+
+test('get latest release prefers higher beta number', function () {
+    // 旧实现把 -beta.N 后缀剥光后两者相等，"最新"取决于循环顺序，beta.10 检测不出
+    $releases = [
+        ['tag_name' => 'v0.5.2-beta.9', 'published_at' => '2026-05-27T10:00:00Z'],
+        ['tag_name' => 'v0.5.2-beta.10', 'published_at' => '2026-05-28T10:00:00Z'],
+    ];
+
+    $client = makeClientWithReleases($releases);
+    $latest = $client->getLatestRelease('dev');
+
+    expect($latest)->not->toBeNull();
+    expect($latest['version'])->toBe('0.5.2-beta.10');
+});
+
+test('get latest release picks highest across mixed prereleases', function () {
+    // 混合 alpha/beta/rc，应选 rc.1（rc > beta > alpha）
+    $releases = [
+        ['tag_name' => 'v1.0.0-alpha.5'],
+        ['tag_name' => 'v1.0.0-beta.3'],
+        ['tag_name' => 'v1.0.0-beta.10'],
+        ['tag_name' => 'v1.0.0-rc.1'],
+    ];
+
+    $client = makeClientWithReleases($releases);
+    $latest = $client->getLatestRelease('dev');
+
+    expect($latest['version'])->toBe('1.0.0-rc.1');
+});
+
+test('get latest release main channel still works after fix', function () {
+    // main 通道不受影响：选最高的正式版
+    $releases = [
+        ['tag_name' => 'v1.0.0'],
+        ['tag_name' => 'v1.0.1'],
+        ['tag_name' => 'v1.0.0-beta.99'],  // 被 channel 过滤
+    ];
+
+    $client = makeClientWithReleases($releases);
+    $latest = $client->getLatestRelease('main');
+
+    expect($latest['version'])->toBe('1.0.1');
+});
+
+test('get latest release case insensitive across mixed case prereleases (M2 fix)', function () {
+    // M2 修复：getLatestRelease 内部直接调 version_compare 也加了 strtolower
+    // 旧实现：Beta（大写）被映射为 #，"最新"判断会错把 Beta.9 当成 > beta.10
+    $releases = [
+        ['tag_name' => 'v0.5.2-Beta.9'],
+        ['tag_name' => 'v0.5.2-beta.10'],
+    ];
+
+    $client = makeClientWithReleases($releases);
+    $latest = $client->getLatestRelease('dev');
+
+    expect($latest['version'])->toBe('0.5.2-beta.10');
+});

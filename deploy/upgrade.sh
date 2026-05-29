@@ -275,17 +275,63 @@ _resolve_version() {
 }
 
 # 版本比较（v1 > v2 返回 0）
-# 保留预发标识参与比较：GNU sort -V 对 0.5.2-beta.2 < 0.5.2-beta.3 < 0.5.2 符合 SemVer 预期
+# 对齐后端 PHP version_compare 与前端 compareVersions：
+# - 主版本段按整数比较（beta.10 > beta.9，避免字典序）
+# - 主版本相同：正式版 > 预发布
+# - 预发布关键字优先级 dev < alpha < beta < rc
+# 不用 sort -V：GNU coreutils 8.32 实测把 0.5.2-beta.10 排在 0.5.2 之后，违反 SemVer
 version_gt() {
+    # 同时剥小写 v 和大写 V 前缀（对齐 PHP ltrim($v, 'vV') / TS /^v/i 大小写不敏感）
     local v1=${1#v}
+    v1=${v1#V}
     local v2=${2#v}
+    v2=${v2#V}
 
-    if [ "$v1" = "$v2" ]; then
-        return 1
-    fi
+    [ "$v1" = "$v2" ] && return 1
 
-    local sorted=$(printf '%s\n%s' "$v1" "$v2" | sort -V | tail -1)
-    [ "$sorted" = "$v1" ] && return 0 || return 1
+    # 拆主版本号与预发布段
+    local main1=${v1%%-*} main2=${v2%%-*}
+    local pre1="" pre2=""
+    [ "$v1" != "$main1" ] && pre1=${v1#*-}
+    [ "$v2" != "$main2" ] && pre2=${v2#*-}
+
+    # 主版本号按数字段比较
+    local IFS=.
+    local -a m1=($main1) m2=($main2)
+    unset IFS
+    local i len=${#m1[@]}
+    [ ${#m2[@]} -gt $len ] && len=${#m2[@]}
+    for ((i = 0; i < len; i++)); do
+        local p1=${m1[i]:-0} p2=${m2[i]:-0}
+        # 强制十进制，避免前导零被当作八进制（08/09 会语法错）
+        p1=$((10#$p1)) p2=$((10#$p2))
+        [ "$p1" -gt "$p2" ] && return 0
+        [ "$p1" -lt "$p2" ] && return 1
+    done
+
+    # 主版本相同：正式版 > 预发布
+    [ -z "$pre1" ] && [ -n "$pre2" ] && return 0
+    [ -n "$pre1" ] && [ -z "$pre2" ] && return 1
+    [ -z "$pre1" ] && [ -z "$pre2" ] && return 1
+
+    # 都有预发布：拆关键字和数字（BSD/GNU sed 兼容写法）
+    local kw1 kw2 num1 num2
+    kw1=$(printf '%s' "$pre1" | sed 's/^\([a-zA-Z][a-zA-Z]*\).*/\1/' | tr '[:upper:]' '[:lower:]')
+    kw2=$(printf '%s' "$pre2" | sed 's/^\([a-zA-Z][a-zA-Z]*\).*/\1/' | tr '[:upper:]' '[:lower:]')
+    num1=$(printf '%s' "$pre1" | sed -n 's/^[a-zA-Z][a-zA-Z]*\.\{0,1\}\([0-9][0-9]*\).*/\1/p')
+    num2=$(printf '%s' "$pre2" | sed -n 's/^[a-zA-Z][a-zA-Z]*\.\{0,1\}\([0-9][0-9]*\).*/\1/p')
+
+    # 关键字优先级 — 未知关键字归到最高（保守，避免误降级）
+    local ord1 ord2
+    case "$kw1" in dev) ord1=0 ;; alpha) ord1=1 ;; beta) ord1=2 ;; rc) ord1=3 ;; *) ord1=99 ;; esac
+    case "$kw2" in dev) ord2=0 ;; alpha) ord2=1 ;; beta) ord2=2 ;; rc) ord2=3 ;; *) ord2=99 ;; esac
+    [ "$ord1" -gt "$ord2" ] && return 0
+    [ "$ord1" -lt "$ord2" ] && return 1
+
+    # 关键字相同：比数字
+    num1=$((10#${num1:-0}))
+    num2=$((10#${num2:-0}))
+    [ "$num1" -gt "$num2" ]
 }
 
 # ========================================

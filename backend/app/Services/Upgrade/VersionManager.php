@@ -139,37 +139,23 @@ class VersionManager
     /**
      * 比较两个语义化版本
      *
+     * 走 PHP 原生 version_compare 处理 SemVer 语义：
+     * - 数字段递增正确（beta.10 > beta.9）
+     * - 关键字优先级 dev < alpha < beta < rc < 正式版
+     *
+     * 入口 strtolower 标准化：PHP version_compare 把大写关键字（如 `Beta`）当未知映射为 `#`
+     * （排在 rc 之后），与 bash `tr '[:upper:]' '[:lower:]'` / TS `toLowerCase()` 行为不一致。
+     * 这里小写化让四处实现（PHP VersionManager / PHP ReleaseClient / TS / bash version_gt）
+     * 对所有大小写组合输出一致。
+     *
      * @return int -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
      */
     public function compareVersions(string $v1, string $v2): int
     {
-        // 移除 v 前缀
-        $v1 = ltrim($v1, 'vV');
-        $v2 = ltrim($v2, 'vV');
-
-        // 分离版本号和预发布标识
-        $v1Parts = $this->parseVersion($v1);
-        $v2Parts = $this->parseVersion($v2);
-
-        // 比较主版本号
-        $result = version_compare($v1Parts['version'], $v2Parts['version']);
-        if ($result !== 0) {
-            return $result;
-        }
-
-        // 版本号相同时比较预发布标识
-        // 没有预发布标识的版本 > 有预发布标识的版本
-        if (empty($v1Parts['prerelease']) && ! empty($v2Parts['prerelease'])) {
-            return 1;
-        }
-        if (! empty($v1Parts['prerelease']) && empty($v2Parts['prerelease'])) {
-            return -1;
-        }
-        if (! empty($v1Parts['prerelease']) && ! empty($v2Parts['prerelease'])) {
-            return strcmp($v1Parts['prerelease'], $v2Parts['prerelease']);
-        }
-
-        return 0;
+        return version_compare(
+            strtolower(ltrim($v1, 'vV')),
+            strtolower(ltrim($v2, 'vV'))
+        );
     }
 
     /**

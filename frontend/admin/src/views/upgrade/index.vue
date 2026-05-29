@@ -128,32 +128,52 @@ const upgradeProgress = computed(() => {
 
 // 比较两个语义化版本
 // 返回: 1 if v1 > v2, 0 if v1 == v2, -1 if v1 < v2
+// 行为对齐后端 VersionManager::compareVersions（PHP version_compare）：
+// - 数字段按整数大小（beta.10 > beta.9）
+// - 预发布关键字优先级 dev < alpha < beta < rc < 正式版
+const PRE_KEYWORD_ORDER: Record<string, number> = {
+  dev: 0,
+  alpha: 1,
+  beta: 2,
+  rc: 3
+};
+
+const parsePrerelease = (pre: string): { keyword: string; num: number } => {
+  const m = pre.match(/^([a-zA-Z]+)\.?(\d+)?/);
+  if (!m) return { keyword: pre.toLowerCase(), num: 0 };
+  return { keyword: m[1].toLowerCase(), num: parseInt(m[2] ?? "0", 10) };
+};
+
 const compareVersions = (v1: string, v2: string): number => {
-  // 移除 v 前缀
   const clean1 = v1.replace(/^v/i, "");
   const clean2 = v2.replace(/^v/i, "");
 
-  // 分离版本号和预发布标识
-  const [version1, pre1] = clean1.split("-");
-  const [version2, pre2] = clean2.split("-");
+  const [main1, pre1 = ""] = clean1.split("-");
+  const [main2, pre2 = ""] = clean2.split("-");
 
-  // 比较主版本号
-  const parts1 = version1.split(".").map(Number);
-  const parts2 = version2.split(".").map(Number);
-
-  for (let i = 0; i < 3; i++) {
-    const p1 = parts1[i] || 0;
-    const p2 = parts2[i] || 0;
+  // 主版本段按整数比较
+  const parts1 = main1.split(".").map(s => parseInt(s, 10) || 0);
+  const parts2 = main2.split(".").map(s => parseInt(s, 10) || 0);
+  const len = Math.max(parts1.length, parts2.length);
+  for (let i = 0; i < len; i++) {
+    const p1 = parts1[i] ?? 0;
+    const p2 = parts2[i] ?? 0;
     if (p1 > p2) return 1;
     if (p1 < p2) return -1;
   }
 
-  // 版本号相同时比较预发布标识
-  // 没有预发布标识的版本 > 有预发布标识的版本
+  // 主版本相同：正式版 > 预发布版
   if (!pre1 && pre2) return 1;
   if (pre1 && !pre2) return -1;
-  if (pre1 && pre2) return pre1.localeCompare(pre2);
+  if (!pre1 && !pre2) return 0;
 
+  // 都有预发布：关键字优先级 → 数字段
+  const a = parsePrerelease(pre1);
+  const b = parsePrerelease(pre2);
+  const orderA = PRE_KEYWORD_ORDER[a.keyword] ?? 99;
+  const orderB = PRE_KEYWORD_ORDER[b.keyword] ?? 99;
+  if (orderA !== orderB) return orderA > orderB ? 1 : -1;
+  if (a.num !== b.num) return a.num > b.num ? 1 : -1;
   return 0;
 };
 

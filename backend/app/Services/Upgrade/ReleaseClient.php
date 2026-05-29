@@ -55,11 +55,11 @@ class ReleaseClient
             foreach ($releases as $release) {
                 $tagName = $release['tag_name'] ?? '';
                 if ($this->matchChannel($tagName, $channel)) {
+                    // 直接对完整版本号比较；PHP 原生 version_compare 能正确处理
+                    // dev 通道下 beta.10 > beta.9 / rc > beta > alpha > dev 等场景
+                    // strtolower 与 VersionManager::compareVersions 对齐（大写关键字标准化）
                     $version = ltrim($tagName, 'vV');
-                    $compareVersion = $this->stripPreReleaseSuffix($version);
-                    $compareLatest = $this->stripPreReleaseSuffix($latestVersion);
-
-                    if (version_compare($compareVersion, $compareLatest, '>')) {
+                    if (version_compare(strtolower($version), strtolower($latestVersion), '>')) {
                         $latestVersion = $version;
                         $latestRelease = $release;
                     }
@@ -109,10 +109,10 @@ class ReleaseClient
             $releases = $this->fetchReleases();
             $filtered = [];
 
-            // 按版本号降序排序
+            // 按版本号降序排序（strtolower 与 VersionManager::compareVersions 对齐）
             usort($releases, function ($a, $b) {
-                $va = ltrim($a['tag_name'] ?? '', 'vV');
-                $vb = ltrim($b['tag_name'] ?? '', 'vV');
+                $va = strtolower(ltrim($a['tag_name'] ?? '', 'vV'));
+                $vb = strtolower(ltrim($b['tag_name'] ?? '', 'vV'));
 
                 return version_compare($vb, $va);
             });
@@ -376,14 +376,6 @@ class ReleaseClient
         }
 
         return ($channel === 'dev') === $isPreRelease;
-    }
-
-    /**
-     * 移除预发布后缀用于版本比较
-     */
-    protected function stripPreReleaseSuffix(string $version): string
-    {
-        return preg_replace('/-(dev|alpha|beta|rc)(\.\d+)?$/', '', $version);
     }
 
     /**

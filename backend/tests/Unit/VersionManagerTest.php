@@ -68,6 +68,36 @@ test('compare versions with prerelease', function () {
     expect($this->versionManager->compareVersions('1.0.0-dev', '1.0.0-dev'))->toBe(0);
 });
 
+test('compare versions prerelease number progression', function () {
+    // 数字段递增：beta.10 > beta.9（旧实现用 strcmp 会判 beta.10 < beta.9）
+    expect($this->versionManager->compareVersions('0.5.2-beta.10', '0.5.2-beta.9'))->toBe(1);
+    expect($this->versionManager->compareVersions('0.5.2-beta.9', '0.5.2-beta.10'))->toBe(-1);
+    expect($this->versionManager->compareVersions('0.5.2-beta.10', '0.5.2-beta.10'))->toBe(0);
+    // 两位数 vs 个位数交叉
+    expect($this->versionManager->compareVersions('1.0.0-rc.11', '1.0.0-rc.2'))->toBe(1);
+    expect($this->versionManager->compareVersions('1.0.0-alpha.100', '1.0.0-alpha.99'))->toBe(1);
+});
+
+test('compare versions prerelease keyword priority', function () {
+    // SemVer 预发布关键字优先级 dev < alpha < beta < rc < 正式
+    expect($this->versionManager->compareVersions('1.0.0-alpha.1', '1.0.0-dev.99'))->toBe(1);
+    expect($this->versionManager->compareVersions('1.0.0-beta.1', '1.0.0-alpha.99'))->toBe(1);
+    expect($this->versionManager->compareVersions('1.0.0-rc.1', '1.0.0-beta.99'))->toBe(1);
+    expect($this->versionManager->compareVersions('1.0.0', '1.0.0-rc.99'))->toBe(1);
+});
+
+test('compare versions case insensitive prerelease keyword (M2 fix)', function () {
+    // M2 修复：入口 strtolower 标准化，大写关键字与小写等价
+    // 旧实现：PHP version_compare 把 Beta（大写）当未知，映射为 # 排在 rc 之后，
+    //         导致 1.0.0-Beta.10 > 1.0.0-rc.1 返回 1（错误）
+    expect($this->versionManager->compareVersions('1.0.0-Beta.10', '1.0.0-beta.9'))->toBe(1);
+    expect($this->versionManager->compareVersions('1.0.0-BETA', '1.0.0-beta'))->toBe(0);
+    expect($this->versionManager->compareVersions('1.0.0-RC.1', '1.0.0-beta.99'))->toBe(1);
+    expect($this->versionManager->compareVersions('1.0.0-Alpha.1', '1.0.0-dev.99'))->toBe(1);
+    // v 前缀大小写在 ltrim 阶段已处理，加 strtolower 后大写关键字也对齐
+    expect($this->versionManager->compareVersions('V1.0.0-Beta.10', 'v1.0.0-beta.10'))->toBe(0);
+});
+
 test('compare versions with v prefix', function () {
     expect($this->versionManager->compareVersions('v1.0.0', '1.0.0'))->toBe(0);
     expect($this->versionManager->compareVersions('V1.0.0', 'v1.0.0'))->toBe(0);

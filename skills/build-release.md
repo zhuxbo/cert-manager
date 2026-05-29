@@ -141,6 +141,36 @@ bash build/build.sh --clear-cache
 
 无 `version.json` 时，PHP 返回：`version=0.0.0-beta, channel=dev`
 
+### SemVer 比较语义（三处必须对齐）
+
+升级链路三处独立实现版本比较，行为必须一致：
+
+| 位置                                              | 实现                                                         |
+| ------------------------------------------------- | ------------------------------------------------------------ |
+| `backend/app/Services/Upgrade/VersionManager.php` | `compareVersions()` 直接调 PHP 原生 `version_compare`        |
+| `backend/app/Services/Upgrade/ReleaseClient.php`  | `getLatestRelease()` 用 `version_compare` 比完整版本号选最高 |
+| `frontend/admin/src/views/upgrade/index.vue`      | `compareVersions()` 关键字优先级表 + 数字段整数比较          |
+| `deploy/upgrade.sh::version_gt`                   | 纯 bash 拆主版本/预发布段，按整数 + 关键字优先级比较         |
+
+约定：
+
+- 数字段按整数大小（`beta.10 > beta.9`，**不能**字典序）
+- 主版本相同时：正式版 > 预发布版
+- 预发布关键字优先级：`dev < alpha < beta < rc < 正式版`
+- 未知关键字保守归到最高（避免误判为旧版降级）
+- **大小写不敏感**：`v/V` 前缀剥除、关键字（`Beta`/`BETA`/`beta`）等价 — PHP 端 `compareVersions` 入口 `strtolower` 标准化（version_compare 原生会把大写当未知映射为 `#`）；bash 用 `tr '[:upper:]' '[:lower:]'`；TS 用 `.toLowerCase()`
+
+历史陷阱（**不要回滚**）：
+
+- `sort -V`：GNU coreutils 8.32 把 `0.5.2-beta.10` 排在 `0.5.2` **之后**，违反 SemVer
+- `strcmp(pre1, pre2)`：会判 `beta.10 < beta.9`（字典序）
+- 后缀剥光对比（`stripPreReleaseSuffix`）：`beta.9` 和 `beta.10` 被剥成同一个版本号，"最新"取决于循环顺序
+
+测试入口：
+
+- PHP 单测：`backend/tests/Unit/VersionManagerTest.php`、`backend/tests/Unit/ReleaseClientTest.php`
+- bash 单测：`bash deploy/test/test-version-gt.sh`（21 个 case，覆盖数字段递增 / 正式 vs 预发 / 关键字优先级 / v 前缀 / 边界）
+
 ---
 
 ## 远程发布
