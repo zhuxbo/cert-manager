@@ -1,11 +1,11 @@
 {
     "version": "1.0",
-    "mysql_version": "8.0.46",
-    "generated_at": "2026-05-27 12:03:45",
+    "mysql_version": "8.4.9",
+    "generated_at": "2026-05-30 21:34:43",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
-        "collation": null
+        "collation": "utf8mb4_0900_ai_ci"
     },
     "tables": {
         "acmes": {

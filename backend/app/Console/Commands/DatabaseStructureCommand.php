@@ -40,7 +40,7 @@ class DatabaseStructureCommand extends Command
 
     private int $containerPort = 33067;
 
-    private string $mysqlImage = 'm.daocloud.io/docker.io/library/mysql:8.0'; // 为了兼容 使用 MySQL 8.0
+    private string $mysqlImage = 'm.daocloud.io/docker.io/library/mysql:8.4'; // 与生产 8.x 对齐
 
     private string $mysqlPassword = 'temp123';
 

@@ -202,7 +202,9 @@ skills/ # 开发规范（详细文档）
 
 ## 测试
 
-- 单一库（MySQL）：本地需 mysql 5.7 容器（与 CI 对齐），跑 `php artisan test --parallel`
+- 本地开发环境用容器（`compose.yaml` + `Makefile`，详见 `docker/README.md`）：后端 PHP 8.4 + MySQL 8.4 + Redis 7，`make test` 容器内并行跑（隔离库 `ssl_manager_test`，`--processes` 防 OOM）
+- **MySQL 5.7 与 8.x 双版本**：生产二者都有，CI core 跑 `5.7×{8.3,8.4}` + `8.4×{8.4,8.5}` 矩阵、各 plugin 跑 5.7+8.4；本地默认 8.4（ARM 原生），复现 5.7 用内网实例或看 CI
+- **collation 按版本自动选择**（三处统一：`bt-install.sh` 的 `_detect_db_collation` / 容器 `entrypoint.sh` / CI `matrix.collation`）：8.x→`utf8mb4_0900_ai_ci`、5.7→`utf8mb4_unicode_520_ci`、MariaDB→`utf8mb4_unicode_ci`；`structure.json` 以 8.4 为基准。新迁移/SQL 避开 8.0+ 保留字（`rank`/`groups`/`system`）与 5.7 不支持的语法
 - 详见 `skills/backend-dev.md` 测试章节
 
 ### M4 测试覆盖

@@ -886,6 +886,31 @@ _set_env_var() {
     fi
 }
 
+# 按数据库版本选择最优 collation（恢复旧 install.php 的版本自动切换逻辑，整合安装后曾遗漏）
+# MySQL 8.0+ → utf8mb4_0900_ai_ci；MySQL 5.7 → utf8mb4_unicode_520_ci；
+# MariaDB（不支持 0900 系列）→ utf8mb4_unicode_ci；连不上/无客户端时回落全版本通用的 unicode_ci
+_detect_db_collation() {
+    local version="" major
+    if command -v mysql &>/dev/null; then
+        version=$(MYSQL_PWD="$DB_PASSWORD" mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" \
+            -N -s -e "SELECT VERSION()" 2>/dev/null | head -n1)
+    fi
+    if [ -z "$version" ]; then
+        printf 'utf8mb4_unicode_ci'
+        return
+    fi
+    if printf '%s' "$version" | grep -qiE 'mariadb'; then
+        printf 'utf8mb4_unicode_ci'
+        return
+    fi
+    major=$(printf '%s' "$version" | grep -oE '[0-9]+\.[0-9]+' | head -n1)
+    if [ -n "$major" ] && awk "BEGIN{exit !($major >= 8.0)}"; then
+        printf 'utf8mb4_0900_ai_ci'
+    else
+        printf 'utf8mb4_unicode_520_ci'
+    fi
+}
+
 # 生成 .env 文件
 # - APP_KEY / JWT_SECRET 现场生成
 # - mysql DB_CONNECTION + 连接字段
@@ -943,6 +968,12 @@ generate_env_file() {
     _set_env_var "$env_file" "DB_DATABASE" "$DB_DATABASE"
     _set_env_var "$env_file" "DB_USERNAME" "$DB_USERNAME"
     _set_env_var "$env_file" "DB_PASSWORD" "$DB_PASSWORD"
+
+    # DB_COLLATION：按数据库版本自动选择最优排序规则（恢复旧 install.php 逻辑）
+    local db_collation
+    db_collation=$(_detect_db_collation)
+    _set_env_var "$env_file" "DB_COLLATION" "$db_collation"
+    log_info "DB_COLLATION=$db_collation（按数据库版本自动选择）"
 
     # CACHE_DRIVER / QUEUE_CONNECTION / SESSION_DRIVER 不写入 — 已是 config 默认值
 
