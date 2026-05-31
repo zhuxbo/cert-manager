@@ -13,13 +13,19 @@ class OrderDocument extends BaseModel
         'file_name',
         'file_path',
         'file_size',
+        'content_hash',
         'uploaded_by',
         'submitted',
+        'submitted_at',
+        'submit_attempts',
+        'submit_error',
     ];
 
     protected $casts = [
         'file_size' => 'integer',
         'submitted' => 'boolean',
+        'submitted_at' => 'datetime',
+        'submit_attempts' => 'integer',
     ];
 
     public function order(): BelongsTo

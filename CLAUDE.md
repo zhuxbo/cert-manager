@@ -131,6 +131,7 @@ skills/ # 开发规范（详细文档）
 - **后台升级 binary preflight**：`POST /api/admin/upgrade/execute` 入口（isRunning 短路后）先跑 `UpgradePreflight::check()` 4 项检查 —— ① FPM `disable_functions`、② PHP CLI 可探、③ composer phar 可探、④ CLI `disable_functions`（CLI 和 FPM 用各自独立 ini，必须起子进程读 CLI 的 `ini_get`，不能只查 FPM 进程的 `ini_get('disable_functions')`）。任一阻塞返回 503 + `{blocking: [], items: [], ini: {fpm, cli}}`，fix 文案统一"使用 upgrade.sh 升级"。独立健康检查端点：`GET /api/admin/upgrade/binary-health`（不阻塞，纯展示 8 个工具状态供前端升级页面参考）。**注意：preflight 只负责 binary，完整 PHP 环境校验（PHP 版本 / extensions.required / functions.required）在升级流程内的 `EnvironmentChecker::check()` —— 解包后、applyUpgrade 前跑，不通过抛 `PhpEnvironmentException` 中断升级（代码原样未动），引导用 upgrade.sh 修复**。
 - **redis 扩展动态必装**：`php-requirements.json` 中 `redis` 默认在 `recommended`；但当 `backend/.env` 的 `CACHE_DRIVER` / `CACHE_STORE` / `QUEUE_CONNECTION` 任一为 `redis` 时，`EnvironmentChecker` 和 `deploy/upgrade.sh::_redis_required_from_env` 同步把 redis 升级为必装（避免装好后 cache/queue 运行时崩）。两侧解析逻辑必须对称：处理引号、行内注释、CRLF、前后空白；.env 缺失时 fail-safe 返回 false。修改任一侧记得同步另一侧。
 - **事务内 dispatch Job 必须加 `->afterCommit()`**：`config/queue.php` 所有连接默认 `after_commit=false`，事务内 dispatch 的 Job 会立即入队，worker 可能在事务提交前消费 Job，读不到事务内新建的行/状态导致任务静默丢失。`createTask`/`createTasks` 等所有 TaskJob::dispatch 调用都已加 `->afterCommit()`，新增 Job dispatch 点也要跟进。
+- **异步 Job 必须显式 `->onQueue(config('queue.names.tasks'))` 或 `notifications`**：生产部署的 supervisor worker 只监听 `tasks,notifications` 两个队列（`deploy/scripts/bt-install.sh` 自动写入 `queue:work --queue tasks,notifications`、`skills/deploy-ops.md` 文档同），**不监听 connection 默认的 `default` 队列**。漏写 `onQueue` 的 Job 会落到 `default` 永远没人消费（`SubmitDocumentJob` 曾踩此坑：文档静默不上传上游）。约定：业务 Job → `tasks`、通知 → `notifications`，新增 Job 的 dispatch 必须 onQueue 到二者之一；**gateway 侧同此约定**（其 worker 同样只监听这俩，镜像的 `SubmitDocumentJob` 也需 onQueue）。
 - **统一锁顺序 task→order/acme 防死锁**：`TaskJob::handle` 是 task→order/acme 顺序（先锁 task，action 内再锁业务行）；所有 DELETE/修改 task 的业务路径（Order `revokeCancel`/`commitCancel(active)`/`batchCommitCancel`、ACME `revokeCancel` 等）都必须按同一顺序，先 `Task::where(...)->lockForUpdate()->get()` 拿 task 锁再锁业务行，再做 DELETE。否则 InnoDB 会周期性触发死锁回滚，用户看到随机失败。
 - **Transaction::create 必须在 DB::transaction 内调用**：Transaction::creating 钩子内不再开自己的嵌套事务/savepoint——直接使用外层事务保证 balance 修改与 INSERT 的原子性。非事务内调用会抛异常提示。Fund::updating 同理。
 - **资金事务优先用 `DB::transaction(fn)` 闭包**：Laravel 自动管 commit/rollback，避免"$row=null 控制流穿透"导致的事务计数器漂移。如必须手写 `DB::beginTransaction` + try/catch（如需在 catch 内捕获 `ApiResponseException` 后再写任务状态等场景），**所有控制流分支必须 commit 或 rollback**（含 no-row、early-return、异常路径），并补单元测试覆盖这些分支——禁止控制流穿透到方法末尾。
@@ -144,6 +145,16 @@ skills/ # 开发规范（详细文档）
 - **显示条件**：`brand.toLowerCase() === 'certum'` 且 `validation_type !== 'dv'`
 - **文件限制**：单文件 5MB，类型 PDF/JPG/JPEG/PNG/XADES，控制器层 `mimes` 验证
 - **提交权限**：Admin 和 User 均可提交文档到上游
+- **提交上游异步化 + 重试**：`submitDocuments` 不再同步阻塞，改为每个未提交文档派发 `App\Jobs\SubmitDocumentJob`（`tries=3`、`backoff=[60,300]` 指数退避、`->afterCommit()`）。Job 调 `ActionDocumentTrait::submitDocument(int $docId)`：成功标 `submitted`+`submitted_at`、永久失败（文件缺失）记 `submit_error` 不重试、可重试失败（订单未提交/上游错误）抛异常退避重试；`failed()` 兜底记错 + `Log::error`。前端 `documentUpload.vue` 状态列展示 submitted/失败(submit_error)+轮询
+- **跨级去重（content_hash）**：`order_documents` 加 `content_hash`(sha256) + 唯一索引 `(order_id, content_hash)`。**纯接收端**实现 —— `uploadDocumentFromBase64` 对解码字节算 hash，同 order 同内容已存在则跳过（重试/重复推送幂等），唯一索引兜底并发竞态（catch `QueryException` errorInfo 1062）。**发送端/线协议不变**，旧版下游推到新接收端也能去重。Gateway 侧 `V2/ApiController::uploadDocument` 镜像同一逻辑（对端对称）。防止 Job 重试在上游产生重复行 → Certum 重复提交
+- **上传即自动转发上游**：`uploadDocument`（UI 文件上传）与 `uploadDocumentFromBase64`（V2 接收下游）存档后**都**自动派发 `SubmitDocumentJob` 往上游转（含 dedup-hit 补转），多级链全自动、免手动点提交。前端「提交」按钮降级为兜底（仅 `unsubmittedCount>0` 时显示、全部 submitted 后隐藏；上传后前端轮询刷新状态）。**注意：自动转发仍依赖 queue worker 常驻**——无 worker 则 Job 滞留 `jobs` 表、文档不会真正到达上游
+- **新增列**：`submitted_at` / `submit_attempts` / `submit_error` / `content_hash`（迁移 `2026_05_31_100000_*`，幂等 `hasColumn` 守护）
+
+### 对外 API 接口文档
+
+- **源**：`backend/resources/docs/api/{v2,acme,deploy}.md`（单一来源，KB 级 Markdown，随版本发布打包）
+- **后端端点**：`GET /api/meta/api-doc?surface=v2|acme|deploy`（公开无鉴权，返回 `text/markdown` 原文，供 curl / 非 SPA 接入方）；surface 白名单，非法 404
+- **前端**：`unplugin-vue-markdown` build 期把 `.md` 编译为 Vue 组件（运行时零 markdown 库）；`shared/build/plugins.ts` 给 `vue()` 加 `.md` include + Markdown 插件；`shared/build/utils.ts` 加 `@apidoc` alias 指向后端 docs；用户端「设置 → 接口文档」抽屉面板（`apiDocs.vue`）渲染三套
 
 ### 自动续费/重签
 
