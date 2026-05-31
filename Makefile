@@ -16,7 +16,7 @@ PROCESSES ?= 4 # 并行测试 worker 数（amd64 Rosetta 下不宜过高，防 O
 .DEFAULT_GOAL := help
 
 .PHONY: help up down stop restart build rebuild ps logs shell test test-compat migrate fresh seed \
-        tinker composer artisan pint db redis-cli front install
+        tinker composer artisan php exec pint db db-structure redis-cli front install
 
 help: ## 显示本帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -65,6 +65,12 @@ fresh: ## 重建数据库并 seed（清空数据！）
 seed: ## 填充种子数据
 	$(DC) exec app php artisan db:seed
 
+db-structure: ## 导出 structure.json（compose 临时干净库，仅主迁移，不碰开发库）
+	$(DC) exec -T -e MYSQL_PWD=password mysql mysql -uroot -e "DROP DATABASE IF EXISTS structure_export; CREATE DATABASE structure_export CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci" && \
+	$(DC) exec -T -e DB_DATABASE=structure_export app php artisan migrate:fresh --force --path=database/migrations && \
+	$(DC) exec -T -e DB_DATABASE=structure_export app php artisan db:structure --export --use-local; \
+	$(DC) exec -T -e MYSQL_PWD=password mysql mysql -uroot -e "DROP DATABASE IF EXISTS structure_export"
+
 tinker: ## 进 tinker
 	$(DC) exec app php artisan tinker
 
@@ -73,6 +79,12 @@ composer: ## 容器内 composer，如 make composer ARGS="require xxx"
 
 artisan: ## 容器内 artisan，如 make artisan ARGS="route:list"
 	$(DC) exec app php artisan $(ARGS)
+
+php: ## 容器内任意 php，如 make php ARGS="-r 'echo PHP_VERSION;'"
+	$(DC) exec app php $(ARGS)
+
+exec: ## 容器内任意命令，如 make exec ARGS="./vendor/bin/pest --filter=Acme"
+	$(DC) exec app $(ARGS)
 
 pint: ## 跑 Laravel Pint 格式化
 	$(DC) exec app ./vendor/bin/pint

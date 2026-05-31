@@ -285,8 +285,8 @@ git add . && git commit -m "feat: 功能描述" && git push
 `structure.json` 是主系统数据库标准结构，升级时用于校验和修复。
 
 ```bash
-# 通过当前 .env 配置的 MySQL 连接导出
-cd backend && php artisan db:structure --export
+# 容器开发环境：在 compose MySQL 里开临时干净库导出，不碰开发库（详见 /db-structure）
+make db-structure
 ```
 
 - 导出命令自动排除插件迁移（`--path=database/migrations` 限制）

@@ -35,11 +35,16 @@ make test PROCESSES=6           # 调并行 worker 数（默认 4）
 make test-compat                # 依次用 PHP 8.3 / 8.4 跑测试，验证版本兼容
 make shell                      # 进后端容器
 make artisan ARGS="route:list"  # 任意 artisan
+make php ARGS="-v"              # 容器内任意 php（php -r / 跑脚本等）
+make exec ARGS="./vendor/bin/pest"  # 容器内任意命令（pest/phpstan 等）
 make migrate / make fresh       # 迁移 / 重建库并 seed
 make pint                       # PHP 格式化
+make db-structure               # 导出 structure.json（临时干净库，仅主迁移，不碰开发库）
 make db / make redis-cli        # 进 MySQL / Redis
 make down                       # 停止（保留数据库卷）
 ```
+
+> **参数必须用 `ARGS="..."` 包裹**：`make php` / `exec` / `artisan` / `composer` 的参数都要放进 `ARGS`（如 `make php ARGS="artisan test --filter=Acme"`、`make exec ARGS="./vendor/bin/pint"`）。直接 `make php -v` 会被 make 当成自身选项、`make php artisan` 会被当成构建目标；含空格/引号的参数也整体放进 `ARGS`。
 
 ## PHP 版本切换（8.3 / 8.4）
 

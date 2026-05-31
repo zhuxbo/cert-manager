@@ -590,11 +590,7 @@ onUnmounted(() => {
       <template #header>
         <div class="flex justify-between items-center">
           <span class="text-lg font-bold">升级进度</span>
-          <el-button
-            v-if="!upgrading"
-            type="text"
-            @click="closeUpgradeProgress"
-          >
+          <el-button v-if="!upgrading" link @click="closeUpgradeProgress">
             关闭
           </el-button>
         </div>
@@ -664,7 +660,7 @@ onUnmounted(() => {
                 : "数据库结构存在差异（需手动处理）"
             }}
           </span>
-          <el-button type="text" @click="structureWarning.show = false">
+          <el-button link @click="structureWarning.show = false">
             关闭
           </el-button>
         </div>
