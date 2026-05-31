@@ -158,6 +158,15 @@ if [ "$BUILD_ADMIN" = "true" ] || [ "$BUILD_USER" = "true" ]; then
 
     log_success "前端源码已复制"
 
+    # 接口文档源（@apidoc → backend/resources/docs/api）：user/admin 单独构建
+    # （BUILD_BACKEND=false）时后端不整体复制，需单独带上供 unplugin-vue-markdown 编译
+    if [ "$BUILD_BACKEND" != "true" ] && [ -d "$SOURCE_DIR/backend/resources/docs" ]; then
+        mkdir -p "$WORKSPACE_DIR/backend/resources/docs"
+        rsync -a --delete \
+            "$SOURCE_DIR/backend/resources/docs/" "$WORKSPACE_DIR/backend/resources/docs/"
+        log_success "接口文档源已复制（@apidoc）"
+    fi
+
     # 覆盖 logo.svg（如果 custom 中存在）
     if [ -f "$CUSTOM_DIR/logo.svg" ]; then
         log_info "使用自定义 logo.svg 覆盖..."

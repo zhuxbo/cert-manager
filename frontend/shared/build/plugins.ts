@@ -1,5 +1,6 @@
 import { getCdn } from "./cdn.js";
 import vue from "@vitejs/plugin-vue";
+import Markdown from "unplugin-vue-markdown/vite";
 import { viteBuildInfo } from "./info.js";
 import svgLoader from "vite-svg-loader";
 import Icons from "unplugin-icons/vite";
@@ -33,7 +34,10 @@ export function getPluginsList(
 
   return [
     tailwindcss(),
-    vue(),
+    // include .md：配合 unplugin-vue-markdown 把接口文档 Markdown 编译为 Vue 组件
+    vue({ include: [/\.vue$/, /\.md$/] }),
+    // Markdown → Vue 组件（build 期编译，运行时零 markdown 库；仅 user「接口文档」面板使用）
+    Markdown({}),
     // jsx、tsx语法支持
     vueJsx(),
     /**

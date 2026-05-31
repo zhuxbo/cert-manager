@@ -83,6 +83,15 @@ if [ "${BUILD_BACKEND:-false}" = "true" ]; then
 
         # 生成排除列表文件
         EXCLUDE_FILE="$(mktemp)"
+
+        # 保护：对外接口文档随后端打包（运行时 MetaController::apiDoc 读取 resources/docs/api/*.md）
+        # 必须在下面 *.md 通配排除“之前” include —— rsync 过滤规则按顺序首个匹配生效
+        cat >>"$EXCLUDE_FILE" <<'EOF'
++ /resources/docs/
++ /resources/docs/api/
++ /resources/docs/api/**
+EOF
+
         jq -r '.exclude_patterns.backend[]' "$CONFIG_FILE" 2>/dev/null >>"$EXCLUDE_FILE" || true
 
         # 额外排除

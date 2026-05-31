@@ -96,7 +96,7 @@ calc_dir_hash() {
     local dirs=("$@")
     # 对目录下所有源文件内容计算 hash，排除 node_modules 和 dist
     for dir in "${dirs[@]}"; do
-        find "$dir" -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.vue" -o -name "*.js" -o -name "*.css" -o -name "*.scss" -o -name "*.json" -o -name "*.html" \) \
+        find "$dir" -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.vue" -o -name "*.js" -o -name "*.css" -o -name "*.scss" -o -name "*.json" -o -name "*.html" -o -name "*.md" \) \
             ! -path "*/node_modules/*" ! -path "*/dist/*" \
             -exec sha256sum {} \; 2>/dev/null
     done | sort | sha256sum | awk '{print $1}'
@@ -113,7 +113,15 @@ build_component() {
     local hash_file="/workspace/.dep_hashes/${filter}_src.sha256"
 
     # 增量构建检测：检查源码是否变更（包括 shared 依赖）
-    local current_hash=$(calc_dir_hash "$src_dir" "$shared_dir")
+    # @apidoc 源（backend/resources/docs）在 frontend 之外、build 期编译进 SPA，
+    # 一并纳入 hash —— 否则纯改接口文档时增量缓存命中、内嵌文档过期
+    local apidoc_dir="$WORKSPACE_DIR/backend/resources/docs"
+    local current_hash
+    if [ -d "$apidoc_dir" ]; then
+        current_hash=$(calc_dir_hash "$src_dir" "$shared_dir" "$apidoc_dir")
+    else
+        current_hash=$(calc_dir_hash "$src_dir" "$shared_dir")
+    fi
     local prev_hash=""
     [ -f "$hash_file" ] && prev_hash=$(cat "$hash_file" 2>/dev/null || echo "")
 

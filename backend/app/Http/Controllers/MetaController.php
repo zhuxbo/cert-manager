@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Services\Plugin\PluginManager;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 
 /**
  * 公开元信息端点
@@ -46,6 +48,32 @@ class MetaController extends Controller
                 $installed,
             )),
             'version' => (string) config('version.version', 'unknown'),
+        ]);
+    }
+
+    /**
+     * 对外 API 接口文档（原文 Markdown，供 curl / 非 SPA 接入方读取）
+     *
+     * 路由 GET /api/meta/api-doc?surface=v2|acme|deploy
+     * 源文件随版本发布打包（backend/resources/docs/api/*.md），与 SPA 内构建期编译同源。
+     * 公开、无鉴权（文档描述的是公开契约，本身不含敏感信息）。
+     */
+    public function apiDoc(Request $request): Response
+    {
+        $surface = (string) $request->query('surface', '');
+
+        if (! in_array($surface, ['v2', 'acme', 'deploy'], true)) {
+            abort(404);
+        }
+
+        $path = resource_path("docs/api/$surface.md");
+        if (! is_file($path)) {
+            abort(404);
+        }
+
+        return response((string) file_get_contents($path), 200, [
+            'Content-Type' => 'text/markdown; charset=utf-8',
+            'Cache-Control' => 'public, max-age=300',
         ]);
     }
 }
