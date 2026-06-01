@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onBeforeUnmount, nextTick, computed } from "vue";
 import { ElProgress, ElTag, ElButton } from "element-plus";
 import { Refresh } from "@element-plus/icons-vue";
 import { useRouter } from "vue-router";
@@ -37,6 +37,7 @@ const router = useRouter();
 
 // 管理员信息
 const adminInfo = ref();
+// 首屏加载状态：仅等待管理员信息 + 首批关键数据，决定页面骨架是否显示
 const loading = ref(true);
 
 // Dashboard数据
@@ -88,9 +89,15 @@ const consumptionDelta = computed(() => {
   return (f?.consumption || 0) - (f?.prev_consumption || 0);
 });
 
-// 加载状态
+// 次批（图表/排行）加载状态：与首批卡片解耦，进入视口后才触发
 const chartsLoading = ref(true);
 const refreshing = ref(false);
+
+// 图表区域哨兵元素 + IntersectionObserver，用于延迟加载二屏图表
+const chartsSentinel = ref<HTMLElement>();
+let chartsObserver: IntersectionObserver | null = null;
+// 防止 observer 多次触发或与刷新重复发起请求
+const chartsRequested = ref(false);
 
 // 格式化金额
 const formatCurrency = (amount: number): string => {
@@ -296,39 +303,100 @@ const fetchAdminInfo = async () => {
   adminInfo.value = res.data;
 };
 
-// 获取Dashboard数据
-const fetchDashboardData = async () => {
+// 首批：关键指标卡片（系统概览 / 实时监控 / 财务概览），进页立即加载并渲染
+const fetchOverviewData = async () => {
+  // 各接口独立结算，单个失败不连累其它卡片
+  const [overviewRes, realtimeRes, financeRes] = await Promise.allSettled([
+    getSystemOverview(),
+    getRealtimeData(),
+    getFinanceOverview()
+  ]);
+
+  if (overviewRes.status === "fulfilled") {
+    systemOverview.value = overviewRes.value.data;
+  }
+  if (realtimeRes.status === "fulfilled") {
+    realtimeData.value = realtimeRes.value.data;
+  }
+  if (financeRes.status === "fulfilled") {
+    financeOverview.value = financeRes.value.data;
+  }
+};
+
+// 次批：图表/排行（系统趋势 / 产品销售排行 / 品牌分布 / 用户等级分布），二屏内容延后加载
+const fetchChartsData = async () => {
+  // 标记已发起，避免 observer 重复触发；刷新时由调用方先复位
+  chartsRequested.value = true;
   try {
     chartsLoading.value = true;
 
-    const [
-      overviewRes,
-      realtimeRes,
-      trendsRes,
-      productsRes,
-      brandsRes,
-      levelsRes,
-      financeRes
-    ] = await Promise.all([
-      getSystemOverview(),
-      getRealtimeData(),
-      getTrendsData(30),
-      getTopProducts(topProductsDays.value, 10),
-      getBrandStats(brandStatsDays.value),
-      getUserLevelDistribution(),
-      getFinanceOverview()
-    ]);
+    const [trendsRes, productsRes, brandsRes, levelsRes] =
+      await Promise.allSettled([
+        getTrendsData(30),
+        getTopProducts(topProductsDays.value, 10),
+        getBrandStats(brandStatsDays.value),
+        getUserLevelDistribution()
+      ]);
 
-    systemOverview.value = overviewRes.data;
-    realtimeData.value = realtimeRes.data;
-    trendsData.value = trendsRes.data;
-    topProducts.value = productsRes.data;
-    brandStats.value = brandsRes.data;
-    userLevelDistribution.value = levelsRes.data;
-    financeOverview.value = financeRes.data;
+    if (trendsRes.status === "fulfilled") {
+      trendsData.value = trendsRes.value.data;
+    }
+    if (productsRes.status === "fulfilled") {
+      topProducts.value = productsRes.value.data;
+    }
+    if (brandsRes.status === "fulfilled") {
+      brandStats.value = brandsRes.value.data;
+    }
+    if (levelsRes.status === "fulfilled") {
+      userLevelDistribution.value = levelsRes.value.data;
+    }
   } finally {
     chartsLoading.value = false;
   }
+};
+
+// 触发次批加载（仅首次有效）：observer 命中或兜底定时器调用
+const triggerChartsLoad = () => {
+  if (chartsRequested.value) return;
+  disconnectChartsObserver();
+  fetchChartsData();
+};
+
+const disconnectChartsObserver = () => {
+  if (chartsObserver) {
+    chartsObserver.disconnect();
+    chartsObserver = null;
+  }
+};
+
+// 建立 IntersectionObserver，图表区域进入视口即加载次批
+const setupChartsObserver = () => {
+  // 已请求则无需观察
+  if (chartsRequested.value) return;
+
+  // 环境不支持 IntersectionObserver 时直接加载，保证降级可用
+  if (typeof IntersectionObserver === "undefined") {
+    triggerChartsLoad();
+    return;
+  }
+
+  const el = chartsSentinel.value;
+  if (!el) {
+    // 哨兵未挂载（异常情况）兜底直接加载
+    triggerChartsLoad();
+    return;
+  }
+
+  chartsObserver = new IntersectionObserver(
+    entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        triggerChartsLoad();
+      }
+    },
+    // 提前 200px 预加载，滚动到图表前数据已就绪
+    { rootMargin: "200px 0px" }
+  );
+  chartsObserver.observe(el);
 };
 
 // 刷新缓存并重新获取数据
@@ -337,10 +405,13 @@ const handleRefreshData = async () => {
     refreshing.value = true;
 
     // 清除后端缓存
-    const clearResult = await clearDashboardCache();
+    await clearDashboardCache();
 
-    // 重新获取数据
-    await fetchDashboardData();
+    // 复位次批标记，刷新时连同图表一起重新拉取
+    chartsRequested.value = false;
+
+    // 首批与次批并行刷新，互不阻塞
+    await Promise.all([fetchOverviewData(), fetchChartsData()]);
 
     message("数据刷新成功", { type: "success" });
   } finally {
@@ -350,8 +421,17 @@ const handleRefreshData = async () => {
 
 onMounted(async () => {
   loading.value = true;
-  await Promise.all([fetchAdminInfo(), fetchDashboardData()]);
+  // 首屏仅等待管理员信息 + 首批关键卡片数据
+  await Promise.all([fetchAdminInfo(), fetchOverviewData()]);
   loading.value = false;
+
+  // 等待 v-else 分支 DOM 渲染后再观察图表哨兵元素
+  await nextTick();
+  setupChartsObserver();
+});
+
+onBeforeUnmount(() => {
+  disconnectChartsObserver();
 });
 </script>
 
@@ -722,9 +802,12 @@ onMounted(async () => {
         </div>
       </div>
 
-      <!-- 图表区域 -->
+      <!-- 图表区域（chartsSentinel 标记次批触发点，进入视口即加载图表/排行） -->
       <!-- 系统趋势 -->
-      <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
+      <div
+        ref="chartsSentinel"
+        class="bg-white dark:bg-[#141414] rounded-lg p-6"
+      >
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
             系统趋势（最近30天）

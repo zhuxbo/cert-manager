@@ -833,3 +833,123 @@ test('charge 同用户串行支付恰好用满 credit_limit：两笔都在额度
     expect((float) $user->balance)->toBe(-100.0);
     expect(Transaction::where('type', 'order')->count())->toBe(2);
 });
+
+// ==================== commit ====================
+//
+// commit() 把待提交（pending）订单提交到上游 CA。事务内调 $this->api->$action($data)，
+// 上游返回 code=1 且 data.api_id 非空时写入 api_id/dcv/validation/cert_apply_status、
+// 状态转 processing；否则 $this->error 触发 DB::rollback，保证"上游提交失败不污染本地
+// status/api_id"（Action.php:352-429）。
+//
+// 上游 mock：反射注入 protected $api（与本文件 sync 终态守卫测试同范式）。Cert 工厂默认
+// action='new'、status='pending'、api_id=null，正好是待 commit 的状态。
+
+test('commit 上游 code=1：写入 api_id/dcv/validation、cert 转 processing', function () {
+    Queue::fake();
+    [$order, $cert] = createOrderWithCertForAction('pending', [], ['action' => 'new', 'api_id' => null]);
+
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('new')
+        ->once()
+        ->andReturn([
+            'code' => 1,
+            'data' => [
+                'api_id' => 'upstream-commit-001',
+                'cert_apply_status' => 1,
+                'dcv' => [['domain' => 'commit.example.com', 'method' => 'dns']],
+                'validation' => [['domain' => 'commit.example.com', 'status' => 'pending']],
+            ],
+        ]);
+
+    $ref = new ReflectionClass($this->service);
+    $prop = $ref->getProperty('api');
+    $prop->setAccessible(true);
+    $prop->setValue($this->service, $mockApi);
+
+    $response = expectOrderApiSuccess(fn () => $this->service->commit($order->id));
+
+    expect($response['data']['order_id'])->toBe($order->id);
+    expect($response['data']['cert_apply_status'])->toBe(1);
+
+    $cert->refresh();
+    expect($cert->status)->toBe('processing');
+    expect($cert->api_id)->toBe('upstream-commit-001');
+    expect($cert->cert_apply_status)->toBe(1);
+    // dcv 合并后原样写入（cert.dcv 为空时取上游 apiDcv）
+    expect($cert->dcv)->toBe([['domain' => 'commit.example.com', 'method' => 'dns']]);
+    // validation 合并后写入：mergeValidation 给缺 method 的条目补 'admin'（ActionTrait.php:732-734）
+    expect($cert->validation)->toBe([['domain' => 'commit.example.com', 'status' => 'pending', 'method' => 'admin']]);
+});
+
+test('commit 上游 code=0：回滚，cert 仍 pending、api_id 未写入', function () {
+    Queue::fake();
+    [$order, $cert] = createOrderWithCertForAction('pending', [], ['action' => 'new', 'api_id' => null]);
+
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('new')
+        ->once()
+        ->andReturn([
+            'code' => 0,
+            'msg' => '上游提交失败',
+        ]);
+
+    $ref = new ReflectionClass($this->service);
+    $prop = $ref->getProperty('api');
+    $prop->setAccessible(true);
+    $prop->setValue($this->service, $mockApi);
+
+    expectOrderApiError(
+        fn () => $this->service->commit($order->id),
+        '上游提交失败'
+    );
+
+    // 事务回滚：状态保持 pending、api_id 未写入
+    $cert->refresh();
+    expect($cert->status)->toBe('pending');
+    expect($cert->api_id)->toBeNull();
+    expect($cert->cert_apply_status)->toBe(0);
+});
+
+test('commit 上游 code=1 但 api_id 为空：回滚，cert 仍 pending、api_id 未写入', function () {
+    Queue::fake();
+    [$order, $cert] = createOrderWithCertForAction('pending', [], ['action' => 'new', 'api_id' => null]);
+
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('new')
+        ->once()
+        ->andReturn([
+            'code' => 1,
+            'data' => [
+                // api_id 缺失：上游声称成功但未返回订单号，视为提交失败
+                'cert_apply_status' => 1,
+                'dcv' => [['domain' => 'commit.example.com', 'method' => 'dns']],
+            ],
+        ]);
+
+    $ref = new ReflectionClass($this->service);
+    $prop = $ref->getProperty('api');
+    $prop->setAccessible(true);
+    $prop->setValue($this->service, $mockApi);
+
+    expectOrderApiError(
+        fn () => $this->service->commit($order->id),
+        '提交失败'
+    );
+
+    // 事务回滚：状态保持 pending、api_id 未写入（防上游空 api_id 污染本地）
+    $cert->refresh();
+    expect($cert->status)->toBe('pending');
+    expect($cert->api_id)->toBeNull();
+});
+
+test('commit 非 pending 状态报错：订单状态不是待提交', function () {
+    [$order, $cert] = createOrderWithCertForAction('active', [], ['action' => 'new']);
+
+    expectOrderApiError(
+        fn () => $this->service->commit($order->id),
+        '订单状态不是待提交'
+    );
+
+    // 状态未变化
+    expect($cert->fresh()->status)->toBe('active');
+});

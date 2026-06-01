@@ -44,6 +44,21 @@ class PackageExtractor
             throw new RuntimeException("无法打开升级包: 错误码 $result");
         }
 
+        // 解压前逐条目校验，防止路径遍历 / 符号链接攻击（与 BackupManager/PluginManager 共用 ArchiveGuard）。
+        // 升级包来自 release 站，结构为 version.json + backend/...，无 `..` 条目，故不传 allowExact。
+        try {
+            ArchiveGuard::assertSafeEntries($zip);
+        } catch (RuntimeException $e) {
+            $zip->close();
+            File::deleteDirectory($extractDir);
+            throw $e;
+        }
+
+        $entryNames = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entryNames[] = $zip->getNameIndex($i);
+        }
+
         if (! $zip->extractTo($extractDir)) {
             $zip->close();
             File::deleteDirectory($extractDir);
@@ -51,6 +66,14 @@ class PackageExtractor
         }
 
         $zip->close();
+
+        // 解压后断言产物落点仍在解压目录内（纵深兜底，含符号链接绕过）
+        try {
+            ArchiveGuard::assertExtractedWithin($extractDir, array_filter($entryNames, 'is_string'));
+        } catch (RuntimeException $e) {
+            File::deleteDirectory($extractDir);
+            throw new RuntimeException('升级包包含非法路径');
+        }
 
         Log::info("升级包已解压到: $extractDir");
 

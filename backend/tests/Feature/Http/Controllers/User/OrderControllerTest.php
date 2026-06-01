@@ -5,11 +5,16 @@ use App\Models\Contact;
 use App\Models\Order;
 use App\Models\Organization;
 use App\Models\Product;
+use App\Models\ProductPrice;
+use App\Models\Task;
+use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Order\Api\Api;
 use Tests\Traits\ActsAsUser;
+use Tests\Traits\CreatesTestData;
 use Tests\Traits\MocksExternalApis;
 
-uses(ActsAsUser::class, MocksExternalApis::class);
+uses(ActsAsUser::class, MocksExternalApis::class, CreatesTestData::class);
 
 test('获取订单列表', function () {
     $user = User::factory()->create();
@@ -392,4 +397,243 @@ test('新建订单-OV 企业未绑定联系人时报错', function () {
 
     expect($resp->json('code'))->toBe(0)
         ->and($resp->json('msg'))->toContain('联系人');
+});
+
+// ==================== 资金动作端到端（pay / commit / commit-cancel）====================
+//
+// 这些端点（pay/{id}、commit/{id}、commit-cancel/{id}）此前 User 端无任何用例。
+// 这里真实执行（不 mock Action），仅在 commit 步骤 mock 最底层上游 Api（Action::__construct
+// 走 app(Api::class)，容器替身生效），重点验证：
+//   1. User 端这些端点真实可达（路由 + 控制器接线 + Action 真实跑通）
+//   2. 真实扣费 / 退费 / 状态机
+//   3. UserScope 越权边界：对他人订单执行资金动作必须落空（订单不存在）
+
+/**
+ * 造一个 user 名下的待扣费订单：unpaid 证书（action=new）+ 指定金额。
+ * 建 ProductPrice 让 charge 组装交易备注走真实价格路径。
+ */
+function createUserUnpaidOrder(User $user, Product $product, string $amount): array
+{
+    ProductPrice::firstOrCreate(
+        ['product_id' => $product->id, 'level_code' => 'standard', 'period' => 12],
+        ['price' => $amount, 'alternative_standard_price' => '10.00', 'alternative_wildcard_price' => '20.00'],
+    );
+
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period' => 12,
+        'amount' => $amount,
+    ]);
+
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'unpaid',
+        'action' => 'new',
+        'amount' => $amount,
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+
+    $order->update(['latest_cert_id' => $cert->id]);
+    $order->refresh();
+
+    return [$order, $cert];
+}
+
+test('支付订单-pay→commit 端到端：真实扣费 + 真实提交上游', function () {
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+    [$order, $cert] = createUserUnpaidOrder($user, $product, '100.00');
+
+    // mock 最底层上游 Api（commit 内 $this->api->new($data)）
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('new')
+        ->once()
+        ->andReturn([
+            'code' => 1,
+            'data' => [
+                'api_id' => 'CA-USER-123',
+                'cert_apply_status' => 0,
+                'dcv' => [['domain' => 'example.com', 'method' => 'txt']],
+                'validation' => [],
+            ],
+        ]);
+    $this->app->instance(Api::class, $mockApi);
+
+    // issue_verify=false 跳过 DNS 网络校验；commit 默认 true → 扣费成功后立即提交
+    $this->actingAsUser($user)
+        ->postJson("/api/order/pay/$order->id", ['issue_verify' => false])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // 真实扣费：余额 100 → 0，产生一条 type=order 扣费流水（-100）
+    $user->refresh();
+    expect((float) $user->balance)->toBe(0.0);
+    $tx = Transaction::where('transaction_id', $order->id)->where('type', 'order')->get();
+    expect($tx)->toHaveCount(1)
+        ->and((float) $tx->first()->amount)->toBe(-100.0);
+
+    // 真实提交：cert 写回上游 api_id，状态 unpaid → pending → processing
+    $cert->refresh();
+    expect($cert->status)->toBe('processing')
+        ->and($cert->api_id)->toBe('CA-USER-123');
+});
+
+test('支付订单-不能支付其他用户的订单（UserScope 越权拒绝）', function () {
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $otherUser = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+    [$otherOrder, $otherCert] = createUserUnpaidOrder($otherUser, $product, '100.00');
+
+    // 当前 user 尝试支付他人订单：UserScope 限制 charge 内 Order 查询落空
+    $this->actingAsUser($user)
+        ->postJson("/api/order/pay/$otherOrder->id", ['issue_verify' => false])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    // 越权未生效：两位用户余额都没动，订单仍 unpaid，无任何扣费流水
+    $user->refresh();
+    $otherUser->refresh();
+    expect((float) $user->balance)->toBe(100.0)
+        ->and((float) $otherUser->balance)->toBe(100.0)
+        ->and($otherCert->fresh()->status)->toBe('unpaid')
+        ->and(Transaction::where('transaction_id', $otherOrder->id)->count())->toBe(0);
+});
+
+test('提交订单-commit 端到端：pending 订单真实提交上游转 processing', function () {
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period' => 12,
+    ]);
+    // pending = 已扣费待提交
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'pending',
+        'action' => 'new',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('new')
+        ->once()
+        ->andReturn([
+            'code' => 1,
+            'data' => [
+                'api_id' => 'CA-USER-COMMIT',
+                'cert_apply_status' => 0,
+                'dcv' => [['domain' => 'example.com', 'method' => 'txt']],
+                'validation' => [],
+            ],
+        ]);
+    $this->app->instance(Api::class, $mockApi);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/commit/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $cert->refresh();
+    expect($cert->status)->toBe('processing')
+        ->and($cert->api_id)->toBe('CA-USER-COMMIT');
+});
+
+test('提交订单-不能提交其他用户的订单（UserScope 越权拒绝）', function () {
+    $user = $this->createTestUser();
+    $otherUser = $this->createTestUser();
+    $product = Product::factory()->create();
+    $otherOrder = Order::factory()->create([
+        'user_id' => $otherUser->id,
+        'product_id' => $product->id,
+    ]);
+    $otherCert = Cert::factory()->create([
+        'order_id' => $otherOrder->id,
+        'status' => 'pending',
+        'action' => 'new',
+    ]);
+    $otherOrder->update(['latest_cert_id' => $otherCert->id]);
+
+    // 不应触达上游
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldNotReceive('new');
+    $this->app->instance(Api::class, $mockApi);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/commit/$otherOrder->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    // 他人订单状态不变（未被提交）
+    expect($otherCert->fresh()->status)->toBe('pending')
+        ->and($otherCert->fresh()->api_id)->toBeNull();
+});
+
+test('取消订单-commit-cancel：unpaid 订单委派 delete（订单+证书被删除，无资金流水）', function () {
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+    [$order, $cert] = createUserUnpaidOrder($user, $product, '100.00');
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/commit-cancel/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // unpaid 直接删除：订单 + 证书均不存在；未扣费故余额不变、无流水
+    expect(Order::withoutGlobalScopes()->find($order->id))->toBeNull()
+        ->and(Cert::withoutGlobalScopes()->find($cert->id))->toBeNull();
+    $user->refresh();
+    expect((float) $user->balance)->toBe(100.0)
+        ->and(Transaction::where('transaction_id', $order->id)->count())->toBe(0);
+});
+
+test('取消订单-commit-cancel：active 订单转 cancelling + 创建延时 cancel 任务', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create(['refund_period' => 30]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/commit-cancel/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // active 走延时取消：cert 转 cancelling + 落一条 executing 的 cancel 任务（真实退费在 TaskJob 执行）
+    expect($cert->fresh()->status)->toBe('cancelling');
+    $cancelTask = Task::where('order_id', $order->id)
+        ->where('action', 'cancel')
+        ->where('status', 'executing')
+        ->first();
+    expect($cancelTask)->not->toBeNull();
+});
+
+test('取消订单-不能取消其他用户的订单（UserScope 越权拒绝）', function () {
+    $user = $this->createTestUser();
+    $otherUser = $this->createTestUser();
+    $product = Product::factory()->create();
+    $otherOrder = Order::factory()->create([
+        'user_id' => $otherUser->id,
+        'product_id' => $product->id,
+    ]);
+    $otherCert = Cert::factory()->active()->create([
+        'order_id' => $otherOrder->id,
+    ]);
+    $otherOrder->update(['latest_cert_id' => $otherCert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/commit-cancel/$otherOrder->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    // 越权未生效：他人订单仍 active，未生成 cancel 任务
+    expect($otherCert->fresh()->status)->toBe('active')
+        ->and(Task::where('order_id', $otherOrder->id)->where('action', 'cancel')->count())->toBe(0);
 });

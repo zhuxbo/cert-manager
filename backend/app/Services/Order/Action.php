@@ -320,7 +320,8 @@ class Action
         $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
         $orderIds = array_map('intval', $orderIds);
 
-        count($orderIds) > 20 && $this->error('订单数量不能超过20');
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($orderIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         $issueVerify && VerifyUtil::issueVerify($orderIds);
 

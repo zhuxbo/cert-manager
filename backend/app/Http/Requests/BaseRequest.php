@@ -24,6 +24,22 @@ abstract class BaseRequest extends FormRequest
     }
 
     /**
+     * 通用校验文案
+     *
+     * 集中提供 ids 批量参数的报错文案，供所有 GetIdsRequest 共享；
+     * 子类如自行实现 messages() 会直接覆盖此处。
+     */
+    public function messages(): array
+    {
+        return [
+            'ids.required' => '请选择要操作的数据',
+            'ids.array' => '参数 ids 必须为数组',
+            'ids.max' => '单次最多只能操作 '.config('batch.max_ids').' 条数据',
+            'ids.*.integer' => 'id 必须为整数',
+        ];
+    }
+
+    /**
      * 处理请求参数
      */
     protected function prepareForValidation(): void

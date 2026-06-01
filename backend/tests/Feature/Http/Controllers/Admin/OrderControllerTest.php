@@ -4,14 +4,19 @@ use App\Models\Admin;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ProductPrice;
+use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Order\Action;
+use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Traits\ActsAsAdmin;
+use Tests\Traits\CreatesTestData;
 use Tests\Traits\MocksExternalApis;
 
 uses(ActsAsAdmin::class);
 uses(MocksExternalApis::class);
+uses(CreatesTestData::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -230,6 +235,86 @@ test('管理员可以提交取消订单', function () {
     $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/order/commit-cancel/$order->id");
 
     $response->assertOk();
+});
+
+// ==================== 真实接线 happy path（不 mock Action）====================
+//
+// 上面的 pay/commit/sync/commit-cancel 用例 mock 了 Action，只验证「控制器调到了
+// Action 方法 + 入参对」。这里补一条端到端：不 mock Action，真实跑 charge → commit，
+// 仅 mock 最底层上游 Api（Action::__construct 走 app(Api::class)，容器替身生效），
+// 验证「pay/{id} → charge 真实扣费 + 锁内入账 → commit 真实写 api_id/status」整条接线。
+
+/**
+ * 造一个待扣费订单：unpaid 证书（action=new）+ 指定金额，挂上 latest_cert_id。
+ * 建 ProductPrice 让 charge 组装交易备注走真实价格路径。
+ */
+function createAdminUnpaidOrder(User $user, Product $product, string $amount): array
+{
+    ProductPrice::firstOrCreate(
+        ['product_id' => $product->id, 'level_code' => 'standard', 'period' => 12],
+        ['price' => $amount, 'alternative_standard_price' => '10.00', 'alternative_wildcard_price' => '20.00'],
+    );
+
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period' => 12,
+        'amount' => $amount,
+    ]);
+
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'unpaid',
+        'action' => 'new',
+        'amount' => $amount,
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+
+    $order->update(['latest_cert_id' => $cert->id]);
+    $order->refresh();
+
+    return [$order, $cert];
+}
+
+test('管理员 pay→commit 端到端：真实扣费 + 真实提交上游（不 mock Action）', function () {
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+    [$order, $cert] = createAdminUnpaidOrder($user, $product, '100.00');
+
+    // mock 最底层上游 Api（commit 内 $this->api->new($data)）：返回带 api_id 的成功响应
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('new')
+        ->once()
+        ->andReturn([
+            'code' => 1,
+            'data' => [
+                'api_id' => 'CA-ADMIN-123',
+                'cert_apply_status' => 0,
+                'dcv' => [['domain' => 'test.com', 'method' => 'txt']],
+                'validation' => [],
+            ],
+        ]);
+    $this->app->instance(Api::class, $mockApi);
+
+    // issue_verify=false 跳过 DNS 网络校验；commit=true（默认）→ 扣费成功后立即提交
+    $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/order/pay/$order->id", [
+        'issue_verify' => false,
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+
+    // 真实扣费：余额 100 → 0，且产生一条 type=order 的扣费流水（-100）
+    $user->refresh();
+    expect((float) $user->balance)->toBe(0.0);
+    $tx = Transaction::where('transaction_id', $order->id)->where('type', 'order')->get();
+    expect($tx)->toHaveCount(1)
+        ->and((float) $tx->first()->amount)->toBe(-100.0);
+
+    // 真实提交：cert 写回上游 api_id，状态 unpaid → pending → processing
+    $cert->refresh();
+    expect($cert->status)->toBe('processing')
+        ->and($cert->api_id)->toBe('CA-ADMIN-123');
 });
 
 test('管理员可以添加订单备注', function () {

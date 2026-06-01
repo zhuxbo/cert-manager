@@ -4,6 +4,7 @@ use App\Models\Admin;
 use App\Models\Cert;
 use App\Models\Order;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\Traits\ActsAsAdmin;
@@ -12,6 +13,8 @@ uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    // metrics:index 走 30s 短 TTL 缓存，清掉避免跨用例污染
+    Cache::flush();
     $this->admin = Admin::factory()->create();
 });
 
@@ -198,6 +201,44 @@ test('返回数据库总大小（mysql information_schema 求和）', function (
     expect($db['driver'])->toBeString();
     expect($db['total_size_bytes'])->toBeGreaterThanOrEqual(0);
     expect($db['total_size_mb'])->toBeGreaterThanOrEqual(0);
+});
+
+test('状态分布仅统计近 30 天下单的订单', function () {
+    // 窗口内：2 单 active
+    createOrderWithLatestCert('active', ['created_at' => now()->subDays(5)]);
+    createOrderWithLatestCert('active', ['created_at' => now()->subDays(29)]);
+    // 窗口外（>30 天）：1 单 active —— 不应计入状态分布
+    createOrderWithLatestCert('active', ['created_at' => now()->subDays(40)]);
+
+    $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/metrics');
+
+    $response->assertOk();
+    $dist = $response->json('data.orders.status_distribution');
+    // 仅窗口内 2 单计入，40 天前那单被排除
+    expect($dist['active'])->toBe(2);
+});
+
+test('index 走短 TTL 缓存：首次采集后再次请求返回缓存快照', function () {
+    // 第一次请求：此时 0 单
+    $first = $this->actingAsAdmin($this->admin)->getJson('/api/admin/metrics');
+    $first->assertOk();
+    expect($first->json('data.orders.count_24h'))->toBe(0);
+    $firstCollectedAt = $first->json('data.collected_at');
+
+    // 缓存写入后再造数据
+    createOrderWithLatestCert('active', ['created_at' => now()->subHours(1)]);
+
+    // 第二次请求：应命中缓存（TTL 30s 内），仍返回 0 与同一 collected_at
+    $second = $this->actingAsAdmin($this->admin)->getJson('/api/admin/metrics');
+    $second->assertOk();
+    expect($second->json('data.orders.count_24h'))->toBe(0);
+    expect($second->json('data.collected_at'))->toBe($firstCollectedAt);
+
+    // 清缓存后重新采集：能看到新数据，证明此前确为缓存命中而非查询本身漏算
+    Cache::forget('metrics:index');
+    $third = $this->actingAsAdmin($this->admin)->getJson('/api/admin/metrics');
+    $third->assertOk();
+    expect($third->json('data.orders.count_24h'))->toBe(1);
 });
 
 /**

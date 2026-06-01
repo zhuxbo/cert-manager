@@ -200,8 +200,8 @@ export default ({ mode }: ConfigEnv): UserConfigExport => {
       // https://cn.vitejs.dev/guide/build.html#browser-compatibility
       target: "es2015",
       sourcemap: false,
-      // 消除打包大小超过500kb警告
-      chunkSizeWarningLimit: 4000,
+      // 超过此大小（KB）的 chunk 触发警告，便于及时发现过大产物
+      chunkSizeWarningLimit: 1000,
       rollupOptions: {
         // 限制并行文件操作数，降低内存峰值
         maxParallelFileOps: 2,
@@ -212,7 +212,32 @@ export default ({ mode }: ConfigEnv): UserConfigExport => {
         output: {
           chunkFileNames: "static/js/[name]-[hash].js",
           entryFileNames: "static/js/[name]-[hash].js",
-          assetFileNames: "static/[ext]/[name]-[hash].[ext]"
+          assetFileNames: "static/[ext]/[name]-[hash].[ext]",
+          // 拆分稳定大依赖为独立 vendor chunk，提升长期缓存命中率
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return;
+            // vue 全家桶归一个 chunk，避免运行时初始化顺序/循环依赖问题
+            if (
+              /node_modules\/(@vue\/|vue\/|vue-router\/|pinia\/|@pinia\/|vue-demi\/)/.test(
+                id
+              )
+            ) {
+              return "vue-vendor";
+            }
+            if (id.includes("node_modules/echarts/")) {
+              return "echarts";
+            }
+            // zrender 是 echarts 的渲染底座，并入同一 chunk
+            if (id.includes("node_modules/zrender/")) {
+              return "echarts";
+            }
+            if (
+              id.includes("node_modules/element-plus/") ||
+              id.includes("node_modules/@element-plus/")
+            ) {
+              return "element-plus";
+            }
+          }
         }
       }
     },

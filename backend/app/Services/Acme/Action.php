@@ -76,6 +76,9 @@ class Action
     {
         $acmeIds = array_map('intval', $acmeIds);
 
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($acmeIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
+
         $payableIds = Acme::whereIn('id', $acmeIds)
             ->where('status', Acme::STATUS_UNPAID)
             ->pluck('id')
@@ -183,6 +186,9 @@ class Action
     {
         $acmeIds = array_map('intval', $acmeIds);
 
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($acmeIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
+
         $ids = Acme::whereIn('id', $acmeIds)
             ->whereIn('status', [Acme::STATUS_UNPAID, Acme::STATUS_PENDING, Acme::STATUS_ACTIVE])
             ->pluck('id')
@@ -221,6 +227,9 @@ class Action
     public function batchRevokeCancel(array $acmeIds): void
     {
         $acmeIds = array_map('intval', $acmeIds);
+
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($acmeIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         $ids = Acme::whereIn('id', $acmeIds)
             ->where('status', Acme::STATUS_CANCELLING)

@@ -226,6 +226,84 @@ test('get download path', function () {
     expect($path)->toBeDirectory();
 });
 
+// ==================== zip-slip / 符号链接 安全校验（ArchiveGuard 接入） ====================
+
+test('extract 拒绝含 .. 路径遍历条目的升级包', function () {
+    $zipPath = "$this->testDir/traversal.zip";
+    $zip = new ZipArchive;
+    $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    // 合法载荷 + 一个穿越条目
+    $zip->addFromString('version.json', json_encode(['version' => '1.0.0']));
+    $zip->addFromString('../../../etc/passwd', 'root::0:0');
+    $zip->close();
+
+    // 校验在 extractTo 之前发生，拒绝后清理临时解压目录，不残留
+    $before = count(File::directories($this->extractor->getDownloadPath()));
+
+    expect(fn () => $this->extractor->extract($zipPath))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+
+    expect(count(File::directories($this->extractor->getDownloadPath())))->toBe($before);
+});
+
+test('extract 拒绝含绝对路径条目的升级包', function () {
+    $zipPath = "$this->testDir/absolute.zip";
+    $zip = new ZipArchive;
+    $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $zip->addFromString('version.json', json_encode(['version' => '1.0.0']));
+    $zip->addFromString('/etc/cron.d/evil', 'x');
+    $zip->close();
+
+    expect(fn () => $this->extractor->extract($zipPath))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+});
+
+test('extract 拒绝含反斜杠条目的升级包（Windows 风格绕过）', function () {
+    $zipPath = "$this->testDir/backslash.zip";
+    $zip = new ZipArchive;
+    $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $zip->addFromString('version.json', json_encode(['version' => '1.0.0']));
+    $zip->addFromString('app\\..\\..\\escape.php', 'x');
+    $zip->close();
+
+    expect(fn () => $this->extractor->extract($zipPath))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+});
+
+test('extract 拒绝含符号链接条目的升级包', function () {
+    $zipPath = "$this->testDir/symlink.zip";
+    $zip = new ZipArchive;
+    $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $zip->addFromString('version.json', json_encode(['version' => '1.0.0']));
+    $zip->addFromString('link', '/etc/passwd');
+    // 设 Unix 符号链接模式位（S_IFLNK 0xA000 | 0777），external attr 高 16 位为 mode
+    $zip->setExternalAttributesName('link', ZipArchive::OPSYS_UNIX, (0xA000 | 0777) << 16);
+    $zip->close();
+
+    expect(fn () => $this->extractor->extract($zipPath))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+});
+
+test('extract 合法升级包结构（含 Unix 普通文件属性）正常通过', function () {
+    $zipPath = "$this->testDir/legit.zip";
+    $zip = new ZipArchive;
+    $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $zip->addFromString('version.json', json_encode(['version' => '1.0.0']));
+    $zip->addFromString('backend/app/test.php', '<?php // test');
+    $zip->addFromString('backend/config/test.php', '<?php return [];');
+    // 普通文件 S_IFREG 0x8000 | 0644，确保不被误判为符号链接
+    $zip->setExternalAttributesName('backend/app/test.php', ZipArchive::OPSYS_UNIX, (0x8000 | 0644) << 16);
+    $zip->close();
+
+    $extractedPath = $this->extractor->extract($zipPath);
+
+    expect($extractedPath)->toBeDirectory();
+    expect("$extractedPath/version.json")->toBeFile();
+    expect("$extractedPath/backend/app/test.php")->toBeFile();
+
+    File::deleteDirectory($extractedPath);
+});
+
 /**
  * 创建测试用的有效升级包 ZIP
  */
