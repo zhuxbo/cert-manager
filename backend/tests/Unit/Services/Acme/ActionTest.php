@@ -1121,6 +1121,35 @@ test('batchCommit 无 pending 订单时报错', function () {
     expect($res['msg'])->toBe('没有可以提交的订单');
 });
 
+// ==================== createTasks 逐条幂等 ====================
+
+test('createTasks 逐条幂等：跳过已存在 executing 的 id，仅为其余创建（对齐 Order createTask）', function () {
+    Queue::fake();
+    $user = $this->createTestUser();
+    $existing = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
+    $fresh = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
+
+    // existing 已有 executing commit_acme 任务
+    Task::create([
+        'order_id' => $existing->id,
+        'action' => 'commit_acme',
+        'status' => 'executing',
+        'started_at' => now(),
+        'source' => 'admin',
+    ]);
+
+    // public 入口 batchCommit/batchSync 前置 checkRepeat 会整体拦截，无法触达逐条分支，故反射直调
+    $method = new ReflectionMethod(Action::class, 'createTasks');
+    $method->setAccessible(true);
+    $method->invoke($this->service, [$existing->id, $fresh->id], 'commit_acme');
+
+    // existing 不重复创建（仍 1 条），fresh 新建 1 条
+    expect(Task::where('order_id', $existing->id)->where('action', 'commit_acme')->where('status', 'executing')->count())->toBe(1);
+    expect(Task::where('order_id', $fresh->id)->where('action', 'commit_acme')->where('status', 'executing')->count())->toBe(1);
+    // 仅为 fresh dispatch 了 1 个 TaskJob
+    Queue::assertPushed(TaskJob::class, 1);
+});
+
 // ==================== batchSync ====================
 
 test('batchSync 仅处理 active/cancelling 状态，创建 sync_acme Task', function () {

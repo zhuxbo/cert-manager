@@ -31,6 +31,24 @@ test('获取组织列表-快速搜索', function () {
         ->assertJson(['code' => 1]);
 });
 
+test('快速搜索叠加附加过滤时，附加过滤不被 OR 短路', function () {
+    $user = User::factory()->create();
+
+    // 两条都命中 quickSearch（name 含 Alpha），但只有一条满足附加的 country 过滤
+    Organization::factory()->create(['user_id' => $user->id, 'name' => 'AlphaOne', 'country' => 'JP']);
+    Organization::factory()->create(['user_id' => $user->id, 'name' => 'AlphaTwo', 'country' => 'US']);
+
+    $resp = $this->actingAsUser($user)
+        ->getJson('/api/organization?quickSearch=Alpha&country=JP')
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // 修复前裸 orWhere 会让 name 命中的 AlphaTwo 因 OR 短路绕过 country 过滤而泄漏进结果
+    $items = $resp->json('data.items');
+    expect($items)->toHaveCount(1);
+    expect($items[0]['name'])->toBe('AlphaOne');
+});
+
 test('创建组织', function () {
     $user = User::factory()->create();
 

@@ -32,9 +32,12 @@ class OrganizationController extends BaseController
 
         // 添加搜索条件
         if (! empty($validated['quickSearch'])) {
-            $query->where('name', 'like', "%{$validated['quickSearch']}%")
-                ->orWhere('registration_number', 'like', "%{$validated['quickSearch']}%")
-                ->orWhere('phone', 'like', "%{$validated['quickSearch']}%");
+            // 用闭包包裹 quickSearch 的 OR 组，避免与后续附加过滤（registration_number/country/created_at 等）的 AND 条件因运算符优先级被短路
+            $query->where(function ($q) use ($validated) {
+                $q->where('name', 'like', "%{$validated['quickSearch']}%")
+                    ->orWhere('registration_number', 'like', "%{$validated['quickSearch']}%")
+                    ->orWhere('phone', 'like', "%{$validated['quickSearch']}%");
+            });
         }
         if (! empty($validated['name'])) {
             $query->where('name', 'like', "%{$validated['name']}%");

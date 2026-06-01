@@ -118,7 +118,7 @@ const allowCancel = (row: any) => {
   return (
     ["processing", "approving", "active"].includes(row.latest_cert?.status) &&
     dayjs().diff(dayjs(row.created_at), "seconds") <
-      row.product.refund_period * 86400
+      (row.product?.refund_period ?? 0) * 86400
   );
 };
 

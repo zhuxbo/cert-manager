@@ -853,6 +853,16 @@ class Action
         $source = getControllerCategory();
 
         foreach ($acmeIds as $id) {
+            // 检查是否已存在相同的执行中任务，避免重复创建（对齐 Order createTask 的逐条幂等）
+            $existingTask = Task::where('order_id', $id)
+                ->where('action', $action)
+                ->where('status', 'executing')
+                ->first();
+
+            if ($existingTask) {
+                continue;
+            }
+
             $task = Task::create([
                 'order_id' => $id,
                 'action' => $action,

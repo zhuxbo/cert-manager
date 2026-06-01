@@ -174,7 +174,7 @@ test('uploadDocumentFromBase64 相同内容去重：任意 type 同字节只存�
 
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
-    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
 
     $b64 = base64_encode('SAME-BYTES');
     $action = app(Action::class);
@@ -195,7 +195,7 @@ test('uploadDocumentFromBase64 收到下游文档后自动派发转发 Job', fun
 
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
-    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
 
     captureDocResponse(fn () => app(Action::class)->uploadDocumentFromBase64(
         $order->id, 'APPLICANT', 'a.pdf', base64_encode('FORWARD-ME')
@@ -212,7 +212,7 @@ test('uploadDocument 文件上传：设置 content_hash + 按内容去重 + 自�
 
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
-    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
 
     $f1 = UploadedFile::fake()->createWithContent('a.pdf', 'SAME-FILE-BYTES');
     $f2 = UploadedFile::fake()->createWithContent('b.pdf', 'SAME-FILE-BYTES');
@@ -229,6 +229,33 @@ test('uploadDocument 文件上传：设置 content_hash + 按内容去重 + 自�
     Queue::assertPushed(SubmitDocumentJob::class, 2);
 
     @unlink(storage_path("app/{$docs->first()->file_path}"));
+});
+
+test('uploadDocument 在证书已签发（active）后拒绝上传', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+
+    $file = UploadedFile::fake()->createWithContent('a.pdf', 'BYTES');
+    $res = captureDocResponse(fn () => app(Action::class)->uploadDocument($order->id, $file, 'APPLICANT', 'user'));
+
+    expect($res['code'])->toBe(0)
+        ->and($res['msg'])->toBe('证书已签发，不能再上传文档');
+    expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
+});
+
+test('uploadDocumentFromBase64 在证书已签发（active）后拒绝上传（挡 V2 API 入口）', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+
+    $res = captureDocResponse(fn () => app(Action::class)->uploadDocumentFromBase64(
+        $order->id, 'APPLICANT', 'a.pdf', base64_encode('BYTES')
+    ));
+
+    expect($res['code'])->toBe(0)
+        ->and($res['msg'])->toBe('证书已签发，不能再上传文档');
+    expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
 });
 
 test('previewDocument 图片走 inline 预览 + 带 nosniff', function () {
