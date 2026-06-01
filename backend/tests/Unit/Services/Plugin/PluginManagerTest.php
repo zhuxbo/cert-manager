@@ -146,6 +146,185 @@ test('validateReleaseUrl 非法地址抛出异常', function () {
     $method->invoke($manager, 'ftp://example.com/plugin');
 })->throws(RuntimeException::class, '不安全的更新地址');
 
+// ==================== validateReleaseUrl - SSRF / 传输层收敛（审核 #6） ====================
+
+test('validateReleaseUrl 拒绝公网 http（防中间人替换插件包）', function (string $url) {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('validateReleaseUrl');
+
+    // 公网 IP 走明文 http 必须拒绝（插件包是可执行代码 → 条件性 RCE）
+    expect(fn () => $method->invoke($manager, $url))
+        ->toThrow(RuntimeException::class, '公网地址必须使用 HTTPS');
+})->with([
+    '公网 IP' => ['http://8.8.8.8/plugin/releases.json'],
+    '公网域名' => ['http://example.com/plugin'],
+]);
+
+test('validateReleaseUrl 放行私网 http（内网离线部署）', function (string $url) {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('validateReleaseUrl');
+
+    $method->invoke($manager, $url);
+    expect(true)->toBeTrue();
+})->with([
+    '192.168 段' => ['http://192.168.1.10/plugin'],
+    '10 段' => ['http://10.0.0.5/plugin'],
+    '172.16 段' => ['http://172.16.0.1/plugin'],
+    '回环' => ['http://127.0.0.1/plugin'],
+    '链路本地（云元数据）' => ['http://169.254.169.254/plugin'],
+]);
+
+test('validateReleaseUrl 放行 https（含公网，TLS 防篡改）', function (string $url) {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('validateReleaseUrl');
+
+    $method->invoke($manager, $url);
+    expect(true)->toBeTrue();
+})->with([
+    '公网 https' => ['https://release.example.com/plugin'],
+    '私网 https' => ['https://10.0.0.5/plugin'],
+]);
+
+test('validateReleaseUrl 放行本地路径（官方子目录回落）', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('validateReleaseUrl');
+
+    $method->invoke($manager, '/var/www/release/plugins/test');
+    expect(true)->toBeTrue();
+});
+
+// 注：不测"主机无法解析为 IP"分支 —— 不同环境的 DNS 解析器对保留 TLD（.invalid）
+// 行为不一致（容器内捕获式解析器会返回地址），该断言会 flaky；防御代码保留。
+
+// ==================== findPluginAssetSha256 / verifyPluginPackageHash（审核 #6） ====================
+
+test('findPluginAssetSha256 提取第一个 zip asset 的 sha256（与 resolveAssetUrl 选同一 asset）', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('findPluginAssetSha256');
+
+    $release = [
+        'assets' => [
+            ['name' => 'notes.txt', 'sha256' => 'shouldignore'],
+            ['name' => 'easy-plugin-1.0.0.zip', 'sha256' => 'abc123def456'],
+        ],
+    ];
+
+    expect($method->invoke($manager, $release))->toBe('abc123def456');
+});
+
+test('findPluginAssetSha256 无 sha256 字段时返回空字符串', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('findPluginAssetSha256');
+
+    $release = ['assets' => [['name' => 'easy-plugin-1.0.0.zip']]];
+
+    expect($method->invoke($manager, $release))->toBe('');
+});
+
+test('verifyPluginPackageHash 匹配时通过且保留文件', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $dir = sys_get_temp_dir().'/test_plugin_sha_'.uniqid();
+    mkdir($dir, 0755, true);
+    $file = "$dir/pkg.zip";
+    file_put_contents($file, 'plugin package content');
+    $sha = hash('sha256', 'plugin package content');
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('verifyPluginPackageHash');
+
+    $method->invoke($manager, $file, $sha);
+
+    expect(file_exists($file))->toBeTrue();
+
+    File::deleteDirectory($dir);
+});
+
+test('verifyPluginPackageHash 大小写无关比对', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $dir = sys_get_temp_dir().'/test_plugin_sha_'.uniqid();
+    mkdir($dir, 0755, true);
+    $file = "$dir/pkg.zip";
+    file_put_contents($file, 'payload');
+    $sha = strtoupper(hash('sha256', 'payload'));
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('verifyPluginPackageHash');
+
+    $method->invoke($manager, $file, $sha);
+
+    expect(file_exists($file))->toBeTrue();
+
+    File::deleteDirectory($dir);
+});
+
+test('verifyPluginPackageHash 不匹配时抛异常并删除文件（fail-closed）', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $dir = sys_get_temp_dir().'/test_plugin_sha_'.uniqid();
+    mkdir($dir, 0755, true);
+    $file = "$dir/tampered.zip";
+    file_put_contents($file, 'malicious payload');
+    $wrongSha = hash('sha256', 'legit content');
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('verifyPluginPackageHash');
+
+    try {
+        $method->invoke($manager, $file, $wrongSha);
+        test()->fail('应当抛出 RuntimeException');
+    } catch (RuntimeException $e) {
+        expect($e->getMessage())->toContain('sha256 校验不匹配');
+        // 被篡改的包必须删除，绝不残留供后续 extract
+        expect(file_exists($file))->toBeFalse();
+    }
+
+    File::deleteDirectory($dir);
+});
+
+test('verifyPluginPackageHash 期望值为空时放行并保留文件（verify-if-present，不阻断存量插件）', function () {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $dir = sys_get_temp_dir().'/test_plugin_sha_'.uniqid();
+    mkdir($dir, 0755, true);
+    $file = "$dir/unverified.zip";
+    file_put_contents($file, 'content');
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('verifyPluginPackageHash');
+
+    // 发布端未提供 sha256：放行（不抛），文件保留供后续解压安装
+    $method->invoke($manager, $file, '');
+    $method->invoke($manager, $file, "  \n");
+
+    expect(file_exists($file))->toBeTrue();
+
+    File::deleteDirectory($dir);
+});
+
 // ==================== 安全检查 - ZIP 路径遍历防护 ====================
 
 test('ZIP 安全检查 - 包含路径遍历的 ZIP 被拒绝', function () {

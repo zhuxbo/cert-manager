@@ -231,6 +231,53 @@ test('uploadDocument 文件上传：设置 content_hash + 按内容去重 + 自�
     @unlink(storage_path("app/{$docs->first()->file_path}"));
 });
 
+test('previewDocument 图片走 inline 预览 + 带 nosniff', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+
+    $rel = 'verification/test/'.Str::uuid().'.png';
+    $full = storage_path("app/$rel");
+    @mkdir(dirname($full), 0755, true);
+    file_put_contents($full, 'PNGDATA');
+    $doc = newDoc($order->id, $user->id, ['file_name' => 'logo.png', 'file_path' => $rel]);
+
+    $response = app(Action::class)->previewDocument($doc->id);
+
+    expect($response->headers->get('Content-Type'))->toBe('image/png')
+        ->and($response->headers->get('X-Content-Type-Options'))->toBe('nosniff')
+        ->and($response->headers->get('Content-Disposition'))->toStartWith('inline');
+
+    @unlink($full);
+});
+
+test('previewDocument 非图片（pdf / xades）强制 attachment 下载 + 带 nosniff', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+
+    foreach (['report.pdf' => 'application/pdf', 'sig.xades' => 'application/xml'] as $name => $expectedMime) {
+        $ext = pathinfo($name, PATHINFO_EXTENSION);
+        $rel = 'verification/test/'.Str::uuid().".$ext";
+        $full = storage_path("app/$rel");
+        @mkdir(dirname($full), 0755, true);
+        file_put_contents($full, 'BYTES');
+        $doc = newDoc($order->id, $user->id, [
+            'file_name' => $name,
+            'file_path' => $rel,
+            'content_hash' => hash('sha256', $name),
+        ]);
+
+        $response = app(Action::class)->previewDocument($doc->id);
+
+        expect($response->headers->get('Content-Type'))->toBe($expectedMime)
+            ->and($response->headers->get('X-Content-Type-Options'))->toBe('nosniff')
+            ->and($response->headers->get('Content-Disposition'))->toStartWith('attachment');
+
+        @unlink($full);
+    }
+});
+
 test('submitDocument 上游调用抛异常时也记录 submit_error（observability）', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());

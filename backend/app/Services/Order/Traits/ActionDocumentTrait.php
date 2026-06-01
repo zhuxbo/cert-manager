@@ -180,9 +180,16 @@ trait ActionDocumentTrait
         $mime = $mimeTypes[$ext] ?? 'application/octet-stream';
         $safeName = rawurlencode(basename($document->file_name));
 
+        // 仅图片走 inline 直接预览；其余（pdf / xades-xml / 未知）一律 attachment 下载，
+        // 避免浏览器把上传者可控字节当作可渲染内容（钓鱼 / 边缘 XSS）。
+        // 配合 X-Content-Type-Options: nosniff 关闭 MIME 嗅探。
+        $isImage = in_array($ext, ['jpg', 'jpeg', 'png'], true);
+        $disposition = $isImage ? 'inline' : 'attachment';
+
         return response()->file($fullPath, [
             'Content-Type' => $mime,
-            'Content-Disposition' => "inline; filename*=UTF-8''$safeName",
+            'Content-Disposition' => "$disposition; filename*=UTF-8''$safeName",
+            'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'private, max-age=3600',
         ]);
     }

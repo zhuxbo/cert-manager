@@ -115,19 +115,28 @@ _bt_api_post() {
     local url="${BT_API_BASE}${action_path}"
     # 默认超时 30s；input_package 等同步执行 install.sh 的端点可临时覆盖 BT_API_TIMEOUT
     local timeout="${BT_API_TIMEOUT:-30}"
-    # BT 11.x 自签名证书走 https 时 -k 跳过证书校验（仅本机 127.0.0.1 调用，安全）
+    # 安全：-k（跳过 TLS 校验）仅在目标确为本机 loopback 时启用——BT 11.x 自签名证书
+    # 走 https 必须跳过校验，但 BT_API_BASE 可被 env 覆盖成任意地址，对非 loopback
+    # 主机跳过校验等于放任中间人。故断言 URL 必须以 https://127.0.0.1 开头才加 -k，
+    # 其余情况留空 → curl 正常校验 TLS。
+    local insecure_flag=""
+    case "$url" in
+        https://127.0.0.1 | https://127.0.0.1:* | https://127.0.0.1/*)
+            insecure_flag="-k"
+            ;;
+    esac
     # 失败时把 curl stderr 一并输出，帮助诊断协议错配 / SSL 握手 / 连不上等问题
     local resp curl_exit=0
     if [ -n "$form_data" ]; then
         # form_data 可能含多行 --data-urlencode 参数，用 eval 展开
         # 参数已在调用方控制，不引入用户输入
-        resp=$(eval curl -sk --show-error --connect-timeout 10 --max-time "$timeout" \
+        resp=$(eval curl -s $insecure_flag --show-error --connect-timeout 10 --max-time "$timeout" \
             --data-urlencode "request_token=$BT_REQ_TOKEN" \
             --data-urlencode "request_time=$BT_REQ_TIME" \
             "$form_data" \
             "'$url'" 2>&1) || curl_exit=$?
     else
-        resp=$(curl -sk --show-error --connect-timeout 10 --max-time "$timeout" \
+        resp=$(curl -s $insecure_flag --show-error --connect-timeout 10 --max-time "$timeout" \
             --data-urlencode "request_token=$BT_REQ_TOKEN" \
             --data-urlencode "request_time=$BT_REQ_TIME" \
             "$url" 2>&1) || curl_exit=$?

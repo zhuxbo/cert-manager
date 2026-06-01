@@ -564,17 +564,21 @@ download_application() {
         local version_file="$INSTALL_DIR/version.json"
 
         # 使用 PHP 处理 JSON（确保格式正确）
-        $PHP_CMD -r "
-            \$json = json_decode(file_get_contents('$version_file'), true);
+        # 安全：所有外部值（version_file 路径 / CUSTOM_RELEASE_URL）一律走环境变量 + getenv()
+        # 读取，绝不字符串插值进 PHP 代码——否则 URL 含单引号即可闭合注入任意 PHP（root RCE）
+        VERSION_FILE="$version_file" RELEASE_URL="$CUSTOM_RELEASE_URL" "$PHP_CMD" -r '
+            $file = getenv("VERSION_FILE");
+            $json = json_decode(file_get_contents($file), true);
             // 注入 release_url
-            if (!empty('$CUSTOM_RELEASE_URL')) {
-                \$json['release_url'] = '$CUSTOM_RELEASE_URL';
+            $releaseUrl = getenv("RELEASE_URL");
+            if (!empty($releaseUrl)) {
+                $json["release_url"] = $releaseUrl;
             }
             // 注入 network 配置（从环境变量读取）
-            \$network = getenv('NETWORK_ENV') ?: 'china';
-            \$json['network'] = \$network;
-            file_put_contents('$version_file', json_encode(\$json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . \"\\n\");
-        "
+            $network = getenv("NETWORK_ENV") ?: "china";
+            $json["network"] = $network;
+            file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        '
 
         if [ -n "$CUSTOM_RELEASE_URL" ]; then
             log_info "已配置 release_url: $CUSTOM_RELEASE_URL"
@@ -604,11 +608,57 @@ check_composer() {
         log_success "Composer 已安装: $COMPOSER_BIN"
     else
         # 安装 Composer（在临时目录中执行，避免污染当前目录）
+        # 安全：按 Composer 官方做法——先下载 installer 到本地文件，用官方权威来源
+        # https://composer.github.io/installer.sig 提供的 SHA384 校验通过后再执行；
+        # 不再 curl ... | php 直接管道执行（installer 被篡改即 root RCE）。
+        # installer.sig 随 installer 版本动态更新，是 Composer 官方维护的权威指纹，故运行时拉取而非硬编码。
         log_info "安装 Composer..."
         local temp_composer_dir="/tmp/composer-install-$$"
         mkdir -p "$temp_composer_dir"
         cd "$temp_composer_dir"
-        curl -sS https://getcomposer.org/installer | "$PHP_CMD"
+
+        if ! curl -fsSL --connect-timeout 10 --max-time 60 -o composer-setup.php https://getcomposer.org/installer; then
+            log_error "Composer installer 下载失败"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
+
+        local expected_sig
+        expected_sig=$(curl -fsSL --connect-timeout 10 --max-time 30 https://composer.github.io/installer.sig | tr -d '[:space:]')
+        if [ -z "$expected_sig" ]; then
+            log_error "无法获取 Composer installer 官方 SHA384 签名（installer.sig），安装中止"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
+
+        local actual_sig
+        actual_sig=$(file_sha384 composer-setup.php) || {
+            log_error "缺少 sha384sum/shasum/openssl 工具，无法校验 Composer installer，安装中止"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        }
+        actual_sig=$(echo "$actual_sig" | tr 'A-Z' 'a-z')
+        expected_sig=$(echo "$expected_sig" | tr 'A-Z' 'a-z')
+
+        if [ "$actual_sig" != "$expected_sig" ]; then
+            log_error "Composer installer SHA384 校验不匹配，可能被篡改，安装中止"
+            log_error "  期望: $expected_sig"
+            log_error "  实际: $actual_sig"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
+        log_success "Composer installer SHA384 校验通过"
+
+        if ! "$PHP_CMD" composer-setup.php; then
+            log_error "Composer installer 执行失败"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
         mv composer.phar /usr/local/bin/composer
         chmod +x /usr/local/bin/composer
         cd - >/dev/null

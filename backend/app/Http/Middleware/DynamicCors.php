@@ -33,7 +33,7 @@ class DynamicCors extends HandleCors
         $allowedOrigins = Config::get('cors.allowed_origins', '');
         $origin = $request->header('Origin');
 
-        if ($origin && $this->isAllowedOrigin($origin, $allowedOrigins)) {
+        if ($origin && self::isAllowedOrigin($origin, $allowedOrigins)) {
             // 处理预检请求
             if ($request->getMethod() === 'OPTIONS') {
                 $response = new JsonResponse(null, 204);
@@ -49,8 +49,12 @@ class DynamicCors extends HandleCors
 
     /**
      * 检查请求的 Origin 是否在允许的域名列表中
+     *
+     * 公开静态：下载流（ActionFileTrait::downFlow）通过 readfile()+exit 直出，
+     * 绕过 Symfony Response 因而拿不到本中间件设置的 CORS 头，需复用此白名单逻辑，
+     * 保证全站跨域策略单一来源。
      */
-    private function isAllowedOrigin(string $origin, string $allowedOrigins): bool
+    public static function isAllowedOrigin(string $origin, string $allowedOrigins): bool
     {
         $allowedOrigins = array_map('trim', explode(',', $allowedOrigins));
 

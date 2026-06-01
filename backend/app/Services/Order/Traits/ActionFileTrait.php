@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Services\Order\Traits;
 
+use App\Http\Middleware\DynamicCors;
 use App\Models\Order;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Traits\ApiResponse;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use ZipArchive;
@@ -264,16 +266,21 @@ trait ActionFileTrait
         // 获取文件名
         $filename = basename($zipFile);
 
-        // 手动设置所有头信息，包括跨域支持
+        // 跨域支持：本流通过 readfile()+exit 直出，绕过 Symfony Response，
+        // 拿不到全局 DynamicCors 中间件设置的 CORS 头，故在此复用同一白名单逻辑手动设置。
+        // 仅当 Origin 命中白名单时回显该 Origin，绝不 reflect 任意来源、绝不回落 '*'。
         $origin = request()->header('Origin');
-        if ($origin) {
+        $allowedOrigins = (string) Config::get('cors.allowed_origins', '');
+        if ($origin && DynamicCors::isAllowedOrigin($origin, $allowedOrigins)) {
             header('Access-Control-Allow-Origin: '.$origin);
-        } else {
-            header('Access-Control-Allow-Origin: *');
+            header('Vary: Origin');
+            if (Config::get('cors.supports_credentials', false)) {
+                header('Access-Control-Allow-Credentials: true');
+            }
+            header('Access-Control-Expose-Headers: Content-Disposition');
         }
         header('Access-Control-Allow-Methods: GET, OPTIONS');
         header('Access-Control-Allow-Headers: Content-Type, X-Requested-With');
-        header('Access-Control-Expose-Headers: Content-Disposition');
 
         // 文件下载头信息
         header('Content-Description: File Transfer');

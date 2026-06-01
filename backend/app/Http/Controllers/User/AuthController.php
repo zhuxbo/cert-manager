@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Models\UserRefreshToken;
 use App\Utils\VerifyCodeHelper;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 
@@ -307,8 +308,15 @@ class AuthController extends BaseController
             $this->error('新密码不能与旧密码相同');
         }
 
-        $user->password = $newPassword;
-        $user->save();
+        DB::transaction(function () use ($user, $newPassword) {
+            $user->password = $newPassword;
+            // 改密后吊销所有旧会话：bump token_version 使旧 access token 失效，并清除全部 refresh token（与 logout 全设备登出一致）
+            $user->token_version = ($user->token_version ?? 0) + 1;
+            $user->logout_at = now();
+            $user->save();
+
+            UserRefreshToken::deleteTokenByUserId($user->id);
+        });
 
         $this->success();
     }

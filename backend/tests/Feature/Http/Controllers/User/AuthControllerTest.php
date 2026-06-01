@@ -198,10 +198,38 @@ test('修改密码成功', function () {
     expect(Hash::check('newpassword123', $user->fresh()->password))->toBeTrue();
 });
 
+test('修改密码后吊销所有旧 refresh token 并 bump token_version', function () {
+    $user = User::factory()->create([
+        'password' => 'oldpassword',
+        'token_version' => 0,
+    ]);
+    // 模拟改密前已有的多个会话 refresh token
+    UserRefreshToken::createToken($user->id);
+    UserRefreshToken::createToken($user->id);
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(2);
+
+    $this->actingAsUser($user)
+        ->patchJson('/api/update-password', [
+            'oldPassword' => 'oldpassword',
+            'newPassword' => 'newpassword123',
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $user->refresh();
+    // 旧 refresh token 全部失效（旧会话无法再续期）
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(0);
+    // token_version bump，旧 access token 进入黑名单（与 logout 一致）
+    expect($user->token_version)->toBe(1);
+    expect($user->logout_at)->not->toBeNull();
+});
+
 test('修改密码失败-旧密码错误', function () {
     $user = User::factory()->create([
         'password' => 'oldpassword',
+        'token_version' => 0,
     ]);
+    UserRefreshToken::createToken($user->id);
 
     $this->actingAsUser($user)
         ->patchJson('/api/update-password', [
@@ -210,6 +238,11 @@ test('修改密码失败-旧密码错误', function () {
         ])
         ->assertOk()
         ->assertJson(['code' => 0]);
+
+    // 改密失败不得吊销现有会话
+    $user->refresh();
+    expect($user->token_version)->toBe(0);
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(1);
 });
 
 test('修改密码失败-新旧密码相同', function () {

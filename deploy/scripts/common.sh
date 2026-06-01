@@ -78,6 +78,21 @@ file_sha256() {
     fi
 }
 
+# 计算文件 SHA384（三平台 fallback：sha384sum / shasum / openssl）
+# 用于校验 Composer installer（官方仅提供 SHA384 签名）
+file_sha384() {
+    local file="$1"
+    if command -v sha384sum &>/dev/null; then
+        sha384sum "$file" | cut -d' ' -f1
+    elif command -v shasum &>/dev/null; then
+        shasum -a 384 "$file" | cut -d' ' -f1
+    elif command -v openssl &>/dev/null; then
+        openssl dgst -sha384 "$file" | awk '{print $NF}'
+    else
+        return 1
+    fi
+}
+
 # 强校验文件 SHA256；用法：verify_sha256 <file> <expected_sha256>
 # expected 大小写无关；不匹配 / 缺工具 → return 1 + log_error
 verify_sha256() {

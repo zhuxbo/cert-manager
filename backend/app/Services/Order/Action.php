@@ -938,6 +938,14 @@ class Action
             $transaction = OrderUtil::getCancelTransaction($order->toArray());
 
             // 创建交易记录并退款
+            //
+            // 防双退底线（与 refundForSyncedCancel 注释互引，二者协作不可单独删除）：
+            //   - 锁内 status 校验：上面 L926「status===cancelled → error('订单已取消')」是第一道。
+            //     refundForSyncedCancel 已退款并置 cancelled 后刻意保留的残留 cancel task，被
+            //     TaskJob 唤醒调用本方法时，会在锁内撞上该校验抛错回滚，不会走到此处二次退款。
+            //   - DB 唯一索引 transactions_dedup_unique（type,transaction_id WHERE type!='order'，
+            //     迁移 2026_05_07_120000）是物理底线：即便锁校验被某条并发路径绕过，此 INSERT 也会
+            //     因唯一冲突抛错回滚。应用层校验仅是预检，删除唯一索引会破坏底线。
             Transaction::create($transaction);
 
             // 更新订单状态
@@ -1005,7 +1013,14 @@ class Action
                 return;
             }
 
-            // 应用层防重（物理阻断仍由 transactions 表 DB 唯一索引兜底）
+            // 防双退两道协作（详见下方 cancel() 注释，二者必须同时保留）：
+            //   ① 此处应用层 exists 仅作预检，避免无谓的 getCancelTransaction 计算；它不是物理底线
+            //      —— 锁外 exists+INSERT 非原子，并发 sync 仍可能两条都通过。
+            //   ② 物理底线 = transactions 表 DB 唯一索引 transactions_dedup_unique（虚拟列
+            //      dedup_key=CONCAT(type,':',transaction_id) WHERE type!='order'，迁移
+            //      2026_05_07_120000_add_fund_transaction_unique_indexes）+ Transaction::creating
+            //      钩子的二次 exists——任一并发漏过预检，唯一索引会让第二条 INSERT 抛错回滚。
+            // 重构者注意：删除应用层 exists 不会双退（索引兜底），但删除唯一索引会破坏物理底线。
             $alreadyRefunded = Transaction::where('type', 'cancel')
                 ->where('transaction_id', $order->id)
                 ->exists();
