@@ -255,10 +255,9 @@ import {
   getDocuments,
   deleteDocument,
   submitDocuments,
-  updateDocument
+  updateDocument,
+  previewDocumentUrl
 } from "@/api/order";
-import { getToken } from "@/utils/auth";
-import { getConfig } from "@/config";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { UploadFile } from "element-plus";
 import { Upload, Close, Document } from "@element-plus/icons-vue";
@@ -313,16 +312,22 @@ const formatSize = (bytes: number) => {
   return (bytes / 1024 / 1024).toFixed(1) + "MB";
 };
 
-const buildDocUrl = (docId: number) => {
-  const token = getToken()?.access_token || "";
-  const base = getConfig()?.BaseUrlApi || "";
-  return `${base}/order/document-preview/${docId}?token=${encodeURIComponent(token)}&_t=${Date.now()}`;
+const buildDocUrl = async (docId: number): Promise<string> => {
+  // 安全：access_token 是全权限长效凭据，绝不进 URL（会落入浏览器历史 / access log / Referer）。
+  // 改向后端取分钟级短时签名 URL（temporarySignedRoute），iframe/img/下载只用这个签名 URL。
+  const res = await previewDocumentUrl(docId);
+  if (res.code !== 1 || !res.data?.url) {
+    ElMessage.error(res.msg || "获取预览链接失败");
+    return "";
+  }
+  return res.data.url;
 };
 
 const handlePreview = async (row: any) => {
   await loadDocuments();
   previewDoc.value = row;
-  previewUrl.value = buildDocUrl(row.id);
+  previewUrl.value = await buildDocUrl(row.id);
+  if (!previewUrl.value) return; // 取签名 URL 失败（已提示），不打开空白预览弹窗
   const dotIdx = row.file_name.lastIndexOf(".");
   if (dotIdx > 0) {
     editBaseName.value = row.file_name.substring(0, dotIdx);
@@ -358,9 +363,10 @@ const handleSave = async () => {
   }
 };
 
-const handleDownload = () => {
+const handleDownload = async () => {
   if (!previewDoc.value) return;
-  const url = buildDocUrl(previewDoc.value.id);
+  const url = await buildDocUrl(previewDoc.value.id);
+  if (!url) return;
   const a = document.createElement("a");
   a.href = url;
   a.download = previewDoc.value.file_name;

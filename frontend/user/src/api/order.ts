@@ -305,6 +305,11 @@ export function getDocuments(id: number): Promise<BaseResponse> {
   return http.get<BaseResponse<null>, any>(`/order/documents/${id}`);
 }
 
+/** 获取文档预览/下载短时签名 URL（access_token 不进 URL） */
+export function previewDocumentUrl(id: number): Promise<BaseResponse> {
+  return http.get<BaseResponse<null>, any>(`/order/document-preview-url/${id}`);
+}
+
 /** 删除文档 */
 export function deleteDocument(id: number): Promise<BaseResponse> {
   return http.delete<BaseResponse<null>, any>(`/order/document/${id}`);

@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Documents\\DocumentPreviewTest::__pest_evaluable_document_preview_无签名访问被拒绝（signed_中间件拦截，非_401）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/document-preview/{id}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

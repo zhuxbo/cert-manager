@@ -341,6 +341,14 @@ class OrderController extends BaseController
     }
 
     /**
+     * 获取文档预览/下载短时签名 URL（access_token 不进 URL）
+     */
+    public function previewDocumentUrl(int $id): void
+    {
+        $this->action->previewDocumentUrl($id, 'user.order.document-preview');
+    }
+
+    /**
      * 获取文档列表
      */
     public function getDocuments(int $id): void

@@ -11,6 +11,7 @@ use App\Services\Order\Utils\FindUtil;
 use App\Traits\ApiResponse;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
@@ -198,6 +199,26 @@ trait ActionDocumentTrait
             'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'private, max-age=3600',
         ]);
+    }
+
+    /**
+     * 生成文档预览/下载的短时签名 URL（分钟级过期）。
+     *
+     * 安全：JWT access_token 是全权限长效凭据，绝不可拼进 URL query —— iframe / img / <a download>
+     * 这类无法带 Authorization header 的场景，一律用 temporarySignedRoute 短时签名 URL。
+     * 归属校验靠本方法的 OrderDocument::find（user 上下文经 UserScope 限本人，admin 无 scope 全局），
+     * 签名保证 docId 不可被篡改（改 id 则签名失效），故 signed 预览路由本身无需再查归属。
+     *
+     * @param  string  $routeName  签名指向的预览路由名（user.order.document-preview / admin.order.document-preview）
+     */
+    public function previewDocumentUrl(int $docId, string $routeName): void
+    {
+        $document = OrderDocument::find($docId);
+        ! $document && $this->error('文档不存在');
+
+        $url = URL::temporarySignedRoute($routeName, now()->addMinutes(10), ['id' => $docId]);
+
+        $this->success(['url' => $url]);
     }
 
     /**

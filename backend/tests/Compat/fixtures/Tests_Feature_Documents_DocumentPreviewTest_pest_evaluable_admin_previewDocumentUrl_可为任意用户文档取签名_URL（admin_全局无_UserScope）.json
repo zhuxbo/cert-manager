@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Documents\\DocumentPreviewTest::__pest_evaluable_admin_previewDocumentUrl_可为任意用户文档取签名_URL（admin_全局无_UserScope）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/order/document-preview-url/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "url": "string"
+                }
+            }
+        }
+    ]
+}

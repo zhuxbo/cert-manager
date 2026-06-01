@@ -15,6 +15,8 @@ use App\Http\Controllers\User\TopUpController;
 use App\Http\Controllers\User\TransactionController;
 use App\Http\Controllers\User\VerifyCodeController;
 use App\Http\Controllers\User\ZipcodeLookupController;
+use App\Http\Middleware\FilterUserIdParameter;
+use App\Http\Middleware\UserAuthenticate;
 use App\Utils\RouteHelper;
 use Illuminate\Support\Facades\Route;
 
@@ -92,7 +94,15 @@ Route::middleware('api.user')->group(function () {
         Route::get('{id}/certs', [OrderController::class, 'certs'])->where('id', '[0-9]+');
         Route::get('deploy-commands', [OrderController::class, 'deployCommands']);
         Route::post('upload-document/{id}', [OrderController::class, 'uploadDocument'])->where('id', '[0-9]+');
-        Route::get('document-preview/{id}', [OrderController::class, 'previewDocument'])->where('id', '[0-9]+');
+        // document-preview 改走短时签名 URL（signed）而非 JWT：access_token 不进 URL，仅验证签名
+        // withoutMiddleware 移除 api.user 组中间件（依赖 ApiMiddleware 中 api.user 组定义 = UserAuthenticate + FilterUserIdParameter）
+        Route::get('document-preview/{id}', [OrderController::class, 'previewDocument'])
+            ->where('id', '[0-9]+')
+            ->withoutMiddleware([UserAuthenticate::class, FilterUserIdParameter::class])
+            ->middleware('signed')
+            ->name('user.order.document-preview');
+        // 取预览/下载短时签名 URL（走 JWT header 鉴权 + UserScope 归属校验）
+        Route::get('document-preview-url/{id}', [OrderController::class, 'previewDocumentUrl'])->where('id', '[0-9]+');
         Route::get('documents/{id}', [OrderController::class, 'getDocuments'])->where('id', '[0-9]+');
         Route::patch('document/{id}', [OrderController::class, 'updateDocument'])->where('id', '[0-9]+');
         Route::delete('document/{id}', [OrderController::class, 'deleteDocument'])->where('id', '[0-9]+');

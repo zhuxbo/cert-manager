@@ -261,6 +261,13 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - `order` 支持单个数字 ID（跟随 renewed 链）或单个域名（按 `common_name` 精确匹配，`issued_at` 降序取最新 active 证书），续费后 certimate URL 无需变更
 - 不带 `field` 时走原 JSON 分页逻辑（向后兼容）
 
+### 凭据不进 URL：用短时签名 URL
+
+- **JWT access_token 是全权限长效凭据，绝不可拼进 URL query** —— 进了就落入浏览器历史 / 服务端 access log / Referer，被截获即等于泄漏该用户全部 API 权限。
+- iframe / img / `<a download>` 这类无法带 `Authorization` header 的场景（如文档预览/下载），**一律用分钟级短时签名 URL**（`URL::temporarySignedRoute` + `signed` 中间件验签），不复用 access_token。
+- 文档预览实现（参考）：`GET order/document-preview-url/{id}`（走 JWT header 鉴权 + 归属校验）返回 `temporarySignedRoute('{role}.order.document-preview', now()->addMinutes(10), ['id' => $id])`；`order/document-preview/{id}` 路由用 `withoutMiddleware([JWT 中间件类])->middleware('signed')` 脱离 JWT、仅验签名。归属安全链：取 URL 接口经 UserScope 限本人（admin 全局）→ 签名防 docId 篡改 → signed 预览路由本身无需再查归属。
+- 前端两步：先调「取签名 URL」接口（header 带 JWT），再把返回的签名 URL 作 iframe/img/下载 src。`withoutMiddleware` 移除组中间件需传**展开后的中间件类名**（不是组别名）；`route:list` 仍显示组名属正常（运行时 pipeline 才排除），以 HTTP 测试「无 JWT + 有效签名 → 200」验证真正生效。
+
 ---
 
 ## 资金确定性体系（4 道网）
