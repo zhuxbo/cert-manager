@@ -439,6 +439,8 @@ php artisan route:clear && php artisan config:clear
 - ZIP 解压前检查所有条目，拒绝含 `..` 的路径
 - 公共端点仅返回 bundle/css 路径，管理端返回完整信息
 - plugin-loader 校验 URL 必须以 `/` 开头
+- 插件包 sha256：`PluginManager` 安装/更新时若 `release.json` 提供 sha256 则强校验（verify-if-present）；下载入口 `validateReleaseUrl` 对 release_url 做 SSRF 校验（https 放行 / 公网 http 拒绝 / 私网 http 放行）
+- 插件可自注册限流中间件：`easy` 插件的 `EasyRateLimiter` 对其公开回调/简易开票端点限流（中间件别名插件内自注册，参考 `invoice` 插件）
 
 ---
 

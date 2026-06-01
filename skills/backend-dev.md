@@ -382,6 +382,27 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 5. 删除已入账 fund 路径必须事务内 `lockForUpdate` + 锁内 status/created_at 二次校验
 6. 上线前先跑 `php artisan finance:audit` 确认现有数据干净，否则改约束之后下一次相关 INSERT 触发"交易记录已存在"误报
 
+## 安全补强
+
+### 邮件验证码防爆破（VerifyCodeRateLimiter）
+
+- 中间件 `App\Http\Middleware\VerifyCodeRateLimiter` 挂在发码/校验路由（注册、重置密码）；`VerifyCodeHelper` 按失败次数计数 + 冷却，验证码用 `random_int` 生成
+- 重置密码接口去掉 `exists:users,email` 校验（避免邮箱枚举），邮箱不存在也返回统一成功文案
+
+### 归档解压统一防护（ArchiveGuard）
+
+- `App\Services\Upgrade\ArchiveGuard`：`assertSafeEntries()`（解压前校验 zip 条目无 `..`/绝对路径/symlink 逃逸）+ `assertExtractedWithin()`（解压后校验落地路径在目标目录内）
+- 所有解压路径统一走它：`PackageExtractor`（升级）/ `BackupManager`（备份）/ `PluginManager`（插件安装）。**新增解压点必须接入**，不要各写各的 zip-slip 校验
+
+### sync 终态守卫（防复活）
+
+- `Order\Action::sync`/`Acme\Action::sync` 锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，防上游旧状态把已取消/已吊销订单复活回 active（与 commitCancel 串行化配合）
+
+### 批量操作上限（`config/batch.php`）
+
+- `max_ids=100`：所有 `GetIdsRequest` 的 ids 数量上限（`BaseRequest::messages` 统一错误文案）
+- `max_upstream=20`：batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游
+
 ## MySQL 兼容性
 
 - 兼容 MySQL 5.7，不使用 `json` 字段类型

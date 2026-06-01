@@ -112,6 +112,8 @@ bash build/build.sh --clear-cache
 
 `build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
 
+后台升级（PHP 端 `ReleaseClient`）同样 **fail-closed**：releases.json 缺 sha256 或下载产物不匹配时拒绝升级（不降级放行）；`validateReleaseUrl` 对 release_url 做 SSRF 校验（https 放行 / 公网 http 拒绝 / 私网 http 放行）。
+
 ### 手动打包
 
 手动打包必须使用完整构建后的 `build/temp/production-code`。`package.sh` 会在打包前校验后端、前端和 nginx 关键产物，缺失时直接失败并清理半成品 zip。

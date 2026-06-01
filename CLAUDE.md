@@ -115,12 +115,15 @@ skills/ # 开发规范（详细文档）
 - **TaskJob 分发**：`commit_acme / sync_acme / cancel_acme` 统一去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`；其余 action 走 `Order\Action`
 - **User 端同步**：`POST /api/user/acme/sync/{id}`（与 Admin 对齐）
 - **checkRepeat 并发限制**：与 Order 相同，`checkRepeat` 和 `createTasks` 之间无事务锁，并发情况下可能产生双份 executing Task；沿用 Order 设计，属已知限制
+- **createTasks 逐条幂等**：`Acme\Action::createTasks` 与 `Order` 的 `createTask` 一致，foreach 内创建前查已存在 executing 同 `order_id+action` task 则 continue（防重复 task）；`cancel_acme` 走独立 `Task::create` 路径、自带同款幂等查询
+- **批量上限（`config/batch.php`）**：`max_ids=100`（所有 batch 接口 ids 数量上限，21 个 `GetIdsRequest` + `BaseRequest::messages` 统一校验）、`max_upstream=20`（batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游）
 
 ## 系统架构约定
 
 - **`$order->latestCert` 非空保证**：由系统架构保证 latestCert 关系非空，查询时加 `with('latestCert')` 预加载即可，无需额外空值判断
 - **`$this->error()` 方法**：来自 `ApiResponse` trait，调用后抛出异常终止执行，不会继续后续代码
 - **取消/吊销不静默成功**：上游接口未返回明确成功时，一律返回失败；不允许跳过上游调用直接标记本地状态
+- **sync 终态守卫（防复活）**：`Order\Action::sync`/`Acme\Action::sync` 在锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，不让上游旧状态把已取消/已吊销的订单"复活"回 active（与 commitCancel 串行化配合，防资金错乱）
 - **ACME 计费流程**：`Action` 三步流程 `new→pay→commit` 详见"ACME 订阅管理"章节
 - **ACME 取消策略**：未提交上游（无 api_id）的 pending 订单直接退费取消；已提交上游的订单通过延时任务调 Api->cancel() 后退费
 - **Action 无 userId 构造参数**：`Acme\Action` 和 `Order\Action` 均无 `userId` 构造参数，通过 `app(Action::class)` 获取实例。用户隔离由 UserScope 全局作用域保证（`Authenticate`/`ApiAuthenticate` 中间件注册 Acme、ApiToken、Callback、CnameDelegation、Order、Fund、Transaction、Organization、Contact、OrderDocument），控制器在创建方法的 params 中传入 `user_id`。UserScope `apply()` 无条件执行 `where('user_id', ...)`，不做零值跳过
@@ -145,6 +148,7 @@ skills/ # 开发规范（详细文档）
 - **显示条件**：`brand.toLowerCase() === 'certum'` 且 `validation_type !== 'dv'`
 - **文件限制**：单文件 5MB，类型 PDF/JPG/JPEG/PNG/XADES，控制器层 `mimes` 验证
 - **提交权限**：Admin 和 User 均可提交文档到上游
+- **签发后禁止上传**：证书 `latestCert.status === 'active'` 后不再接受文档上传——`ActionDocumentTrait::uploadDocument`/`uploadDocumentFromBase64` 单点拦截（覆盖 Admin/User UI + V2 API 三入口，全仓写 `order_documents` 仅此二方法），前端 admin/user 的 process.vue 均在 active 态隐藏上传入口
 - **提交上游异步化 + 重试**：`submitDocuments` 不再同步阻塞，改为每个未提交文档派发 `App\Jobs\SubmitDocumentJob`（`tries=3`、`backoff=[60,300]` 指数退避、`->afterCommit()`）。Job 调 `ActionDocumentTrait::submitDocument(int $docId)`：成功标 `submitted`+`submitted_at`、永久失败（文件缺失）记 `submit_error` 不重试、可重试失败（订单未提交/上游错误）抛异常退避重试；`failed()` 兜底记错 + `Log::error`。前端 `documentUpload.vue` 状态列展示 submitted/失败(submit_error)+轮询
 - **跨级去重（content_hash）**：`order_documents` 加 `content_hash`(sha256) + 唯一索引 `(order_id, content_hash)`。**纯接收端**实现 —— `uploadDocumentFromBase64` 对解码字节算 hash，同 order 同内容已存在则跳过（重试/重复推送幂等），唯一索引兜底并发竞态（catch `QueryException` errorInfo 1062）。**发送端/线协议不变**，旧版下游推到新接收端也能去重。Gateway 侧 `V2/ApiController::uploadDocument` 镜像同一逻辑（对端对称）。防止 Job 重试在上游产生重复行 → Certum 重复提交
 - **上传即自动转发上游**：`uploadDocument`（UI 文件上传）与 `uploadDocumentFromBase64`（V2 接收下游）存档后**都**自动派发 `SubmitDocumentJob` 往上游转（含 dedup-hit 补转），多级链全自动、免手动点提交。前端「提交」按钮降级为兜底（仅 `unsubmittedCount>0` 时显示、全部 submitted 后隐藏；上传后前端轮询刷新状态）。**注意：自动转发仍依赖 queue worker 常驻**——无 worker 则 Job 滞留 `jobs` 表、文档不会真正到达上游
