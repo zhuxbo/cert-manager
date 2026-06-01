@@ -34,12 +34,15 @@ test('管理员可以按状态筛选部署令牌', function () {
 });
 
 test('管理员可以查看部署令牌详情', function () {
+    expectsBreakingChange('A1: admin 详情接口移除 token 明文字段，防跨用户泄漏部署凭据');
     $token = DeployToken::factory()->create(['user_id' => $this->user->id]);
 
     $response = $this->actingAsAdmin($this->admin)->getJson("/api/admin/deploy-token/$token->id");
 
     $response->assertOk()->assertJson(['code' => 1]);
     $response->assertJsonPath('data.id', $token->id);
+    // A1: admin 跨用户管理部署令牌不返回 token 明文（与 ApiToken 不可见基线一致）
+    expect($response->json('data'))->not->toHaveKey('token');
 });
 
 test('查看不存在的部署令牌返回错误', function () {
@@ -97,12 +100,17 @@ test('管理员可以批量删除部署令牌', function () {
 });
 
 test('管理员可以批量获取部署令牌', function () {
+    expectsBreakingChange('A1: admin 批量详情接口移除 token 明文字段');
     $tokens = DeployToken::factory()->count(3)->create(['user_id' => $this->user->id]);
     $ids = $tokens->pluck('id')->toArray();
 
     $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/deploy-token/batch?ids[]='.implode('&ids[]=', $ids));
 
     $response->assertOk()->assertJson(['code' => 1]);
+    // A1: 批量详情同样不返回 token 明文
+    foreach ($response->json('data') as $item) {
+        expect($item)->not->toHaveKey('token');
+    }
 });
 
 test('管理员可以分页获取部署令牌', function () {

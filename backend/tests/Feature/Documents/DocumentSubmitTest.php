@@ -5,8 +5,10 @@ use App\Jobs\SubmitDocumentJob;
 use App\Models\OrderDocument;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\Traits\CreatesTestData;
@@ -57,6 +59,15 @@ function newDoc(int $orderId, int $userId, array $overrides = []): OrderDocument
         'uploaded_by' => 'api',
         'submitted' => 0,
     ], $overrides));
+}
+
+/** 构造携带指定 SQLSTATE errno 的 QueryException（errno=1062 即唯一索引冲突，errorInfo 由 previous PDOException 复制） */
+function makeDuplicateQueryException(int $errno): QueryException
+{
+    $pdo = new PDOException('SQLSTATE[23000]: Integrity constraint violation');
+    $pdo->errorInfo = ['23000', $errno, 'Duplicate entry for key'];
+
+    return new QueryException('mysql', 'insert into order_documents (...) values (...)', [], $pdo);
 }
 
 test('submitDocument 成功标记 submitted + submitted_at，清空 error', function () {
@@ -323,4 +334,125 @@ test('submitDocument 上游调用抛异常时也记录 submit_error（observabil
         ->and($doc->submit_attempts)->toBe(1);
 
     @unlink(storage_path("app/$rel"));
+});
+
+// ==========================================
+// 并发唯一索引(1062)兜底分支（catch QueryException）
+// ==========================================
+
+test('uploadDocument 并发唯一索引冲突(1062)：删孤儿文件并回查幂等返回 success', function () {
+    Queue::fake();
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
+
+    $content = 'RACE-BYTES';
+    $hash = hash('sha256', $content);
+
+    // 模拟并发：预查 miss（对手未插），但 INSERT 撞唯一索引。creating 钩子首次触发时
+    // 先用 DB::table（绕 Eloquent 事件）插入"对手"行，再抛 1062，使 catch 回查能命中对手行
+    $fault = true;
+    OrderDocument::creating(function () use (&$fault, $order, $hash, $content) {
+        if (! $fault) {
+            return;
+        }
+        $fault = false;
+        DB::table('order_documents')->insert([
+            'order_id' => $order->id,
+            'user_id' => $order->user_id,
+            'type' => 'APPLICANT',
+            'file_name' => 'rival.pdf',
+            'file_path' => "verification/$order->id/rival.pdf",
+            'file_size' => strlen($content),
+            'content_hash' => $hash,
+            'uploaded_by' => 'api',
+            'submitted' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        throw makeDuplicateQueryException(1062);
+    });
+
+    $file = UploadedFile::fake()->createWithContent('a.pdf', $content);
+    $res = captureDocResponse(fn () => app(Action::class)->uploadDocument($order->id, $file, 'APPLICANT', 'user'));
+
+    OrderDocument::flushEventListeners();
+
+    // 幂等成功（按已存在对手行处理），DB 仅 1 行（无重复），孤儿文件已删（目录无残留）
+    expect($res['code'])->toBe(1)
+        ->and(OrderDocument::where('order_id', $order->id)->count())->toBe(1);
+    $dir = storage_path("app/verification/$order->id");
+    expect(is_dir($dir) ? glob("$dir/*") : [])->toBeEmpty();
+});
+
+test('uploadDocument 非 1062 的 QueryException 删孤儿文件后照常抛出', function () {
+    Queue::fake();
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
+
+    $fault = true;
+    OrderDocument::creating(function () use (&$fault) {
+        if (! $fault) {
+            return;
+        }
+        $fault = false;
+        throw makeDuplicateQueryException(1452); // 外键约束等非重复键
+    });
+
+    $file = UploadedFile::fake()->createWithContent('a.pdf', 'OTHER-BYTES');
+
+    expect(fn () => app(Action::class)->uploadDocument($order->id, $file, 'APPLICANT', 'user'))
+        ->toThrow(QueryException::class);
+
+    OrderDocument::flushEventListeners();
+
+    // 非 1062 重抛前也删了孤儿文件（catch 里先 @unlink 再判断 errorInfo），未落库
+    $dir = storage_path("app/verification/$order->id");
+    expect(is_dir($dir) ? glob("$dir/*") : [])->toBeEmpty();
+    expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
+});
+
+test('uploadDocumentFromBase64 并发唯一索引冲突(1062)：删孤儿文件并回查幂等返回 success', function () {
+    Queue::fake();
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
+
+    $content = 'RACE-BASE64';
+    $hash = hash('sha256', $content);
+
+    $fault = true;
+    OrderDocument::creating(function () use (&$fault, $order, $hash, $content) {
+        if (! $fault) {
+            return;
+        }
+        $fault = false;
+        DB::table('order_documents')->insert([
+            'order_id' => $order->id,
+            'user_id' => $order->user_id,
+            'type' => 'APPLICANT',
+            'file_name' => 'rival.pdf',
+            'file_path' => "verification/$order->id/rival.pdf",
+            'file_size' => strlen($content),
+            'content_hash' => $hash,
+            'uploaded_by' => 'api',
+            'submitted' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        throw makeDuplicateQueryException(1062);
+    });
+
+    $res = captureDocResponse(fn () => app(Action::class)->uploadDocumentFromBase64(
+        $order->id, 'APPLICANT', 'a.pdf', base64_encode($content)
+    ));
+
+    OrderDocument::flushEventListeners();
+
+    // base64 入口用 file_put_contents 写文件，catch 里 @unlink($fullPath) 删孤儿
+    expect($res['code'])->toBe(1)
+        ->and(OrderDocument::where('order_id', $order->id)->count())->toBe(1);
+    $dir = storage_path("app/verification/$order->id");
+    expect(is_dir($dir) ? glob("$dir/*") : [])->toBeEmpty();
 });

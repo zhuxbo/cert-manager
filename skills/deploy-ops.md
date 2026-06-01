@@ -264,3 +264,9 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 - 低于 2.8 可能出现依赖安装错误
 - 升级：`composer self-update`
+
+### 回调端点返回"回调未配置鉴权"
+
+- 出厂 `callback.default` 的 token 与 allowed_ips 均为空，回调端点默认**拒绝**（防裸奔被刷 sync / 探测 api_id 存在性）
+- 接入上游 webhook 前，须在管理端「系统设置 → 回调设置」为对应 endpoint 配置 token 或 IP 白名单**至少其一**
+- 配任一即放行（允许仅 IP 白名单或仅 token），两者皆空才拒绝

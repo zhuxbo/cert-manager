@@ -305,3 +305,18 @@ test('LoginRateLimiter 频率限制不影响不同账号', function () {
     expect($response->getData(true)['code'])->toBe(1)
         ->and((int) RateLimiter::attempts('admin:userB'))->toBe(0);
 });
+
+test('LoginRateLimiter 账号大小写/空白变体共用同一限流桶（防变体绕过爆破）', function () {
+    $middleware = new LoginRateLimiter;
+
+    // 同一账号的大小写 + 前后空白变体：DB 账号匹配为 ci collation（大小写不敏感），本就是同一用户
+    // 归一化后 4 个变体应落到同一个 key 'admin:victim@x.com'，而非分散到 4 个桶各计 1 次
+    foreach (['victim@x.com', 'Victim@X.com', 'VICTIM@X.COM', '  victim@x.com  '] as $variant) {
+        $request = Request::create('/api/admin/login', 'POST', ['account' => $variant, 'password' => 'wrong']);
+        $middleware->handle($request, function () {
+            return new JsonResponse(['code' => 0, 'msg' => '密码错误']);
+        }, 'admin');
+    }
+
+    expect((int) RateLimiter::attempts('admin:victim@x.com'))->toBe(4);
+});

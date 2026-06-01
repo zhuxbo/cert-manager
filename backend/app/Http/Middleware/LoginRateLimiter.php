@@ -20,8 +20,10 @@ class LoginRateLimiter
     public function handle(Request $request, Closure $next, string $guard): mixed
     {
         $key = $guard.':'.$this->getRequestIpAddress($request);
-        $account = $request->input('account') ?? '';
-        if (! empty($account)) {
+        // 归一化 account（小写 + 去空白）再拼 key：DB 账号匹配（username/email/mobile）在 ci collation 下大小写不敏感，
+        // 同一账号的大小写/空白变体本就是同一用户，归一化后共用同一限流桶，防变体分散绕过爆破限制（不会误并不同用户）
+        $account = mb_strtolower(trim($request->input('account') ?? ''));
+        if ($account !== '') {
             $key = $guard.':'.$account;
         }
         // 独立累计失败计数，用于账号锁定，不受短期限流窗口影响

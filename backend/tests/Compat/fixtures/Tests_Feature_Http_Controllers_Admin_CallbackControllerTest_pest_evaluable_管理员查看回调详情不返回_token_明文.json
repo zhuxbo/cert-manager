@@ -1,10 +1,10 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DeployTokenControllerTest::__pest_evaluable_管理员可以查看部署令牌详情",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\CallbackControllerTest::__pest_evaluable_管理员查看回调详情不返回_token_明文",
     "version": "1.0.0",
     "calls": [
         {
             "method": "GET",
-            "uri_pattern": "/api/admin/deploy-token/{id}",
+            "uri_pattern": "/api/admin/callback/{id}",
             "request_keys": null,
             "response_status": "2xx",
             "response_schema": {
@@ -12,10 +12,7 @@
                 "data": {
                     "id": "integer",
                     "user_id": "integer",
-                    "allowed_ips": "null",
-                    "rate_limit": "integer",
-                    "last_used_at": "null",
-                    "last_used_ip": "null",
+                    "url": "string",
                     "status": "integer",
                     "created_at": "string",
                     "updated_at": "string"

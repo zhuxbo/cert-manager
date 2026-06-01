@@ -1,10 +1,10 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DeployTokenControllerTest::__pest_evaluable_管理员可以批量获取部署令牌",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\CallbackControllerTest::__pest_evaluable_管理员批量查看回调不返回_token_明文",
     "version": "1.0.0",
     "calls": [
         {
             "method": "GET",
-            "uri_pattern": "/api/admin/deploy-token/batch",
+            "uri_pattern": "/api/admin/callback/batch",
             "request_keys": [
                 "ids"
             ],
@@ -15,10 +15,7 @@
                     "__list_of__": {
                         "id": "integer",
                         "user_id": "integer",
-                        "allowed_ips": "null",
-                        "rate_limit": "integer",
-                        "last_used_at": "null",
-                        "last_used_ip": "null",
+                        "url": "string",
                         "status": "integer",
                         "created_at": "string",
                         "updated_at": "string"

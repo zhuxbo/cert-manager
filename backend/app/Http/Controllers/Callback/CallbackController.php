@@ -23,6 +23,12 @@ class CallbackController extends Controller
             $this->error('Endpoint not configured');
         }
 
+        // token 与 allowed_ips 均未配置则拒绝回调：防出厂默认双空（SettingSeeder 出厂 token=''/allowed_ips=''）
+        // 裸奔被刷 sync / 探测 api_id 存在性。配置任一即按下方规则校验（允许「仅 IP 白名单」或「仅 token」）
+        if (empty($config['token']) && empty($config['allowed_ips'])) {
+            $this->error('回调未配置鉴权');
+        }
+
         // IP 白名单校验
         if (! empty($config['allowed_ips'])) {
             $allowedIps = array_map('trim', explode(',', $config['allowed_ips']));
