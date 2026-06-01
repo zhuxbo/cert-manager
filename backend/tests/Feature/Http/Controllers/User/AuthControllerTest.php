@@ -111,7 +111,10 @@ test('重置密码成功', function () {
     expect(Hash::check('newpassword123', $user->fresh()->password))->toBeTrue();
 });
 
-test('重置密码失败-邮箱不存在', function () {
+test('重置密码-验证码无效返回错误', function () {
+    // 安全修复：去掉 exists:users,email 校验（不再通过 errors.email 暴露邮箱是否注册）
+    expectsBreakingChange('audit-2026-06: reset-password 移除 exists:users,email 枚举校验，未注册邮箱不再返回 errors.email');
+
     $this->postJson('/api/reset-password', [
         'email' => 'nonexistent@example.com',
         'password' => 'newpassword123',
@@ -119,6 +122,36 @@ test('重置密码失败-邮箱不存在', function () {
     ])
         ->assertOk()
         ->assertJson(['code' => 0]);
+});
+
+test('重置密码-不暴露邮箱是否注册（账号枚举消歧）', function () {
+    expectsBreakingChange('audit-2026-06: reset-password 对存在/不存在邮箱统一返回成功式响应');
+    // 已注册邮箱：缓存有效验证码 → 成功
+    $user = User::factory()->create(['email' => 'exists@example.com']);
+    Cache::put('verify_code_reset_exists@example.com', '111111', 600);
+
+    $existsResponse = $this->postJson('/api/reset-password', [
+        'email' => 'exists@example.com',
+        'password' => 'newpassword123',
+        'code' => '111111',
+    ])->assertOk();
+
+    // 未注册邮箱：同样存在一个有效验证码（攻击者对任意邮箱触发过 send-code）
+    Cache::put('verify_code_reset_ghost@example.com', '222222', 600);
+
+    $ghostResponse = $this->postJson('/api/reset-password', [
+        'email' => 'ghost@example.com',
+        'password' => 'newpassword123',
+        'code' => '222222',
+    ])->assertOk();
+
+    // 两者对外响应不可区分（均 code=1），不泄露邮箱注册状态
+    expect($existsResponse->json('code'))->toBe(1);
+    expect($ghostResponse->json('code'))->toBe(1);
+
+    // 内部仅对已注册邮箱真正改密；幽灵邮箱不会创建用户
+    expect(Hash::check('newpassword123', $user->fresh()->password))->toBeTrue();
+    expect(User::where('email', 'ghost@example.com')->exists())->toBeFalse();
 });
 
 test('获取当前用户信息', function () {

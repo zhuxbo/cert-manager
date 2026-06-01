@@ -403,8 +403,9 @@ class AuthController extends BaseController
 
         $data = ['email' => $email, 'password' => $password];
 
+        // 不用 exists:users,email：避免通过校验错误暴露邮箱是否已注册（账号枚举）
         $validator = Validator::make($data, [
-            'email' => 'required|string|email|max:50|exists:users,email',
+            'email' => 'required|string|email|max:50',
             'password' => 'required|string|min:6|max:32',
         ]);
 
@@ -421,14 +422,12 @@ class AuthController extends BaseController
             $this->error('验证码无效或已过期');
         }
 
-        // 更新用户密码
+        // 仅对已注册邮箱真正改密；对外不区分邮箱是否存在，统一返回成功式响应，防止账号枚举
         $user = User::where('email', $email)->first();
-        if (! $user) {
-            $this->error('用户不存在');
+        if ($user) {
+            $user->password = $password;
+            $user->save();
         }
-
-        $user->password = $password;
-        $user->save();
 
         $this->success();
     }

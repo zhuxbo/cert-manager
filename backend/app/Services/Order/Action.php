@@ -512,7 +512,8 @@ class Action
             $order->period_till = max($data['expires_at'], $periodTill);
         }
 
-        // 状态是否变化
+        // 状态是否变化（事务外粗筛，仅用于决定是否进入 refundForSyncedCancel 分支；
+        // 该分支自身锁 order 行并在锁内二次校验四条件，外层粗筛不会造成误退款）
         $hasStatusChanged = isset($data['status']) && $data['status'] !== $cert->status;
 
         // 同步退款分支：上游 cancelled + 过渡态 + new/renew + 开关开 → 专用 helper 处理退款
@@ -522,36 +523,66 @@ class Action
             && in_array($cert->action, ['new', 'renew'])
             && get_system_setting('site', 'autoRefundOnSync')
         ) {
-            // helper 内完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
+            // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
             $this->refundForSyncedCancel($order, $data);
             $this->success();
         }
 
-        // 证书签发后发送通知邮件
-        if ($hasStatusChanged && $data['status'] === 'active' && $user->email) {
-            app(NotificationCenter::class)->dispatch(new NotificationIntent(
-                'cert_issued',
-                'user',
-                $user->id,
-                [
-                    'order_id' => $order->id,
-                    'email' => $user->email,
-                ]
-            ));
-        }
+        // 锁内重取 + 终态守卫 + 写回：慢 IO（上游 get）已在锁外完成，此事务只包状态判定副作用 + 写回。
+        // 锁序 task→order：与 commitCancel(active)/revokeCancel 统一。controller 直调 sync 时无前置 task 锁，
+        // 必须在锁 order 前先按 task→order 顺序锁住本订单的 commit/sync/revalidate 任务（与下面 deleteTask 删除范围一致），
+        // 否则与 commitCancel(锁 sync,revalidate→order)/refundForSyncedCancel 反序，task 集合相交触发 InnoDB 死锁。
+        // 经 TaskJob 调用时 TaskJob 已先持本 task 行锁（同事务 lockForUpdate 可重入），叠加后整体仍是 task→order，不反序。
+        // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订单复活。
+        DB::transaction(function () use ($orderId, $order, $cert, $user, $data) {
+            // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
+            Task::where('order_id', $orderId)
+                ->whereIn('action', ['commit', 'sync', 'revalidate'])
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
 
-        // 签发 取消 吊销 发起回调
-        if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'])) {
-            $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
-            $callback && $this->createTask($orderId, 'callback');
-            // 删除相关任务
-            $this->deleteTask($orderId, 'commit,sync,revalidate');
-        }
+            // 锁顺序 2：再锁 order。锁内重读权威 status（重取 order 带 latestCert 重新加载），重取失败回落到外层陈旧值
+            $lockedOrder = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($orderId);
+            $lockedStatus = $lockedOrder?->latestCert->status ?? $cert->status;
 
-        $order->save();
-        $cert->update($data);
+            // 终态守卫（泛化到所有路径）：本地已是终态时拒绝上游 status 覆盖，防滞后 active 复活已退款/已重签订单
+            if (in_array($lockedStatus, ['cancelled', 'revoked', 'renewed', 'reissued', 'failed'], true)) {
+                unset($data['status']);
+            }
 
-        // 强制更新不返回提示
+            // 用锁内权威 status 重算状态变化，后续通知/回调/deleteTask 均以此为准
+            $hasStatusChanged = isset($data['status']) && $data['status'] !== $lockedStatus;
+
+            // 证书签发后发送通知邮件
+            if ($hasStatusChanged && $data['status'] === 'active' && $user->email) {
+                app(NotificationCenter::class)->dispatch(new NotificationIntent(
+                    'cert_issued',
+                    'user',
+                    $user->id,
+                    [
+                        'order_id' => $order->id,
+                        'email' => $user->email,
+                    ]
+                ));
+            }
+
+            // 签发 取消 吊销 发起回调
+            if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'], true)) {
+                $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+                $callback && $this->createTask($orderId, 'callback');
+                // 删除相关任务
+                $this->deleteTask($orderId, 'commit,sync,revalidate');
+            }
+
+            $order->save();
+            $cert->update($data);
+        });
+
+        // 强制更新不返回提示（success 抛 ApiResponseException 须在事务闭包外）
         $force || $this->success();
     }
 
@@ -930,11 +961,13 @@ class Action
      * 调用前提：sync 已校验触发四条件（status=cancelled + 过渡态 + new/renew + 开关开）。
      * 与 cancel() 的区别：不调用上游 api->cancel（上游已是 cancelled 态）；不检查 refund_period（以上游状态为权威）。
      *
+     * 锁序 task→order：与 commitCancel(active)/revokeCancel/sync 统一。本方法由 sync 调用，
+     * 同样要删除 commit/sync/revalidate task，故在锁 order 前先按 task→order 顺序锁住这批 task
+     * （与下面 deleteTask 删除范围一致），避免与 commitCancel 反序触发 InnoDB 死锁。
+     *
      * cancel task 残留说明：当 cert.status=cancelling 时可能存在 cancel task。
-     * 此处不主动删除 cancel task，原因是本方法先锁 order 再操作（order→task 顺序），
-     * 而 TaskJob::handle / revokeCancel 是 task→order 顺序；若在事务内加删 cancel task
-     * 会形成 order↔task 锁序倒置，引发 InnoDB 死锁。
-     * 安全性：残留的 cancel task 被 TaskJob 调用 Action::cancel() 时，
+     * 此处仍不主动删除 cancel task（仅删 commit/sync/revalidate），与既有行为保持一致，
+     * 不扩大本次修复范围。安全性：残留的 cancel task 被 TaskJob 调用 Action::cancel() 时，
      * 锁内检查 status===cancelled 会抛错回滚，不会重复退款。
      *
      * @throws Throwable
@@ -942,7 +975,14 @@ class Action
     private function refundForSyncedCancel(Order $order, array $certData): void
     {
         DB::transaction(function () use ($order, $certData) {
-            // order 行锁（防并发 sync 同时进入）
+            // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
+            Task::where('order_id', $order->id)
+                ->whereIn('action', ['commit', 'sync', 'revalidate'])
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
+
+            // 锁顺序 2：再锁 order 行（防并发 sync 同时进入）
             $order = Order::with(['latestCert'])
                 ->whereHas('latestCert')
                 ->lock()

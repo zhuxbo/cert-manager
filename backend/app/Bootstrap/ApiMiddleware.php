@@ -20,6 +20,7 @@ use App\Http\Middleware\TrimStrings;
 use App\Http\Middleware\TrustProxies;
 use App\Http\Middleware\UserAuthenticate;
 use App\Http\Middleware\UserRefreshTokenAuthenticate;
+use App\Http\Middleware\VerifyCodeRateLimiter;
 use Illuminate\Foundation\Configuration\Middleware as Config;
 use Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull;
 use Illuminate\Foundation\Http\Middleware\ValidatePostSize;
@@ -101,6 +102,7 @@ class ApiMiddleware
             'signed' => ValidateSignature::class,
             'throttle' => RateLimiter::class,
             'login.limiter' => LoginRateLimiter::class,
+            'verify.code.limiter' => VerifyCodeRateLimiter::class,
         ]);
     }
 }

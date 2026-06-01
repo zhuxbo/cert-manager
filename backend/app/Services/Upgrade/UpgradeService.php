@@ -125,7 +125,10 @@ class UpgradeService
                 $statusManager->completeStep('maintenance_on');
             }
 
-            // 步骤 5: 下载升级包
+            // 步骤 5: 下载升级包（内部强校验 sha256，fail-closed）
+            // downloadUpgradePackage 在下载完成后立即比对 releases.json 的 sha256：
+            // 缺失或不匹配会抛 RuntimeException 并删除已下载文件 → 被本方法外层 catch 接住，
+            // 保证未经校验 / 被篡改的可执行包绝不会进入后续 extract / applyUpgrade。
             $statusManager->startStep('download');
             $packagePath = $this->packageExtractor->getDownloadPath()."/upgrade-$targetVersion.zip";
 

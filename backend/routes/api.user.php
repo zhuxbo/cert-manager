@@ -20,11 +20,11 @@ use Illuminate\Support\Facades\Route;
 
 // 无需认证
 Route::middleware('login.limiter:user')->post('login', [AuthController::class, 'login']);
-Route::post('register', [AuthController::class, 'register']);
-Route::post('reset-password', [AuthController::class, 'resetPassword']);
+Route::middleware('verify.code.limiter:register')->post('register', [AuthController::class, 'register']);
+Route::middleware('verify.code.limiter:reset-password')->post('reset-password', [AuthController::class, 'resetPassword']);
 
 // 发送邮箱验证码 无需认证
-Route::post('send-email-code', [VerifyCodeController::class, 'sendEmail']);
+Route::middleware('verify.code.limiter:send-email-code')->post('send-email-code', [VerifyCodeController::class, 'sendEmail']);
 
 // 刷新Token
 Route::middleware('api.user.refresh')->group(function () {

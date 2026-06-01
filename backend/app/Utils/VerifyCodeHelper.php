@@ -8,6 +8,27 @@ use Throwable;
 
 class VerifyCodeHelper
 {
+    /** 验证码缓存前缀 */
+    protected const CODE_PREFIX = 'verify_code_';
+
+    /** 失败计数缓存前缀 */
+    protected const FAIL_PREFIX = 'verify_code_fail_';
+
+    /** 发送冷却缓存前缀 */
+    protected const COOLDOWN_PREFIX = 'verify_code_cooldown_';
+
+    /** 每日发送计数缓存前缀 */
+    protected const DAILY_PREFIX = 'verify_code_daily_';
+
+    /** 校验失败达到该次数后作废当前验证码 */
+    protected const MAX_FAIL_ATTEMPTS = 5;
+
+    /** 同一目标两次发送之间的最小间隔（秒） */
+    protected const SEND_COOLDOWN_SECONDS = 60;
+
+    /** 同一目标每日最大发送次数 */
+    protected const DAILY_SEND_LIMIT = 10;
+
     /**
      * 发送手机验证码
      *
@@ -19,20 +40,26 @@ class VerifyCodeHelper
      */
     public static function sendSmsCode(string $mobile, string $type = 'verify_code'): array
     {
-        $codeCachePrefix = 'verify_code_';
         $codeExpire = get_system_setting('sms', 'expire') ?? 600;
+
+        // 发送冷却 + 每日上限
+        if ($cooldown = self::checkSendCooldown($mobile)) {
+            return $cooldown;
+        }
 
         // 生成验证码
         $code = self::generateCode();
-        $codeKey = $codeCachePrefix.$type.'_'.$mobile;
+        $codeKey = self::CODE_PREFIX.$type.'_'.$mobile;
 
         // 发送验证码
         $sms = new Sms;
         $result = $sms->send($mobile, $type, ['code' => $code]);
 
         if ($result['code'] === 1) {
-            // 保存验证码到缓存
+            // 保存验证码到缓存，并重置失败计数
             Cache::put($codeKey, $code, $codeExpire);
+            self::resetFailCount($mobile, $type);
+            self::markSent($mobile);
 
             return [
                 'code' => 1,
@@ -56,16 +83,17 @@ class VerifyCodeHelper
      */
     public static function sendEmailCode(string $email, string $type = 'verify_code'): array
     {
-        $codeCachePrefix = 'verify_code_';
         $codeExpire = get_system_setting('sms', 'expire', 600);
         $siteName = get_system_setting('site', 'name', 'SSL证书管理系统');
 
+        // 发送冷却 + 每日上限：已有未过冷却的码则拒绝重发
+        if ($cooldown = self::checkSendCooldown($email)) {
+            return $cooldown;
+        }
+
         // 生成验证码
         $code = self::generateCode();
-        $codeKey = $codeCachePrefix.$type.'_'.$email;
-
-        // 保存验证码到缓存
-        Cache::put($codeKey, $code, $codeExpire);
+        $codeKey = self::CODE_PREFIX.$type.'_'.$email;
 
         // 发送验证码邮件
         try {
@@ -93,13 +121,24 @@ class VerifyCodeHelper
             }
 
             $mail->Body = $content;
+
+            // 先写缓存后发送：发送失败则回滚缓存，避免占用冷却/计数却没真正发出
+            Cache::put($codeKey, $code, $codeExpire);
+
             $mail->send();
+
+            // 发送成功，重置失败计数并记录发送时间
+            self::resetFailCount($email, $type);
+            self::markSent($email);
 
             return [
                 'code' => 1,
                 'data' => null,
             ];
         } catch (Throwable $e) {
+            // 发送失败，回滚验证码缓存
+            Cache::forget($codeKey);
+
             // 记录异常
             app(ApiExceptions::class)->logException($e);
 
@@ -120,19 +159,7 @@ class VerifyCodeHelper
      */
     public static function verifyEmailCode(string $email, string $code, string $type = 'verify_code', bool $autoDelete = true): bool
     {
-        $codeCachePrefix = 'verify_code_';
-        $cacheKey = $codeCachePrefix.$type.'_'.$email;
-        $savedCode = Cache::get($cacheKey);
-
-        if ($savedCode && $savedCode === $code) {
-            if ($autoDelete) {
-                Cache::forget($cacheKey);
-            }
-
-            return true;
-        }
-
-        return false;
+        return self::verify($email, $code, $type, $autoDelete);
     }
 
     /**
@@ -145,32 +172,115 @@ class VerifyCodeHelper
      */
     public static function verifySmsCode(string $mobile, string $code, string $type = 'verify_code', bool $autoDelete = true): bool
     {
-        $codeCachePrefix = 'verify_code_';
-        $codeKey = $codeCachePrefix.$type.'_'.$mobile;
-        $savedCode = Cache::get($codeKey);
+        return self::verify($mobile, $code, $type, $autoDelete);
+    }
 
-        if ($savedCode && $savedCode === $code) {
+    /**
+     * 统一的验证码校验：按目标维度累计失败次数，超阈值作废验证码 + 短时锁定。
+     *
+     * @param  string  $target  邮箱或手机号
+     */
+    protected static function verify(string $target, string $code, string $type, bool $autoDelete): bool
+    {
+        $cacheKey = self::CODE_PREFIX.$type.'_'.$target;
+        $failKey = self::FAIL_PREFIX.$type.'_'.$target;
+
+        $savedCode = Cache::get($cacheKey);
+
+        // 无有效验证码（未发送 / 已过期 / 已被失败次数作废）一律失败，且不再累计
+        if (! $savedCode) {
+            return false;
+        }
+
+        // 使用 hash_equals 防时序侧信道；$code 来自用户输入需转字符串
+        if (hash_equals((string) $savedCode, (string) $code)) {
             if ($autoDelete) {
-                Cache::forget($codeKey);
+                Cache::forget($cacheKey);
+                Cache::forget($failKey);
             }
 
             return true;
+        }
+
+        // 校验失败累计；达到阈值作废该验证码，攻击者无法继续猜测
+        $codeExpire = (int) (get_system_setting('sms', 'expire') ?? 600);
+        Cache::add($failKey, 0, $codeExpire);
+        $attempts = (int) Cache::increment($failKey);
+
+        if ($attempts >= self::MAX_FAIL_ATTEMPTS) {
+            Cache::forget($cacheKey);
+            Cache::forget($failKey);
         }
 
         return false;
     }
 
     /**
-     * 生成随机验证码
+     * 发送冷却 + 每日上限检查。
+     *
+     * @param  string  $target  邮箱或手机号
+     * @return array|null 命中限制时返回错误数组，否则 null
+     */
+    protected static function checkSendCooldown(string $target): ?array
+    {
+        $cooldownKey = self::COOLDOWN_PREFIX.$target;
+        $dailyKey = self::DAILY_PREFIX.$target.'_'.date('Ymd');
+
+        if (Cache::has($cooldownKey)) {
+            return [
+                'code' => 0,
+                'msg' => '验证码发送过于频繁，请稍后再试',
+            ];
+        }
+
+        if ((int) Cache::get($dailyKey, 0) >= self::DAILY_SEND_LIMIT) {
+            return [
+                'code' => 0,
+                'msg' => '今日验证码发送次数已达上限',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * 标记一次成功发送：写入冷却 + 累计当日发送次数。
+     *
+     * @param  string  $target  邮箱或手机号
+     */
+    protected static function markSent(string $target): void
+    {
+        $cooldownKey = self::COOLDOWN_PREFIX.$target;
+        $dailyKey = self::DAILY_PREFIX.$target.'_'.date('Ymd');
+
+        Cache::put($cooldownKey, 1, self::SEND_COOLDOWN_SECONDS);
+
+        // 当日计数：TTL 到当日 23:59:59，跨天自动重置
+        Cache::add($dailyKey, 0, now()->endOfDay());
+        Cache::increment($dailyKey);
+    }
+
+    /**
+     * 重置失败计数（发送新码或校验成功时）。
+     *
+     * @param  string  $target  邮箱或手机号
+     */
+    protected static function resetFailCount(string $target, string $type): void
+    {
+        Cache::forget(self::FAIL_PREFIX.$type.'_'.$target);
+    }
+
+    /**
+     * 生成随机验证码（使用 random_int 保证密码学强度）
      */
     protected static function generateCode(): string
     {
         $length = 6;
-        $characters = '0123456789';
+        $max = 9;
         $code = '';
 
         for ($i = 0; $i < $length; $i++) {
-            $code .= $characters[rand(0, strlen($characters) - 1)];
+            $code .= (string) random_int(0, $max);
         }
 
         return $code;

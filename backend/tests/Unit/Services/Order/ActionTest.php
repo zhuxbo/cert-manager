@@ -1,14 +1,18 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Models\Admin;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ProductPrice;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Order\Action;
+use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
@@ -596,4 +600,236 @@ test('batchCommitCancel active 分支锁内 status 变化：静默跳过（不�
     // order2 正常处理
     expect($cert2->fresh()->status)->toBe('cancelling');
     expect(Task::where('order_id', $order2->id)->where('action', 'cancel')->count())->toBe(1);
+});
+
+// ==================== sync 终态守卫 ====================
+
+test('sync 终态守卫（force=false TOCTOU）：锁外慢 IO 期间被并发 cancel 置 cancelled，不被上游滞后 active 复活', function () {
+    Queue::fake();
+    // 初始 processing：通过 force=false 分支「只有待验证/待批准/已签发才能同步」前置校验
+    [$order, $cert] = createOrderWithCertForRevoke('processing');
+
+    // mock 上游 get：返回滞后的 active，并在回调里模拟"锁外慢 IO 期间并发 cancel 置终态 + 退款"——
+    // 直接改库（绕过内存 $cert），让锁内重读拿到权威 cancelled。
+    // 命中的是 force=false 路径下锁内的新守卫（Action::sync unset($data['status'])），
+    // 而非 force=true 才走的 462-466 行 force-unset（那条会让 $data 压根没有 status，守卫变 no-op → 假绿）。
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('get')
+        ->andReturnUsing(function () use ($cert) {
+            Cert::where('id', $cert->id)->update(['status' => 'cancelled']);
+
+            return [
+                'code' => 1,
+                'data' => ['status' => 'active'],
+            ];
+        });
+    // 反射注入 protected $api，绕过上游真实 HTTP（参照 ReleaseClientTest 范式）
+    $ref = new ReflectionClass($this->service);
+    $prop = $ref->getProperty('api');
+    $prop->setAccessible(true);
+    $prop->setValue($this->service, $mockApi);
+
+    // force=false：sync 末尾 success() 抛 ApiResponseException，用 expectOrderApiSuccess 兜住，事务已提交
+    expectOrderApiSuccess(fn () => $this->service->sync($order->id, false));
+
+    // 终态守卫生效：cert 仍 cancelled，未被上游滞后 active 覆盖（防已退款订单复活）
+    expect($cert->fresh()->status)->toBe('cancelled');
+});
+
+// ==================== charge / pay 扣费核心 ====================
+//
+// charge() 是真金白银的最高频路径（ActionTrait::charge）。这里通过单订单
+// pay($id, false)（commit=false，只扣费不提交上游）真实执行 charge，断言：
+// 余额边界、admin 欠费放行、退款回正、同用户跨订单并发被 credit_limit 锁内拦截。
+//
+// 关键事实（写断言的依据，file:line 见下）：
+// - charge 锁 user 行：Order::with(['user' => fn($q)=>$q->lockForUpdate(),...]) (ActionTrait.php:845)
+// - 扣费金额取 cert.amount，transaction.amount = '-'.cert.amount（OrderUtil.php:169 负数）
+// - balance_after = balance + transaction.amount（负数 → 减法）(ActionTrait.php:864)
+// - 锁内校验 bccomp(balance_after, credit_limit) === -1 时非 admin 报「余额不足」(ActionTrait.php:865-867)
+// - credit_limit setter 强制存为负数：abs(value)*-1（User.php:186），传 100 → 存 -100
+// - 扣费成功 cert.status: unpaid → pending（ActionTrait.php:888）
+
+/**
+ * 造一个待扣费订单：unpaid 证书 + 指定 cert.amount（扣费金额取自 cert.amount）。
+ * product 默认建 ProductPrice 让 charge 的 remark 组装走真实价格路径。
+ */
+function createUnpaidOrderForCharge(User $user, Product $product, string $amount): array
+{
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'amount' => $amount,
+    ]);
+
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'unpaid',
+        'action' => 'new',
+        'amount' => $amount,
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+
+    $order->update(['latest_cert_id' => $cert->id]);
+    $order->refresh();
+
+    return [$order, $cert];
+}
+
+test('charge 余额刚好够：支付成功、cert 转 pending、余额归零、产生一条扣费流水', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '10.00', 'alternative_wildcard_price' => '20.00',
+    ]);
+
+    [$order, $cert] = createUnpaidOrderForCharge($user, $product, '100.00');
+
+    // commit=false：只扣费不提交上游（对称 ACME pay($id, false)）
+    expectOrderApiSuccess(fn () => $this->service->pay($order->id, false));
+
+    expect($cert->fresh()->status)->toBe('pending');
+
+    $user->refresh();
+    expect((float) $user->balance)->toBe(0.0);
+
+    $tx = Transaction::where('transaction_id', $order->id)->where('type', 'order')->get();
+    expect($tx)->toHaveCount(1);
+    expect((float) $tx->first()->amount)->toBe(-100.0);
+});
+
+test('charge 差一分钱拒绝：抛余额不足、余额不变、不产生扣费流水、cert 仍 unpaid', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '99.99']);
+    $product = Product::factory()->create();
+
+    [$order, $cert] = createUnpaidOrderForCharge($user, $product, '100.00');
+
+    expectOrderApiError(
+        fn () => $this->service->pay($order->id, false),
+        '余额不足'
+    );
+
+    // 扣费被拒：状态、余额、流水均无变化
+    expect($cert->fresh()->status)->toBe('unpaid');
+
+    $user->refresh();
+    expect((float) $user->balance)->toBe(99.99);
+
+    expect(Transaction::where('transaction_id', $order->id)->count())->toBe(0);
+});
+
+test('charge 管理员授信欠费放行：admin guard 下余额为 0 仍可扣费、余额转负', function () {
+    Queue::fake();
+
+    // 设置 admin guard（charge 锁内 Auth::guard('admin')->check() 为 true 时跳过余额校验）
+    $admin = Admin::factory()->create();
+    $this->actingAs($admin, 'admin');
+    expect(Auth::guard('admin')->check())->toBeTrue();
+
+    $user = $this->createTestUser(['balance' => '0.00']);
+    $product = Product::factory()->create();
+
+    [$order, $cert] = createUnpaidOrderForCharge($user, $product, '100.00');
+
+    expectOrderApiSuccess(fn () => $this->service->pay($order->id, false));
+
+    expect($cert->fresh()->status)->toBe('pending');
+
+    // admin 放行欠费：余额扣成负数
+    $user->refresh();
+    expect((float) $user->balance)->toBe(-100.0);
+
+    $tx = Transaction::where('transaction_id', $order->id)->where('type', 'order')->first();
+    expect($tx)->not->toBeNull();
+    expect((float) $tx->amount)->toBe(-100.0);
+});
+
+test('charge 退款后余额回正：pay 扣费 → cancelPending 退费 → 余额恢复', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = Product::factory()->create();
+
+    [$order, $cert] = createUnpaidOrderForCharge($user, $product, '100.00');
+
+    // 1) 扣费：balance 100 → 0，cert → pending
+    expectOrderApiSuccess(fn () => $this->service->pay($order->id, false));
+    $user->refresh();
+    expect((float) $user->balance)->toBe(0.0);
+    expect($cert->fresh()->status)->toBe('pending');
+
+    // 2) 退费（pending + action=new 走退款分支）：balance 0 → 100，cert → cancelled
+    $this->service->cancelPending($order->id);
+
+    $user->refresh();
+    expect((float) $user->balance)->toBe(100.0);
+    expect($cert->fresh()->status)->toBe('cancelled');
+
+    // 退费 cancel 交易已创建（+100），与扣费的 -100 抵消，账目恒等（FundInvariants 自动守门）
+    $cancelTx = Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->first();
+    expect($cancelTx)->not->toBeNull();
+    expect((float) $cancelTx->amount)->toBe(100.0);
+});
+
+test('charge 同用户跨订单串行支付被 credit_limit 锁内拦截：第二笔透支被拒（最关键）', function () {
+    // 复刻 ACME ActionTest「pay 串行第二次调用报错，保证只扣一次费」的串行模拟手法
+    // （非真多线程，而是顺序两次调用验证锁内校验生效）。
+    // 这里聚焦 charge 锁内 credit_limit 校验（ActionTrait.php:864-867）：
+    // 同一用户两笔不同订单，可用额度 = balance + |credit_limit|，串行支付时第二笔
+    // 累计透支超额必须被锁内重算的 balance_after < credit_limit 拦下，
+    // 不能两笔都过导致用户余额突破信用额度。
+    Queue::fake();
+
+    // balance=100，credit_limit 传 100 → setter 存为 -100（允许欠费到 -100）
+    // 可用额度 = 100 - (-100) = 200。两笔订单各 150：第一笔后 balance=-50（≥ -100，放行），
+    // 第二笔会让 balance_after = -50 + (-150) = -200 < -100 → 拒绝。
+    $user = $this->createTestUser(['balance' => '100.00', 'credit_limit' => 100]);
+    expect((float) $user->credit_limit)->toBe(-100.0); // 确认 setter 语义
+    $product = Product::factory()->create();
+
+    [$orderA] = createUnpaidOrderForCharge($user, $product, '150.00');
+    [$orderB] = createUnpaidOrderForCharge($user, $product, '150.00');
+
+    // 第一笔：balance 100 → -50（仍在信用额度内），放行
+    expectOrderApiSuccess(fn () => $this->service->pay($orderA->id, false));
+    $user->refresh();
+    expect((float) $user->balance)->toBe(-50.0);
+
+    // 第二笔：锁内重算 balance_after = -50 + (-150) = -200 < credit_limit(-100) → 拒绝
+    expectOrderApiError(
+        fn () => $this->service->pay($orderB->id, false),
+        '余额不足'
+    );
+
+    // 第二笔被拦：余额停在 -50（未突破 -100 信用额度），订单 B 仍 unpaid、无第二条扣费流水
+    $user->refresh();
+    expect((float) $user->balance)->toBe(-50.0);
+    expect($orderB->latestCert->fresh()->status)->toBe('unpaid');
+    expect(Transaction::where('transaction_id', $orderB->id)->count())->toBe(0);
+
+    // 全局只有第一笔的一条扣费流水
+    expect(Transaction::where('type', 'order')->where('amount', '-150.00')->count())->toBe(1);
+});
+
+test('charge 同用户串行支付恰好用满 credit_limit：两笔都在额度内则都放行', function () {
+    // 对照组：证明拦截不是"第二笔一律拒"，而是精确按累计 balance_after vs credit_limit 判定。
+    Queue::fake();
+
+    // balance=100，credit_limit=-100，可用 200；两笔各 100，累计正好 -100（== credit_limit，不小于，放行）
+    $user = $this->createTestUser(['balance' => '100.00', 'credit_limit' => 100]);
+    $product = Product::factory()->create();
+
+    [$orderA] = createUnpaidOrderForCharge($user, $product, '100.00');
+    [$orderB] = createUnpaidOrderForCharge($user, $product, '100.00');
+
+    expectOrderApiSuccess(fn () => $this->service->pay($orderA->id, false));
+    expectOrderApiSuccess(fn () => $this->service->pay($orderB->id, false));
+
+    $user->refresh();
+    // 100 - 100 - 100 = -100，恰好用满信用额度
+    expect((float) $user->balance)->toBe(-100.0);
+    expect(Transaction::where('type', 'order')->count())->toBe(2);
 });

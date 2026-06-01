@@ -765,6 +765,47 @@ test('sync force=true 静默返回', function () {
     expect(true)->toBeTrue();
 });
 
+test('sync 终态守卫：本地 cancelled 不被上游滞后 active 复活', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    // 真实路径造出本地 cancelled + acme_cancel 退款流水（账目恒等，过 FundInvariants）
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update([
+        'status' => Acme::STATUS_CANCELLING,
+        'api_id' => 'upstream-terminal-guard',
+    ]);
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']]),
+    ]);
+    expectApiSuccess(fn () => $this->service->cancel($acme->id));
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
+
+    $cancelTx = Transaction::where('transaction_id', $acme->id)
+        ->where('type', Transaction::TYPE_ACME_CANCEL)
+        ->first();
+    expect($cancelTx)->not->toBeNull();
+
+    // 上游滞后返回 active，绕过 10s 缓存（cancel 已写过），sync 应拒绝把 cancelled 改回 active
+    Cache::forget("acme_sync_$acme->id");
+    Http::fake([
+        'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active']]),
+    ]);
+
+    // force=true 避免 success 抛 ApiResponseException 打断断言
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
+});
+
 // ==================== remark ====================
 
 test('remark 更新 remark 字段', function () {

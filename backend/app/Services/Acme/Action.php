@@ -495,38 +495,54 @@ class Action
             $this->error($acme ? '订单尚未提交到上游' : '订单不存在');
         }
 
+        // 慢 IO（上游 Guzzle）放在行锁之外，避免长时间持锁
         $result = (new Api)->get($acme->id);
-
         $data = $result['data'] ?? [];
-        $updateData = [];
-        $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
-        if (isset($data['status']) && in_array($data['status'], $syncableStatuses)) {
-            $updateData['status'] = $data['status'];
-            // 上游已取消/吊销且本地尚未记录取消时间 → 用当前时间补记（正式取消时间）
-            if (in_array($data['status'], [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED]) && ! $acme->cancelled_at) {
-                $updateData['cancelled_at'] = now();
-            }
-        }
-        if (isset($data['vendor_id'])) {
-            $updateData['vendor_id'] = $data['vendor_id'];
-        }
-        // 历史订单 contact_email 可能为空，从上游 sync 回填；已有值也以上游为准保持一致
-        if (isset($data['contact_email']) && $data['contact_email'] !== '') {
-            $updateData['contact_email'] = $data['contact_email'];
-        }
-        // ACME 本地仅记录占位周期（commit 时的 now），上游是权威数据源，sync 时以上游为准覆盖
-        if (isset($data['period_from'])) {
-            $updateData['period_from'] = $data['period_from'];
-        }
-        if (isset($data['period_till'])) {
-            $updateData['period_till'] = $data['period_till'];
-        }
-        if (! empty($updateData)) {
-            $acme->update($updateData);
-        }
 
-        if (! empty($data['directory_url'])) {
-            $this->cacheDirectoryUrl((string) ($acme->product->ca ?? ''), (string) $data['directory_url']);
+        // 锁内重取 + 终态守卫 + 写回：锁序 task→acme（sync_acme 经 TaskJob 已持 task 锁）。
+        // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订阅复活。
+        $directoryUrl = (string) ($data['directory_url'] ?? '');
+        $ca = DB::transaction(function () use ($acmeId, $data) {
+            $acme = Acme::where('id', $acmeId)->lock()->first();
+            if (! $acme) {
+                return '';
+            }
+
+            $updateData = [];
+            $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
+            // 终态守卫：本地已是终态（cancelled/revoked/expired）时拒绝上游 status 覆盖，防滞后 active 复活已退款订阅
+            $localTerminal = in_array($acme->status, [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED], true);
+            if (! $localTerminal && isset($data['status']) && in_array($data['status'], $syncableStatuses, true)) {
+                $updateData['status'] = $data['status'];
+                // 上游已取消/吊销且本地尚未记录取消时间 → 用当前时间补记（正式取消时间）
+                if (in_array($data['status'], [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED], true) && ! $acme->cancelled_at) {
+                    $updateData['cancelled_at'] = now();
+                }
+            }
+            // 非状态字段不受终态守卫限制，仍按上游合并
+            if (isset($data['vendor_id'])) {
+                $updateData['vendor_id'] = $data['vendor_id'];
+            }
+            // 历史订单 contact_email 可能为空，从上游 sync 回填；已有值也以上游为准保持一致
+            if (isset($data['contact_email']) && $data['contact_email'] !== '') {
+                $updateData['contact_email'] = $data['contact_email'];
+            }
+            // ACME 本地仅记录占位周期（commit 时的 now），上游是权威数据源，sync 时以上游为准覆盖
+            if (isset($data['period_from'])) {
+                $updateData['period_from'] = $data['period_from'];
+            }
+            if (isset($data['period_till'])) {
+                $updateData['period_till'] = $data['period_till'];
+            }
+            if (! empty($updateData)) {
+                $acme->update($updateData);
+            }
+
+            return (string) ($acme->product->ca ?? '');
+        });
+
+        if ($directoryUrl !== '') {
+            $this->cacheDirectoryUrl($ca, $directoryUrl);
         }
 
         Cache::set($cacheKey, time(), 10);
