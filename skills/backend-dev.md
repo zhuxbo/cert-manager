@@ -232,6 +232,12 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - `FlushLogs` 中间件：响应发送后触发日志刷入
 - 所有日志模型使用默认数据库连接
 
+### Cert 中间证书缓存与 retrieved 时序
+
+- `Cert::retrieved` 钩子对 `active + issuer` 的证书，从 `Cert::chainMap()`（请求 / Job 级容器缓存的全部中间证书）取 `intermediate_cert`；缺失时把 `status` 改写为 `approving`（中间证书未就绪 → 表现为签发中，**影响 Deploy 部署判断 / V1·V2 cacheTime / 文档上传拦截，有意设计，勿当纯输出移除**）。
+- **不能用 `with('chain')` 预加载**：Laravel `retrieved` 事件早于 `with()` eager load 触发，retrieved 内访问预加载关联会触发 lazy load（N+1 重现）。故用 `chainMap()` 一次性全表缓存（Chain 是 CA 中间证书、`common_name` 唯一、数量有限）替代逐条 `Chain::where()`，列表 N+1 → 每请求 / Job 仅 1 次全表查询。
+- **缓存用 `app()->scoped` 而非 `instance`**：FPM 每请求新容器天然刷新；`queue:work` 常驻 worker 在每个 job 边界由框架 `resetScope → forgetScopedInstances` 自动清，避免跨 job 读到陈旧中间证书（`instance` 不随 job 清）。`setIntermediateCert` 写新 Chain 后 `forgetInstance('cert.chainMap')` 让同请求 / 同 job 内即时失效。
+
 ---
 
 ## Token 认证体系

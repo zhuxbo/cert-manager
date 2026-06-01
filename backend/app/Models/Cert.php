@@ -93,7 +93,7 @@ class Cert extends BaseModel
         static::retrieved(function ($model) {
             // 如果订单已签发且有 issuer，预查询中间证书（只查询一次）
             if ($model->status === 'active' && ! empty($model->issuer)) {
-                $model->cachedIntermediateCert = Chain::where('common_name', $model->issuer)->value('intermediate_cert');
+                $model->cachedIntermediateCert = self::chainMap()[$model->issuer] ?? null;
                 $model->intermediateCertCached = true;
 
                 // 如果中间证书不存在，则设置状态为 approving 等待下次同步获取
@@ -134,8 +134,8 @@ class Cert extends BaseModel
             return $this->cachedIntermediateCert;
         }
 
-        // 首次访问时查询并缓存
-        $this->cachedIntermediateCert = Chain::where('common_name', $this->issuer)->value('intermediate_cert');
+        // 首次访问时从请求级缓存取，并缓存到实例
+        $this->cachedIntermediateCert = self::chainMap()[$this->issuer] ?? null;
         $this->intermediateCertCached = true;
 
         return $this->cachedIntermediateCert;
@@ -157,6 +157,29 @@ class Cert extends BaseModel
                 'common_name' => $this->issuer,
                 'intermediate_cert' => $value,
             ]);
+            // 写入新中间证书后让请求级缓存失效，确保同请求后续读取反映最新数据
+            app()->forgetInstance('cert.chainMap');
         }
+    }
+
+    /**
+     * 请求 / Job 级缓存全部中间证书（issuer => intermediate_cert）。
+     *
+     * Chain 表存 CA 中间证书（common_name 唯一、issuer 数量有限），一次性加载到容器，避免列表场景
+     * 每条 active cert 各查一次 Chain（N+1）。retrieved 钩子早于 with() eager load 触发，无法用
+     * 预加载关联，故用此缓存替代逐条查询。
+     *
+     * 用 scoped 而非 instance：FPM 每请求新容器天然刷新；queue:work 常驻 worker 在每个 job 边界由框架
+     * resetScope → forgetScopedInstances 自动清理 scoped 绑定，避免跨 job 读到陈旧中间证书（instance
+     * 不在 scopedInstances 中、不会随 job 清理）。setIntermediateCert 写入新 Chain 后 forgetInstance
+     * 让同请求 / 同 job 内即时失效。
+     */
+    protected static function chainMap(): array
+    {
+        if (! app()->bound('cert.chainMap')) {
+            app()->scoped('cert.chainMap', fn () => Chain::pluck('intermediate_cert', 'common_name')->all());
+        }
+
+        return app('cert.chainMap');
     }
 }
