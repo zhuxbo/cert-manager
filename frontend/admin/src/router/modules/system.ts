@@ -49,16 +49,6 @@ export default {
       }
     },
     {
-      path: "/api-docs",
-      name: "ApiDocs",
-      component: () => import("@/views/apiDocs/index.vue"),
-      meta: {
-        icon: "ri:book-2-line",
-        title: "接口文档",
-        keepAlive: true
-      }
-    },
-    {
       path: "/plugin",
       name: "Plugin",
       component: () => import("@/views/plugin/index.vue"),

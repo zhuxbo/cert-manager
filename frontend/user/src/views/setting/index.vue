@@ -7,7 +7,6 @@ import { useCallback } from "./callback";
 import { useProfile, VerifyDialog } from "./profile";
 import { useNotificationPreference } from "./notification";
 import { useAutoPreference } from "./auto";
-import ApiDocs from "./apiDocs.vue";
 import { getConfig } from "@/config";
 
 const showAutoDeploy = getConfig()?.AutoDeploy !== false;
@@ -121,7 +120,6 @@ const { autoSettings, autoLoading, handleAutoToggle } = useAutoPreference();
         :onReset="resetApiToken"
       />
     </el-card>
-    <ApiDocs />
     <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
       <PlusForm
         v-model="callbackValues"

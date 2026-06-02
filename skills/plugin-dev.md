@@ -446,12 +446,22 @@ php artisan route:clear && php artisan config:clear
 
 ## 内置插件参考
 
-新增插件可对照以下三个内置实现，按复杂度递增：
+新增插件可对照以下内置实现：
 
-| 插件              | 特点                                                                                                                                                         | 适合参考                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
-| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory                                                                                             | 最小可用插件骨架                                           |
-| `plugins/invoice` | 双端 CRUD（发票）+ 配额服务 + 外部开票方接入（`/api/invoice/external/{pending,complete}`，token+IP 鉴权）+ Admin 配置面板（storage 文件 + Crypt 加密 token） | 对外接口 + 中间件别名插件内自注册 + 跨插件被 `easy` 软依赖 |
-| `plugins/easy`    | 复杂度最高：多回调控制器、log handler 接入主系统、产品级别映射；简易开票（独立 web 静态页 `invoice.html`，tid+email 鉴权，class_exists 软依赖 invoice 插件） | 涉及 Callback / 日志处理 / 跨模型关联 / 跨插件软依赖       |
+| 插件               | 特点                                                                                                                                                                                     | 适合参考                                                           |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `plugins/notice`   | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory                                                                                                                         | 最小可用插件骨架                                                   |
+| `plugins/invoice`  | 双端 CRUD（发票）+ 配额服务 + 外部开票方接入（`/api/invoice/external/{pending,complete}`，token+IP 鉴权）+ Admin 配置面板（storage 文件 + Crypt 加密 token）                             | 对外接口 + 中间件别名插件内自注册 + 跨插件被 `easy` 软依赖         |
+| `plugins/easy`     | 复杂度最高：多回调控制器、log handler 接入主系统、产品级别映射；简易开票（独立 web 静态页 `invoice.html`，tid+email 鉴权，class_exists 软依赖 invoice 插件）                             | 涉及 Callback / 日志处理 / 跨模型关联 / 跨插件软依赖               |
+| `plugins/api-docs` | **纯前端插件**（无 backend / 无迁移 / 无 CI job，仅 user 端）：iframe(srcdoc) 内嵌 Scalar 官方 standalone 渲染对外 API 文档；spec 由主系统 `/api/meta/api-doc` 提供、iframe 内同源 fetch | 纯前端插件骨架 + 第三方重型库 iframe 隔离 + Scalar Shadow DOM 定制 |
 
 各插件的 ServiceProvider `boot()` 同时调 `loadRoutesFrom`（admin / user / api / callback 视需要）+ `loadMigrationsFrom`，主系统 `php artisan migrate` 自动覆盖。
+
+### 纯前端插件（api-docs 范例）
+
+`api-docs` 无 `backend/`，纯前端接入对外 API 文档（Scalar 渲染），要点：
+
+- **无后端也能加载**：`PluginServiceProvider` 仅在存在 `backend/` 时注册命名空间/provider，`boot()` 对 `provider=null` 跳过，故纯前端插件正常加载、`/api/plugins` 仍返回 bundle 路径。无迁移、无 CI job。
+- **重型库进插件 + iframe 隔离**：Scalar（~1MB JS）用官方 standalone bundle —— `package.json` 的 `build` 跑 `vite build && cp node_modules/@scalar/api-reference/dist/browser/standalone.js dist/scalar-standalone.js`；外壳 IIFE 仅 ~1KB（external vue），页面用 `<iframe srcdoc>` 加载 standalone。好处：CSS 完全隔离、按需加载（打开才载）、布局 Scalar 原生。release 脚本自动 `cp frontend/{side}/dist/*`，`scalar-standalone.js` 随包。
+- **iframe srcdoc 三个坑**：① srcdoc 的 base 是 `about:srcdoc`、`location.origin` 可能为 `"null"`，spec 的相对 server 会拼成 null（test request 地址 null）→ **父页拼好绝对 url + 显式 `servers`** 传入。② 高度：Pure Admin 用 `el-scrollbar` 内部滚动、`documentElement` 不滚 → 向上找真正滚动祖先测 `scrollHeight-clientHeight` 扣除，避免高出页脚。③ Scalar 渲染在 **Shadow DOM**，外层 CSS/JS 穿不透 → 隐藏 Introduction 用 Scalar `customCss`（注入 shadow）+ JS 递归穿 `shadowRoot` 按文本隐藏侧栏项。
+- **开发期识别**：`compose.yaml` 把 `./plugins` 挂到 `/var/plugins`（= 容器内 `base_path('../plugins')`，注意 `/var/www` 父目录是 `/var`），`make restart` 后 `/api/plugins` 才返回插件；user dev 的 `servePlugins` 中间件把 `/plugins/{name}/frontend/user/*` 映射到宿主 `dist`。

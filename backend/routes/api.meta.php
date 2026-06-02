@@ -17,5 +17,5 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('meta', [MetaController::class, 'index']);
 
-// 对外 API 接口文档原文（Markdown），供 curl / 非 SPA 接入方读取；公开无鉴权
+// 对外 API 接口文档（OpenAPI 3.1 YAML），供 curl / Scalar 渲染读取；公开无鉴权
 Route::get('meta/api-doc', [MetaController::class, 'apiDoc']);

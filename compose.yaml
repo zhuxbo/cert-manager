@@ -15,6 +15,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/var/www
+      # 插件目录 → /var/plugins（= 容器内 base_path('../plugins')），开发期后端识别插件
+      - ./plugins:/var/plugins
     ports:
       - "5300:8000" # 前端 proxy 默认指向 localhost:5300
     depends_on:

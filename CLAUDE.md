@@ -156,9 +156,9 @@ skills/ # 开发规范（详细文档）
 
 ### 对外 API 接口文档
 
-- **源**：`backend/resources/docs/api/{v2,acme,deploy}.md`（单一来源，KB 级 Markdown，随版本发布打包）
-- **后端端点**：`GET /api/meta/api-doc?surface=v2|acme|deploy`（公开无鉴权，返回 `text/markdown` 原文，供 curl / 非 SPA 接入方）；surface 白名单，非法 404
-- **前端**：`unplugin-vue-markdown` build 期把 `.md` 编译为 Vue 组件（运行时零 markdown 库）；`shared/build/plugins.ts` 给 `vue()` 加 `.md` include + Markdown 插件；`shared/build/utils.ts` 加 `@apidoc` alias 指向后端 docs；用户端「设置 → 接口文档」抽屉面板（`apiDocs.vue`）渲染三套
+- **源**：`backend/resources/docs/api/{v2,acme,deploy}.yaml`（OpenAPI 3.1，单一来源，随版本发布打包）；编辑时逐端点对照控制器实际校验/返回核对，枚举值对系统字典（如 `validation_method` 对 `validationMethodOptions`）
+- **后端端点**：`GET /api/meta/api-doc?surface=v2|acme|deploy`（公开无鉴权，返回 `application/yaml` 原文，供 curl / Scalar 渲染）；surface 白名单，非法 404。spec 描述主系统 v2/acme/deploy 契约、跟随主系统版本，**留主系统未拆进插件**
+- **展示**：由 `api-docs` 插件（**纯前端、仅 user 端**）提供 —— 外壳 IIFE（~1KB，external vue）向「系统设置」注入「接口文档」菜单，页面用 **iframe(srcdoc)** 内嵌 Scalar 官方 standalone bundle（`scalar-standalone.js`，自带 Vue）渲染三套。iframe 隔离使 Scalar 的 ~1MB JS / 236KB CSS 仅在打开文档页时加载、不污染主系统、布局为 Scalar 原生。主系统**不再内置**渲染（已拆 `apiDocs.vue`×2 + `unplugin-vue-markdown` + `@apidoc`）。接入要点见 `skills/plugin-dev.md`
 
 ### 自动续费/重签
 

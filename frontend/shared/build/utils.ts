@@ -47,9 +47,7 @@ export function createBuildUtils(
   const alias: Record<string, string> = {
     "@": resolve(appRoot, "src"),
     "@build": resolve(appRoot, "build"),
-    "@shared": resolve(appRoot, "../shared/src"),
-    // 对外 API 接口文档源（后端单一来源），build 期由 unplugin-vue-markdown 编译进 SPA
-    "@apidoc": resolve(appRoot, "../../backend/resources/docs/api")
+    "@shared": resolve(appRoot, "../shared/src")
   };
 
   /** 平台的名称、版本、运行所需的`node`和`pnpm`版本、依赖、最后构建时间的类型提示 */

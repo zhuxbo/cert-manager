@@ -84,7 +84,7 @@ if [ "${BUILD_BACKEND:-false}" = "true" ]; then
         # 生成排除列表文件
         EXCLUDE_FILE="$(mktemp)"
 
-        # 保护：对外接口文档随后端打包（运行时 MetaController::apiDoc 读取 resources/docs/api/*.md）
+        # 保护：对外接口文档随后端打包（运行时 MetaController::apiDoc 读取 resources/docs/api/*.yaml）
         # 必须在下面 *.md 通配排除“之前” include —— rsync 过滤规则按顺序首个匹配生效
         cat >>"$EXCLUDE_FILE" <<'EOF'
 + /resources/docs/
