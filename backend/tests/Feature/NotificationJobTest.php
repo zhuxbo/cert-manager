@@ -5,6 +5,7 @@ use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Models\User;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
+use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\Channels\MailChannel;
 use App\Services\Notification\NotificationRepository;
@@ -181,6 +182,65 @@ test('marks as failed when all channels fail', function () {
     // 验证发送结果
     expect($notification->data['result']['status'])->toBe(Notification::STATUS_FAILED);
     expect($notification->data['result']['message'])->toBe('发送失败');
+});
+
+test('user_created delivers password to mail render but never persists it to notifications.data', function () {
+    $user = createJobUser();
+
+    // user_created 模板正文含 {{ $password }}，与 seeder 一致
+    $template = NotificationTemplate::firstOrCreate(
+        ['code' => 'user_created'],
+        [
+            'name' => '用户创建通知',
+            'content' => '您好，我们为您创建了账号，用户名 {{ $username }}，密码 {{ $password }}，登录地址 {{ $site_url }}',
+            'variables' => ['username', 'password', 'site_url'],
+            'status' => 1,
+        ]
+    );
+
+    // 捕获通道在发送时实际看到的 data（应含密码，证明邮件能正常渲染凭据）
+    $renderedData = null;
+    $this->mock(MailChannel::class, function ($mock) use (&$renderedData) {
+        $mock->shouldReceive('send')
+            ->once()
+            ->andReturnUsing(function ($notification) use (&$renderedData) {
+                $renderedData = $notification->data;
+
+                return ['code' => 1, 'msg' => '发送成功'];
+            });
+    });
+
+    $job = new NotificationJob(
+        'user',
+        $user->id,
+        $template->id,
+        'mail',
+        [
+            'username' => $user->username,
+            'password' => 'PlainSecret123',
+            'site_name' => 'S',
+            'site_url' => 'https://example.com',
+            'email' => $user->email,
+        ],
+        UserCreatedNotificationBuilder::class
+    );
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    // 渲染期：通道看得到明文密码（邮件正文能交付初始凭据）
+    expect($renderedData['password'] ?? null)->toBe('PlainSecret123');
+
+    // 持久化：notifications.data 不含明文密码，但保留非敏感字段
+    $notification = Notification::where('notifiable_id', $user->id)
+        ->where('template_id', $template->id)
+        ->first();
+    expect($notification)->not->toBeNull();
+    expect($notification->status)->toBe(Notification::STATUS_SENT);
+    expect($notification->data)->not->toHaveKey('password');
+    expect($notification->data['username'])->toBe($user->username);
+
+    // 入库 JSON 整体不出现明文密码（兜底防止藏在 _meta/result 等子结构）
+    expect(json_encode($notification->data))->not->toContain('PlainSecret123');
 });
 
 test('handles channel exception gracefully', function () {

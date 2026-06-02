@@ -89,6 +89,12 @@ class NotificationJob implements ShouldQueue
         $notification->setRelation('template', $template);
         $notification->save();
 
+        // 渲染期 transient：敏感字段（如初始密码）只注入内存供通道渲染，绝不写入 notifications.data。
+        // 此时 DB 行已落地为不含 transient 的 $preparedPayload，下面 finally 再还原内存数据。
+        if ($payload->transient !== []) {
+            $notification->setAttribute('data', array_merge($preparedPayload, $payload->transient));
+        }
+
         $isSuccessful = false;
         $result = [
             'status' => Notification::STATUS_FAILED,
@@ -108,6 +114,11 @@ class NotificationJob implements ShouldQueue
             app(ApiExceptions::class)->logException($e);
             $result['message'] = '发送失败，请稍后重试';
             $result['timestamp'] = now()->toDateTimeString();
+        } finally {
+            // 还原为不含 transient 的持久化数据，避免 updateSendResult 把敏感字段写回库
+            if ($payload->transient !== []) {
+                $notification->setAttribute('data', $preparedPayload);
+            }
         }
 
         $notificationRepository->updateSendResult($notification, $result, $isSuccessful);
