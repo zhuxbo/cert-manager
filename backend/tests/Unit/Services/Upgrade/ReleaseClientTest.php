@@ -150,13 +150,24 @@ test('validateReleaseUrl 拒绝公网 http', function () {
 });
 
 test('validateReleaseUrl 放行内网 http', function (string $url) {
-    // 内网/私网/保留地址走 http 是合法离线部署场景（与 deploy/install.sh --url http://内网 对齐）
+    // RFC1918 私网与 loopback 走 http 是合法离线部署场景（与 deploy/install.sh --url http://内网 对齐）
     expect($this->client->validateReleaseUrl($url))->toBeTrue();
 })->with([
     'http://192.168.1.10/pkg.zip',
     'http://10.0.0.5/pkg.zip',
     'http://172.16.0.1/pkg.zip',
     'http://127.0.0.1/pkg.zip',
+]);
+
+test('validateReleaseUrl 拒绝 link-local / 元数据 / CGNAT / 0.0.0.0 http（SSRF 防护）', function (string $url) {
+    // 169.254.169.254 云元数据、169.254/16 link-local、100.64/10 CGNAT、0.0.0.0/8 不是合法
+    // 内网部署目标，明文 http 一律拒绝，防被诱导对元数据/内网发起 SSRF 取回
+    expect($this->client->validateReleaseUrl($url))->toBeFalse();
+})->with([
+    'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+    'http://169.254.0.1/pkg.zip',
+    'http://100.64.0.1/pkg.zip',
+    'http://0.0.0.0/pkg.zip',
 ]);
 
 test('validateReleaseUrl 拒绝非 http(s) scheme', function (string $url) {

@@ -433,8 +433,16 @@ class AuthController extends BaseController
         // 仅对已注册邮箱真正改密；对外不区分邮箱是否存在，统一返回成功式响应，防止账号枚举
         $user = User::where('email', $email)->first();
         if ($user) {
-            $user->password = $password;
-            $user->save();
+            DB::transaction(function () use ($user, $password) {
+                $user->password = $password;
+                // 忘记密码重置后吊销所有旧会话（账号可能已失陷）：bump token_version 使旧 access token
+                // 失效 + 写 logout_at + 清除全部 refresh token（与登录态改密 updatePassword 一致）
+                $user->token_version = ($user->token_version ?? 0) + 1;
+                $user->logout_at = now();
+                $user->save();
+
+                UserRefreshToken::deleteTokenByUserId($user->id);
+            });
         }
 
         $this->success();

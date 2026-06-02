@@ -497,7 +497,11 @@ class PluginManager
         // 回退到 PHP HTTP
         try {
             $response = Http::timeout($timeout)
-                ->withOptions(['sink' => $savePath])
+                ->withOptions([
+                    'sink' => $savePath,
+                    // 与 curl 对称：重定向仅允许 https（防降级到 http 内网/元数据 SSRF），限 5 跳
+                    'allow_redirects' => ['max' => 5, 'protocols' => ['https']],
+                ])
                 ->get($url);
 
             if ($response->successful() && file_exists($savePath)) {
@@ -523,8 +527,10 @@ class PluginManager
             return false;
         }
 
+        // -L 跟随重定向但收敛协议：初始仅 http/https，重定向仅允许 https，限 5 跳。
+        // 防 file/gopher/dict 等 SSRF 协议，并堵“https 预校验通过 → 302 降级到 http 内网/元数据”绕过。
         $command = sprintf(
-            '%s -sL --max-time %s -o %s %s 2>&1',
+            '%s -sL --proto =http,https --proto-redir =https --max-redirs 5 --max-time %s -o %s %s 2>&1',
             escapeshellarg($curlPath),
             escapeshellarg((string) $timeout),
             escapeshellarg($savePath),
@@ -966,7 +972,7 @@ class PluginManager
             throw new RuntimeException('不安全的更新地址，仅支持 HTTPS、HTTP 或本地路径');
         }
 
-        // http：只允许内网/私网/保留地址（内网离线部署），公网 http 拒绝
+        // http：仅放行 RFC1918 私网与 loopback（内网离线部署），其余一律拒绝
         $host = parse_url($url, PHP_URL_HOST);
         if (! $host) {
             throw new RuntimeException('无效的更新地址：无法解析主机');
@@ -978,10 +984,29 @@ class PluginManager
             throw new RuntimeException("无效的更新地址：主机无法解析为 IP: {$host}");
         }
 
-        // 公网地址（非私有、非保留）走 http → 拒绝（防中间人替换 + 公网 http 无意义）
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-            throw new RuntimeException('不安全的更新地址：公网地址必须使用 HTTPS（明文 HTTP 仅限内网）');
+        // 明文 http 仅放行 RFC1918 私网（10/172.16/192.168）与 loopback（127/8、::1）；
+        // 显式拒绝 link-local 169.254.0.0/16（含云元数据 169.254.169.254）、CGNAT、保留/多播等
+        // 危险段，避免被诱导对内网/元数据发起 SSRF 取回。
+        if (! $this->isPrivateOrLoopbackIp($ip)) {
+            throw new RuntimeException('不安全的更新地址：明文 HTTP 仅限 RFC1918 私网或本机地址');
         }
+    }
+
+    /**
+     * IP 是否为 RFC1918 私网或 loopback —— 明文 http 的唯一放行集合。
+     *
+     * 排除 link-local（169.254.0.0/16，含云元数据 169.254.169.254）、CGNAT（100.64/10）、
+     * 0.0.0.0/8、多播等危险保留段，防 SSRF。注意 loopback（127/8、::1）在 PHP filter_var
+     * 里归类为 reserved 而非 private，故单独放行。
+     */
+    protected function isPrivateOrLoopbackIp(string $ip): bool
+    {
+        if ($ip === '::1' || str_starts_with($ip, '127.')) {
+            return true;
+        }
+
+        // FILTER_FLAG_NO_PRIV_RANGE 命中私网段时返回 false（被过滤），取反即“是私网”
+        return ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE);
     }
 
     /**

@@ -273,6 +273,7 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - iframe / img / `<a download>` 这类无法带 `Authorization` header 的场景（如文档预览/下载），**一律用分钟级短时签名 URL**（`URL::temporarySignedRoute` + `signed` 中间件验签），不复用 access_token。
 - 文档预览实现（参考）：`GET order/document-preview-url/{id}`（走 JWT header 鉴权 + 归属校验）返回 `temporarySignedRoute('{role}.order.document-preview', now()->addMinutes(10), ['id' => $id])`；`order/document-preview/{id}` 路由用 `withoutMiddleware([JWT 中间件类])->middleware('signed')` 脱离 JWT、仅验签名。归属安全链：取 URL 接口经 UserScope 限本人（admin 全局）→ 签名防 docId 篡改 → signed 预览路由本身无需再查归属。
 - 前端两步：先调「取签名 URL」接口（header 带 JWT），再把返回的签名 URL 作 iframe/img/下载 src。`withoutMiddleware` 移除组中间件需传**展开后的中间件类名**（不是组别名）；`route:list` 仍显示组名属正常（运行时 pipeline 才排除），以 HTTP 测试「无 JWT + 有效签名 → 200」验证真正生效。
+- **坑（access_token 不进 URL 的前提）**：User 控制器构造函数若有 `$this->guard->id() || $this->error()` 登录校验，必须对签名预览路由（`request()->routeIs('user.order.document-preview')`）放行，否则无 JWT 的签名请求在构造函数就被挡死、返回「用户不存在」（HTTP 200 JSON）—— 签名预览形同虚设。HTTP 测试须断言**真文件流**（`content-type=application/pdf` / `attachment` disposition），只 `assertOk()` 会因 200 JSON 假绿。Admin 控制器构造函数无此登录校验，故不受影响。
 
 ---
 

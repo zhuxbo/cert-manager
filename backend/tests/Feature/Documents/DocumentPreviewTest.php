@@ -37,11 +37,16 @@ test('无 JWT 携带有效签名可访问 document-preview（withoutMiddleware �
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
     $this->createTestCert($order, ['api_id' => 'UP1', 'status' => 'processing']);
-    [$doc, $rel] = seedPreviewDoc($order->id, $user->id);
+    [$doc, $rel] = seedPreviewDoc($order->id, $user->id, 'PDFDATA');
 
     // 不 actingAsUser（无 JWT），直接用后端签名 URL 访问：若 api.user 未被移除会 401，移除则仅 signed 验证 → 200
     $url = URL::temporarySignedRoute('user.order.document-preview', now()->addMinutes(10), ['id' => $doc->id]);
-    $this->get($url)->assertOk();
+    $resp = $this->get($url);
+
+    // 必须真正吐文件流，而非构造函数 guard 拦截后的 {"code":0,"msg":"用户不存在"}（那也是 200，会假绿）
+    $resp->assertOk();
+    expect($resp->headers->get('content-type'))->toContain('application/pdf');
+    expect($resp->headers->get('content-disposition'))->toContain('attachment');
 
     @unlink(storage_path("app/$rel"));
 });

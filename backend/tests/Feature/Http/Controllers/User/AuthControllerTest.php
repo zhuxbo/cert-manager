@@ -96,7 +96,12 @@ test('用户注册失败-验证码为空', function () {
 test('重置密码成功', function () {
     $user = User::factory()->create([
         'email' => 'reset@example.com',
+        'token_version' => 0,
     ]);
+    // 忘记密码意味着账号可能已失陷：重置前的会话 refresh token 必须被全部吊销
+    UserRefreshToken::createToken($user->id);
+    UserRefreshToken::createToken($user->id);
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(2);
 
     Cache::put('verify_code_reset_reset@example.com', '123456', 600);
 
@@ -108,7 +113,12 @@ test('重置密码成功', function () {
         ->assertOk()
         ->assertJson(['code' => 1]);
 
-    expect(Hash::check('newpassword123', $user->fresh()->password))->toBeTrue();
+    $user->refresh();
+    expect(Hash::check('newpassword123', $user->password))->toBeTrue();
+    // 重置后吊销所有旧会话：refresh token 清空 + token_version bump + logout_at 落地
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(0);
+    expect($user->token_version)->toBe(1);
+    expect($user->logout_at)->not->toBeNull();
 });
 
 test('重置密码-验证码无效返回错误', function () {

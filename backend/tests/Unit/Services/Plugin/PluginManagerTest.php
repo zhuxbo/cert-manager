@@ -157,7 +157,7 @@ test('validateReleaseUrl 拒绝公网 http（防中间人替换插件包）', fu
 
     // 公网 IP 走明文 http 必须拒绝（插件包是可执行代码 → 条件性 RCE）
     expect(fn () => $method->invoke($manager, $url))
-        ->toThrow(RuntimeException::class, '公网地址必须使用 HTTPS');
+        ->toThrow(RuntimeException::class, '明文 HTTP 仅限');
 })->with([
     '公网 IP' => ['http://8.8.8.8/plugin/releases.json'],
     '公网域名' => ['http://example.com/plugin'],
@@ -177,7 +177,23 @@ test('validateReleaseUrl 放行私网 http（内网离线部署）', function (s
     '10 段' => ['http://10.0.0.5/plugin'],
     '172.16 段' => ['http://172.16.0.1/plugin'],
     '回环' => ['http://127.0.0.1/plugin'],
-    '链路本地（云元数据）' => ['http://169.254.169.254/plugin'],
+]);
+
+test('validateReleaseUrl 拒绝 link-local/元数据/CGNAT/0.0.0.0 http（SSRF 防护）', function (string $url) {
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new PluginManager($versionManager);
+
+    $reflection = new ReflectionClass($manager);
+    $method = $reflection->getMethod('validateReleaseUrl');
+
+    // 这些保留段不是合法内网部署目标，http 一律拒绝，防被诱导对元数据/内网发起 SSRF 取回
+    expect(fn () => $method->invoke($manager, $url))
+        ->toThrow(RuntimeException::class, '明文 HTTP 仅限');
+})->with([
+    '云元数据 169.254.169.254' => ['http://169.254.169.254/latest/meta-data/'],
+    'link-local 169.254' => ['http://169.254.0.1/plugin'],
+    'CGNAT 100.64' => ['http://100.64.0.1/plugin'],
+    '0.0.0.0' => ['http://0.0.0.0/plugin'],
 ]);
 
 test('validateReleaseUrl 放行 https（含公网，TLS 防篡改）', function (string $url) {
