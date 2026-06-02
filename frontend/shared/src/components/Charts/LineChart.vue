@@ -75,6 +75,13 @@ const initChart = () => {
 const updateChart = () => {
   if (!chartInstance) return;
 
+  // 首帧数据未就绪时父组件可能传入空 yAxisConfig（如 Dashboard 异步加载）。
+  // echarts 在「有 xAxis 但 yAxis 为空数组」时会抛 axis.getAxesOnZeroOf is not
+  // a function，故空数组回退到单个默认 Y 轴，保证坐标系完整。
+  const yAxisConfig = props.yAxisConfig.length
+    ? props.yAxisConfig
+    : [{ name: "", position: "left" as const }];
+
   const option: EChartsCoreOption = {
     title: {
       text: props.title,
@@ -121,7 +128,7 @@ const updateChart = () => {
         }
       }
     },
-    yAxis: props.yAxisConfig.map((config, index) => ({
+    yAxis: yAxisConfig.map((config, index) => ({
       type: config.type || "value",
       position: config.position,
       name: config.name,
