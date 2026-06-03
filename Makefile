@@ -100,3 +100,10 @@ install: ## 宿主机安装前端依赖
 
 front: ## 宿主机启动前端 dev（admin:5201 / user:5202）
 	pnpm install && pnpm dev
+
+plugins-build: ## 构建所有插件前端（产物不入库，clone 后或改插件 src 后跑一次）
+	@for d in plugins/*/frontend/admin plugins/*/frontend/user; do \
+		[ -f "$$d/package.json" ] || continue; \
+		echo "==> $$d"; \
+		pnpm -C "$$d" install --ignore-workspace && pnpm -C "$$d" build || exit 1; \
+	done

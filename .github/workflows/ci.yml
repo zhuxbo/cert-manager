@@ -473,6 +473,10 @@ jobs:
       - name: Build user
         run: pnpm build:user
 
+      - name: Build plugins
+        # 插件前端产物不入库（方案 B），CI 现构建以验证各插件可编译、防 src 漂移无人发现
+        run: make plugins-build
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

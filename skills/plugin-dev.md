@@ -139,7 +139,13 @@ cd plugins/{name}/frontend/admin && pnpm install --ignore-workspace && pnpm buil
 bash plugins/release-plugin.sh {name} --version x.y.z --build-only
 ```
 
-**开发环境静态资源映射**：`plugin.json` 中的 bundle 路径（如 `frontend/admin/notice-plugin.iife.js`）不含 `dist/`，但 Vite 构建产物输出在 `frontend/{side}/dist/`。主系统 admin/user 的 `vite.config.ts` 中 `servePlugins()` 中间件自动将 `/plugins/{name}/frontend/{side}/{file}` 映射到 `dist/{file}`，开发环境无需手动复制。
+**构建产物不入库（方案 B）+ 开发环境静态资源映射**：插件前端构建产物**一律不入 git**（`*/frontend/{admin,user}/*.{iife.js,css}` 已加入 `plugins/.gitignore`），dev 与 release 都现构建：
+
+- **新 clone 后**：先跑一次 `make plugins-build`（遍历所有插件 `pnpm install --ignore-workspace && pnpm build`，产物输出到各自 `dist/`），否则前端控制台报 `[PluginLoader] Failed to load plugin`（404）
+- **改了插件 src 后**：重跑该插件 `pnpm build`（或 `make plugins-build`）+ 主应用**硬刷新**（`<script>` 加载无 cache busting，**无 HMR**）
+- `servePlugins()` 中间件把请求的扁平路径映射到 `dist/{file}` 取产物（`plugin.json` bundle 路径不含 `dist/`）；**dist 不存在即返回 `503` + 终端 `[servePlugins]` warn 提示 `make plugins-build`**，不再静默 404 让人误判为路径/插件坏了。生产由 Nginx serve 安装包内的扁平产物
+
+> **为什么不入库**：入库构建产物会与 src **漂移**——`pnpm build` 只更新 `dist/`、不碰扁平副本，dev 又优先用 dist 显示「正常」，改 src 后极易忘记同步且无感（CI 也不构建插件前端、不会拦下）。而扁平副本对生产无用（`PluginManager` 装 release zip，包内产物由 `release-plugin.sh` 打包时现构建），纯属 dev 便利。故统一「不入库、现构建」，从源头消除漂移。
 
 **版本号不入仓库**：`plugin.json` 源文件不含 `version` 字段，由 `release-plugin.sh --version x.y.z` 在打包时动态注入到临时副本。开发环境下 `PluginManager` 读取时回落为 `0.0.0`。
 
@@ -463,5 +469,6 @@ php artisan route:clear && php artisan config:clear
 
 - **无后端也能加载**：`PluginServiceProvider` 仅在存在 `backend/` 时注册命名空间/provider，`boot()` 对 `provider=null` 跳过，故纯前端插件正常加载、`/api/plugins` 仍返回 bundle 路径。无迁移、无 CI job。
 - **重型库进插件 + iframe 隔离**：Scalar（~1MB JS）用官方 standalone bundle —— `package.json` 的 `build` 跑 `vite build && cp node_modules/@scalar/api-reference/dist/browser/standalone.js dist/scalar-standalone.js`；外壳 IIFE 仅 ~1KB（external vue），页面用 `<iframe srcdoc>` 加载 standalone。好处：CSS 完全隔离、按需加载（打开才载）、布局 Scalar 原生。release 脚本自动 `cp frontend/{side}/dist/*`，`scalar-standalone.js` 随包。
+- **重型产物 `scalar-standalone.js` ~3.5MB**：`build` 脚本把它拷进 `dist/`、`release` 打包时进包。与所有插件一样产物不入库（见上方「构建产物不入库（方案 B）」），`make plugins-build` 会一并构建，无需单独处理。
 - **iframe srcdoc 三个坑**：① srcdoc 的 base 是 `about:srcdoc`、`location.origin` 可能为 `"null"`，spec 的相对 server 会拼成 null（test request 地址 null）→ **父页拼好绝对 url + 显式 `servers`** 传入。② 高度：Pure Admin 用 `el-scrollbar` 内部滚动、`documentElement` 不滚 → 向上找真正滚动祖先测 `scrollHeight-clientHeight` 扣除，避免高出页脚。③ Scalar 渲染在 **Shadow DOM**，外层 CSS/JS 穿不透 → 隐藏 Introduction 用 Scalar `customCss`（注入 shadow）+ JS 递归穿 `shadowRoot` 按文本隐藏侧栏项。
 - **开发期识别**：`compose.yaml` 把 `./plugins` 挂到 `/var/plugins`（= 容器内 `base_path('../plugins')`，注意 `/var/www` 父目录是 `/var`），`make restart` 后 `/api/plugins` 才返回插件；user dev 的 `servePlugins` 中间件把 `/plugins/{name}/frontend/user/*` 映射到宿主 `dist`。
