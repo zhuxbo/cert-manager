@@ -56,8 +56,14 @@ test('tid 维度超限被拦截', function () {
 
     // 第 4 次（tid 维度）被拦截
     $request = Request::create('/api/easy/check', 'POST', ['tid' => 'TID-A', 'email' => 'a@example.com']);
-    easyRl()->handle($request, passThrough());
-})->throws(ApiResponseException::class, '操作过于频繁');
+    try {
+        easyRl()->handle($request, passThrough());
+        $this->fail('期望触发限流抛出 ApiResponseException');
+    } catch (ApiResponseException $e) {
+        // 业务消息在 apiResponse['msg']；ApiResponseException 标准 getMessage() 恒空
+        expect($e->getApiResponse()['msg'])->toContain('操作过于频繁');
+    }
+});
 
 test('不同 tid 计数互不影响', function () {
     setEasyRlSetting('easyRateLimitTidMax', 2);
@@ -87,8 +93,13 @@ test('IP 维度兜底（即使换 tid 也拦截枚举）', function () {
     }
 
     $request = Request::create('/api/easy/check', 'POST', ['tid' => 'TID-X']);
-    easyRl()->handle($request, passThrough());
-})->throws(ApiResponseException::class, '操作过于频繁');
+    try {
+        easyRl()->handle($request, passThrough());
+        $this->fail('期望触发限流抛出 ApiResponseException');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse()['msg'])->toContain('操作过于频繁');
+    }
+});
 
 test('未传 tid 时仅 IP 维度计数', function () {
     setEasyRlSetting('easyRateLimitTidMax', 1);
@@ -122,7 +133,10 @@ test('缺省配置走常量默认值', function () {
         passThrough()
     ))->toThrow(ApiResponseException::class);
 })->skip(
-    EasyRateLimiter::DEFAULT_IP_MAX < EasyRateLimiter::DEFAULT_TID_MAX,
+    // 条件必须用闭包延迟到运行时求值：->skip() 的非闭包参数在 Pest 收集阶段就 eager
+    // 求值，早于 PluginServiceProvider 注册插件 autoload，会触发 EasyRateLimiter 过早
+    // 加载报 "Class not found"
+    fn () => EasyRateLimiter::DEFAULT_IP_MAX < EasyRateLimiter::DEFAULT_TID_MAX,
     'IP 上限低于 tid 上限时此用例不适用'
 );
 
