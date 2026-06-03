@@ -12,7 +12,7 @@ return new class extends Migration
             Schema::create('acmes', function (Blueprint $table) {
                 $table->bigInteger('id')->unsigned()->primary()->comment('Snowflake ID');
                 $table->unsignedBigInteger('user_id')->index();
-                $table->unsignedInteger('product_id');
+                $table->unsignedInteger('product_id')->index();
                 $table->string('brand', 50);
                 $table->integer('period')->comment('有效期（月）');
                 $table->unsignedInteger('purchased_standard_count')->default(0)->comment('标准域名额度');
@@ -25,12 +25,14 @@ return new class extends Migration
                 $table->timestamp('period_from')->nullable();
                 $table->timestamp('period_till')->nullable();
                 $table->timestamp('cancelled_at')->nullable();
-                $table->enum('status', ['unpaid', 'pending', 'active', 'cancelling', 'cancelled', 'revoked', 'expired']);
+                $table->enum('status', ['unpaid', 'pending', 'active', 'cancelling', 'cancelled', 'revoked', 'expired'])->index();
                 $table->string('channel', 20)->default('web')->comment('提交通道：web/admin/api/deploy/auto');
                 $table->string('remark', 255)->nullable();
                 $table->decimal('amount', 10, 2)->comment('订单金额');
                 $table->string('admin_remark', 255)->nullable()->comment('管理员备注');
                 $table->timestamps();
+
+                $table->index('created_at');
             });
         }
     }

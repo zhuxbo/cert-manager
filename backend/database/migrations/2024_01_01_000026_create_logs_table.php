@@ -18,7 +18,7 @@ return new class extends Migration
                 $table->integer('status_code')->default(200)->index()->comment('状态码');
                 $table->unsignedTinyInteger('status')->default(0)->index()->comment('状态: 0=失败, 1=成功');
                 $table->decimal('duration')->default(0)->comment('耗时(秒)');
-                $table->timestamp('created_at')->nullable()->comment('创建时间');
+                $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
             });
         }
 
@@ -31,7 +31,7 @@ return new class extends Migration
                 $table->mediumtext('response')->nullable()->comment('响应内容');
                 $table->string('ip', 100)->nullable()->comment('IP地址');
                 $table->unsignedTinyInteger('status')->default(0)->index()->comment('状态: 0=失败, 1=成功');
-                $table->timestamp('created_at')->nullable()->comment('创建时间');
+                $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
             });
         }
 
@@ -68,7 +68,7 @@ return new class extends Migration
                 $table->decimal('duration')->default(0)->comment('耗时(秒)');
                 $table->string('ip', 100)->nullable()->comment('IP地址');
                 $table->string('user_agent', 500)->nullable()->comment('User Agent');
-                $table->timestamp('created_at')->nullable()->comment('创建时间');
+                $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
             });
         }
 
@@ -101,7 +101,7 @@ return new class extends Migration
                 $table->mediumtext('trace')->nullable()->comment('错误堆栈跟踪');
                 $table->integer('status_code')->default(500)->index()->comment('状态码');
                 $table->string('ip', 100)->nullable()->comment('IP地址');
-                $table->timestamp('created_at')->nullable()->comment('创建时间');
+                $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
             });
         }
     }

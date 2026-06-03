@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-05-31 13:53:35",
+    "generated_at": "2026-06-03 12:49:29",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -208,6 +208,16 @@
                 }
             },
             "indexes": {
+                "acmes_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "acmes_eab_kid_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -218,11 +228,31 @@
                         null
                     ]
                 },
+                "acmes_product_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "product_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "acmes_refer_id_unique": {
                     "unique": true,
                     "type": "BTREE",
                     "columns": [
                         "refer_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "acmes_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "status"
                     ],
                     "sub_parts": [
                         null
@@ -1180,6 +1210,16 @@
                         null
                     ]
                 },
+                "ca_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "ca_logs_status_code_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -1298,6 +1338,16 @@
                     "type": "BTREE",
                     "columns": [
                         "correlation_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "callback_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
                     ],
                     "sub_parts": [
                         null
@@ -2598,6 +2648,16 @@
                     "type": "BTREE",
                     "columns": [
                         "correlation_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "error_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
                     ],
                     "sub_parts": [
                         null
@@ -5274,6 +5334,16 @@
                     "type": "BTREE",
                     "columns": [
                         "correlation_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "user_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
                     ],
                     "sub_parts": [
                         null
