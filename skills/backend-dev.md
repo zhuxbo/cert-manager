@@ -80,6 +80,12 @@ backend/
 | `BackupManager`        | 备份和恢复                                                             |
 | `VersionManager`       | 版本比较，环境检测                                                     |
 
+**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：**遍历 source backend 顶层目录**逐个 `syncDirectory`（**只覆盖不删除**），`skipDirs` 排除 `storage`（运行时数据 + 升级自身状态 `upgrade.lock`/status；且 `removeEmptyDirectories` 会误删其空目录）和 `vendor`（单独同步）；根文件按清单 `artisan`+`composer.json/lock`+`php-requirements.json` 复制，`version.json` 由 `updateVersionJsonWithPreservedFields` 单独处理（保留 `release_url`/`network`）。早期用硬编码白名单，曾漏 `resources` 导致 `resources/docs/api/*.yaml`（对外 API 文档 `MetaController::apiDoc` 读取）等代码资源不随升级更新，症状是「代码更新了（app/routes → 路由注册，POST 405）但资源 404」；**改动态发现后新增顶层目录永不再漏**（upgrade 包打包已 exclude `storage/*`/`vendor/`/`tests/`，source 有什么同步什么天然安全）。
+
+**两条升级路径删除语义不同、且都正确**：后台升级（PHP，在被升级代码内运行、不能全量删自身）→ 只覆盖不删除，旧版删除的文件会残留（本项目路由是显式白名单不扫目录，残留基本无害）；需彻底清理残留时走 `upgrade.sh`（外部 shell，`rm -rf` 各目录 + 整体 `cp` 全量替换、天然无残留）。一致性目标是「都不漏应更新的目录」，删除策略因运行环境不同而必须不同。
+
+**升级器自更新有一次时序滞后**：本次升级跑的是服务器上的旧 `PackageExtractor`，逻辑修复要下一次升级才生效（或本次升级后手动补缺失资源）。回归测试见 `PackageExtractorTest`（动态发现新目录 / storage 跳过 / resources 同步）。
+
 ### 升级模式
 
 | 特性             | PHP API 升级                      | Shell 脚本升级                                        |

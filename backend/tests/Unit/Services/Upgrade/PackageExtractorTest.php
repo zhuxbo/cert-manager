@@ -226,6 +226,90 @@ test('get download path', function () {
     expect($path)->toBeDirectory();
 });
 
+test('applyBackendUpgrade 同步 resources 目录到安装目录（回归：对外 API 文档 yaml 不再丢失）', function () {
+    // 升级包 source：backend/ 下含 app（基线）+ resources/docs/api/v2.yaml（曾因不在白名单被漏掉）
+    $sourceDir = "$this->testDir/pkg/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/resources/docs/api", 0755, true);
+    File::put("$sourceDir/app/Marker.php", '<?php // marker');
+    File::put("$sourceDir/resources/docs/api/v2.yaml", "openapi: 3.1.0\ninfo:\n  title: V2\n");
+
+    // base_path 临时指向空安装目录，避免污染真实项目；finally 恢复（applyBackendUpgrade 写 base_path()）
+    $installDir = "$this->testDir/install";
+    File::makeDirectory($installDir, 0755, true);
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        // 回归断言：resources/docs/api/v2.yaml 必须随升级落地（否则 MetaController::apiDoc 读不到 → 404）
+        expect("$installDir/resources/docs/api/v2.yaml")->toBeFile();
+        expect(File::get("$installDir/resources/docs/api/v2.yaml"))->toContain('openapi: 3.1.0');
+        // 基线：app 目录照常同步
+        expect("$installDir/app/Marker.php")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 动态发现顶层目录（新增目录不再被白名单漏掉）', function () {
+    // source 含一个不在旧硬编码白名单（app/config/database/routes/bootstrap/public/resources）里的新顶层目录
+    $sourceDir = "$this->testDir/pkg/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/newmodule/sub", 0755, true);
+    File::put("$sourceDir/app/Marker.php", '<?php // marker');
+    File::put("$sourceDir/newmodule/sub/Feature.php", '<?php // new module');
+
+    $installDir = "$this->testDir/install";
+    File::makeDirectory($installDir, 0755, true);
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        // 动态发现：新目录也被同步（硬编码白名单不含 newmodule，会漏）
+        expect("$installDir/newmodule/sub/Feature.php")->toBeFile();
+        expect("$installDir/app/Marker.php")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态、空目录）', function () {
+    $sourceDir = "$this->testDir/pkg/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/storage/framework", 0755, true);
+    File::put("$sourceDir/app/Marker.php", '<?php // marker');
+    // 包内 storage 带“污染”文件：若被同步会落到安装目录
+    File::put("$sourceDir/storage/framework/poison.txt", 'from-package');
+
+    $installDir = "$this->testDir/install";
+    File::makeDirectory("$installDir/storage/framework", 0755, true);
+    File::makeDirectory("$installDir/storage/app/public", 0755, true); // 标准空目录，不能被 removeEmptyDirectories 误删
+    // 安装目录预存升级自身状态（模拟 upgrade.lock / status.json），绝不能被覆盖
+    File::put("$installDir/storage/framework/state.json", 'RUNNING');
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        // storage 完全不被碰 —— 三条覆盖不同失败模式（skip 失效时各自独立 FAIL）
+        expect("$installDir/storage/app/public")->toBeDirectory();                      // removeEmptyDirectories 不误删 storage 空目录
+        expect("$installDir/storage/framework/poison.txt")->not->toBeFile();            // 包内 storage 内容不落地
+        expect(File::get("$installDir/storage/framework/state.json"))->toBe('RUNNING'); // 已有运行时状态不被覆盖
+        // 其他目录正常同步
+        expect("$installDir/app/Marker.php")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
 // ==================== zip-slip / 符号链接 安全校验（ArchiveGuard 接入） ====================
 
 test('extract 拒绝含 .. 路径遍历条目的升级包', function () {

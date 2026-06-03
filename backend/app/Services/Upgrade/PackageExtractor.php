@@ -184,16 +184,19 @@ class PackageExtractor
         // 保护自定义 API 适配器：先备份
         $preservedApiAdapters = $this->preserveCustomApiAdapters($targetDir);
 
-        // 需要同步的目录
-        $dirs = ['app', 'config', 'database', 'routes', 'bootstrap', 'public'];
-
-        foreach ($dirs as $dir) {
-            $sourcePath = "$sourceDir/$dir";
-            $targetPath = "$targetDir/$dir";
-
-            if (File::isDirectory($sourcePath)) {
-                $this->syncDirectory($sourcePath, $targetPath);
+        // 动态发现 source 顶层目录逐个同步，替代硬编码白名单 —— 新增目录永不再漏
+        // （曾因白名单漏 resources 导致对外 API 文档 yaml 不随升级更新 → 404）。
+        // skip storage（运行时数据 + 升级状态 upgrade.lock/status，绝不能碰，且
+        // syncDirectory 末尾的 removeEmptyDirectories 会误删其空目录）；vendor 单独处理。
+        // 仍只覆盖不删除：本服务在被升级的代码内运行、不能全量删自身；旧版删除的文件
+        // 残留无害（路由是显式白名单不扫目录），需彻底清理时用 upgrade.sh 全量升级。
+        $skipDirs = ['storage', 'vendor'];
+        foreach (File::directories($sourceDir) as $sourcePath) {
+            $name = basename($sourcePath);
+            if (in_array($name, $skipDirs, true)) {
+                continue;
             }
+            $this->syncDirectory($sourcePath, "$targetDir/$name");
         }
 
         // 同步 vendor 目录（如果存在）
@@ -202,8 +205,8 @@ class PackageExtractor
             $this->syncDirectory($vendorSource, "$targetDir/vendor");
         }
 
-        // 同步根目录文件
-        $rootFiles = ['composer.json', 'composer.lock', 'php-requirements.json'];
+        // 同步根目录文件（artisan 之前遗漏，补齐；version.json 由 updateVersionJsonWithPreservedFields 单独处理）
+        $rootFiles = ['artisan', 'composer.json', 'composer.lock', 'php-requirements.json'];
         foreach ($rootFiles as $file) {
             $sourceFile = "$sourceDir/$file";
             $targetFile = "$targetDir/$file";
@@ -761,14 +764,17 @@ class PackageExtractor
     protected function checkWritableBeforeApply(): void
     {
         $targetDir = base_path();
-        // 检查核心目录和 vendor（仅顶层目录，无性能影响）
-        $testDirs = ['app', 'config', 'database', 'routes', 'bootstrap', 'vendor'];
 
         $notWritable = [];
 
-        foreach ($testDirs as $dir) {
-            $path = "$targetDir/$dir";
-            if (is_dir($path) && ! is_writable($path)) {
+        // 动态发现 base_path 顶层目录检查可写性，与 applyBackendUpgrade 的动态同步范围对齐
+        // —— 避免白名单漏目录（resources/public 等被同步的目录也必须预检可写）。
+        // skip storage：它在下面单独检查，给更具体的错误消息。
+        foreach (File::directories($targetDir) as $path) {
+            if (basename($path) === 'storage') {
+                continue;
+            }
+            if (! is_writable($path)) {
                 $notWritable[] = $path;
             }
         }
