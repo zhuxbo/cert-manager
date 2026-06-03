@@ -59,9 +59,11 @@ const srcdoc = computed(() => {
     servers: [{ url: `${origin}/api/${active.value}` }],
     layout: "modern",
     hideClientButton: true,
+    hideDownloadButton: false,
     agentEnabled: false,
-    // customCss 由 Scalar 注入其 shadow DOM 内，能穿透隐藏 Introduction 概述区
-    customCss: ".introduction-section,.introduction-card{display:none!important}"
+    // 只隐藏概述描述文字，保留 introduction 区的「下载 OpenAPI 文档」按钮（与 description 平级）
+    customCss:
+      ".introduction-description{display:none!important}.section-container{border-top:none!important}"
   });
   return [
     "<!doctype html><html><head><meta charset='utf-8'>",
@@ -69,7 +71,8 @@ const srcdoc = computed(() => {
     // (/api/v2) 得到 null（test request 地址显示 null）；指定后正确拼成 origin/api/<surface>
     `<base href='${window.location.origin}/'>`,
     "<style>html,body,#app{height:100%;margin:0}",
-    ".introduction-section,.introduction-card{display:none!important}",
+    ".introduction-description{display:none!important}",
+    ".section-container{border-top:none!important}",
     "[class*='sidebar'] a[href*='description'],[class*='sidebar'] a[href*='introduction']{display:none!important}",
     "</style></head>",
     "<body><div id='app'></div>",
@@ -97,7 +100,7 @@ const srcdoc = computed(() => {
 
 <style scoped>
 .api-docs__bar {
-  padding: 12px 16px;
+  padding: 0 16px 12px 0;
 }
 .api-docs__frame {
   display: block;

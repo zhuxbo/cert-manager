@@ -22,7 +22,7 @@ paths:
       description: |
         `order` 为纯数字=ID、字符串=域名、含逗号=批量（≤100）；不传返回最近 100 条 active。
         `field=certificate|private_key` 时 `order` 须为单个 ID 或域名，**直接返回纯 PEM 文本**
-        （certificate 含中间证书；续费后地址不变）。
+        （certificate 含中间证书；重签后 ID 不变，续费返回新 ID）。
       parameters:
         - { name: order, in: query, required: false, schema: { type: string }, description: 订单 ID / 域名 / 逗号分隔批量 }
         - name: field
@@ -62,7 +62,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
               type: object
               required: [order_id]
@@ -97,7 +97,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
               type: object
               required: [order_id, status]
@@ -128,7 +128,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
               type: object
               required: [order_id, auto_reissue]
@@ -157,7 +157,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
               type: object
               required: [product_code, contact_email]
