@@ -3,6 +3,7 @@
 namespace Tests;
 
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Illuminate\Support\Facades\Storage;
 use Tests\Compat\Helpers;
 use Tests\Compat\SnapshotListener;
 
@@ -15,10 +16,40 @@ abstract class TestCase extends BaseTestCase
     {
         parent::setUp();
 
+        $this->isolateWorkerStorage();
+
         if (Helpers::isCaptureMode() || Helpers::isCompareMode()) {
             SnapshotListener::register();
             SnapshotListener::setCurrentTest($this->toString());
         }
+    }
+
+    /**
+     * 并行测试 storage 隔离：paratest 给每个 worker 注入 TEST_TOKEN，据此把运行时
+     * storage 路径重定向到 worker 专属目录，避免多 worker 共享真实磁盘产生跨进程
+     * 文件竞争（如 PurgeCommand 扫 verification 根，按本 worker DB 判孤立，误删其他
+     * worker 正在用的 verification/{orderId} 文件 → file_exists 偶发 false）。
+     *
+     * storage_path() 与 Storage 门面（local/public disk）同步隔离，保持二者路径一致
+     * （生产同为默认路径，对称）。framework 的 cache/log/session 用 bootstrap 时 config
+     * 已解析的默认路径，不受影响。单进程跑（无 TEST_TOKEN）直接返回，零侵入。
+     */
+    private function isolateWorkerStorage(): void
+    {
+        $token = getenv('TEST_TOKEN');
+        if ($token === false || $token === '') {
+            return;
+        }
+
+        $workerStorage = storage_path('framework/testing/worker-'.$token);
+        @mkdir($workerStorage.'/app/public', 0755, true);
+
+        $this->app->useStoragePath($workerStorage);
+        config([
+            'filesystems.disks.local.root' => $workerStorage.'/app',
+            'filesystems.disks.public.root' => $workerStorage.'/app/public',
+        ]);
+        Storage::forgetDisk(['local', 'public']);
     }
 
     protected function tearDown(): void
