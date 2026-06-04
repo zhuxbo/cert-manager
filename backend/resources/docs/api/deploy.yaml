@@ -1,0 +1,249 @@
+openapi: 3.1.0
+info:
+  title: 部署接口
+  version: "1.0"
+  description: |
+    供自动化部署工具（certimate 等）拉取证书、触发续费/重签、回报部署结果。
+
+    - **鉴权**：请求头 `Authorization: Bearer {部署 Token}`（在「设置 → 部署」获取；亦支持 `?token=`）。
+    - **统一响应**：`{ "code": 1|0, "msg": "", "data": {...} }`；`field` 取 PEM 时直接返回纯文本。
+
+servers:
+  - url: /api/deploy
+    description: 当前站点
+
+security:
+  - bearerAuth: []
+
+paths:
+  /:
+    get:
+      summary: 查询订单 / 拉取 PEM
+      description: |
+        `order` 为纯数字=ID、字符串=域名、含逗号=批量（≤100）；不传返回最近 100 条 active。
+        `field=certificate|private_key` 时 `order` 须为单个 ID 或域名，**直接返回纯 PEM 文本**
+        （certificate 含中间证书；重签后 ID 不变，续费返回新 ID）。
+      parameters:
+        - { name: order, in: query, required: false, schema: { type: string }, description: 订单 ID / 域名 / 逗号分隔批量 }
+        - name: field
+          in: query
+          required: false
+          schema: { type: string, enum: [certificate, private_key] }
+          description: 指定则返回纯 PEM 文本
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        "200":
+          description: 不带 field 返回 JSON 订单列表；带 field 返回纯 PEM 文本
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          page: { type: integer }
+                          page_size: { type: integer }
+                          renew_before_days: { type: integer }
+                          data:
+                            type: array
+                            items: { $ref: "#/components/schemas/DeployOrder" }
+            text/plain:
+              schema: { type: string, description: 纯 PEM（field 模式） }
+
+    post:
+      summary: 更新
+      description: |
+        按订单当前状态推进：`unpaid`→支付、`pending`→提交、
+        `active`→到期 ≤15 天续费（需开启自动续费）、否则重签。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id: { type: integer }
+                csr: { type: string, description: 不传则系统生成 }
+                domains: { type: string, description: 逗号分隔；不传沿用当前证书域名 }
+                validation_method:
+                  type: string
+                  enum: [delegation, file]
+                  description: 默认 delegation；file 按产品回落 file→https→http
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/DeployOrder"
+                          - type: object
+                            properties:
+                              renew_before_days: { type: integer }
+
+  /callback:
+    post:
+      summary: 回报部署结果
+      description: 成功才记录部署时间。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, status]
+              properties:
+                order_id: { type: integer }
+                status: { type: string, enum: [success, failure] }
+                deployed_at: { type: string, description: 可选，部署完成时间 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          order_id: { type: integer }
+                          status: { type: string }
+                          recorded: { type: boolean }
+                          renew_before_days: { type: integer }
+
+  /auto-reissue:
+    post:
+      summary: 开关订单自动重签
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, auto_reissue]
+              properties:
+                order_id: { type: integer }
+                auto_reissue: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          order_id: { type: integer }
+                          auto_reissue: { type: boolean }
+
+  /acme/new:
+    post:
+      summary: 创建 ACME 订阅
+      description: 一步到位（创建 + 支付 + 提交），返回含 EAB + directory_url。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_code, contact_email]
+              properties:
+                product_code: { type: string, maxLength: 50 }
+                contact_email: { type: string, format: email, maxLength: 254 }
+                period: { type: integer }
+                plus: { type: integer, enum: [0, 1] }
+                refer_id: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AcmeSubscription" }
+
+  /acme/{id}:
+    get:
+      summary: ACME 订阅详情
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AcmeSubscription" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 部署 Token（在「设置 → 部署」获取；亦支持 ?token=）
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code: { type: integer, enum: [0, 1] }
+        msg: { type: string }
+        data: {}
+
+    DeployOrder:
+      type: object
+      properties:
+        order_id: { type: integer }
+        domains: { type: string }
+        status: { type: string }
+        certificate: { type: string, description: active 时返回 }
+        private_key: { type: string, description: active 时返回 }
+        ca_certificate: { type: string, description: active 时返回（中间证书） }
+        issued_at: { type: [string, "null"] }
+        expires_at: { type: [string, "null"] }
+        file:
+          type: object
+          description: processing 且文件验证时返回
+          properties:
+            path: { type: string }
+            content: { type: string }
+
+    AcmeSubscription:
+      type: object
+      description: ACME 订阅记录（含 EAB 与 directory_url）；已隐藏 user_id/plus/api_id 等内部字段
+      properties:
+        id: { type: integer }
+        product: { type: [object, "null"], description: 关联产品 }
+        brand: { type: string }
+        period: { type: integer, description: 周期（月） }
+        purchased_standard_count: { type: integer, description: 标准域名额度 }
+        purchased_wildcard_count: { type: integer, description: 通配符域名额度 }
+        contact_email: { type: string }
+        eab_kid: { type: string }
+        eab_hmac: { type: string }
+        directory_url: { type: string }
+        vendor_id: { type: [string, "null"] }
+        refer_id: { type: [string, "null"] }
+        period_from: { type: [string, "null"] }
+        period_till: { type: [string, "null"] }
+        cancelled_at: { type: [string, "null"] }
+        status: { type: string }

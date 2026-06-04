@@ -1,8 +1,9 @@
 <?php
 
 use App\Utils\LogScrubber;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 afterEach(function () {
     config([

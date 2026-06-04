@@ -8,6 +8,7 @@ use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\DetectsConcurrencyErrors;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\JsonResponse;
@@ -139,7 +140,7 @@ class ApiExceptions
         $sqlState = (string) $e->getCode();
         $message = $e->getMessage();
         $errCode = null;
-        if ($e instanceof \Illuminate\Database\QueryException) {
+        if ($e instanceof QueryException) {
             $errCode = $e->errorInfo[1] ?? null;
         }
 
@@ -155,9 +156,12 @@ class ApiExceptions
         }
 
         // MySQL 错误消息含约束名，按命名匹配业务消息
+        // ACME refer_id 应用层 checkAcmeReferId 通过 SELECT-then-INSERT 防重，
+        // 极端并发下两个 SELECT 同时返回不存在 → DB unique 兜底拦截，本翻译保证消息与应用层一致
         return match (true) {
             str_contains($message, 'funds_pay_method_pay_sn_unique') => '支付编号重复请勿重复支付',
             str_contains($message, 'transactions_dedup_unique') => '交易记录已存在',
+            str_contains($message, 'acmes_refer_id_unique') => 'Refer id already exists',
             default => '数据已存在',
         };
     }

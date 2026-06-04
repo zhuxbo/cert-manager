@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Models\UserRefreshToken;
 use App\Utils\VerifyCodeHelper;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 
@@ -307,8 +308,15 @@ class AuthController extends BaseController
             $this->error('新密码不能与旧密码相同');
         }
 
-        $user->password = $newPassword;
-        $user->save();
+        DB::transaction(function () use ($user, $newPassword) {
+            $user->password = $newPassword;
+            // 改密后吊销所有旧会话：bump token_version 使旧 access token 失效，并清除全部 refresh token（与 logout 全设备登出一致）
+            $user->token_version = ($user->token_version ?? 0) + 1;
+            $user->logout_at = now();
+            $user->save();
+
+            UserRefreshToken::deleteTokenByUserId($user->id);
+        });
 
         $this->success();
     }
@@ -403,8 +411,9 @@ class AuthController extends BaseController
 
         $data = ['email' => $email, 'password' => $password];
 
+        // 不用 exists:users,email：避免通过校验错误暴露邮箱是否已注册（账号枚举）
         $validator = Validator::make($data, [
-            'email' => 'required|string|email|max:50|exists:users,email',
+            'email' => 'required|string|email|max:50',
             'password' => 'required|string|min:6|max:32',
         ]);
 
@@ -421,14 +430,20 @@ class AuthController extends BaseController
             $this->error('验证码无效或已过期');
         }
 
-        // 更新用户密码
+        // 仅对已注册邮箱真正改密；对外不区分邮箱是否存在，统一返回成功式响应，防止账号枚举
         $user = User::where('email', $email)->first();
-        if (! $user) {
-            $this->error('用户不存在');
-        }
+        if ($user) {
+            DB::transaction(function () use ($user, $password) {
+                $user->password = $password;
+                // 忘记密码重置后吊销所有旧会话（账号可能已失陷）：bump token_version 使旧 access token
+                // 失效 + 写 logout_at + 清除全部 refresh token（与登录态改密 updatePassword 一致）
+                $user->token_version = ($user->token_version ?? 0) + 1;
+                $user->logout_at = now();
+                $user->save();
 
-        $user->password = $password;
-        $user->save();
+                UserRefreshToken::deleteTokenByUserId($user->id);
+            });
+        }
 
         $this->success();
     }

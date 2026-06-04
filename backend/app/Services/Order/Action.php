@@ -44,7 +44,7 @@ class Action
 
     public function __construct()
     {
-        $this->api = new Api;
+        $this->api = app(Api::class);
     }
 
     /**
@@ -320,7 +320,8 @@ class Action
         $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
         $orderIds = array_map('intval', $orderIds);
 
-        count($orderIds) > 20 && $this->error('订单数量不能超过20');
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($orderIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         $issueVerify && VerifyUtil::issueVerify($orderIds);
 
@@ -512,35 +513,77 @@ class Action
             $order->period_till = max($data['expires_at'], $periodTill);
         }
 
-        // 状态是否变化
+        // 状态是否变化（事务外粗筛，仅用于决定是否进入 refundForSyncedCancel 分支；
+        // 该分支自身锁 order 行并在锁内二次校验四条件，外层粗筛不会造成误退款）
         $hasStatusChanged = isset($data['status']) && $data['status'] !== $cert->status;
 
-        // 证书签发后发送通知邮件
-        if ($hasStatusChanged && $data['status'] === 'active' && $user->email) {
-            app(NotificationCenter::class)->dispatch(new NotificationIntent(
-                'cert_issued',
-                'user',
-                $user->id,
-                [
-                    'order_id' => $order->id,
-                    'email' => $user->email,
-                ],
-                ['mail']
-            ));
+        // 同步退款分支：上游 cancelled + 过渡态 + new/renew + 开关开 → 专用 helper 处理退款
+        if ($hasStatusChanged
+            && ($data['status'] ?? null) === 'cancelled'
+            && in_array($cert->status, ['processing', 'approving', 'cancelling'])
+            && in_array($cert->action, ['new', 'renew'])
+            && get_system_setting('site', 'autoRefundOnSync')
+        ) {
+            // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
+            $this->refundForSyncedCancel($order, $data);
+            $this->success();
         }
 
-        // 签发 取消 吊销 发起回调
-        if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'])) {
-            $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
-            $callback && $this->createTask($orderId, 'callback');
-            // 删除相关任务
-            $this->deleteTask($orderId, 'commit,sync,revalidate');
-        }
+        // 锁内重取 + 终态守卫 + 写回：慢 IO（上游 get）已在锁外完成，此事务只包状态判定副作用 + 写回。
+        // 锁序 task→order：与 commitCancel(active)/revokeCancel 统一。controller 直调 sync 时无前置 task 锁，
+        // 必须在锁 order 前先按 task→order 顺序锁住本订单的 commit/sync/revalidate 任务（与下面 deleteTask 删除范围一致），
+        // 否则与 commitCancel(锁 sync,revalidate→order)/refundForSyncedCancel 反序，task 集合相交触发 InnoDB 死锁。
+        // 经 TaskJob 调用时 TaskJob 已先持本 task 行锁（同事务 lockForUpdate 可重入），叠加后整体仍是 task→order，不反序。
+        // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订单复活。
+        DB::transaction(function () use ($orderId, $order, $cert, $user, $data) {
+            // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
+            Task::where('order_id', $orderId)
+                ->whereIn('action', ['commit', 'sync', 'revalidate'])
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
 
-        $order->save();
-        $cert->update($data);
+            // 锁顺序 2：再锁 order。锁内重读权威 status（重取 order 带 latestCert 重新加载），重取失败回落到外层陈旧值
+            $lockedOrder = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($orderId);
+            $lockedStatus = $lockedOrder?->latestCert->status ?? $cert->status;
 
-        // 强制更新不返回提示
+            // 终态守卫（泛化到所有路径）：本地已是终态时拒绝上游 status 覆盖，防滞后 active 复活已退款/已重签订单
+            if (in_array($lockedStatus, ['cancelled', 'revoked', 'renewed', 'reissued', 'failed'], true)) {
+                unset($data['status']);
+            }
+
+            // 用锁内权威 status 重算状态变化，后续通知/回调/deleteTask 均以此为准
+            $hasStatusChanged = isset($data['status']) && $data['status'] !== $lockedStatus;
+
+            // 证书签发后发送通知邮件
+            if ($hasStatusChanged && $data['status'] === 'active' && $user->email) {
+                app(NotificationCenter::class)->dispatch(new NotificationIntent(
+                    'cert_issued',
+                    'user',
+                    $user->id,
+                    [
+                        'order_id' => $order->id,
+                        'email' => $user->email,
+                    ]
+                ));
+            }
+
+            // 签发 取消 吊销 发起回调
+            if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'], true)) {
+                $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+                $callback && $this->createTask($orderId, 'callback');
+                // 删除相关任务
+                $this->deleteTask($orderId, 'commit,sync,revalidate');
+            }
+
+            $order->save();
+            $cert->update($data);
+        });
+
+        // 强制更新不返回提示（success 抛 ApiResponseException 须在事务闭包外）
         $force || $this->success();
     }
 
@@ -896,6 +939,14 @@ class Action
             $transaction = OrderUtil::getCancelTransaction($order->toArray());
 
             // 创建交易记录并退款
+            //
+            // 防双退底线（与 refundForSyncedCancel 注释互引，二者协作不可单独删除）：
+            //   - 锁内 status 校验：上面 L926「status===cancelled → error('订单已取消')」是第一道。
+            //     refundForSyncedCancel 已退款并置 cancelled 后刻意保留的残留 cancel task，被
+            //     TaskJob 唤醒调用本方法时，会在锁内撞上该校验抛错回滚，不会走到此处二次退款。
+            //   - DB 唯一索引 transactions_dedup_unique（type,transaction_id WHERE type!='order'，
+            //     迁移 2026_05_07_120000）是物理底线：即便锁校验被某条并发路径绕过，此 INSERT 也会
+            //     因唯一冲突抛错回滚。应用层校验仅是预检，删除唯一索引会破坏底线。
             Transaction::create($transaction);
 
             // 更新订单状态
@@ -911,6 +962,93 @@ class Action
         }
 
         $this->success();
+    }
+
+    /**
+     * 同步发现上游已取消时的退款入口
+     *
+     * 调用前提：sync 已校验触发四条件（status=cancelled + 过渡态 + new/renew + 开关开）。
+     * 与 cancel() 的区别：不调用上游 api->cancel（上游已是 cancelled 态）；不检查 refund_period（以上游状态为权威）。
+     *
+     * 锁序 task→order：与 commitCancel(active)/revokeCancel/sync 统一。本方法由 sync 调用，
+     * 同样要删除 commit/sync/revalidate task，故在锁 order 前先按 task→order 顺序锁住这批 task
+     * （与下面 deleteTask 删除范围一致），避免与 commitCancel 反序触发 InnoDB 死锁。
+     *
+     * cancel task 残留说明：当 cert.status=cancelling 时可能存在 cancel task。
+     * 此处仍不主动删除 cancel task（仅删 commit/sync/revalidate），与既有行为保持一致，
+     * 不扩大本次修复范围。安全性：残留的 cancel task 被 TaskJob 调用 Action::cancel() 时，
+     * 锁内检查 status===cancelled 会抛错回滚，不会重复退款。
+     *
+     * @throws Throwable
+     */
+    private function refundForSyncedCancel(Order $order, array $certData): void
+    {
+        DB::transaction(function () use ($order, $certData) {
+            // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
+            Task::where('order_id', $order->id)
+                ->whereIn('action', ['commit', 'sync', 'revalidate'])
+                ->whereIn('status', ['executing', 'stopped'])
+                ->lockForUpdate()
+                ->get();
+
+            // 锁顺序 2：再锁 order 行（防并发 sync 同时进入）
+            $order = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($order->id);
+
+            if (! $order) {
+                return;
+            }
+
+            $cert = $order->latestCert;
+
+            // 锁内二次校验四条件（并发情况下第二个拿到锁后看到最新状态）
+            if (! in_array($cert->status, ['processing', 'approving', 'cancelling'])) {
+                return;
+            }
+            if (! in_array($cert->action, ['new', 'renew'])) {
+                return;
+            }
+            if (! get_system_setting('site', 'autoRefundOnSync')) {
+                return;
+            }
+
+            // 防双退两道协作（详见下方 cancel() 注释，二者必须同时保留）：
+            //   ① 此处应用层 exists 仅作预检，避免无谓的 getCancelTransaction 计算；它不是物理底线
+            //      —— 锁外 exists+INSERT 非原子，并发 sync 仍可能两条都通过。
+            //   ② 物理底线 = transactions 表 DB 唯一索引 transactions_dedup_unique（虚拟列
+            //      dedup_key=CONCAT(type,':',transaction_id) WHERE type!='order'，迁移
+            //      2026_05_07_120000_add_fund_transaction_unique_indexes）+ Transaction::creating
+            //      钩子的二次 exists——任一并发漏过预检，唯一索引会让第二条 INSERT 抛错回滚。
+            // 重构者注意：删除应用层 exists 不会双退（索引兜底），但删除唯一索引会破坏物理底线。
+            $alreadyRefunded = Transaction::where('type', 'cancel')
+                ->where('transaction_id', $order->id)
+                ->exists();
+
+            if (! $alreadyRefunded) {
+                $transaction = OrderUtil::getCancelTransaction($order->toArray());
+                // amount=0 时 Transaction::creating 钩子返回 false 短路，不创建记录
+                Transaction::create($transaction);
+            }
+
+            // 更新 cert（合并上游数据 + 强制 status=cancelled + cancelled_at）
+            $certData['status'] = 'cancelled';
+            $certData['cancelled_at'] = now();
+            $cert->update($certData);
+
+            // 记录取消时间
+            $order->cancelled_at = now();
+            $order->save();
+
+            // 副作用：发起回调 + 清理相关 task
+            // TaskJob::dispatch 内部已加 ->afterCommit()，事务安全
+            $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+            if ($callback) {
+                $this->createTask($order->id, 'callback');
+            }
+            $this->deleteTask($order->id, 'commit,sync,revalidate');
+        });
     }
 
     /**

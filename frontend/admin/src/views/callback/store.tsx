@@ -54,7 +54,7 @@ export const useCallbackStore = (onSearch: () => void) => {
       prop: "token",
       valueType: "input",
       fieldProps: {
-        placeholder: "请输入认证令牌"
+        placeholder: "留空表示不修改，填写则更新"
       }
     },
     {
@@ -129,7 +129,11 @@ export const useCallbackStore = (onSearch: () => void) => {
   };
 
   const handleUpdate = () => {
-    update(storeId.value, storeValues.value).then(() => {
+    // token 留空表示不修改：后端详情已隐藏 token，编辑态默认空；为空则不提交该字段，
+    // 避免把现有 token 覆盖成空串（Callback token 无访问器，空串会使回调失去 token 鉴权）
+    const payload = { ...storeValues.value };
+    if (!payload.token) delete payload.token;
+    update(storeId.value, payload).then(() => {
       onSearch();
       showStore.value = false;
     });

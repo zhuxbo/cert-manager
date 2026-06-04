@@ -50,6 +50,8 @@ class RateLimiter
         // IP 限流相对宽松，主要防止暴力攻击
         $limit = match ($limiter) {
             'v1', 'v2', 'deploy', 'acme' => 120,
+            'enterprise-lookup' => 30,
+            'zipcode-lookup' => 60,
             default => 60,
         };
 
@@ -124,11 +126,15 @@ class RateLimiter
      * 用当前窗口 + 上一窗口加权估算，平滑窗口边界突发
      * 例：窗口 60s，限额 60 次，当前窗口已过 20s（剩余比例 66.7%）
      * 估算值 = 当前窗口计数 + 上一窗口计数 × 66.7%
+     *
+     * 用 now()->timestamp 而非 time()：前者可被 Carbon::setTestNow 控制，
+     * 让滑动窗口测试能冻结时间避免 60+1 次循环跨窗口边界（边界跨越会让
+     * estimated 被 prev 权重稀释到 limit 以下，导致限流测试 flaky）。
      */
     private function checkLimit(string $key, int $limit, string $errorMessage): void
     {
         $window = 60;
-        $now = time();
+        $now = now()->timestamp;
         $currentWindow = (int) floor($now / $window);
         $elapsed = $now % $window;
         $prevWeight = 1 - $elapsed / $window;

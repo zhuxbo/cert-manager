@@ -1,5 +1,7 @@
 <?php
 
+use Illuminate\Support\Str;
+
 return [
 
     /*
@@ -105,7 +107,7 @@ return [
 
     'cookie' => env(
         'SESSION_COOKIE',
-        \Illuminate\Support\Str::slug(env('APP_NAME', 'ssl'), '_').'_session'
+        Str::slug(env('APP_NAME', 'ssl'), '_').'_session'
     ),
 
     /*

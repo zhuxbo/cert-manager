@@ -44,6 +44,21 @@ class PackageExtractor
             throw new RuntimeException("无法打开升级包: 错误码 $result");
         }
 
+        // 解压前逐条目校验，防止路径遍历 / 符号链接攻击（与 BackupManager/PluginManager 共用 ArchiveGuard）。
+        // 升级包来自 release 站，结构为 version.json + backend/...，无 `..` 条目，故不传 allowExact。
+        try {
+            ArchiveGuard::assertSafeEntries($zip);
+        } catch (RuntimeException $e) {
+            $zip->close();
+            File::deleteDirectory($extractDir);
+            throw $e;
+        }
+
+        $entryNames = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entryNames[] = $zip->getNameIndex($i);
+        }
+
         if (! $zip->extractTo($extractDir)) {
             $zip->close();
             File::deleteDirectory($extractDir);
@@ -51,6 +66,14 @@ class PackageExtractor
         }
 
         $zip->close();
+
+        // 解压后断言产物落点仍在解压目录内（纵深兜底，含符号链接绕过）
+        try {
+            ArchiveGuard::assertExtractedWithin($extractDir, array_filter($entryNames, 'is_string'));
+        } catch (RuntimeException $e) {
+            File::deleteDirectory($extractDir);
+            throw new RuntimeException('升级包包含非法路径');
+        }
 
         Log::info("升级包已解压到: $extractDir");
 
@@ -161,16 +184,19 @@ class PackageExtractor
         // 保护自定义 API 适配器：先备份
         $preservedApiAdapters = $this->preserveCustomApiAdapters($targetDir);
 
-        // 需要同步的目录
-        $dirs = ['app', 'config', 'database', 'routes', 'bootstrap', 'public'];
-
-        foreach ($dirs as $dir) {
-            $sourcePath = "$sourceDir/$dir";
-            $targetPath = "$targetDir/$dir";
-
-            if (File::isDirectory($sourcePath)) {
-                $this->syncDirectory($sourcePath, $targetPath);
+        // 动态发现 source 顶层目录逐个同步，替代硬编码白名单 —— 新增目录永不再漏
+        // （曾因白名单漏 resources 导致对外 API 文档 yaml 不随升级更新 → 404）。
+        // skip storage（运行时数据 + 升级状态 upgrade.lock/status，绝不能碰，且
+        // syncDirectory 末尾的 removeEmptyDirectories 会误删其空目录）；vendor 单独处理。
+        // 仍只覆盖不删除：本服务在被升级的代码内运行、不能全量删自身；旧版删除的文件
+        // 残留无害（路由是显式白名单不扫目录），需彻底清理时用 upgrade.sh 全量升级。
+        $skipDirs = ['storage', 'vendor'];
+        foreach (File::directories($sourceDir) as $sourcePath) {
+            $name = basename($sourcePath);
+            if (in_array($name, $skipDirs, true)) {
+                continue;
             }
+            $this->syncDirectory($sourcePath, "$targetDir/$name");
         }
 
         // 同步 vendor 目录（如果存在）
@@ -179,8 +205,8 @@ class PackageExtractor
             $this->syncDirectory($vendorSource, "$targetDir/vendor");
         }
 
-        // 同步根目录文件
-        $rootFiles = ['composer.json', 'composer.lock'];
+        // 同步根目录文件（artisan 之前遗漏，补齐；version.json 由 updateVersionJsonWithPreservedFields 单独处理）
+        $rootFiles = ['artisan', 'composer.json', 'composer.lock', 'php-requirements.json'];
         foreach ($rootFiles as $file) {
             $sourceFile = "$sourceDir/$file";
             $targetFile = "$targetDir/$file";
@@ -203,10 +229,32 @@ class PackageExtractor
     ];
 
     /**
-     * API 适配器目录中的核心文件（可被升级覆盖）
-     * 其他文件/目录为用户自定义适配器，需要保护
+     * API 适配器目录中的核心文件（升级时覆盖，不保留）
+     * 包含核心入口、默认实现、接口契约文件 — 新增接口时显式登记到此处
      */
-    protected array $coreApiAdapterFiles = ['Api.php', 'default'];
+    protected array $coreApiAdapterFiles = [
+        'Api.php',
+        'default',
+        'OrderSourceApiInterface.php',
+        'AcmeSourceApiInterface.php',
+    ];
+
+    /**
+     * 自定义 API 适配器扫描的目录列表（Order / Acme 对称）
+     * key 用于备份归档命名空间，避免两个目录内同名子目录冲突
+     */
+    protected array $apiAdapterDirs = [
+        'order' => 'app/Services/Order/Api',
+        'acme' => 'app/Services/Acme/Api',
+    ];
+
+    /**
+     * 判断是否为核心 API 适配器文件（升级时覆盖，不保留）
+     */
+    protected function isCoreApiAdapterFile(string $name): bool
+    {
+        return in_array($name, $this->coreApiAdapterFiles, true);
+    }
 
     /**
      * 应用前端升级
@@ -272,43 +320,45 @@ class PackageExtractor
     protected function preserveCustomApiAdapters(string $targetDir): array
     {
         $preserved = [];
-        $apiAdapterDir = "$targetDir/app/Services/Order/Api";
 
-        if (! File::isDirectory($apiAdapterDir)) {
-            return $preserved;
-        }
-
-        // 遍历 Api 目录下的所有文件和目录
-        $items = array_merge(
-            File::files($apiAdapterDir),
-            File::directories($apiAdapterDir)
-        );
-
-        foreach ($items as $item) {
-            $name = is_string($item) ? basename($item) : $item->getFilename();
-
-            // 跳过核心文件
-            if (in_array($name, $this->coreApiAdapterFiles)) {
+        foreach ($this->apiAdapterDirs as $bucket => $relDir) {
+            $apiAdapterDir = "$targetDir/$relDir";
+            if (! File::isDirectory($apiAdapterDir)) {
                 continue;
             }
 
-            $itemPath = is_string($item) ? $item : $item->getRealPath();
+            $bucketItems = [];
+            $items = array_merge(
+                File::files($apiAdapterDir),
+                File::directories($apiAdapterDir)
+            );
 
-            // 保存自定义适配器
-            if (File::isDirectory($itemPath)) {
-                // 目录：递归复制到临时数组
-                $preserved[$name] = [
-                    'type' => 'directory',
-                    'files' => $this->getDirectoryContents($itemPath),
-                ];
-                Log::info("保留自定义 API 适配器目录: $name");
-            } else {
-                // 文件
-                $preserved[$name] = [
-                    'type' => 'file',
-                    'content' => File::get($itemPath),
-                ];
-                Log::info("保留自定义 API 适配器文件: $name");
+            foreach ($items as $item) {
+                $name = is_string($item) ? basename($item) : $item->getFilename();
+
+                if ($this->isCoreApiAdapterFile($name)) {
+                    continue;
+                }
+
+                $itemPath = is_string($item) ? $item : $item->getRealPath();
+
+                if (File::isDirectory($itemPath)) {
+                    $bucketItems[$name] = [
+                        'type' => 'directory',
+                        'files' => $this->getDirectoryContents($itemPath),
+                    ];
+                    Log::info("保留自定义 API 适配器目录: $bucket/$name");
+                } else {
+                    $bucketItems[$name] = [
+                        'type' => 'file',
+                        'content' => File::get($itemPath),
+                    ];
+                    Log::info("保留自定义 API 适配器文件: $bucket/$name");
+                }
+            }
+
+            if (! empty($bucketItems)) {
+                $preserved[$bucket] = $bucketItems;
             }
         }
 
@@ -340,33 +390,38 @@ class PackageExtractor
             return;
         }
 
-        $apiAdapterDir = "$targetDir/app/Services/Order/Api";
+        foreach ($preserved as $bucket => $bucketItems) {
+            $relDir = $this->apiAdapterDirs[$bucket] ?? null;
+            if ($relDir === null) {
+                Log::warning("未知 API 适配器 bucket，跳过: $bucket");
 
-        // 确保目录存在
-        if (! File::isDirectory($apiAdapterDir)) {
-            File::makeDirectory($apiAdapterDir, 0755, true);
-        }
+                continue;
+            }
+            $apiAdapterDir = "$targetDir/$relDir";
 
-        foreach ($preserved as $name => $data) {
-            $targetPath = "$apiAdapterDir/$name";
+            if (! File::isDirectory($apiAdapterDir)) {
+                File::makeDirectory($apiAdapterDir, 0755, true);
+            }
 
-            if ($data['type'] === 'directory') {
-                // 恢复目录
-                foreach ($data['files'] as $relativePath => $content) {
-                    $filePath = "$targetPath/$relativePath";
-                    $fileDir = dirname($filePath);
+            foreach ($bucketItems as $name => $data) {
+                $targetPath = "$apiAdapterDir/$name";
 
-                    if (! File::isDirectory($fileDir)) {
-                        File::makeDirectory($fileDir, 0755, true);
+                if ($data['type'] === 'directory') {
+                    foreach ($data['files'] as $relativePath => $content) {
+                        $filePath = "$targetPath/$relativePath";
+                        $fileDir = dirname($filePath);
+
+                        if (! File::isDirectory($fileDir)) {
+                            File::makeDirectory($fileDir, 0755, true);
+                        }
+
+                        File::put($filePath, $content);
                     }
-
-                    File::put($filePath, $content);
+                    Log::info("恢复自定义 API 适配器目录: $bucket/$name");
+                } else {
+                    File::put($targetPath, $data['content']);
+                    Log::info("恢复自定义 API 适配器文件: $bucket/$name");
                 }
-                Log::info("恢复自定义 API 适配器目录: $name");
-            } else {
-                // 恢复文件
-                File::put($targetPath, $data['content']);
-                Log::info("恢复自定义 API 适配器文件: $name");
             }
         }
     }
@@ -444,50 +499,10 @@ class PackageExtractor
      */
     protected function syncDirectory(string $source, string $target): void
     {
-        // 确保目标目录存在
         if (! File::isDirectory($target)) {
             File::makeDirectory($target, 0755, true);
         }
 
-        // 使用 rsync 如果可用（不使用 --delete，只覆盖文件）
-        if ($this->isRsyncAvailable()) {
-            $command = sprintf(
-                'rsync -av %s/ %s/ 2>&1',
-                escapeshellarg($source),
-                escapeshellarg($target)
-            );
-            exec($command, $output, $returnCode);
-
-            if ($returnCode !== 0) {
-                $errorOutput = implode("\n", $output);
-                Log::error('rsync 同步失败', [
-                    'source' => $source,
-                    'target' => $target,
-                    'return_code' => $returnCode,
-                    'output' => $errorOutput,
-                ]);
-
-                // rsync 失败时降级到 PHP 方式
-                Log::info('rsync 失败，降级到 PHP 文件复制');
-                $this->syncDirectoryPhp($source, $target);
-            }
-        } else {
-            // 降级到 PHP 文件操作
-            $this->syncDirectoryPhp($source, $target);
-        }
-    }
-
-    /**
-     * PHP 原生目录同步（只覆盖，不删除目标中的多余文件）
-     */
-    protected function syncDirectoryPhp(string $source, string $target): void
-    {
-        // 确保目标目录存在
-        if (! File::isDirectory($target)) {
-            File::makeDirectory($target, 0755, true);
-        }
-
-        // 复制源目录中的所有文件（覆盖已存在的）
         $files = File::allFiles($source);
         foreach ($files as $file) {
             $relativePath = $file->getRelativePathname();
@@ -501,7 +516,6 @@ class PackageExtractor
             File::copy($file->getRealPath(), $targetFile);
         }
 
-        // 删除空目录
         $this->removeEmptyDirectories($target);
     }
 
@@ -520,13 +534,25 @@ class PackageExtractor
     }
 
     /**
-     * 检查 rsync 是否可用
+     * 查找 php-requirements.json（与 findBackendDir 同样的两层兼容策略）。
+     * 解压形态可能是 $extractedPath/php-requirements.json 或 $extractedPath/{upgrade,full}/php-requirements.json。
+     * 找不到返回 null，由 EnvironmentChecker 走 skipped 路径（向后兼容旧版本不含清单的升级包）。
      */
-    protected function isRsyncAvailable(): bool
+    public function findRequirementsJson(string $extractedPath): ?string
     {
-        exec('which rsync 2>/dev/null', $output, $returnCode);
+        $candidate = "$extractedPath/php-requirements.json";
+        if (File::isFile($candidate)) {
+            return $candidate;
+        }
 
-        return $returnCode === 0;
+        foreach (File::directories($extractedPath) as $dir) {
+            $candidate = "$dir/php-requirements.json";
+            if (File::isFile($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -738,14 +764,17 @@ class PackageExtractor
     protected function checkWritableBeforeApply(): void
     {
         $targetDir = base_path();
-        // 检查核心目录和 vendor（仅顶层目录，无性能影响）
-        $testDirs = ['app', 'config', 'database', 'routes', 'bootstrap', 'vendor'];
 
         $notWritable = [];
 
-        foreach ($testDirs as $dir) {
-            $path = "$targetDir/$dir";
-            if (is_dir($path) && ! is_writable($path)) {
+        // 动态发现 base_path 顶层目录检查可写性，与 applyBackendUpgrade 的动态同步范围对齐
+        // —— 避免白名单漏目录（resources/public 等被同步的目录也必须预检可写）。
+        // skip storage：它在下面单独检查，给更具体的错误消息。
+        foreach (File::directories($targetDir) as $path) {
+            if (basename($path) === 'storage') {
+                continue;
+            }
+            if (! is_writable($path)) {
                 $notWritable[] = $path;
             }
         }

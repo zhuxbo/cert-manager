@@ -271,10 +271,21 @@ generate_plugin_releases_update() {
 
     cat <<PYEOF
 import json
+import hashlib
 
 releases_file = '$releases_file'
 version = '$version'
 created_at = '$created_at'
+zip_path = '$zip_path'
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fp:
+        for chunk in iter(lambda: fp.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 new_release = {
     'tag_name': f'v{version}',
@@ -286,6 +297,7 @@ new_release = {
     'assets': [{
         'name': '$(basename "$zip_path")',
         'size': $zip_size,
+        'sha256': _sha256(zip_path),
         'browser_download_url': '$rel_download_url'
     }]
 }
@@ -376,13 +388,27 @@ publish_remote() {
 
         ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$ssh_timeout \
             -p "$srv_port" "$SSH_USER@$srv_host" "python3 << 'PYEOF'
-import json, os
+import json, os, hashlib
 from datetime import datetime
 
 releases_file = '$remote_releases_file'
+version_dir = '$remote_version_dir'
 version = '$VERSION'
 requires = '$REQUIRES'
 created_at = '$(date -Iseconds)'
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fp:
+        for chunk in iter(lambda: fp.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# sha256 由远端对已上传的 zip 计算（hex 小写），与主系统 release-common.sh 线协议一致；
+# 主系统 PluginManager 下载后据此强校验（缺失则告警放行）
+zip_path = os.path.join(version_dir, '$OUTPUT_FILE')
 
 new_release = {
     'tag_name': f'v{version}',
@@ -394,6 +420,7 @@ new_release = {
     'assets': [{
         'name': '$OUTPUT_FILE',
         'size': $zip_size,
+        'sha256': _sha256(zip_path),
         'browser_download_url': '$rel_url'
     }]
 }

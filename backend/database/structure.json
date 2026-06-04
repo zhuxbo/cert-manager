@@ -1,11 +1,11 @@
 {
     "version": "1.0",
-    "mysql_version": "8.0.43",
-    "generated_at": "2026-05-10 09:14:55",
+    "mysql_version": "8.4.9",
+    "generated_at": "2026-06-03 12:49:29",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
-        "collation": null
+        "collation": "utf8mb4_0900_ai_ci"
     },
     "tables": {
         "acmes": {
@@ -208,6 +208,16 @@
                 }
             },
             "indexes": {
+                "acmes_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "acmes_eab_kid_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -218,11 +228,31 @@
                         null
                     ]
                 },
+                "acmes_product_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "product_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "acmes_refer_id_unique": {
                     "unique": true,
                     "type": "BTREE",
                     "columns": [
                         "refer_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "acmes_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "status"
                     ],
                     "sub_parts": [
                         null
@@ -1180,6 +1210,16 @@
                         null
                     ]
                 },
+                "ca_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "ca_logs_status_code_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -1298,6 +1338,16 @@
                     "type": "BTREE",
                     "columns": [
                         "correlation_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "callback_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
                     ],
                     "sub_parts": [
                         null
@@ -2603,6 +2653,16 @@
                         null
                     ]
                 },
+                "error_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "error_logs_method_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -3005,16 +3065,8 @@
                     "extra": "",
                     "comment": "模板标识"
                 },
-                "channels": {
-                    "position": 4,
-                    "type": "text",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "可用通道"
-                },
                 "content": {
-                    "position": 5,
+                    "position": 4,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -3022,7 +3074,7 @@
                     "comment": "模板内容"
                 },
                 "variables": {
-                    "position": 6,
+                    "position": 5,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -3030,7 +3082,7 @@
                     "comment": "变量说明"
                 },
                 "example": {
-                    "position": 7,
+                    "position": 6,
                     "type": "text",
                     "nullable": true,
                     "default": null,
@@ -3038,7 +3090,7 @@
                     "comment": "示例"
                 },
                 "status": {
-                    "position": 8,
+                    "position": 7,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "1",
@@ -3046,7 +3098,7 @@
                     "comment": "状态:1=启用,0=禁用"
                 },
                 "created_at": {
-                    "position": 9,
+                    "position": 8,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3054,7 +3106,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 10,
+                    "position": 9,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3064,7 +3116,7 @@
             },
             "indexes": {
                 "notification_templates_code_index": {
-                    "unique": false,
+                    "unique": true,
                     "type": "BTREE",
                     "columns": [
                         "code"
@@ -3301,8 +3353,16 @@
                     "extra": "",
                     "comment": "文件大小(bytes)"
                 },
-                "uploaded_by": {
+                "content_hash": {
                     "position": 8,
+                    "type": "varchar(64)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "文件内容 sha256，用于跨级去重"
+                },
+                "uploaded_by": {
+                    "position": 9,
                     "type": "varchar(10)",
                     "nullable": false,
                     "default": null,
@@ -3310,15 +3370,39 @@
                     "comment": "上传来源: user\/admin\/api"
                 },
                 "submitted": {
-                    "position": 9,
+                    "position": 10,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
                     "extra": "",
                     "comment": "是否已提交到上游"
                 },
+                "submitted_at": {
+                    "position": 11,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "提交上游成功时间"
+                },
+                "submit_attempts": {
+                    "position": 12,
+                    "type": "tinyint unsigned",
+                    "nullable": false,
+                    "default": "0",
+                    "extra": "",
+                    "comment": "提交上游尝试次数"
+                },
+                "submit_error": {
+                    "position": 13,
+                    "type": "varchar(255)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "最后一次提交失败原因"
+                },
                 "created_at": {
-                    "position": 10,
+                    "position": 14,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3326,7 +3410,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 11,
+                    "position": 15,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3335,6 +3419,18 @@
                 }
             },
             "indexes": {
+                "order_documents_dedup_unique": {
+                    "unique": true,
+                    "type": "BTREE",
+                    "columns": [
+                        "order_id",
+                        "content_hash"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null
+                    ]
+                },
                 "order_documents_order_id_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -3649,8 +3745,16 @@
                     "extra": "",
                     "comment": "用户ID"
                 },
-                "name": {
+                "contact_id": {
                     "position": 3,
+                    "type": "bigint unsigned",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "联系人ID"
+                },
+                "name": {
+                    "position": 4,
                     "type": "varchar(200)",
                     "nullable": false,
                     "default": null,
@@ -3658,7 +3762,7 @@
                     "comment": "组织名称"
                 },
                 "registration_number": {
-                    "position": 4,
+                    "position": 5,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -3666,7 +3770,7 @@
                     "comment": "注册号"
                 },
                 "country": {
-                    "position": 5,
+                    "position": 6,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -3674,7 +3778,7 @@
                     "comment": "国家"
                 },
                 "state": {
-                    "position": 6,
+                    "position": 7,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -3682,7 +3786,7 @@
                     "comment": "省份"
                 },
                 "city": {
-                    "position": 7,
+                    "position": 8,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -3690,7 +3794,7 @@
                     "comment": "城市"
                 },
                 "address": {
-                    "position": 8,
+                    "position": 9,
                     "type": "varchar(200)",
                     "nullable": true,
                     "default": null,
@@ -3698,7 +3802,7 @@
                     "comment": "地址"
                 },
                 "postcode": {
-                    "position": 9,
+                    "position": 10,
                     "type": "varchar(20)",
                     "nullable": true,
                     "default": null,
@@ -3706,7 +3810,7 @@
                     "comment": "邮编"
                 },
                 "phone": {
-                    "position": 10,
+                    "position": 11,
                     "type": "varchar(20)",
                     "nullable": true,
                     "default": null,
@@ -3714,7 +3818,7 @@
                     "comment": "电话"
                 },
                 "created_at": {
-                    "position": 11,
+                    "position": 12,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3722,7 +3826,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 12,
+                    "position": 13,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -3731,6 +3835,16 @@
                 }
             },
             "indexes": {
+                "organizations_contact_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "contact_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
                 "organizations_name_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -5220,6 +5334,16 @@
                     "type": "BTREE",
                     "columns": [
                         "correlation_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "user_logs_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
                     ],
                     "sub_parts": [
                         null

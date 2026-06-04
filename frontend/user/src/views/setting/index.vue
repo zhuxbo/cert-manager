@@ -51,7 +51,7 @@ const {
 } = useCallback();
 const {
   notificationValues,
-  notificationChannels,
+  mailNotificationItems,
   notificationLoading,
   handleToggle
 } = useNotificationPreference();
@@ -172,41 +172,29 @@ const { autoSettings, autoLoading, handleAutoToggle } = useAutoPreference();
     <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
       <div class="notification-card__header">
         <div>
-          <div class="notification-card__title">通知设置</div>
-          <div class="notification-card__desc">
-            选择是否接收来自不同渠道的通知提醒
-          </div>
+          <div class="notification-card__title">邮件通知设置</div>
+          <div class="notification-card__desc">选择是否接收邮件通知提醒</div>
         </div>
       </div>
       <el-empty
-        v-if="notificationChannels.length === 0"
+        v-if="mailNotificationItems.length === 0"
         description="暂无可配置的通知类型"
       />
-      <div
-        v-for="channel in notificationChannels"
-        v-else
-        :key="channel.key"
-        class="notification-channel"
-      >
-        <div class="notification-channel__title">{{ channel.label }}</div>
-        <div class="notification-channel__items">
-          <div
-            v-for="item in channel.items"
-            :key="item.type"
-            class="notification-item"
-          >
-            <div class="notification-item__label">
-              <span>{{ item.label }}</span>
-              <small>{{ item.type }}</small>
-            </div>
-            <el-switch
-              :model-value="notificationValues[channel.key][item.type]"
-              :loading="notificationLoading"
-              @change="
-                val => handleToggle(channel.key, item.type, val as boolean)
-              "
-            />
+      <div v-else class="notification-channel__items">
+        <div
+          v-for="item in mailNotificationItems"
+          :key="item.type"
+          class="notification-item"
+        >
+          <div class="notification-item__label">
+            <span>{{ item.label }}</span>
+            <small>{{ item.type }}</small>
           </div>
+          <el-switch
+            :model-value="notificationValues[item.type]"
+            :loading="notificationLoading"
+            @change="val => handleToggle(item.type, val as boolean)"
+          />
         </div>
       </div>
     </el-card>
@@ -253,15 +241,6 @@ const { autoSettings, autoLoading, handleAutoToggle } = useAutoPreference();
   margin-top: 4px;
   font-size: 13px;
   color: var(--el-text-color-secondary);
-}
-
-.notification-channel + .notification-channel {
-  margin-top: 24px;
-}
-
-.notification-channel__title {
-  margin-bottom: 12px;
-  font-weight: 600;
 }
 
 .notification-channel__items {

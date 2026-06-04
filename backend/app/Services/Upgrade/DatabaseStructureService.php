@@ -449,6 +449,38 @@ class DatabaseStructureService
     }
 
     /**
+     * 描述索引的具体差异
+     */
+    public function describeIndexDifferences(array $standard, array $current): string
+    {
+        $differences = [];
+
+        if ($standard['unique'] !== $current['unique']) {
+            $currentKind = $current['unique'] ? 'UNIQUE' : 'INDEX';
+            $standardKind = $standard['unique'] ? 'UNIQUE' : 'INDEX';
+            $differences[] = "$currentKind => $standardKind";
+        }
+
+        if ($standard['type'] !== $current['type']) {
+            $differences[] = "类型 {$current['type']} => {$standard['type']}";
+        }
+
+        if ($standard['columns'] !== $current['columns']) {
+            $differences[] = '列 ('.implode(',', $current['columns']).') => ('.implode(',', $standard['columns']).')';
+        }
+
+        if ($standard['sub_parts'] !== $current['sub_parts']) {
+            $differences[] = '前缀长度 '.json_encode($current['sub_parts']).' => '.json_encode($standard['sub_parts']);
+        }
+
+        if (empty($differences)) {
+            return '(未知差异)';
+        }
+
+        return implode(', ', $differences);
+    }
+
+    /**
      * 标准化整型类型，去除显示宽度
      *
      * MySQL 5.7 显示 int(11)、bigint(20) 等，MySQL 8.0 去除了显示宽度。

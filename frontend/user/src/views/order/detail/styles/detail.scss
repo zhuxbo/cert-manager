@@ -39,7 +39,7 @@
   width: calc(100% - 156px);
   vertical-align: top;
   color: var(--el-text-color-regular);
-  word-wrap: break-word;
+  overflow-wrap: break-word;
 
   li {
     list-style: none;

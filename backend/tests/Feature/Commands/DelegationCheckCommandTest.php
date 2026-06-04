@@ -106,7 +106,7 @@ test('检查异常时记录错误并继续', function () {
 
     $this->delegationService->shouldReceive('checkAndUpdateValidity')
         ->once()
-        ->andThrow(new \Exception('DNS 查询超时'));
+        ->andThrow(new Exception('DNS 查询超时'));
 
     $this->artisan('delegation:check')
         ->expectsOutputToContain('检查异常')

@@ -22,12 +22,12 @@
         "ext-pdo": "*",
         "ext-zip": "*",
         "jeremykendall/php-domain-parser": "^6.0",
-        "laravel/framework": "^11.0",
+        "laravel/framework": "^13.0",
         "overtrue/easy-sms": "^2.4.2",
         "phpmailer/phpmailer": "^6.9",
         "phpoffice/phpspreadsheet": "^3.9",
         "symfony/psr-http-message-bridge": "^7.2",
-        "tymon/jwt-auth": "*",
+        "tymon/jwt-auth": "^2.2",
         "yansongda/pay": "~3.7.0"
     },
     "require-dev": {
@@ -36,13 +36,13 @@
         "larastan/larastan": "^3.0",
         "laravel/pint": "^1.13",
         "laravel/sail": "^1.26",
-        "laravel/tinker": "^2.10",
+        "laravel/tinker": "^3.0",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.0",
-        "pestphp/pest": "^2.36",
-        "pestphp/pest-plugin-laravel": "^2.0",
-        "phpstan/phpstan": "2.1.x-dev",
-        "phpunit/phpunit": "^10.5",
+        "pestphp/pest": "^4.0",
+        "pestphp/pest-plugin-laravel": "^4.0",
+        "phpstan/phpstan": "^2.1",
+        "phpunit/phpunit": "^12.0",
         "spatie/laravel-ignition": "^2.4"
     },
     "suggest": {
@@ -68,7 +68,11 @@
             "@php artisan package:discover --ansi"
         ],
         "test:snapshot:capture": "COMPAT_CAPTURE=true php artisan test tests/Feature/Http/Controllers",
-        "test:snapshot": "COMPAT_COMPARE=true php artisan test tests/Feature/Http/Controllers"
+        "test:snapshot": "COMPAT_COMPARE=true php artisan test tests/Feature/Http/Controllers",
+        "test:mutate": [
+            "Composer\\Config::disableProcessTimeout",
+            "bash scripts/test-mutate.sh"
+        ]
     },
     "config": {
         "optimize-autoloader": true,

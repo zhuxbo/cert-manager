@@ -8,9 +8,8 @@
 frontend/
 ├── shared/ # 共享代码库（@shared/*）
 ├── admin/ # 管理端应用
-├── user/ # 用户端应用
-└── base/ # 上游框架（只读）
-backend/ # Laravel 11 后端
+└── user/ # 用户端应用
+backend/ # Laravel 13 后端
 plugins/ # 插件目录（独立功能模块）
 build/ # 构建系统
 deploy/ # 部署脚本
@@ -25,24 +24,26 @@ skills/ # 开发规范（详细文档）
   - 前端 TS/Vue/CSS：`pnpm lint`（含 ESLint + Prettier + Stylelint）
   - Markdown：`git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --write`
   - Shell：`git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -w`（`brew install shfmt`）
-- **base 目录只读** - 通过 git subtree 同步上游代码，不要修改
 - **PHP 8.3+** - 双引号变量不加大括号（如 `"$var"` 而非 `"{$var}"`）；例外：变量后紧跟中文等非 ASCII 字符时必须加花括号（`"{$var}，中文"` 而非 `"$var，中文"`），因为 PHP 变量名匹配 `\x80-\xff` 字节
 - **测试发现 bug 必须修复代码** - 测试的目的是发现 bug 并修复，绝不修改测试去迎合错误的代码
+- **Plan 文档必须含杀手场景 + 对端检查** - 写 `.superpowers/` 下 plan 前先填这两栏（见 `skills/review-checklist.md` 设计期清单）；回答不出来视为设计未完成，不开始写代码
+- **完成检查必跑 reviewer 循环** - `/finish-check` 阶段 8 强制委派 reviewer subagent，直到输出 `REVIEW_PASS: 未发现新 critical/high 问题` 这串可 grep 签字才算通过
 
 ## 开发规范
 
 详细规范见 `skills/SKILL.md`，按领域组织：
 
-| Skill                     | 内容                                      |
-| ------------------------- | ----------------------------------------- |
-| `skills/backend-dev.md`   | Laravel API、升级系统、迁移幂等           |
-| `skills/acme-module.md`   | ACME 订阅管理（封装下单 + 交付 EAB 模式） |
-| `skills/source-api.md`    | 新增上游来源（Order\\Api / Acme\\Api）    |
-| `skills/frontend-dev.md`  | Vue 3、Monorepo、共享组件                 |
-| `skills/deploy-ops.md`    | 宝塔部署、安全基线                        |
-| `skills/build-release.md` | 版本发布、打包、releases.json 校验链      |
-| `skills/plugin-dev.md`    | 插件系统、IIFE 打包、安装/更新/卸载       |
-| `skills/acme-e2e-test/`   | certbot 端到端测试（Manager + 上游系统）  |
+| Skill                        | 内容                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `skills/backend-dev.md`      | Laravel API、升级系统、迁移幂等                                         |
+| `skills/acme-module.md`      | ACME 订阅管理（封装下单 + 交付 EAB 模式）                               |
+| `skills/source-api.md`       | 新增上游来源（Order\\Api / Acme\\Api）                                  |
+| `skills/frontend-dev.md`     | Vue 3、Monorepo、共享组件                                               |
+| `skills/deploy-ops.md`       | 宝塔部署、安全基线                                                      |
+| `skills/build-release.md`    | 版本发布、打包、releases.json 校验链                                    |
+| `skills/plugin-dev.md`       | 插件系统、IIFE 打包、安装/更新/卸载                                     |
+| `skills/acme-e2e-test/`      | certbot 端到端测试（Manager + 上游系统）                                |
+| `skills/review-checklist.md` | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描 |
 
 ## 知识积累
 
@@ -82,7 +83,8 @@ skills/ # 开发规范（详细文档）
 - **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden；`eab_kid` 建索引；`plus` 列（赠送时间 0/1）；`contact_email` 列（`VARCHAR(254) NULL`，ACME 账号邮箱 — RFC 8555 `contact`）
 - **字段映射**：上游响应 `data.order_id` → 本地 `acmes.api_id` 列（**切勿用 `api_id` 键读上游响应**，老代码踩过坑）
 - **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id, bool $autoCommit = true)`（Admin/User 入口默认"先支付独立事务，再单独事务调 commit"——commit 失败 **不回滚扣费**，订单保留 pending 可走 `commit` 接口重试；`$autoCommit=false` 仅置 pending，由 batchPay 统一入队 commit）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（**单事务原子，失败回滚**，API 入口使用）
-- **上游 `/acme/new` 入参**：`source`（路由用，上游忽略）/ `contact_email`（= `acmes.contact_email`，**所有入口必填**：User/Admin 表单 / API Token / Deploy Token；上游正常返回会覆盖回写，缺失则保持本地值）/ `product_code` / `plus`（赠送时间）/ `refer_id`（幂等键），**不传** `period`/`purchased_*count`/`product_type` 等。**字段名与多级代理链路全程对齐**；Certum 侧的 `customer` 术语仅存在于 Gateway → Certum SDK 的最后一跳
+- **上游 `/acme/new` 入参**（manager 视角完整 schema）：`contact_email`（= `acmes.contact_email`，**所有入口必填**：User/Admin 表单 / API Token / Deploy Token；上游正常返回会覆盖回写，缺失则保持本地值）/ `product_code` / `period`(int，预留 Certum 多年期；gateway 当前 validate 暂不接收由 `product.periods[0]` 决定，但 manager 稳定外发) / `plus`(int 0/1，与传统 V2 Order 一致；gateway 端 `(bool)` cast 兼容) / `refer_id`（端到端幂等键，下游传则用之、未传则 manager 生成 32 字符 hex），**不传** `purchased_*count`/`product_type` 等。**字段名与多级代理链路全程对齐**；`source` 是 manager 内部 Api 路由参数，作为 `Api::new($data, $source)` 第二个独立参数，不混入 data；Certum 侧的 `customer` 术语仅存在于 Gateway → Certum SDK 的最后一跳
+- **对外 API 入参契约**（manager 视角）：`/api/acme/new`（API Token）与 `/api/deploy/acme/new`（Deploy Token）入参同构，validate `product_code` required\|string\|max:50 + `contact_email` required\|email\|max:254 + `period` sometimes\|integer（控制器默认 12）+ `plus` nullable\|integer\|in:0,1（与 V2 Order 风格一致）+ `refer_id` sometimes\|string\|max:64。`refer_id` 由 `App\Traits\AcmeReferIdCheck::checkAcmeReferId` 做应用层防重（按当前 user 范围 + DB `acmes.refer_id` unique 兜底）
 - **directory_url 缓存**：Laravel `Cache::forever("acme_directory_url:{ca}")` 按签发 CA 聚合；commit/sync 刷新、show 缺失时回源一次性回填；不入 system_setting、不落库
 - **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
 - **撤回取消**：`revokeCancel(int $id)` 在 acme.status=cancelling 且延时任务未执行时生效 — 悲观锁回滚 status→active、清空 cancelled_at、删除 executing/stopped 的 `cancel_acme` Task（已 dispatch 的 TaskJob 唤醒后找不到任务直接跳过）
@@ -92,35 +94,47 @@ skills/ # 开发规范（详细文档）
 - **产品导入**：`Order\Action::importProduct()` 同时查询 Order 和 ACME 两端产品，合并后按 `api_id` 去重
 - **控制器路由**：
   - API：`/api/acme/` — new, get, cancel, get-products（对下游代理，与 上游系统 对齐）
-  - Admin：`/api/admin/acme/` — index, show, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
-  - User：`/api/user/acme/` — index, show, new, pay, commit, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
+  - Admin：`/api/admin/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
+  - User：`/api/user/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
   - Deploy：`/api/deploy/acme/` — new（一步到位：创建+支付+提交）, get（含 EAB + directory_url）
+- **字段暴露策略**（参考传统 Order）：
+  - User Web `index` 走 select 白名单，`show`/`batchShow` 走 `makeHidden(['user_id','plus','api_id','refer_id','admin_remark','channel'])`；product 关联 select 含 `ca`（`syncDirectoryUrl` 取 cache key 需要）
+  - Deploy/V2 API `get` 走 `makeHidden(['user_id','plus','api_id','admin_remark','channel'])`；**保留 `refer_id`**（客户端关联键，contract 一部分）
+  - Admin 全字段返回，不做 makeHidden
 - **搜索**：Admin/User 控制器 `index` 支持 quickSearch / id / status / brand / period / **eab_kid 前缀匹配（走索引）** / amount 范围 / product_name / created_at / period_till 范围；Admin 额外 user_id/username
 - **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
 - **传统流程完全隔离**：ACME 通过独立控制器、服务和前端模块处理，与传统订单无交集；V2 API `new` 和 `Order\Action::initParams` 拒绝 ACME 产品
-- **批量操作**：列表页 6 个批量按钮
+- **批量操作**：列表页 7 个批量按钮
+  - `GET /api/{admin,user}/acme/batch?ids=1,2,3` — 批量详情聚合（纯读）；URL 可分享，前端 `details.vue` v-for 渲染。返回 `{items: [...]}` 含 directory_url（按 ca 缓存避免重复算）。User 端复用 show 的字段隐藏；Admin 端全字段
   - `POST /api/{admin,user}/acme/batch-pay` — 同步逐条扣费（pay autoCommit=false），成功的 id 批量入队 `commit_acme`；状态限 unpaid，返回 `{success_count, commit_count, errors}`
   - `POST /api/{admin,user}/acme/batch-commit` — 创建 `commit_acme` Task 立即入队，状态限 pending；`checkRepeat` 存在 executing 任务时整体报错
   - `POST /api/{admin,user}/acme/batch-sync` — 创建 `sync_acme` Task 立即入队，状态限 active/cancelling（必须有 api_id），pending/unpaid 无 api_id 无法同步
   - `POST /api/{admin,user}/acme/batch-commit-cancel` — 同步逐条调单体 commitCancel（混合直接退费 + 延时 Task），状态限 unpaid/pending/active；单体 commitCancel 已扩展支持 unpaid（未扣费无需 refund）
   - `POST /api/{admin,user}/acme/batch-revoke-cancel` — 同步逐条调单体 revokeCancel，状态限 cancelling
-  - `POST /api/{admin,user}/acme/batch-copy-eab` — 纯读返回 EAB 文本（`directory_url\neab_kid\neab_hmac`，条目间空行），**Admin 端跨用户拒绝**；User 端 UserScope 自动限制
+  - `POST /api/{admin,user}/acme/batch-copy-eab` — 纯读返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行），**Admin 端跨用户拒绝**；User 端 UserScope 自动限制
 - **TaskJob 分发**：`commit_acme / sync_acme / cancel_acme` 统一去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`；其余 action 走 `Order\Action`
 - **User 端同步**：`POST /api/user/acme/sync/{id}`（与 Admin 对齐）
 - **checkRepeat 并发限制**：与 Order 相同，`checkRepeat` 和 `createTasks` 之间无事务锁，并发情况下可能产生双份 executing Task；沿用 Order 设计，属已知限制
+- **createTasks 逐条幂等**：`Acme\Action::createTasks` 与 `Order` 的 `createTask` 一致，foreach 内创建前查已存在 executing 同 `order_id+action` task 则 continue（防重复 task）；`cancel_acme` 走独立 `Task::create` 路径、自带同款幂等查询
+- **批量上限（`config/batch.php`）**：`max_ids=100`（所有 batch 接口 ids 数量上限，21 个 `GetIdsRequest` + `BaseRequest::messages` 统一校验）、`max_upstream=20`（batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游）
 
 ## 系统架构约定
 
 - **`$order->latestCert` 非空保证**：由系统架构保证 latestCert 关系非空，查询时加 `with('latestCert')` 预加载即可，无需额外空值判断
 - **`$this->error()` 方法**：来自 `ApiResponse` trait，调用后抛出异常终止执行，不会继续后续代码
 - **取消/吊销不静默成功**：上游接口未返回明确成功时，一律返回失败；不允许跳过上游调用直接标记本地状态
+- **sync 终态守卫（防复活）**：`Order\Action::sync`/`Acme\Action::sync` 在锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，不让上游旧状态把已取消/已吊销的订单"复活"回 active（与 commitCancel 串行化配合，防资金错乱）
 - **ACME 计费流程**：`Action` 三步流程 `new→pay→commit` 详见"ACME 订阅管理"章节
 - **ACME 取消策略**：未提交上游（无 api_id）的 pending 订单直接退费取消；已提交上游的订单通过延时任务调 Api->cancel() 后退费
 - **Action 无 userId 构造参数**：`Acme\Action` 和 `Order\Action` 均无 `userId` 构造参数，通过 `app(Action::class)` 获取实例。用户隔离由 UserScope 全局作用域保证（`Authenticate`/`ApiAuthenticate` 中间件注册 Acme、ApiToken、Callback、CnameDelegation、Order、Fund、Transaction、Organization、Contact、OrderDocument），控制器在创建方法的 params 中传入 `user_id`。UserScope `apply()` 无条件执行 `where('user_id', ...)`，不做零值跳过
 - **ACME Action 统一封装上游 API 调用**：所有上游 API 调用（new/get/cancel 等）必须通过 `Services/Acme/Action`，不允许控制器直接调 `Api`。操作方法接收 ID（int），创建方法接收参数数组。内部负责模型查询、参数过滤、返回值校正、重复提交防护、状态入库。控制器仅做请求验证 + 一行调用 Action
 - **资金/状态变更必须在事务 + 行锁内**：任何涉及 `Transaction::create`/余额变动/状态机变更的路径都要 `DB::transaction` + 目标行 `lock()`/`lockForUpdate()`，且**状态检查放在锁内**（锁外校验会被并发绕过）。Order 走 `Order::with(['latestCert'])->whereHas('latestCert')->lock()` 约定锁 + 所有变更走 `$order->latestCert->update()` 路径；ACME 走 `Acme::lock()` 直接锁 status 所在行。`$this->success()` 必须放在事务闭包**外**（它抛 `ApiResponseException` 会触发回滚）；`$this->error()` 放闭包内正好触发回滚。unpaid 等无资金流水的状态清理路径可免锁（双击第二次自然报错无资金损害）。TaskJob::handle 必须整体包 `DB::transaction`，否则 `lockForUpdate` 在自动提交模式下是"假锁"（SELECT 返回即释放）。**支付路径必须同时锁 user 行**（否则同一用户跨订单并发支付会绕过 credit_limit 校验）：ACME `User::lockForUpdate()`，Order `with(['user' => fn ($q) => $q->lockForUpdate(), 'latestCert'])`。**ACME commit 也需要锁内调用上游**：与 commitCancel 串行化防止"上游已建单 + 本地被改 cancelled 后又被 commit 覆盖回 active"的资金错乱。
 - **资金安全四道网（确定性体系）**：分两类 — **物理阻断**（INSERT/UPDATE 之前挡住错账发生）：(1) DB 唯一索引（`funds(pay_method, pay_sn)` / `transactions(type, transaction_id) WHERE type != 'order'`，旧 3 列 `funds_type_pay_method_pay_sn_unique` 已被替换为 2 列）；(2) `Fund::transitionToSuccessful` 完整 5 字段 WHERE（id + amount + type + pay_method + status=0）的 CAS UPDATE 替代 SELECT-then-UPDATE，CAS WHERE 不能简化为 status 单一条件，否则金额/支付方式不匹配的回调也会把本地 fund 标成功；(3) 事务 + 锁 + 锁内二次校验（destroy/batchDestroy 等"删除已入账"路径无法被 CAS 或唯一索引拦截，删除 SQL 本身合法）；(4) `Transaction.php` 防重豁免列表仅 `'order'`（ACME 一对一交付 EAB，不存在重签增域名）。**事后发现**（不阻止发生但保证发现）：(5) `tests/Pest.php` afterEach hook 自动跑 `App\Services\FundAudit\FundInvariants::all()` 4 条 SQL（L1 账目恒等 / L2 事件唯一 / L3 状态-事件配对 / L4 金额配对），动了 funds/transactions/users.balance 的测试自动守门；(6) 每天 03:00 `finance:audit` cron 全量对账，违反走 `NotificationCenter` 邮件告警 + `Log::error` 兜底，可选 `--freeze-on-violation` 自动禁用涉事用户。**关键**：物理阻断不能被替代为事后发现 — 已删除的 fund 即便 invariant 报 orphan transaction，钱已入账、订单已消失，损失已发生。新增资金路径必须保证：状态转换走 CAS 而非 SELECT-then-UPDATE；写 transaction 不依赖应用层 `exists` 防重，靠 DB 唯一索引兜底；修改 user.balance 必须在 `DB::transaction(fn)` 内同事务创建 transaction；CI tearDown invariant 自动校验，新测试无需手写资金断言。详见 `skills/backend-dev.md` 资金确定性体系章节。
+- **外部命令调用统一走 BinaryLocator**：所有 `exec("php ...")` / `exec("composer ...")` / `exec("openssl ...")` / `exec("mysqldump ...")` / `exec("curl ...")` 必须通过 `app(\App\Services\Binary\BinaryLocator::class)` 解析二进制路径，拼命令统一用 `escapeshellarg($path).' arg1 arg2'`，不允许变量插值或裸命令（如 `exec('openssl pkcs12 ...')`）—— 多版本 PHP 系统下会走错 CLI / open_basedir 限制下 `is_executable` 会误判（探测必须走 `proc_open` 子进程，不能用 `is_executable`/`file_exists`）。失败抛 `BinaryNotFoundException`，调用方按场景 catch 静默降级（如 keytool 找不到跳过 JKS）或向上抛（升级流程内 PHP/composer 失败应阻塞）。详见 `skills/backend-dev.md` BinaryLocator 章节。
+- **后台升级 binary preflight**：`POST /api/admin/upgrade/execute` 入口（isRunning 短路后）先跑 `UpgradePreflight::check()` 4 项检查 —— ① FPM `disable_functions`、② PHP CLI 可探、③ composer phar 可探、④ CLI `disable_functions`（CLI 和 FPM 用各自独立 ini，必须起子进程读 CLI 的 `ini_get`，不能只查 FPM 进程的 `ini_get('disable_functions')`）。任一阻塞返回 503 + `{blocking: [], items: [], ini: {fpm, cli}}`，fix 文案统一"使用 upgrade.sh 升级"。独立健康检查端点：`GET /api/admin/upgrade/binary-health`（不阻塞，纯展示 8 个工具状态供前端升级页面参考）。**注意：preflight 只负责 binary，完整 PHP 环境校验（PHP 版本 / extensions.required / functions.required）在升级流程内的 `EnvironmentChecker::check()` —— 解包后、applyUpgrade 前跑，不通过抛 `PhpEnvironmentException` 中断升级（代码原样未动），引导用 upgrade.sh 修复**。
+- **redis 扩展动态必装**：`php-requirements.json` 中 `redis` 默认在 `recommended`；但当 `backend/.env` 的 `CACHE_DRIVER` / `CACHE_STORE` / `QUEUE_CONNECTION` 任一为 `redis` 时，`EnvironmentChecker` 和 `deploy/upgrade.sh::_redis_required_from_env` 同步把 redis 升级为必装（避免装好后 cache/queue 运行时崩）。两侧解析逻辑必须对称：处理引号、行内注释、CRLF、前后空白；.env 缺失时 fail-safe 返回 false。修改任一侧记得同步另一侧。
 - **事务内 dispatch Job 必须加 `->afterCommit()`**：`config/queue.php` 所有连接默认 `after_commit=false`，事务内 dispatch 的 Job 会立即入队，worker 可能在事务提交前消费 Job，读不到事务内新建的行/状态导致任务静默丢失。`createTask`/`createTasks` 等所有 TaskJob::dispatch 调用都已加 `->afterCommit()`，新增 Job dispatch 点也要跟进。
+- **异步 Job 必须显式 `->onQueue(config('queue.names.tasks'))` 或 `notifications`**：生产部署的 supervisor worker 只监听 `tasks,notifications` 两个队列（`deploy/scripts/bt-install.sh` 自动写入 `queue:work --queue tasks,notifications`、`skills/deploy-ops.md` 文档同），**不监听 connection 默认的 `default` 队列**。漏写 `onQueue` 的 Job 会落到 `default` 永远没人消费（`SubmitDocumentJob` 曾踩此坑：文档静默不上传上游）。约定：业务 Job → `tasks`、通知 → `notifications`，新增 Job 的 dispatch 必须 onQueue 到二者之一；**gateway 侧同此约定**（其 worker 同样只监听这俩，镜像的 `SubmitDocumentJob` 也需 onQueue）。
 - **统一锁顺序 task→order/acme 防死锁**：`TaskJob::handle` 是 task→order/acme 顺序（先锁 task，action 内再锁业务行）；所有 DELETE/修改 task 的业务路径（Order `revokeCancel`/`commitCancel(active)`/`batchCommitCancel`、ACME `revokeCancel` 等）都必须按同一顺序，先 `Task::where(...)->lockForUpdate()->get()` 拿 task 锁再锁业务行，再做 DELETE。否则 InnoDB 会周期性触发死锁回滚，用户看到随机失败。
 - **Transaction::create 必须在 DB::transaction 内调用**：Transaction::creating 钩子内不再开自己的嵌套事务/savepoint——直接使用外层事务保证 balance 修改与 INSERT 的原子性。非事务内调用会抛异常提示。Fund::updating 同理。
 - **资金事务优先用 `DB::transaction(fn)` 闭包**：Laravel 自动管 commit/rollback，避免"$row=null 控制流穿透"导致的事务计数器漂移。如必须手写 `DB::beginTransaction` + try/catch（如需在 catch 内捕获 `ApiResponseException` 后再写任务状态等场景），**所有控制流分支必须 commit 或 rollback**（含 no-row、early-return、异常路径），并补单元测试覆盖这些分支——禁止控制流穿透到方法末尾。
@@ -134,6 +148,17 @@ skills/ # 开发规范（详细文档）
 - **显示条件**：`brand.toLowerCase() === 'certum'` 且 `validation_type !== 'dv'`
 - **文件限制**：单文件 5MB，类型 PDF/JPG/JPEG/PNG/XADES，控制器层 `mimes` 验证
 - **提交权限**：Admin 和 User 均可提交文档到上游
+- **签发后禁止上传**：证书 `latestCert.status === 'active'` 后不再接受文档上传——`ActionDocumentTrait::uploadDocument`/`uploadDocumentFromBase64` 单点拦截（覆盖 Admin/User UI + V2 API 三入口，全仓写 `order_documents` 仅此二方法），前端 admin/user 的 process.vue 均在 active 态隐藏上传入口
+- **提交上游异步化 + 重试**：`submitDocuments` 不再同步阻塞，改为每个未提交文档派发 `App\Jobs\SubmitDocumentJob`（`tries=3`、`backoff=[60,300]` 指数退避、`->afterCommit()`）。Job 调 `ActionDocumentTrait::submitDocument(int $docId)`：成功标 `submitted`+`submitted_at`、永久失败（文件缺失）记 `submit_error` 不重试、可重试失败（订单未提交/上游错误）抛异常退避重试；`failed()` 兜底记错 + `Log::error`。前端 `documentUpload.vue` 状态列展示 submitted/失败(submit_error)+轮询
+- **跨级去重（content_hash）**：`order_documents` 加 `content_hash`(sha256) + 唯一索引 `(order_id, content_hash)`。**纯接收端**实现 —— `uploadDocumentFromBase64` 对解码字节算 hash，同 order 同内容已存在则跳过（重试/重复推送幂等），唯一索引兜底并发竞态（catch `QueryException` errorInfo 1062）。**发送端/线协议不变**，旧版下游推到新接收端也能去重。Gateway 侧 `V2/ApiController::uploadDocument` 镜像同一逻辑（对端对称）。防止 Job 重试在上游产生重复行 → Certum 重复提交
+- **上传即自动转发上游**：`uploadDocument`（UI 文件上传）与 `uploadDocumentFromBase64`（V2 接收下游）存档后**都**自动派发 `SubmitDocumentJob` 往上游转（含 dedup-hit 补转），多级链全自动、免手动点提交。前端「提交」按钮降级为兜底（仅 `unsubmittedCount>0` 时显示、全部 submitted 后隐藏；上传后前端轮询刷新状态）。**注意：自动转发仍依赖 queue worker 常驻**——无 worker 则 Job 滞留 `jobs` 表、文档不会真正到达上游
+- **新增列**：`submitted_at` / `submit_attempts` / `submit_error` / `content_hash`（迁移 `2026_05_31_100000_*`，幂等 `hasColumn` 守护）
+
+### 对外 API 接口文档
+
+- **源**：`backend/resources/docs/api/{v2,acme,deploy}.yaml`（OpenAPI 3.1，单一来源，随版本发布打包）；编辑时逐端点对照控制器实际校验/返回核对，枚举值对系统字典（如 `validation_method` 对 `validationMethodOptions`）
+- **后端端点**：`GET /api/meta/api-doc?surface=v2|acme|deploy`（公开无鉴权，返回 `application/yaml` 原文，供 curl / Scalar 渲染）；surface 白名单，非法 404。spec 描述主系统 v2/acme/deploy 契约、跟随主系统版本，**留主系统未拆进插件**
+- **展示**：由 `api-docs` 插件（**纯前端、仅 user 端**）提供 —— 外壳 IIFE（~1KB，external vue）向「系统设置」注入「接口文档」菜单，页面用 **iframe(srcdoc)** 内嵌 Scalar 官方 standalone bundle（`scalar-standalone.js`，自带 Vue）渲染三套。iframe 隔离使 Scalar 的 ~1MB JS / 236KB CSS 仅在打开文档页时加载、不污染主系统、布局为 Scalar 原生。主系统**不再内置**渲染（已拆 `apiDocs.vue`×2 + `unplugin-vue-markdown` + `@apidoc`）。接入要点见 `skills/plugin-dev.md`
 
 ### 自动续费/重签
 
@@ -146,9 +171,55 @@ skills/ # 开发规范（详细文档）
 - **参数继承**：从原订单提取 period/contact/organization/domains；CSR 按 `product.reuse_csr` 决定重用或生成
 - **委托前置条件**：缺失委托记录时自动创建（`_dnsauth` 精确域名、回落前缀按根域）；DNS 验证采用宽松策略（所有 dnsTools + 本地全部尝试，任一匹配即有效），目的是尽可能发起续签
 
+### 工商查询与企业-联系人绑定
+
+- **多对一模型**：`organizations.contact_id` 关联 `contacts.id`（应用层校验，无 DB 外键 — 避免误删 Contact 时连锁清空企业绑定）；删除 Contact 前校验是否被任何 Organization 引用
+- **嵌套 upsert**：`POST/PUT /api/{role}/organization` 请求体支持嵌套 `contact_id + contact`，单事务原子；User/Admin OrganizationController 复用 `Concerns\ResolvesContactId` trait
+- **update 保留原绑定**：PUT `/api/{role}/organization/{id}` 未传 `contact_id` 也未传 `contact` 时 **保留原 contact_id**（避免部分字段更新意外清空绑定）；显式传 `contact_id: null` 才清空。Admin/User 端一致
+- **订单自动反查**：`Order\ActionTrait::initParams` 当传 organization 但缺 contact 时，从 `organization.contact_id` 自动取；contact_id 为空报错"请先为该企业绑定联系人"
+- **工商查询服务**：`Services/EnterpriseLookup`（`LookupInterface` + `AliyunDriver` + `LookupManager`），仅对接阿里云市场（AppCode 鉴权，HTTP timeout 固定 10s）；Redis 缓存 24h 成功 / 1h 失败，**cacheKey 含 fieldMap 指纹**（配置变更后旧缓存自动失效，避免"改完 fieldMap 但 24h 缓存仍返回旧 schema"的字段缺失）；`fieldMap` 吸收响应结构差异（dot path），`queryField` 吸收请求参数名差异（极速工商 `name`/`company`、其他接入商 `keyword` 等），切接入商不改代码
+- **配置项**（`system_setting.enterprise.*`，setting 顶层 key 采用小驼峰）：`url` / `appCode`（base64 编码存储，非加密；真加密为待评估项）/ `queryField`（默认 `name`）/ `fieldMap`（内部标准 key **对齐 organization/contact 入库字段名**，前端可直接消费无需二次映射：`name` / `registration_number` / `address` / `state` / `city` / `regionname` / `legal_person`）/ `dailyLimit`（全局每日上限，默认 100，0 视为无限制）
+- **启用判定**：去掉了独立的 `enabled` 开关，`LookupManager::enabled()` 改为校验 `url` + `appCode` + `queryField` 非空且 `fieldMap` 至少配齐 `name`/`registration_number`/`address` 三个标准字段；任一缺失即视为未启用
+- **全局每日上限**：`AliyunDriver::enforceAndIncrementDailyQuota()` 在 cache miss 后、HTTP 请求前 `Cache::add + Cache::increment` 原子计数，key `enterprise:daily:{YYYY-MM-DD}` TTL 至当日 23:59:59；**缓存命中不计数、超限抛 LookupException(429) 不写失败缓存**（否则次日重置后仍命中失败缓存）。30/min IP 节流保留作为前置防刷
+- **标准 key 命名约定**：直接对应入库字段（`organizations.name` / `organizations.registration_number` / `organizations.address` / `organizations.state` / `organizations.city`），加 2 个中间值 `regionname`（供邮编查询使用，不入库）和 `legal_person`（拆分后入 `contacts.first_name/last_name`）；移除了未消费的 `status` 字段
+- **端点**：`POST /api/{role}/enterprise-lookup`（节流 30/min）+ `GET /api/{role}/enterprise-lookup/status`（前端探活）
+- **查询按钮可见性**：User 端 `enabled()=false` → 隐藏；Admin 端 `enabled()=false` → 禁用+tooltip
+- **前端组件**：`shared/components/OrganizationEditor` — 单弹窗内两个 select（企业/联系人）+ 工商查询按钮；User/Admin 共用，按 `role` prop 切换按钮可见性策略（http baseURL 已含 /api/admin，URI 不重复前缀）；`countryOptions` 必填 prop 由调用方注入（admin/user 各自 `@/views/system/country` 维护，shared 组件不硬编码项目数据）
+- **法人姓名拆分**：`splitChineseName()` 仅在 contact 未选且 last/first 都为空时回填 — 含空格 → 按空格切；含 `·` 中点（少数民族姓名）→ 按 `·` 切；其他 → 第一个字符为姓、其余为名（复姓需手动调整）。回填成功且 `contact.title` 为空时同步填"法定代表人"（用户可改）
+
+### 邮编查询（本地数据 + 县级市识别）
+
+- **数据来源**：基于 [tombcato/china-zipcode-data](https://github.com/tombcato/china-zipcode-data) MIT 全量 2879 条省/市/区/县/县级市邮编。字段裁剪至 `province / city / name / zipcode`；4 个直辖市 city 字段规范化为 province 名（重庆数据源用"重庆城区/重庆郊县"，统一改"重庆市"以对齐阿里云 `regionname` 输出）。文件 `backend/resources/data/china_city_zipcode.json` 约 273 KB（gzip ~30 KB），自托管零外部依赖
+- **服务**：`App\Services\ZipcodeLookup\ZipcodeLookup`，进程内 `static` 缓存全量数据 + 预计算"每地级市最小 zipcode 代表"；测试用 `ZipcodeLookup::resetCache()` 重置
+- **匹配策略**：`find(regionname, companyName = null)` 三步走 —
+  1. **最长 fullPath 匹配**：遍历数据找最长的 `province+city+name` 子串命中 `regionname`（直辖市同时尝试 `city+name` 两段拼接，兼容阿里云"北京市朝阳区"风格）。命中即返回区/县/县级市精度
+  2. **公司名兜底县级市**：若 regionname 仅到地级市未命中区/县，扫县级市候选 — 只要 regionname 含 province **或** city 任一（兼容工商响应字段不全的县级市公司，常见只给 city 不给 province），公司名是否包含县级市名（去/不去"市"后缀），命中则用县级市覆盖 `city` 字段
+  3. **市级回落**：以上都未命中时，按优先级遍历地级市代表（① province+city 都命中 → ② 仅 city 命中 → ③ 仅 province 命中），返回该地级市最小 zipcode
+- **返回 shape**：`{zipcode, province, city, district}` — 命中县级市时 `city` 填县级市名、`district` 留空；命中普通区县时 `district` 填区县名
+- **端点**：`POST /api/{role}/zipcode-lookup`（节流 60/min，IP 维度），入参 `{regionname, name?}`，未匹配返回 `code: 0`
+- **前端集成**：`OrganizationEditor.onLookup()` 工商查询成功后用 `d.regionname || d.province+d.city` 当 regionname、`d.name`（公司名）当 companyName 调邮编接口；回填 `postcode`（仅在空时），并用返回的 `city` **覆盖**已填 city（zipcode 服务的 city 比工商更精确，如县级市识别）。失败静默
+- **fieldMap 联动**：`enterprise.fieldMap` 加入 `regionname` 标准字段（默认 `result.basic.regionname`），让工商响应带出完整行政区划路径供邮编查询使用
+- **跨省误判防护**：第 2 步要求县级市的 province/city 必须在 regionname 里出现，避免"重庆某义乌商品城"被误判为浙江义乌
+
+### 通知体系（主系统仅 mail，其他通道由插件注入）
+
+- **业务事件归主系统、通道实现归插件**：主系统在 `Order/Action`/`AutoRenewCommand`/`ExpireCommand`/`TaskJob`/`FundAuditCommand` 触发 `NotificationCenter::dispatch(NotificationIntent)`，`ChannelManager` 分发到所有已注册可用且通过 `shouldSend()` 的 channel
+- **主系统内置 mail，无 channel 抽象冗余层**：已删 `Guards/` 整目录（4 Guard + Manager）和 `TemplateSelection.channelTemplates`；`notification_templates.channels` 字段已移除（每个 code 对应单一模板，**`code` 唯一**）；`notifications` 表无 channel 字段
+- **用户偏好扁平按 code**：`users.notification_settings = {cert_issued: true, cert_expire: true, security: true}`；`User::allowsNotification(code)` 替代旧 `allowsNotificationChannel(channel, type)`；`User::normalizeNotificationSettings` 兼容老的嵌套 `{mail: {x}}` 数据（自动提升 mail 子树）
+- **Builder 注册按 code 单维度**：`config/notification.builders = ['cert_issued' => CertIssuedNotificationBuilder::class, ...]`，不再 `code.channel` 复合 key；4 个内置 Builder 已去 `Mail` 后缀（`CertIssuedNotificationBuilder` 等）。Builder 输出 `NotificationPayload($data)`，`data` 对所有 channel 通用，mail-specific 数据放 `data._meta`；敏感字段（如初始密码）走第二参 `NotificationPayload($data, $transient)`——`transient` 由 `NotificationJob` 发送前合入内存供渲染、发送后还原，**绝不入库**
+- **插件接入主系统的全部触点**（**主系统对插件的承诺仅此**）：
+  1. ServiceProvider 里 `app(ChannelManager::class)->register('feishu', new FeishuChannel)`
+  2. 实现 `ChannelInterface`：`send(Notification): array` + `isAvailable(): bool` + `shouldSend(Model $notifiable, string $code): bool`
+  3. 用户偏好/UI/模板全部由插件自治：自己加表/字段读偏好，主系统不预留 schema/UI/API 钩子，不加 widget 插槽
+- **MailChannel::shouldSend 内联逻辑**：检查 `notifiable->email` 非空 + 调 `allowsNotification($code)`；Admin 等无此方法的 notifiable 默认 true
+- **取消/重发等 Admin 操作**：测试通知 `/api/admin/notification/test-send` 和重发 `/api/admin/notification/{id}/resend` 不再传 `channels` 入参（已删 sanitizeChannels）；发送会广播到所有已注册可用 channel
+- **`DefaultNotificationBuilder` 兜底安全约定**：未配置 builder 的 code（Admin 测试通知 / 插件自定义 code）走 `DefaultNotificationBuilder`，**直通 `$intent->context` 入库**，不做敏感字段过滤。调用方需自律 — context 不传 password/token/secret/api_key/private_key 等字段，否则会明文存入 `notifications.data` 列并随通道转发外部。**例外**：`user_created`（携初始密码）已注册专用 `UserCreatedNotificationBuilder`，把密码走 `NotificationPayload.transient`（仅渲染入邮件、不入库），不回落 Default；新增携密 code 同样必须走专用 Builder + transient，不可依赖 Default
+
 ## 测试
 
-- 单一库（MySQL）：本地需 mysql 5.7 容器（与 CI 对齐），跑 `php artisan test --parallel`
+- 本地开发环境用容器（`compose.yaml` + `Makefile`，详见 `docker/README.md`）：后端 PHP 8.4 + MySQL 8.4 + Redis 7，`make test` 容器内并行跑（隔离库 `ssl_manager_test`，`--processes` 防 OOM）
+- **MySQL 5.7 与 8.x 双版本**：生产二者都有，CI core 跑 `5.7×{8.3,8.4}` + `8.4×{8.4,8.5}` 矩阵、各 plugin 跑 5.7+8.4；本地默认 8.4（ARM 原生），复现 5.7 用内网实例或看 CI
+- **collation 按版本自动选择**（三处统一：`bt-install.sh` 的 `_detect_db_collation` / 容器 `entrypoint.sh` / CI `matrix.collation`）：8.x→`utf8mb4_0900_ai_ci`、5.7→`utf8mb4_unicode_520_ci`、MariaDB→`utf8mb4_unicode_ci`；`structure.json` 以 8.4 为基准。新迁移/SQL 避开 8.0+ 保留字（`rank`/`groups`/`system`）与 5.7 不支持的语法
 - 详见 `skills/backend-dev.md` 测试章节
 
 ### M4 测试覆盖

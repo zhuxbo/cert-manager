@@ -65,3 +65,15 @@ export function quota(userId: number) {
 export function showUser(id: number) {
   return http.get(`/user/${id}`);
 }
+
+export function getExternalConfig() {
+  return http.get("/invoice/external-config");
+}
+
+export function updateExternalConfig(data: { allowed_ips: string }) {
+  return http.post("/invoice/external-config", data);
+}
+
+export function regenerateExternalToken() {
+  return http.post("/invoice/external-config/regenerate-token");
+}

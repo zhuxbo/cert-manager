@@ -3,11 +3,14 @@
 namespace Plugins\Invoice\Controllers\Admin;
 
 use App\Http\Controllers\Admin\BaseController;
+use Illuminate\Support\Str;
 use Plugins\Invoice\Models\Invoice;
 use Plugins\Invoice\Requests\GetIdsRequest;
 use Plugins\Invoice\Requests\IndexRequest;
 use Plugins\Invoice\Requests\StoreRequest;
+use Plugins\Invoice\Requests\UpdateExternalConfigRequest;
 use Plugins\Invoice\Requests\UpdateRequest;
+use Plugins\Invoice\Services\InvoiceConfig;
 use Plugins\Invoice\Services\InvoiceQuotaService;
 
 class InvoiceController extends BaseController
@@ -184,5 +187,42 @@ class InvoiceController extends BaseController
     public function quota(int $userId): void
     {
         $this->success(InvoiceQuotaService::getQuota($userId));
+    }
+
+    /**
+     * 获取外部接入配置（token 脱敏）
+     */
+    public function externalConfig(): void
+    {
+        $token = InvoiceConfig::get('external_token');
+        $hasToken = is_string($token) && $token !== '';
+        $masked = $hasToken
+            ? substr($token, 0, 4).str_repeat('*', max(strlen($token) - 8, 3)).substr($token, -4)
+            : '';
+
+        $this->success([
+            'has_token' => $hasToken,
+            'token_masked' => $masked,
+            'allowed_ips' => InvoiceConfig::get('external_allowed_ips', ''),
+        ]);
+    }
+
+    /**
+     * 更新外部接入配置（仅 allowed_ips，不动 token）
+     */
+    public function updateExternalConfig(UpdateExternalConfigRequest $request): void
+    {
+        InvoiceConfig::set('external_allowed_ips', (string) $request->validated('allowed_ips', ''));
+        $this->success();
+    }
+
+    /**
+     * 重新生成外部接入 token（明文仅此一次返回）
+     */
+    public function regenerateExternalToken(): void
+    {
+        $token = Str::random(32);
+        InvoiceConfig::set('external_token', $token);
+        $this->success(['token' => $token]);
     }
 }

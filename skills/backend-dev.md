@@ -3,7 +3,7 @@
 ## 技术栈
 
 - **框架**: Laravel 11.x
-- **PHP**: 8.3+（双引号变量不加大括号）
+- **PHP**: 8.3+，双引号变量不加大括号（如 `"$var"` 而非 `"{$var}"`）；例外：变量后紧跟中文等非 ASCII 字符时必须加花括号（`"{$var}，中文"` 而非 `"$var，中文"`），因为 PHP 变量名匹配 `\x80-\xff` 字节
 - **数据库**: MySQL 8.0
 - **缓存/队列**: Redis
 - **认证**: JWT (tymon/jwt-auth)
@@ -70,22 +70,49 @@ backend/
 
 ### 关键服务
 
-| 服务                   | 职责                                     |
-| ---------------------- | ---------------------------------------- |
-| `UpgradeService`       | 升级主逻辑，`performUpgradeWithStatus()` |
-| `UpgradeStatusManager` | 状态管理，动态步骤计算                   |
-| `PackageExtractor`     | 包解压和应用，权限检查                   |
-| `ReleaseClient`        | Release 获取                             |
-| `BackupManager`        | 备份和恢复                               |
-| `VersionManager`       | 版本比较，环境检测                       |
+| 服务                   | 职责                                                                   |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `UpgradeService`       | 升级主逻辑，`performUpgradeWithStatus()`                               |
+| `UpgradeStatusManager` | 状态管理，动态步骤计算；`fail($msg, $details)` 支持结构化失败上下文    |
+| `EnvironmentChecker`   | 读 `php-requirements.json`，校验 PHP 版本/扩展/函数；产出结构化 report |
+| `PackageExtractor`     | 包解压和应用，权限检查                                                 |
+| `ReleaseClient`        | Release 获取                                                           |
+| `BackupManager`        | 备份和恢复                                                             |
+| `VersionManager`       | 版本比较，环境检测                                                     |
+
+**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：**遍历 source backend 顶层目录**逐个 `syncDirectory`（**只覆盖不删除**），`skipDirs` 排除 `storage`（运行时数据 + 升级自身状态 `upgrade.lock`/status；且 `removeEmptyDirectories` 会误删其空目录）和 `vendor`（单独同步）；根文件按清单 `artisan`+`composer.json/lock`+`php-requirements.json` 复制，`version.json` 由 `updateVersionJsonWithPreservedFields` 单独处理（保留 `release_url`/`network`）。早期用硬编码白名单，曾漏 `resources` 导致 `resources/docs/api/*.yaml`（对外 API 文档 `MetaController::apiDoc` 读取）等代码资源不随升级更新，症状是「代码更新了（app/routes → 路由注册，POST 405）但资源 404」；**改动态发现后新增顶层目录永不再漏**（upgrade 包打包已 exclude `storage/*`/`vendor/`/`tests/`，source 有什么同步什么天然安全）。
+
+**两条升级路径删除语义不同、且都正确**：后台升级（PHP，在被升级代码内运行、不能全量删自身）→ 只覆盖不删除，旧版删除的文件会残留（本项目路由是显式白名单不扫目录，残留基本无害）；需彻底清理残留时走 `upgrade.sh`（外部 shell，`rm -rf` 各目录 + 整体 `cp` 全量替换、天然无残留）。一致性目标是「都不漏应更新的目录」，删除策略因运行环境不同而必须不同。
+
+**升级器自更新有一次时序滞后**：本次升级跑的是服务器上的旧 `PackageExtractor`，逻辑修复要下一次升级才生效（或本次升级后手动补缺失资源）。回归测试见 `PackageExtractorTest`（动态发现新目录 / storage 跳过 / resources 同步）。
 
 ### 升级模式
 
-| 特性     | PHP API 升级  | Shell 脚本升级      |
-| -------- | ------------- | ------------------- |
-| 触发方式 | 管理后台 API  | `deploy/upgrade.sh` |
-| 升级包   | `upgrade` 包  | `full` 包           |
-| 维护模式 | 自动进入/退出 | 自动进入/退出       |
+| 特性             | PHP API 升级                      | Shell 脚本升级                                        |
+| ---------------- | --------------------------------- | ----------------------------------------------------- |
+| 触发方式         | 管理后台 API                      | `deploy/upgrade.sh`                                   |
+| 升级包           | `upgrade` 包                      | `full` 包                                             |
+| 维护模式         | 自动进入/退出                     | 自动进入/退出                                         |
+| PHP 环境不达标   | 仅检测；前端弹窗指引用 upgrade.sh | 询问 BT API key 自动装扩展/启用函数；否则手工指引     |
+| composer install | `--no-scripts` + 单独 discover    | `--no-dev --optimize-autoloader` + 兜底 dump-autoload |
+
+### PHP 环境检测
+
+- **需求清单**：`build/php-requirements.json`（与版本绑定）。build 时同时复制到 release zip 根（`full`/`upgrade` 包，供升级流程读）+ script zip 根（与 `install.sh`/`upgrade.sh` 同级，供安装流程读）。字段：`php_min` / `php_recommended` / `extensions.required[]` / `extensions.recommended[]` / `functions.required[]` / `functions.recommended[]`
+- **install.sh 入口（安装时）**：
+  - `bt-install.sh::select_php_version` 读 `php_min`，扫 `/www/server/php/*` 用 `version_compare` 过滤符合版本的 PHP（取代 hardcode `[84 83]`）
+  - `bt-deps.sh::check_php_extensions` 读 `extensions.required[]`（剔除 PHP 内置 `bcmath/ctype/dom/...` 等不需要 BT 单独装的），用于扩展存在性校验和自动安装
+  - `bt-deps.sh::check_disabled_functions` 读 `functions.required[]`，扫 php.ini + php-cli.ini 的 `disable_functions`，自动 sed 移除（备份原 ini）+ 重启 PHP-FPM
+- **upgrade.sh 入口（升级时）**：
+  - 解压后、切代码前调 `check_php_environment "$src_dir"`：读 release zip 内 `$src_dir/php-requirements.json`
+  - PHP 版本错 → 手工指引 exit；仅扩展/函数错 → 询问是否走 BT API 自动修复
+  - BT API 自动修复：`bt_resolve_key`（仅自动读 `api.json`，不当场 read 收 key）→ 调 `bt-deps.sh::auto_install_ext`（三路径 fallback：BT API → legacy script → ini 直写）装扩展 → 调 `bt-deps.sh::enable_functions` 直接 sed `php.ini` + `php-cli.ini` 移除禁用函数（绕过 BT API GetPHPConfig，因其在 CLI ini 单独配置时返回不准）→ 直接重新校验（升级流程全程 CLI 启新进程读 ini，不依赖 FPM 状态，故不再 sleep / reload FPM；FPM reload 推迟到升级末尾步骤 15b 统一处理）
+  - 未探测到 BT key → 提示用户到面板"设置 → API 接口"启用并加 IP 白名单后重跑（与 install.sh `detect_bt_key` 一致，避免明文 key 进终端历史）
+- **后端 web 入口（管理后台触发）**：`UpgradeService::performUpgradeWithStatus()` 的 `check_environment` 步骤（extract 之后、apply 之前）。不通过抛 `PhpEnvironmentException`，catch 块把 `details` 写入 `status.json.error_details`，前端 ElDialog 弹窗展示
+- **cron/supervisor PHP 路径**：upgrade.sh 升级末尾调 `update_jobs_php_path`，扫 `bt_list_crontab_all` + `bt_list_supervisor_all` 中含 `/www/server/php/XX/bin/php`（或裸 `php` token）与当前 `$PHP_CMD` 不一致的项。对 install.sh 自管（cron 含 `$INSTALL_DIR/backend/artisan schedule:run`；supervisor 含 `artisan queue:work` 且 path=`$INSTALL_DIR/backend`）且类型内唯一的项，自动覆盖更新（cron 走"先删后加 + 失败用原 body 回滚"三段语义；supervisor 走 `bt_add_supervisor_process` 自带 Remove+Add，失败也回滚）。不满足"自管+唯一"的项保留列表 + 手工提示
+- **升级末尾 PHP-FPM reload（步骤 15b）**：upgrade.sh 在权限检查前显式调 `bt_reload_php_fpm`，让 web 入口清 opcache 加载新代码。失败提示手工到面板 reload；非宝塔 PHP 路径跳过
+- **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function`，捕获 `E_ERROR / E_PARSE` 等 fatal，若 status 仍 running 则写 failed，避免卡 running 死锁
+- **classmap 自愈**：upgrade.sh composer 块后**无条件**跑 `dump-autoload --optimize --no-scripts`，修复跨小版本升级时 vendor 路径变更（如 `Pdo\Mysql` polyfill / `ReflectsClosures` 跨目录）导致的 classmap 漂移
 
 ### 数据库结构校验
 
@@ -114,6 +141,54 @@ php artisan db:structure --export       # 导出标准结构
 ```
 
 **注意**: 每次迁移变更后需重新导出 `structure.json`。
+
+---
+
+## BinaryLocator 外部命令调用
+
+### 总则
+
+- 任何 `exec(...)` 涉及外部二进制（php/composer/openssl/java/keytool/mysqldump/mysql/curl）的调用，**必须**先通过 `app(\App\Services\Binary\BinaryLocator::class)` 解析路径
+- 拼命令时用 `escapeshellarg($path).' arg1 arg2'`，**不允许变量插值**（防注入）
+- composer 调用方直接用 `$composerCmd = $locator->composer()` 返回的完整 `{php} {phar}` 串，不要再用 `which composer` 或裸 `'composer'` 命令（始终以本进程解析出的 PHP 为前缀，避开多版本 PHP 系统下 phar 自带 `#!/usr/bin/env php` shebang 找错版本）
+- BinaryLocator 是 singleton，进程内 memoize（同一个 worker 每个工具只探测一次），重复调用零成本
+
+### 异常处理约定
+
+- **升级流程**（`UpgradeService` / `UpgradeController`）—— PHP / composer 找不到由 preflight 阻塞，业务路径不需 catch
+- **证书下载**（`Services/Order/Traits/ActionFileTrait`）—— openssl/keytool 失败跳过对应格式（IIS PFX / Tomcat JKS），try-catch `BinaryNotFoundException` 后 `return` 跳过该段，不影响其它格式输出
+- **备份/恢复**（`Services/Backup/BackupService` 链路 / `Jobs/RestoreBackupJob` / `Http/Controllers/Admin/DatabaseBackupController`）—— mysqldump/mysql 失败由 `ApiResponse` 错误返回，传 `diagnose` 到 errors 字段
+- **插件/Release 下载**（`Services/Plugin/PluginManager` / `Services/Upgrade/ReleaseClient`）—— curl 找不到回落到 `file_get_contents` 等（保持原 `ResolvesExecutablePath` null 语义）
+
+### 探测策略（不要碰）
+
+- 全部走 `proc_open([$path, $flag])` 数组形式校验，**不能用 `is_executable` / `file_exists`**（FPM 下走 `open_basedir` 检查，宝塔白名单外的路径会被误判为不可用）
+- `proc_open` 数组形式调用（execve），不走 shell，天然防注入 + 避开 `open_basedir`
+- **探测顺序统一两条腿**：候选路径常量（绝对路径列表） → shell PATH 兜底，FPM/CLI 走完全一致路径。**不再用 Symfony `ExecutableFinder`** —— open_basedir 非空时它强制只在 open_basedir 内目录找命令，FPM 下永远 miss、CLI 下被候选路径覆盖，留着只让"开发机能跑、生产挂"的差异被偷偷接住
+- **shell 兜底**（`probeViaShell`）：候选路径全 miss 时跑 `sh -c 'command -v $tool'` 拿绝对路径 + probeWith 二次校验工具行为。**显式传 env `SHELL_FALLBACK_PATH`** 给 sh —— 宝塔 PHP-FPM 默认 `clear_env=yes` 不传 PATH，不显式注入子 sh 拿不到 PATH 必然失败。**返回绝对路径**而非裸名 —— 调用方按绝对路径 exec，不依赖调用方进程 env PATH
+- `SHELL_FALLBACK_PATH` 顺序：`/opt/homebrew/{sbin,bin}` 排在 `/usr/bin` 前面 —— macOS `/usr/bin/openssl` 是 LibreSSL（`openssl version` 输出 "LibreSSL ..." 不含 "OpenSSL"，探测假阳性失败），Homebrew 提前避开；生产 Linux 无 `/opt/homebrew/` 自动跳过
+- 版本探测参数因工具而异：
+  - `openssl version`（子命令，不是 `--version` 全局选项）—— OpenSSL 3.0.x 不识别 `--version`（3.2+ 才加），但 `version` 子命令 1.x/2.x/3.x 全系列支持；Ubuntu 24.04 默认 3.0.13 是踩过的坑
+  - `java -version` 输出到 stderr、`keytool` 中文 locale 不含 'keytool' 字符串 —— 这两个仅校验 exit 0，不校验 stdout 内容
+- composer 探测同样是 `候选路径 → shell PATH 兜底`（与其他工具对齐，不再特殊处理"候选 vs PATH 反向"）
+- 进程内 memoize（`$resolved[$tool]` 字典）
+
+### 宝塔 PHP-FPM / PHP-CLI ini 分离
+
+宝塔 `/www/server/php/{ver}/etc/` 下 FPM 读 `php.ini` + pool conf，CLI 读 `php-cli.ini`（独立文件）。两边 `disable_functions` / `open_basedir` 可能完全不同 —— 常见踩坑：FPM 已放开 `proc_open` / `exec`，但 CLI 仍禁用，导致 `composer install` 内部子进程调用失败。
+
+- **`BinaryLocator::inspectFpmIni()`**：读当前进程的 `php_ini_loaded_file()` + `ini_get('disable_functions')`
+- **`BinaryLocator::inspectCliIni()`**：起 CLI 子进程（`{php} -r 'echo php_ini_loaded_file()."|".ini_get("disable_functions");'`）读 CLI 真实 ini，**不能只查当前 FPM 进程的 `ini_get('disable_functions')`**（漏一半）
+- 两个方法都返回 `{ini_path, disable_functions, disable_functions_ok}`，`ok` 要求 `proc_open` 和 `exec` 都未被禁
+
+### preflight 集成
+
+- `App\Services\Upgrade\UpgradePreflight::check()` 一次性跑 4 项检查（FPM ini → php → composer → CLI ini），即便中间项失败也跑完让运维一次看到所有问题
+- 返回结构：`{blocking: [{code, reason, fix}], items: [{tool, status, path?, diagnose?}], ini: {fpm: {disable_functions_ok, ini_path}, cli: {disable_functions_ok, ini_path}}}`
+- 4 项 blocking code：`fpm_proc_open_disabled` / `php_cli_missing` / `composer_missing` / `cli_proc_open_disabled`；fix 文案统一指向"使用 upgrade.sh 升级"或编辑指定 ini 文件
+- BinaryLocator 内部意外错误（非 `BinaryNotFoundException`）被兜成 `health_check_failed` blocking，让 Controller 仍能返 503 + 友好错误，不冒泡成 500
+- **`UpgradeController::execute` 入口**（`isRunning` 短路后）先跑 preflight，任一 blocking → 503 + 完整诊断到 errors 字段
+- **`GET /api/admin/upgrade/binary-health` 端点**：纯展示 8 个工具状态（php/composer/openssl/java/keytool/mysqldump/mysql/curl）+ FPM/CLI ini，不阻塞，供前端升级页面参考
 
 ---
 
@@ -163,6 +238,12 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - `FlushLogs` 中间件：响应发送后触发日志刷入
 - 所有日志模型使用默认数据库连接
 
+### Cert 中间证书缓存与 retrieved 时序
+
+- `Cert::retrieved` 钩子对 `active + issuer` 的证书，从 `Cert::chainMap()`（请求 / Job 级容器缓存的全部中间证书）取 `intermediate_cert`；缺失时把 `status` 改写为 `approving`（中间证书未就绪 → 表现为签发中，**影响 Deploy 部署判断 / V1·V2 cacheTime / 文档上传拦截，有意设计，勿当纯输出移除**）。
+- **不能用 `with('chain')` 预加载**：Laravel `retrieved` 事件早于 `with()` eager load 触发，retrieved 内访问预加载关联会触发 lazy load（N+1 重现）。故用 `chainMap()` 一次性全表缓存（Chain 是 CA 中间证书、`common_name` 唯一、数量有限）替代逐条 `Chain::where()`，列表 N+1 → 每请求 / Job 仅 1 次全表查询。
+- **缓存用 `app()->scoped` 而非 `instance`**：FPM 每请求新容器天然刷新；`queue:work` 常驻 worker 在每个 job 边界由框架 `resetScope → forgetScopedInstances` 自动清，避免跨 job 读到陈旧中间证书（`instance` 不随 job 清）。`setIntermediateCert` 写新 Chain 后 `forgetInstance('cert.chainMap')` 让同请求 / 同 job 内即时失效。
+
 ---
 
 ## Token 认证体系
@@ -192,8 +273,15 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - `order` 支持单个数字 ID（跟随 renewed 链）或单个域名（按 `common_name` 精确匹配，`issued_at` 降序取最新 active 证书），续费后 certimate URL 无需变更
 - 不带 `field` 时走原 JSON 分页逻辑（向后兼容）
 
----
+### 凭据不进 URL：用短时签名 URL
 
+- **JWT access_token 是全权限长效凭据，绝不可拼进 URL query** —— 进了就落入浏览器历史 / 服务端 access log / Referer，被截获即等于泄漏该用户全部 API 权限。
+- iframe / img / `<a download>` 这类无法带 `Authorization` header 的场景（如文档预览/下载），**一律用分钟级短时签名 URL**（`URL::temporarySignedRoute` + `signed` 中间件验签），不复用 access_token。
+- 文档预览实现（参考）：`GET order/document-preview-url/{id}`（走 JWT header 鉴权 + 归属校验）返回 `temporarySignedRoute('{role}.order.document-preview', now()->addMinutes(10), ['id' => $id])`；`order/document-preview/{id}` 路由用 `withoutMiddleware([JWT 中间件类])->middleware('signed')` 脱离 JWT、仅验签名。归属安全链：取 URL 接口经 UserScope 限本人（admin 全局）→ 签名防 docId 篡改 → signed 预览路由本身无需再查归属。
+- 前端两步：先调「取签名 URL」接口（header 带 JWT），再把返回的签名 URL 作 iframe/img/下载 src。`withoutMiddleware` 移除组中间件需传**展开后的中间件类名**（不是组别名）；`route:list` 仍显示组名属正常（运行时 pipeline 才排除），以 HTTP 测试「无 JWT + 有效签名 → 200」验证真正生效。
+- **坑（access_token 不进 URL 的前提）**：User 控制器构造函数若有 `$this->guard->id() || $this->error()` 登录校验，必须对签名预览路由（`request()->routeIs('user.order.document-preview')`）放行，否则无 JWT 的签名请求在构造函数就被挡死、返回「用户不存在」（HTTP 200 JSON）—— 签名预览形同虚设。HTTP 测试须断言**真文件流**（`content-type=application/pdf` / `attachment` disposition），只 `assertOk()` 会因 200 JSON 假绿。Admin 控制器构造函数无此登录校验，故不受影响。
+
+---
 
 ## 资金确定性体系（4 道网）
 
@@ -214,10 +302,10 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 文件：`database/migrations/2026_05_07_*_add_fund_transaction_unique_indexes.php`
 
-| 索引                                                                | 含义                                                                                                                                                                                               |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `funds(pay_method, pay_sn)` 唯一                                    | 防"不同 fund 同一支付编号"。MySQL BTREE 索引中 NULL 互不相等，处理中订单 (pay_sn=NULL) 多行合法；落地后的 (pay_method, pay_sn) 才进入唯一性判定                                                     |
-| `transactions(type, transaction_id) WHERE type != 'order'` 部分唯一 | 防"同一事件被重复入账"。MySQL generated VIRTUAL 列 + 完全唯一索引模拟（`CASE WHEN type='order' THEN NULL ELSE CONCAT(type,':',transaction_id) END`，NULL 不参与唯一约束，效果等价于部分索引）       |
+| 索引                                                                | 含义                                                                                                                                                                                          |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `funds(pay_method, pay_sn)` 唯一                                    | 防"不同 fund 同一支付编号"。MySQL BTREE 索引中 NULL 互不相等，处理中订单 (pay_sn=NULL) 多行合法；落地后的 (pay_method, pay_sn) 才进入唯一性判定                                               |
+| `transactions(type, transaction_id) WHERE type != 'order'` 部分唯一 | 防"同一事件被重复入账"。MySQL generated VIRTUAL 列 + 完全唯一索引模拟（`CASE WHEN type='order' THEN NULL ELSE CONCAT(type,':',transaction_id) END`，NULL 不参与唯一约束，效果等价于部分索引） |
 
 旧 3 列索引 `funds_type_pay_method_pay_sn_unique` 已被本 migration 删除（语义弱于新 2 列、且 refunds/reverse 走 UPDATE 同行不冲突）。
 
@@ -280,7 +368,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 文件：`app/Console/Commands/FundAuditCommand.php` + `routes/console.php` 注册 `Schedule::command('finance:audit')->dailyAt('03:00')`。
 
-命令调 `FundInvariants::all()` 全量对账，违反 → 走 `NotificationCenter`（`code=finance_audit_alert`）发邮件给 `site.adminEmail` + `Log::error` 兜底。可选 `--freeze-on-violation` 自动把涉事 user.status=0 禁用。
+命令调 `FundInvariants::all()` 全量对账，违反 → 走 `NotificationCenter`（`code=finance_audit`）发邮件给 `site.adminEmail` + `Log::error` 兜底。可选 `--freeze-on-violation` 自动把涉事 user.status=0 禁用。
 
 命令本身始终返回 0（不被 retry）；仅 invariant 自身崩溃返回 1。错开 AutoRenew 00:00 时段。
 
@@ -314,10 +402,41 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 5. 删除已入账 fund 路径必须事务内 `lockForUpdate` + 锁内 status/created_at 二次校验
 6. 上线前先跑 `php artisan finance:audit` 确认现有数据干净，否则改约束之后下一次相关 INSERT 触发"交易记录已存在"误报
 
+## 安全补强
+
+### 邮件验证码防爆破（VerifyCodeRateLimiter）
+
+- 中间件 `App\Http\Middleware\VerifyCodeRateLimiter` 挂在发码/校验路由（注册、重置密码）；`VerifyCodeHelper` 按失败次数计数 + 冷却，验证码用 `random_int` 生成
+- 重置密码接口去掉 `exists:users,email` 校验（避免邮箱枚举），邮箱不存在也返回统一成功文案
+
+### 归档解压统一防护（ArchiveGuard）
+
+- `App\Services\Upgrade\ArchiveGuard`：`assertSafeEntries()`（解压前校验 zip 条目无 `..`/绝对路径/symlink 逃逸）+ `assertExtractedWithin()`（解压后校验落地路径在目标目录内）
+- 所有解压路径统一走它：`PackageExtractor`（升级）/ `BackupManager`（备份）/ `PluginManager`（插件安装）。**新增解压点必须接入**，不要各写各的 zip-slip 校验
+
+### sync 终态守卫（防复活）
+
+- `Order\Action::sync`/`Acme\Action::sync` 锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，防上游旧状态把已取消/已吊销订单复活回 active（与 commitCancel 串行化配合）
+
+### 批量操作上限（`config/batch.php`）
+
+- `max_ids=100`：所有 `GetIdsRequest` 的 ids 数量上限（`BaseRequest::messages` 统一错误文案）
+- `max_upstream=20`：batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游
+
 ## MySQL 兼容性
 
 - 兼容 MySQL 5.7，不使用 `json` 字段类型
 - 数组类型字段使用 `string` 存储，由 Laravel 模型 `'array'` cast 自动 JSON 序列化
+
+## 列类型与累加防溢出
+
+**坑**：累加型计数列选小整数（TINYINT UNSIGNED max 255）且无硬截断，溢出抛 SQLSTATE[22003] 1264；若 catch 把异常 message 原样回写另一短字符串列，因 MySQL 异常 message 包含完整 SQL 回显（含上一次列值），形成"error 嵌套自我放大"链，列被反复写直到 VARCHAR 撑爆截断成乱码。真实案例：`cname_delegations.fail_count` 累加到 256 触发该链，把 `schedule:validate` 子进程拖到 fatal exit 255。
+
+**规则**：
+
+1. **累加点硬截断**：用 `min($v + 1, $cap)` 而非裸 `$v++`；$cap 取"列上限"和"业务上限"较小值（如 fail_count 取 100 — 超过没意义且远小于 TINYINT 上限）
+2. **catch 写回 error/message 字段必须限长**：`mb_substr($e->getMessage(), 0, N)`，N 取列长度 ~80%（VARCHAR(255) → 200 留余量），断掉"异常 message 含 SQL 回显 → SQL 含旧列值 → 嵌套放大"链
+3. **选型预留余量**：纯状态枚举（0/1/2）用 TINYINT 无妨；**累加计数即使业务上限只到 100，仍优先 SMALLINT UNSIGNED**，给抗冲击空间，除非压缩 1 字节是硬要求
 
 ## 迁移规范
 
@@ -325,6 +444,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 - **优先 Laravel 系统方法**：迁移优先使用 `Schema::table` + Blueprint 方法，避免 `DB::statement` 裸 SQL
 - **up 幂等**：修改表结构的迁移必须先检查当前状态（`Schema::hasColumn`/`Schema::hasTable`），避免重复执行报错
 - **不写 down**：迁移只写 `up()`，不写 `down()`。生产环境不做回滚，回滚用新迁移前进修复
+- **所有结构变更同步回 create 迁移**：任何 `add_/update_/drop_/rename_xxx_table` 增量迁移做的结构改动（加字段、删字段、改类型/长度/默认值/注释、加/删/重命名索引、加/删外键、改 enum 值、改字段顺序等）都必须同步回对应的 `create_yyy_table` 原迁移，让新装直接拿到最终 schema、老库继续走幂等增量。两侧字段顺序、类型、长度、默认值、nullable、索引、注释完全一致，避免新老库 schema 漂移导致 `db:structure --check` 误报
 - **structure.json 不手动改**：迁移变动后发布前通过 `php artisan db:structure --export` 重新导出
 - **导出前用干净测试库**：避免开发库脏数据或插件表干扰
 
@@ -425,6 +545,77 @@ Schema::table('products', function (Blueprint $table) {
 
 ---
 
+## PurgeCommand 自动取消（临近退款期处理中订单）
+
+`schedule:purge` 每天 02:00 执行，扫描 `created_at` 在 `refund_period - 2 ~ refund_period` 天之间的处理中订单，调 `Order\Action::cancel` 取消并退款。
+
+### 限定条件
+
+- `cert.status = 'processing'`
+- `cert.action IN ('new', 'renew')`（**重签订单 reissue 不取消**，避免连带把原订单 latestCert 改 cancelled）
+- `products.refund_period >= 5`（退款期 < 5 天的产品跳过）
+
+### 实现位置
+
+`backend/app/Console/Commands/PurgeCommand.php` 两段 query 的 `whereHas('latestCert', ...)` 闭包同时加 `whereIn('action', ['new','renew'])`：
+
+- L121-133：预同步 query（refund_period - 4 ~ refund_period - 2 天的订单创建 sync 预热任务）
+- L147-154：取消 query（refund_period - 2 ~ refund_period 天的订单走 sync + cancel）
+
+---
+
+## 同步取消退款开关（site.autoRefundOnSync）
+
+多级代理场景下，上级 Manager 可能先取消订单（如其自身的 PurgeCommand 触发）；下级 Manager 的 `Order\Action::sync` 同步上游状态时，默认仅更新本地 `cert.status='cancelled'`，**不退款**。是否退款给末端用户由各级 Manager 管理员自决。
+
+### 开关
+
+- 分组：`site`，key：`autoRefundOnSync`，type：`boolean`，默认 `false`
+- 后端读取：`get_system_setting('site', 'autoRefundOnSync')`
+- 前端：admin 站点设置页面自动按 SettingGroup 渲染 boolean toggle
+
+### 触发条件（四个必须全部成立）
+
+1. 上游返回 `data.status === 'cancelled'`
+2. `cert.status ∈ {processing, approving, cancelling}`（过渡态；排除 active 已签发 / 终态）
+3. `cert.action ∈ {new, renew}`（排除 reissue 重签）
+4. 开关 `site.autoRefundOnSync === true`
+
+### 资金路径
+
+私有 helper `Order\Action::refundForSyncedCancel(Order, array $certData)`：
+
+1. `DB::transaction` 闭包
+2. `Order::with('latestCert')->whereHas('latestCert')->lock()->find($order->id)` 加 order 行锁
+3. 锁内二次校验触发条件 2/3/4（data.status 已外层校验）
+4. 防重检查 `Transaction::where(['type'=>'cancel','transaction_id'=>$order->id])->exists()`
+5. 若不重复且 amount > 0：调 `OrderUtil::getCancelTransaction($order->toArray())` + `Transaction::create($tx)`（`Transaction::creating` 钩子内自带 user.lockForUpdate + balance 增加）
+6. `$cert->update($certData + [status='cancelled', cancelled_at=now()])`
+7. `$order->cancelled_at = now(); $order->save();`
+8. callback task / deleteTask（复用 sync L532-538 副作用，createTask 内部已 `->afterCommit()`）
+
+### sync 集成
+
+`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用。
+
+### 设计决策
+
+- **不检查 refund_period**：以上游状态为权威，与主动 `cancel()` 路径行为不同。上游已取消意味着资金已从上游退回，本系统应该传递给末端用户，不受退款期限制。
+- **cancelling 状态进入 helper**：若已有 `commitCancel` / `PurgeCommand` 创建的 cancel task 存在，helper 完成后 cert.status='cancelled'，残留 cancel task 被 TaskJob 调度时 `Action::cancel` 锁内首先检查 status === 'cancelled' 立即报错回滚，不会重复调上游 api、不会重复退款。helper 内**不主动删 cancel task**，避免 order→task 与项目惯例 task→order 锁顺序倒置引发死锁。
+- **资金确定性体系契合**：事务+锁、应用层防重 + DB 唯一索引 `transactions_type_transaction_id_unique` 兜底、afterEach FundInvariants 守门（测试登记在 `tests/Support/FundAuditGuard.php::fundAuditGuardedTestPaths()`）。
+
+### 测试覆盖
+
+- `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：12 个用例覆盖开关开/关 / status / action / 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发
+- `tests/Feature/Commands/PurgeCommandTest.php`：补 2 个用例验证 reissue 不取消 / new 仍取消
+
+### 部署注意
+
+- 升级后需跑一次 `php artisan db:seed --class=Database\\Seeders\\SettingSeeder` 让设置项落库
+- 默认 `false` 即维持现状行为，无回滚风险，可作为开关式金丝雀
+
+---
+
 ## 委托验证
 
 ### 验证方法转换
@@ -472,6 +663,14 @@ Schema::table('products', function (Blueprint $table) {
 ### 即时检测
 
 `ValidateCommand::checkDelegationValidity()` 在验证前即时检测委托记录状态。
+
+### Sectigo 本地 DCV 计算开关
+
+`ActionTrait::generateDcv()` 中针对 Sectigo + cname/http/https 的本地哈希计算（CSR → DER → MD5/SHA256，拼出 `_<md5>` host 和 `<sha1>.<sha2>.<uv>.sectigo.com` value）由系统设置 `site.sectigoDcv` 控制，**默认关闭**（不入 seeder，缺失视为 false）。
+
+- 关闭时：走 `$dcv = ['method' => $method]` 降级，dns/file 字段由上游 `/api/v2/new` 响应回填，再经 `mergeDcv()` 合并写入 cert。这是与 DigiCert/Certum 等其他 CA 一致的行为
+- 开启时：本地直接算出 dns.value / file.content，订单创建即可向用户展示验证值（不必等上游回包）
+- 手工开启方式：在 `settings` 表 site 组新增一行 `key=sectigoDcv, type=boolean, value=true`（无管理界面入口，按需 SQL 配置）
 
 ### DCV 数据合并
 
@@ -631,6 +830,86 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 3. **使用 DataProvider**：参数化测试用例
 4. **Mock 策略**：外部服务（DNS、上游 API）使用 Mockery 模拟
 5. **测试必须反映真实约束**：不要为架构上不可能的场景编写测试（如 `latestCert` 为 null），也不要在代码中用防御性检查掩盖此类错误——如果真的发生，应让系统抛出异常暴露问题，而非静默返回
+
+### 资金核心变异测试
+
+`pest-plugin-mutate`（Pest 4 自带）针对资金核心代码做变异测试，验证测试质量没有静默退化（覆盖了但断言不强 → 改代码不报错）。
+
+**范围**（6 个 class，spec 决策）：
+
+- `App\Models\Fund`
+- `App\Models\Transaction`
+- `App\Services\Acme\Action`
+- `App\Services\Order\Action`
+- `App\Services\Order\AutoRenewService`（自动续费/重签的判断逻辑，资金敏感）
+- `App\Services\FundAudit\FundInvariants`
+
+**触发场景**：
+
+- **改了上述 5 个 class 中任一文件 → 必须主动跑 `composer test:mutate` 自检**（最重要的触发点，开发者自我把关）
+- 正式版（main 通道）release 前必跑（`/remote-release` 命令的 §3.0 步骤）
+- **预发布版（dev 通道）不跑**（试错性质，门禁仅在正式版生效）
+- **CI 不跑**（避免 PR 等待 5-7 min，且 release 前已有人工门禁兜底）
+
+**门槛**：
+
+- baseline 文件 `backend/tests/.mutation-baseline.json` 入库，`min_msi` 字段为门槛
+- pest 跑出的 MSI 必须 ≥ `min_msi`，否则 fail
+- baseline **只升不降**：跑出更高 MSI 时手动上调，不允许靠下调 baseline 让发布通过
+
+**baseline 演进规则**：
+
+baseline 不是终点，而是逐步提升的安全网。演进发生在四个时机，每次都用**独立的 `chore:` commit**（不混进业务 PR）。
+
+| 时机                             | 触发者                    | 操作                                                                                                                                                              |
+| -------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A) 补了测试**                  | 改资金代码的 PR 作者      | 本机 `composer test:mutate` 看 MSI；如果升高 ≥ 2%，单独 commit 调高 `min_msi`（最多 = `floor(实测 - 2)`，留 2% 缓冲）                                             |
+| **B) release 前发现自然升高**    | 跑 `/remote-release` 的人 | 跑完看分数高于 baseline ≥ 3%，先 commit 调高 baseline 再走发布流程                                                                                                |
+| **C) 范围扩展**                  | 决策加新核心 class 的人   | 在 `backend/scripts/test-mutate.sh` 加新 `--class=...`，重跑出新 baseline，整体调整 `min_msi`                                                                     |
+| **D) 退步（MSI 跌破 baseline）** | 发现退步的人              | **禁止下调 baseline**——必须先补测试让 MSI 回升；除非该 untested mutation 已评估无害（如不可达分支），此时应在源码加 `// pest-mutate-ignore` 标记，而非动 baseline |
+
+**长期阶段路线**：
+
+| 阶段               | min_msi 目标 | 实测  | 重点                                                                                   |
+| ------------------ | ------------ | ----- | -------------------------------------------------------------------------------------- |
+| 第一阶段（已完成） | 77           | 80.12 | 6 class baseline 落地                                                                  |
+| 第二阶段（已完成） | 88           | 90.96 | FundInvariants 加 message 弱断言 + 加入 AutoRenewService                               |
+| 第三阶段           | 93+          | —     | 消化剩余 15 个 untested（多为 ConcatSwitchSides 等价突变，性价比低）或扩范围到退费明细 |
+
+**首次跑出 baseline**：
+
+```bash
+cd backend
+XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
+    --class='App\Models\Fund' \
+    --class='App\Models\Transaction' \
+    --class='App\Services\Acme\Action' \
+    --class='App\Services\Order\Action' \
+    --class='App\Services\Order\AutoRenewService' \
+    --class='App\Services\FundAudit\FundInvariants' \
+    --covered-only --parallel
+# 看 Score: X%，把 floor(X - 3) 写到 tests/.mutation-baseline.json 的 min_msi
+```
+
+**日常使用**：
+
+```bash
+cd backend
+composer test:mutate                  # 跑全量门禁（按 baseline 门槛）
+composer test:mutate -- --bail        # 遇到第一个 untested 立即停（debug 用）
+composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
+```
+
+**依赖**：
+
+- 本机 PHP 必须装 xdebug 或 pcov（变异测试需要 code coverage driver）
+- 本机必须装 jq（`brew install jq` / `apt install jq`）
+
+**为什么不入 CI**：
+
+- 全量 5-7 min（用 `--covered-only` 优化后），单跑某个 class 约 6 min
+- PR path-filter 触发会让改资金代码的 PR 等额外 5-7 min
+- release 前门禁是关键时刻，本地跑足够保证质量；开发者改资金代码时主动跑做第一道把关
 
 ---
 

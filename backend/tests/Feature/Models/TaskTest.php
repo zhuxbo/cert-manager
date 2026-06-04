@@ -4,6 +4,7 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Task;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 test('任务关联订单', function () {
     $user = User::factory()->create();
@@ -64,8 +65,8 @@ test('日期字段正确转换', function () {
     $task = Task::factory()->completed()->create();
     $task->refresh();
 
-    expect($task->started_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
-    expect($task->last_execute_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($task->started_at)->toBeInstanceOf(Carbon::class);
+    expect($task->last_execute_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('weight 为整数 cast', function () {

@@ -2,14 +2,18 @@
 
 namespace App\Http\Controllers\User;
 
+use App\Http\Controllers\Concerns\ResolvesContactId;
 use App\Http\Requests\Organization\GetIdsRequest;
 use App\Http\Requests\Organization\IndexRequest;
 use App\Http\Requests\Organization\StoreRequest;
 use App\Http\Requests\Organization\UpdateRequest;
 use App\Models\Organization;
+use Illuminate\Support\Facades\DB;
 
 class OrganizationController extends BaseController
 {
+    use ResolvesContactId;
+
     public function __construct()
     {
         parent::__construct();
@@ -28,9 +32,12 @@ class OrganizationController extends BaseController
 
         // 添加搜索条件
         if (! empty($validated['quickSearch'])) {
-            $query->where('name', 'like', "%{$validated['quickSearch']}%")
-                ->orWhere('registration_number', 'like', "%{$validated['quickSearch']}%")
-                ->orWhere('phone', 'like', "%{$validated['quickSearch']}%");
+            // 用闭包包裹 quickSearch 的 OR 组，避免与后续附加过滤（registration_number/country/created_at 等）的 AND 条件因运算符优先级被短路
+            $query->where(function ($q) use ($validated) {
+                $q->where('name', 'like', "%{$validated['quickSearch']}%")
+                    ->orWhere('registration_number', 'like', "%{$validated['quickSearch']}%")
+                    ->orWhere('phone', 'like', "%{$validated['quickSearch']}%");
+            });
         }
         if (! empty($validated['name'])) {
             $query->where('name', 'like', "%{$validated['name']}%");
@@ -68,15 +75,21 @@ class OrganizationController extends BaseController
      */
     public function store(StoreRequest $request): void
     {
-        $validated = $request->validated();
-        $validated['user_id'] = $this->guard->id();
-        $organization = Organization::create($validated);
+        $data = $request->validated();
+        $userId = $this->guard->id();
 
-        if (! $organization->exists) {
-            $this->error('添加失败');
-        }
+        $organization = null;
+        DB::transaction(function () use ($data, $userId, &$organization) {
+            $contactId = $this->resolveContactId($data, $userId);
 
-        $this->success();
+            $orgData = collect($data)->except(['contact', 'contact_id'])->all();
+            $organization = Organization::create(array_merge($orgData, [
+                'user_id' => $userId,
+                'contact_id' => $contactId,
+            ]));
+        });
+
+        $this->success($organization->load('contact')->toArray());
     }
 
     /**
@@ -118,15 +131,29 @@ class OrganizationController extends BaseController
      */
     public function update(UpdateRequest $request, $id): void
     {
+        $data = $request->validated();
+        $userId = $this->guard->id();
+
         $organization = Organization::find($id);
         if (! $organization) {
             $this->error('组织不存在');
         }
 
-        $organization->fill($request->validated());
-        $organization->save();
+        DB::transaction(function () use ($data, $userId, $organization) {
+            // 未传 contact_id/contact 时保留原绑定；显式传 null 才清空。
+            $contactId = array_key_exists('contact_id', $data) || array_key_exists('contact', $data)
+                ? $this->resolveContactId($data, $userId)
+                : $organization->contact_id;
 
-        $this->success();
+            $orgData = collect($data)->except(['contact', 'contact_id'])->all();
+            $organization->fill(array_merge($orgData, [
+                'user_id' => $userId,
+                'contact_id' => $contactId,
+            ]));
+            $organization->save();
+        });
+
+        $this->success($organization->refresh()->load('contact')->toArray());
     }
 
     /**

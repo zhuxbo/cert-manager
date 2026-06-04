@@ -1,9 +1,15 @@
 <?php
 
 use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
+use App\Jobs\CreateBackupJob;
+use App\Jobs\NotificationJob;
+use App\Jobs\RestoreBackupJob;
+use App\Jobs\TaskJob;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use PHPUnit\Framework\Assert;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 /**
  * 收集 app/Jobs/ 下所有实现 ShouldQueue 的具象类。
@@ -21,7 +27,7 @@ function collectAllShouldQueueClasses(): array
         return [];
     }
 
-    /** @var \RecursiveIteratorIterator<\RecursiveDirectoryIterator> $iter */
+    /** @var RecursiveIteratorIterator<RecursiveDirectoryIterator> $iter */
     $iter = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($jobsDir, RecursiveDirectoryIterator::SKIP_DOTS)
     );
@@ -62,10 +68,10 @@ test('扫描函数能找到所有 4 个内置 ShouldQueue Job', function () {
     $classes = collectAllShouldQueueClasses();
 
     expect($classes)->toContain(
-        \App\Jobs\TaskJob::class,
-        \App\Jobs\NotificationJob::class,
-        \App\Jobs\CreateBackupJob::class,
-        \App\Jobs\RestoreBackupJob::class,
+        TaskJob::class,
+        NotificationJob::class,
+        CreateBackupJob::class,
+        RestoreBackupJob::class,
     );
 });
 
@@ -88,7 +94,7 @@ test('所有 ShouldQueue 实现都使用 HasUpgradeFreezeMiddleware trait', func
         }
 
         // 用 PHPUnit assertContains（带 message 参数）输出可读的失败信息
-        \PHPUnit\Framework\Assert::assertContains(
+        Assert::assertContains(
             HasUpgradeFreezeMiddleware::class,
             $allTraits,
             "Job $class 缺少 HasUpgradeFreezeMiddleware trait（升级冻结契约要求）"

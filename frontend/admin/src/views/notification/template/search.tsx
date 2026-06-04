@@ -1,6 +1,6 @@
 import "plus-pro-components/es/components/search/style/css";
 import type { PlusColumn } from "plus-pro-components";
-import { statusOptions, channelOptions } from "./dictionary";
+import { statusOptions } from "./dictionary";
 
 export function useNotificationTemplateSearch() {
   const searchColumns: PlusColumn[] = [
@@ -29,15 +29,6 @@ export function useNotificationTemplateSearch() {
       options: [{ label: "全部", value: "" }, ...statusOptions],
       fieldProps: {
         placeholder: "请选择状态"
-      }
-    },
-    {
-      label: "通道",
-      prop: "channel",
-      valueType: "select",
-      options: [{ label: "全部", value: "" }, ...channelOptions],
-      fieldProps: {
-        placeholder: "请选择通道"
       }
     }
   ];

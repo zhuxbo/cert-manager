@@ -4,8 +4,9 @@ use App\Models\Admin;
 use App\Models\ApiToken;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {

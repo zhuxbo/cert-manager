@@ -1,22 +1,19 @@
 <script setup lang="tsx">
-import { onMounted } from "vue";
+import { onMounted, ref } from "vue";
 import { PureTableBar } from "@shared/components";
-import { PlusSearch, PlusDrawerForm } from "plus-pro-components";
+import { PlusSearch } from "plus-pro-components";
+import { OrganizationEditor } from "@shared/components/OrganizationEditor";
+import { countryCodes } from "@/views/system/country";
 import { useOrganization } from "./hook";
 import { useOrganizationSearch } from "./search";
-import { useOrganizationStore } from "./store";
 import { useOrganizationTable } from "./table";
 
 import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
-import { useDrawerSize } from "@/views/system/drawer";
 import CloseBold from "~icons/ep/close-bold";
 
 defineOptions({
   name: "Organization"
 });
-
-// 使用统一的响应式抽屉宽度
-const { drawerSize } = useDrawerSize();
 
 const {
   tableRef,
@@ -44,18 +41,23 @@ const {
 // 创建搜索列配置
 const { searchColumns } = useOrganizationSearch(() => onSearch());
 
-// 创建表单列配置
-const {
-  storeRef,
-  showStore,
-  storeId,
-  storeColumns,
-  rules,
-  storeValues,
-  openStoreForm,
-  confirmStoreForm,
-  closeStoreForm
-} = useOrganizationStore(() => onSearch());
+const editorVisible = ref(false);
+const editingId = ref<number | null>(null);
+
+function openCreate() {
+  editingId.value = null;
+  editorVisible.value = true;
+}
+
+function openEdit(id: number) {
+  editingId.value = id;
+  editorVisible.value = true;
+}
+
+function onEditorSaved() {
+  editorVisible.value = false;
+  onSearch();
+}
 
 onMounted(() => {
   onSearch();
@@ -87,7 +89,7 @@ onMounted(() => {
     </div>
     <PureTableBar title="组织管理" :columns="tableColumns" @refresh="onSearch">
       <template #buttons>
-        <el-button type="primary" @click="openStoreForm()">新增组织</el-button>
+        <el-button type="primary" @click="openCreate">新增组织</el-button>
       </template>
       <template v-slot="{ size, dynamicColumns }">
         <div
@@ -149,7 +151,7 @@ onMounted(() => {
               type="primary"
               link
               :size="size"
-              @click="openStoreForm(row.id)"
+              @click="openEdit(row.id)"
             >
               编辑
             </el-button>
@@ -173,23 +175,12 @@ onMounted(() => {
         </pure-table>
       </template>
     </PureTableBar>
-    <PlusDrawerForm
-      ref="storeRef"
-      v-model="storeValues"
-      :visible="showStore"
-      :form="{
-        columns: storeColumns,
-        rules,
-        labelPosition: 'right',
-        labelSuffix: ''
-      }"
-      :size="drawerSize"
-      :closeOnClickModal="true"
-      :title="storeId > 0 ? '编辑组织' : '新增组织'"
-      confirmText="提交"
-      cancelText="取消"
-      @confirm="confirmStoreForm"
-      @cancel="closeStoreForm"
+    <organization-editor
+      v-model:visible="editorVisible"
+      role="user"
+      :organization-id="editingId"
+      :country-options="countryCodes"
+      @success="onEditorSaved"
     />
   </div>
 </template>

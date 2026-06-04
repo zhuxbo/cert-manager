@@ -348,6 +348,31 @@ cat >"$FULL_DIR/manifest.json" <<EOF
 }
 EOF
 
+# 复制 PHP 环境需求清单（后台升级 EnvironmentChecker 和 upgrade.sh check_php_environment 必读）
+PHP_REQ_FILE="$PROJECT_ROOT/build/php-requirements.json"
+if [ -f "$PHP_REQ_FILE" ]; then
+    cp "$PHP_REQ_FILE" "$FULL_DIR/php-requirements.json"
+fi
+
+# 复制 deploy/scripts/*.sh（upgrade.sh 解压后重定向 SCRIPT_DIR 到这里使用 bt-automate.sh 等）
+# 升级流程结束后会清理 TEMP_DIR，不持久化到 INSTALL_DIR
+# 显式校验：升级链路实际依赖 bt-automate.sh / bt-deps.sh / common.sh（缺一不可）
+# 其他 .sh 文件（如 bt-install.sh）随同复制以保持包结构对称，但不在硬校验清单
+DEPLOY_SCRIPTS_SRC="$PROJECT_ROOT/deploy/scripts"
+DEPLOY_SCRIPTS_REQUIRED=(bt-automate.sh bt-deps.sh common.sh)
+if [ ! -d "$DEPLOY_SCRIPTS_SRC" ]; then
+    log_error "deploy/scripts/ 目录不存在: $DEPLOY_SCRIPTS_SRC"
+    exit 1
+fi
+mkdir -p "$FULL_DIR/scripts"
+cp "$DEPLOY_SCRIPTS_SRC"/*.sh "$FULL_DIR/scripts/"
+for required in "${DEPLOY_SCRIPTS_REQUIRED[@]}"; do
+    if [ ! -f "$FULL_DIR/scripts/$required" ]; then
+        log_error "升级包缺少关键脚本: scripts/$required（升级时 SCRIPT_DIR 重定向会失败）"
+        exit 1
+    fi
+done
+
 # 清理系统文件后打包
 cleanup_os_files "$FULL_DIR"
 cd "$WORK_DIR"
@@ -419,6 +444,22 @@ cat >"$UPGRADE_DIR/manifest.json" <<EOF
 }
 EOF
 
+# 复制 PHP 环境需求清单（后台升级 EnvironmentChecker 和 upgrade.sh check_php_environment 必读）
+# upgrade.sh 解压后从 src_dir/php-requirements.json 读；UpgradeService 从 extractedPath/php-requirements.json 读
+if [ -f "$PHP_REQ_FILE" ]; then
+    cp "$PHP_REQ_FILE" "$UPGRADE_DIR/php-requirements.json"
+fi
+
+# 复制 deploy/scripts/*.sh（与完整包同源校验）
+mkdir -p "$UPGRADE_DIR/scripts"
+cp "$DEPLOY_SCRIPTS_SRC"/*.sh "$UPGRADE_DIR/scripts/"
+for required in "${DEPLOY_SCRIPTS_REQUIRED[@]}"; do
+    if [ ! -f "$UPGRADE_DIR/scripts/$required" ]; then
+        log_error "升级包缺少关键脚本: scripts/$required（升级时 SCRIPT_DIR 重定向会失败）"
+        exit 1
+    fi
+done
+
 # 创建升级说明
 cat >"$UPGRADE_DIR/UPGRADE.md" <<EOF
 # SSL证书管理系统 升级包
@@ -472,6 +513,12 @@ if [ -d "$SCRIPT_DIR_SRC" ]; then
     cp "$SCRIPT_DIR_SRC/scripts/"*.sh "$SCRIPT_PKG_DIR/scripts/" 2>/dev/null || true
     cp "$SCRIPT_DIR_SRC/install.sh" "$SCRIPT_PKG_DIR/" 2>/dev/null || true
     cp "$SCRIPT_DIR_SRC/upgrade.sh" "$SCRIPT_PKG_DIR/" 2>/dev/null || true
+
+    # 复制 PHP 需求清单（install.sh/bt-install.sh 在下载 release 前需要它来决定支持的 PHP 版本/扩展）
+    PHP_REQ_FILE="$PROJECT_ROOT/build/php-requirements.json"
+    if [ -f "$PHP_REQ_FILE" ]; then
+        cp "$PHP_REQ_FILE" "$SCRIPT_PKG_DIR/php-requirements.json"
+    fi
 
     # 注：原本生成的 script-deploy/README.md 已弃用（部署脚本不需自带说明文档；
     # 用户文档由 release 站 / repo 的 docs 目录提供）

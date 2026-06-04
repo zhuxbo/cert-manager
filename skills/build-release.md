@@ -112,6 +112,8 @@ bash build/build.sh --clear-cache
 
 `build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
 
+后台升级（PHP 端 `ReleaseClient`）同样 **fail-closed**：releases.json 缺 sha256 或下载产物不匹配时拒绝升级（不降级放行）；`validateReleaseUrl` 对下载 URL 做 SSRF 校验（https 放行 / 公网 http 拒绝 / 明文 http 仅放行 RFC1918 私网 + loopback，link-local 169.254 含云元数据 / CGNAT / 保留段拒绝），下载 curl/Http 重定向限 https + 限 5 跳，防「https 校验通过 → 302 降级到 http 内网」绕过。
+
 ### 手动打包
 
 手动打包必须使用完整构建后的 `build/temp/production-code`。`package.sh` 会在打包前校验后端、前端和 nginx 关键产物，缺失时直接失败并清理半成品 zip。
@@ -140,6 +142,36 @@ bash build/build.sh --clear-cache
 ### 本地开发
 
 无 `version.json` 时，PHP 返回：`version=0.0.0-beta, channel=dev`
+
+### SemVer 比较语义（三处必须对齐）
+
+升级链路三处独立实现版本比较，行为必须一致：
+
+| 位置                                              | 实现                                                         |
+| ------------------------------------------------- | ------------------------------------------------------------ |
+| `backend/app/Services/Upgrade/VersionManager.php` | `compareVersions()` 直接调 PHP 原生 `version_compare`        |
+| `backend/app/Services/Upgrade/ReleaseClient.php`  | `getLatestRelease()` 用 `version_compare` 比完整版本号选最高 |
+| `frontend/admin/src/views/upgrade/index.vue`      | `compareVersions()` 关键字优先级表 + 数字段整数比较          |
+| `deploy/upgrade.sh::version_gt`                   | 纯 bash 拆主版本/预发布段，按整数 + 关键字优先级比较         |
+
+约定：
+
+- 数字段按整数大小（`beta.10 > beta.9`，**不能**字典序）
+- 主版本相同时：正式版 > 预发布版
+- 预发布关键字优先级：`dev < alpha < beta < rc < 正式版`
+- 未知关键字保守归到最高（避免误判为旧版降级）
+- **大小写不敏感**：`v/V` 前缀剥除、关键字（`Beta`/`BETA`/`beta`）等价 — PHP 端 `compareVersions` 入口 `strtolower` 标准化（version_compare 原生会把大写当未知映射为 `#`）；bash 用 `tr '[:upper:]' '[:lower:]'`；TS 用 `.toLowerCase()`
+
+历史陷阱（**不要回滚**）：
+
+- `sort -V`：GNU coreutils 8.32 把 `0.5.2-beta.10` 排在 `0.5.2` **之后**，违反 SemVer
+- `strcmp(pre1, pre2)`：会判 `beta.10 < beta.9`（字典序）
+- 后缀剥光对比（`stripPreReleaseSuffix`）：`beta.9` 和 `beta.10` 被剥成同一个版本号，"最新"取决于循环顺序
+
+测试入口：
+
+- PHP 单测：`backend/tests/Unit/VersionManagerTest.php`、`backend/tests/Unit/ReleaseClientTest.php`
+- bash 单测：`bash deploy/test/test-version-gt.sh`（21 个 case，覆盖数字段递增 / 正式 vs 预发 / 关键字优先级 / v 前缀 / 边界）
 
 ---
 
@@ -255,8 +287,8 @@ git add . && git commit -m "feat: 功能描述" && git push
 `structure.json` 是主系统数据库标准结构，升级时用于校验和修复。
 
 ```bash
-# 通过当前 .env 配置的 MySQL 连接导出
-cd backend && php artisan db:structure --export
+# 容器开发环境：在 compose MySQL 里开临时干净库导出，不碰开发库（详见 /db-structure）
+make db-structure
 ```
 
 - 导出命令自动排除插件迁移（`--path=database/migrations` 限制）

@@ -37,9 +37,20 @@
           {{ formatSize(row.file_size) }}
         </template>
       </el-table-column>
-      <el-table-column prop="submitted" label="状态" width="80">
+      <el-table-column prop="submitted" label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.submitted ? 'success' : 'warning'" size="small">
+          <el-tooltip
+            v-if="!row.submitted && row.submit_error"
+            :content="`${row.submit_error}（已尝试 ${row.submit_attempts || 0} 次）`"
+            placement="top"
+          >
+            <el-tag type="danger" size="small">失败</el-tag>
+          </el-tooltip>
+          <el-tag
+            v-else
+            :type="row.submitted ? 'success' : 'warning'"
+            size="small"
+          >
             {{ row.submitted ? "已提交" : "待提交" }}
           </el-tag>
         </template>
@@ -229,16 +240,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, inject, computed, onMounted } from "vue";
+import { ref, inject, computed, onMounted, onUnmounted, watch } from "vue";
 import {
   uploadDocument,
   getDocuments,
   deleteDocument,
   updateDocument,
-  submitDocuments
+  submitDocuments,
+  previewDocumentUrl
 } from "@/api/order";
-import { getToken } from "@/utils/auth";
-import { getConfig } from "@/config";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { UploadFile } from "element-plus";
 import { Upload, Close, Document } from "@element-plus/icons-vue";
@@ -293,16 +303,22 @@ const formatSize = (bytes: number) => {
   return (bytes / 1024 / 1024).toFixed(1) + "MB";
 };
 
-const buildDocUrl = (docId: number) => {
-  const token = getToken()?.access_token || "";
-  const base = getConfig()?.BaseUrlApi || "";
-  return `${base}/order/document-preview/${docId}?token=${encodeURIComponent(token)}&_t=${Date.now()}`;
+const buildDocUrl = async (docId: number): Promise<string> => {
+  // 安全：access_token 是全权限长效凭据，绝不进 URL（会落入浏览器历史 / access log / Referer）。
+  // 改向后端取分钟级短时签名 URL（temporarySignedRoute），iframe/img/下载只用这个签名 URL。
+  const res = await previewDocumentUrl(docId);
+  if (res.code !== 1 || !res.data?.url) {
+    ElMessage.error(res.msg || "获取预览链接失败");
+    return "";
+  }
+  return res.data.url;
 };
 
 const handlePreview = async (row: any) => {
   await loadDocuments();
   previewDoc.value = row;
-  previewUrl.value = buildDocUrl(row.id);
+  previewUrl.value = await buildDocUrl(row.id);
+  if (!previewUrl.value) return; // 取签名 URL 失败（已提示），不打开空白预览弹窗
   const dotIdx = row.file_name.lastIndexOf(".");
   if (dotIdx > 0) {
     editBaseName.value = row.file_name.substring(0, dotIdx);
@@ -338,9 +354,10 @@ const handleSave = async () => {
   }
 };
 
-const handleDownload = () => {
+const handleDownload = async () => {
   if (!previewDoc.value) return;
-  const url = buildDocUrl(previewDoc.value.id);
+  const url = await buildDocUrl(previewDoc.value.id);
+  if (!url) return;
   const a = document.createElement("a");
   a.href = url;
   a.download = previewDoc.value.file_name;
@@ -375,9 +392,10 @@ const handleUpload = async () => {
       formData.append("type", item.type);
       await uploadDocument(order.id, formData);
     }
-    ElMessage.success("上传成功");
+    ElMessage.success("上传成功，正在自动提交上游");
     showUploadDialog.value = false;
     await loadDocuments();
+    startPolling();
   } finally {
     uploading.value = false;
   }
@@ -392,16 +410,42 @@ const handleDelete = async (docId: number) => {
   }
 };
 
+// 异步入队后轮询刷新状态（上传自动转发 / 手动兜底提交 共用）
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+};
+// 轮询刷新，直到没有"待提交且未失败"的文档或达到上限
+const startPolling = () => {
+  stopPolling();
+  let ticks = 0;
+  pollTimer = setInterval(async () => {
+    ticks += 1;
+    await loadDocuments();
+    const pending = documents.value.filter(
+      d => !d.submitted && !d.submit_error
+    ).length;
+    if (pending === 0 || ticks >= 8) stopPolling();
+  }, 2500);
+};
+
+// 兜底：自动转发失败 / 漏提交时手动重试未提交的文档
 const handleSubmit = async () => {
-  await ElMessageBox.confirm("确定提交所有待提交文档？", "提示", {
+  await ElMessageBox.confirm("确定提交所有未成功的文档到上游？", "提示", {
     type: "warning"
   });
   submitting.value = true;
   try {
     const res = await submitDocuments(order.id);
     if (res.code === 1) {
-      ElMessage.success("提交成功");
+      ElMessage.success(
+        `已加入提交队列（${res.data?.queued ?? 0} 个），正在处理`
+      );
       await loadDocuments();
+      startPolling();
     }
   } finally {
     submitting.value = false;
@@ -409,6 +453,12 @@ const handleSubmit = async () => {
 };
 
 onMounted(loadDocuments);
+// 订单刷新（刷新按钮 / 同步 / 自动刷新）时，同步重载本地文档列表
+watch(
+  () => order.sync,
+  () => loadDocuments()
+);
+onUnmounted(stopPolling);
 </script>
 
 <style scoped lang="scss">

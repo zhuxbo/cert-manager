@@ -808,7 +808,6 @@
       setVal("deploy-install-linux", data.deploy.install?.linux);
       setVal("deploy-install-windows", data.deploy.install?.windows);
       setVal("deploy-nginx-deploy", data.deploy.deploy);
-      setVal("deploy-iis-download", data.deploy.iis_install?.download);
       setVal("deploy-iis-install-windows", data.deploy.iis_install?.windows);
       setVal("deploy-iis-deploy", data.deploy.iis_deploy);
 

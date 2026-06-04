@@ -36,12 +36,7 @@ html.dark {
   .tags-view {
     .arrow-left,
     .arrow-right {
-      border-right: 1px solid $border-style;
       box-shadow: none;
-    }
-
-    .arrow-right {
-      border-left: 1px solid $border-style;
     }
 
     .scroll-item {

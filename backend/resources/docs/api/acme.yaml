@@ -1,0 +1,139 @@
+openapi: 3.1.0
+info:
+  title: ACME 订阅接口
+  version: "1.0"
+  description: |
+    供下游接入方申请 ACME 订阅，获取 EAB 凭证（`eab_kid` / `eab_hmac`）与 `directory_url`，
+    用于 ACME 客户端（certbot / acme.sh 等）自动签发。
+
+    - **鉴权**：请求头 `Authorization: Bearer {API Token}`（同 API v2 Token）。
+    - **统一响应**：`{ "code": 1|0, "msg": "", "data": {...} }`。
+
+servers:
+  - url: /api/acme
+    description: 当前站点
+
+security:
+  - bearerAuth: []
+
+paths:
+  /new:
+    post:
+      summary: 创建订阅
+      description: 域名额度由产品自动推断；`period` 不传按产品默认周期。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_code, contact_email]
+              properties:
+                product_code: { type: string, maxLength: 50, description: ACME 产品编码（见 get-products） }
+                contact_email: { type: string, format: email, maxLength: 254, description: ACME 账号邮箱（RFC 8555 contact） }
+                period: { type: integer, description: 周期（月），整数，预留多年期 }
+                plus: { type: integer, enum: [0, 1], description: 赠送时间，默认 1 }
+                refer_id: { type: string, maxLength: 64, description: 端到端幂等键 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AcmeSubscription" }
+
+  /get:
+    get:
+      summary: 订阅详情
+      description: 查询会先同步上游最新状态。
+      parameters:
+        - { name: order_id, in: query, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/AcmeSubscription" }
+
+  /cancel:
+    post:
+      summary: 取消订阅
+      description: 立即取消（下游 API 不走延时任务）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiResponse" }
+
+  /get-products:
+    get:
+      summary: ACME 产品列表
+      parameters:
+        - { name: brand, in: query, required: false, schema: { type: string } }
+        - { name: code, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items: { type: object }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API Token（与 API v2 相同）
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code: { type: integer, enum: [0, 1] }
+        msg: { type: string }
+        data: {}
+
+    AcmeSubscription:
+      type: object
+      description: ACME 订阅记录（含 EAB 与 directory_url）；已隐藏 user_id/plus/api_id 等内部字段
+      properties:
+        id: { type: integer }
+        product: { type: [object, "null"], description: 关联产品 }
+        brand: { type: string }
+        period: { type: integer, description: 周期（月） }
+        purchased_standard_count: { type: integer, description: 标准域名额度 }
+        purchased_wildcard_count: { type: integer, description: 通配符域名额度 }
+        contact_email: { type: string }
+        eab_kid: { type: string }
+        eab_hmac: { type: string }
+        directory_url: { type: string, description: 按签发 CA 聚合 }
+        vendor_id: { type: [string, "null"] }
+        refer_id: { type: [string, "null"] }
+        period_from: { type: [string, "null"] }
+        period_till: { type: [string, "null"] }
+        cancelled_at: { type: [string, "null"] }
+        status: { type: string }
+        created_at: { type: string }

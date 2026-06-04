@@ -88,7 +88,14 @@ class AcmeController extends BaseController
         }
 
         $total = $query->count();
-        $items = $query->with(['product'])
+        $items = $query->with(['product' => fn ($q) => $q->select(['id', 'name', 'product_type', 'ca'])])
+            ->select([
+                'id', 'product_id', 'brand', 'period',
+                'purchased_standard_count', 'purchased_wildcard_count',
+                'vendor_id', 'contact_email', 'eab_kid',
+                'amount', 'period_from', 'period_till', 'cancelled_at',
+                'status', 'remark', 'created_at',
+            ])
             ->orderByDesc('id')
             ->offset(($currentPage - 1) * $pageSize)
             ->limit($pageSize)
@@ -104,19 +111,63 @@ class AcmeController extends BaseController
 
     /**
      * 订单详情（UserScope 自动过滤当前用户）
+     *
+     * 参考传统订单 User 端策略：仅暴露用户视角必要字段，
+     * 隐藏内部桥接/计费/审计字段（user_id / plus / api_id / refer_id / admin_remark / channel）。
+     * product 关联保留 ca 字段以供 syncDirectoryUrl 按 CA 取缓存。
      */
     public function show(int $id): void
     {
-        $order = Acme::with(['product'])->find($id);
+        $order = Acme::with(['product' => fn ($q) => $q->select(['id', 'name', 'product_type', 'ca'])])
+            ->find($id);
 
         if (! $order) {
             $this->error('订单不存在');
         }
 
-        $data = $order->makeVisible('eab_hmac')->toArray();
+        $order->makeVisible('eab_hmac')
+            ->makeHidden(['user_id', 'plus', 'api_id', 'refer_id', 'admin_remark', 'channel']);
+
+        $data = $order->toArray();
         $data['directory_url'] = $this->action->syncDirectoryUrl($order);
 
         $this->success($data);
+    }
+
+    /**
+     * 批量订单详情 — 用于详情聚合页同时查看多张订单
+     *
+     * 字段策略与 show 一致；按 ca 缓存 directory_url 避免重复计算。
+     */
+    public function batchShow(GetIdsRequest $request): void
+    {
+        $ids = $request->validated('ids');
+
+        $acmes = Acme::whereIn('id', $ids)
+            ->with(['product' => fn ($q) => $q->select(['id', 'name', 'product_type', 'ca'])])
+            ->orderByDesc('id')
+            ->get();
+
+        if ($acmes->isEmpty()) {
+            $this->error('订单不存在');
+        }
+
+        $dirUrls = [];
+        $items = $acmes->map(function ($acme) use (&$dirUrls) {
+            $ca = (string) ($acme->product->ca ?? '');
+            if (! array_key_exists($ca, $dirUrls)) {
+                $dirUrls[$ca] = $this->action->syncDirectoryUrl($acme);
+            }
+            $acme->makeVisible('eab_hmac')
+                ->makeHidden(['user_id', 'plus', 'api_id', 'refer_id', 'admin_remark', 'channel']);
+
+            $data = $acme->toArray();
+            $data['directory_url'] = $dirUrls[$ca];
+
+            return $data;
+        });
+
+        $this->success(['items' => $items->toArray()]);
     }
 
     /**

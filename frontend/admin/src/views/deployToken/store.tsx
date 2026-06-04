@@ -49,7 +49,7 @@ export const useDeployTokenStore = (onSearch: () => void) => {
       prop: "token",
       valueType: "input",
       fieldProps: {
-        placeholder: "请输入Token"
+        placeholder: "留空表示不修改，填写或点「生成」则更新"
       },
       fieldSlots: {
         append: () =>
@@ -149,7 +149,11 @@ export const useDeployTokenStore = (onSearch: () => void) => {
   };
 
   const handleUpdate = () => {
-    update(storeId.value, storeValues.value).then(() => {
+    // token 留空表示不修改：后端详情已隐藏 token 明文，编辑态默认空；为空则不提交该字段，
+    // 避免把现有 token 覆盖成空（后端 setTokenAttribute('') 会清空 token+token_hash 使令牌失效）
+    const payload = { ...storeValues.value };
+    if (!payload.token) delete payload.token;
+    update(storeId.value, payload).then(() => {
       onSearch();
       showStore.value = false;
     });

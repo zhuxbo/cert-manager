@@ -73,15 +73,18 @@
         </el-dropdown-menu>
       </template>
     </el-dropdown>
-    <el-button
+    <el-popconfirm
       v-if="canCommitCancel()"
-      type="danger"
-      size="small"
-      class="ml-2"
-      @click="commitCancel()"
+      title="确定要取消订单吗？"
+      width="160px"
+      @confirm="commitCancel()"
     >
-      取消订单
-    </el-button>
+      <template #reference>
+        <el-button type="danger" size="small" class="ml-2">
+          取消订单
+        </el-button>
+      </template>
+    </el-popconfirm>
     <el-button
       v-if="canRevokeCancel()"
       type="warning"

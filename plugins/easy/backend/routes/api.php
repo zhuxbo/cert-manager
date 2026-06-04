@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use Plugins\Easy\Controllers\EasyController;
 
-Route::prefix('api/easy')->middleware('global')->group(function () {
+Route::prefix('api/easy')->middleware(['global', 'easy.throttle'])->group(function () {
     Route::post('check', [EasyController::class, 'check']);
     Route::post('apply', [EasyController::class, 'apply']);
     Route::post('revalidate', [EasyController::class, 'revalidate']);

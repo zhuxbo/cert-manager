@@ -226,6 +226,17 @@ bt-install 不落盘保存 admin 密码，seed 后直接调用 `admin:reset-pass
 gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 ```
 
+## 升级注意事项
+
+### Laravel 13 升级 release 部署
+
+部署含 Laravel 13 升级的 release（首次为升级 PR 合并后的 release）到生产时：
+
+- **所有在线用户会被登出**：Laravel 13 默认 session cookie 名格式由 `{app_name}_session` 改为 `{app_name}-session`（下划线→连字符），cookie 名不匹配 → 全部 session 失效
+- **旧 Redis cache key 失效**：Laravel 13 默认 cache prefix 由 `{app_name}_cache_` 改为 `{app_name}-cache-`，旧 key 不再被读到，会自然过期、无业务影响
+- **建议部署窗口**：业务低峰期发布；可在公告或登录页提前告知用户会被登出
+- **不要通过 .env 显式保留旧 prefix**——本系统已决策接受用户重登，避免长期维护两套 prefix
+
 ## 常见问题
 
 ### 500 服务器错误
@@ -253,3 +264,9 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 - 低于 2.8 可能出现依赖安装错误
 - 升级：`composer self-update`
+
+### 回调端点返回"回调未配置鉴权"
+
+- 出厂 `callback.default` 的 token 与 allowed_ips 均为空，回调端点默认**拒绝**（防裸奔被刷 sync / 探测 api_id 存在性）
+- 接入上游 webhook 前，须在管理端「系统设置 → 回调设置」为对应 endpoint 配置 token 或 IP 白名单**至少其一**
+- 配任一即放行（允许仅 IP 白名单或仅 token），两者皆空才拒绝

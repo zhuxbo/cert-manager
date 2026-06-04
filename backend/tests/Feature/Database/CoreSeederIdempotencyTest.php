@@ -152,41 +152,49 @@ dataset('core_seeders', [
     'NotificationTemplateSeeder' => [
         NotificationTemplateSeeder::class,
         function (): void {
-            expect(findTemplateByCodeAndChannels('cert_issued', ['sms']))->not->toBeNull();
-            expect(findTemplateByCodeAndChannels('cert_issued', ['mail']))->not->toBeNull();
+            expect(NotificationTemplate::where('code', 'cert_issued')->first())->not->toBeNull();
+            expect(NotificationTemplate::where('code', 'cert_expire')->first())->not->toBeNull();
         },
         function (): void {
-            NotificationTemplate::create([
-                'code' => 'cert_issued',
-                'name' => '自定义签发通知',
-                'content' => 'custom-sms-content',
-                'variables' => ['order_id', 'mobile'],
-                'example' => 'custom-example',
-                'channels' => ['sms'],
-                'status' => 1,
-            ]);
+            // 用户自定义已存在的模板（修改内容），seeder 再跑不应覆盖
+            $existing = NotificationTemplate::where('code', 'cert_issued')->first();
+            if ($existing) {
+                $existing->update([
+                    'name' => '自定义签发通知',
+                    'content' => 'custom-content',
+                    'variables' => ['order_id'],
+                    'example' => 'custom-example',
+                ]);
+            } else {
+                NotificationTemplate::create([
+                    'code' => 'cert_issued',
+                    'name' => '自定义签发通知',
+                    'content' => 'custom-content',
+                    'variables' => ['order_id'],
+                    'example' => 'custom-example',
+                    'status' => 1,
+                ]);
+            }
         },
         function (): void {
-            $template = findTemplateByCodeAndChannels('cert_issued', ['sms']);
+            $template = NotificationTemplate::where('code', 'cert_issued')->first();
             expect($template)->not->toBeNull();
-            expect(countTemplateByCodeAndChannels('cert_issued', ['sms']))->toBe(1);
+            expect(NotificationTemplate::where('code', 'cert_issued')->count())->toBe(1);
             expect((string) $template->name)->toBe('自定义签发通知');
-            expect((string) $template->content)->toBe('custom-sms-content');
+            expect((string) $template->content)->toBe('custom-content');
         },
         function (): array {
-            // 仅比较关键字段快照，避免模板大文本直接比对。
             return NotificationTemplate::query()
                 ->get()
                 ->map(fn (NotificationTemplate $template): array => [
                     'code' => (string) $template->code,
-                    'channels' => normalizeChannels((array) ($template->channels ?? [])),
                     'name' => (string) $template->name,
                     'status' => (int) $template->status,
                     'content_hash' => md5((string) $template->content),
                     'variables_hash' => md5(json_encode($template->variables ?? [])),
                     'example_hash' => md5((string) ($template->example ?? '')),
                 ])
-                ->sortBy(fn (array $item): string => $item['code'].'|'.implode(',', $item['channels']))
+                ->sortBy(fn (array $item): string => $item['code'])
                 ->values()
                 ->all();
         },
@@ -224,33 +232,3 @@ test('核心 Seeder 幂等：仅新增缺失项，不覆盖已有值，重复执
 
     expect($afterSecond)->toBe($afterFirst);
 })->with('core_seeders');
-
-function normalizeChannels(array $channels): array
-{
-    sort($channels);
-
-    return array_values($channels);
-}
-
-function findTemplateByCodeAndChannels(string $code, array $channels): ?NotificationTemplate
-{
-    $normalizedChannels = normalizeChannels($channels);
-
-    return NotificationTemplate::where('code', $code)
-        ->get()
-        ->first(function (NotificationTemplate $template) use ($normalizedChannels): bool {
-            return normalizeChannels((array) ($template->channels ?? [])) === $normalizedChannels;
-        });
-}
-
-function countTemplateByCodeAndChannels(string $code, array $channels): int
-{
-    $normalizedChannels = normalizeChannels($channels);
-
-    return NotificationTemplate::where('code', $code)
-        ->get()
-        ->filter(function (NotificationTemplate $template) use ($normalizedChannels): bool {
-            return normalizeChannels((array) ($template->channels ?? [])) === $normalizedChannels;
-        })
-        ->count();
-}

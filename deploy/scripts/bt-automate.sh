@@ -37,8 +37,9 @@ fi
 # BT API 配置
 # ========================================
 
-# BT 面板 API 端点动态探测（BT 11.x 默认 https + 自定义端口，存在 /www/server/panel/data/port.pl）
-# 优先级：env BT_API_BASE > 探测 port.pl > 兜底 https://127.0.0.1:8888
+# BT 面板 API 端点动态探测（端口存在 /www/server/panel/data/port.pl）
+# 协议：BT 11.x 默认 http，启用面板 SSL 后改 https；先试 https 再 fallback http
+# 优先级：env BT_API_BASE > 探测 port.pl + 协议 > 兜底 https://127.0.0.1:8888
 _resolve_bt_api_base() {
     if [ -n "${BT_API_BASE:-}" ]; then return 0; fi
     local port=""
@@ -46,7 +47,18 @@ _resolve_bt_api_base() {
         port=$(tr -d '[:space:]' </www/server/panel/data/port.pl)
     fi
     port="${port:-8888}"
-    BT_API_BASE="https://127.0.0.1:${port}"
+
+    # 用 HEAD 探活，必须返回 HTTP 状态行才认（SSL 握手失败 / TCP 连不上都会拿不到状态行）
+    local proto status_line
+    for proto in https http; do
+        status_line=$(curl -ksI --connect-timeout 3 --max-time 3 "$proto://127.0.0.1:$port/" 2>/dev/null | head -1)
+        if echo "$status_line" | grep -qE "^HTTP/"; then
+            BT_API_BASE="$proto://127.0.0.1:$port"
+            return 0
+        fi
+    done
+    # 两种协议都不通 → 兜底 https（让后续 _bt_api_post 调用时的 curl 错误暴露具体问题）
+    BT_API_BASE="https://127.0.0.1:$port"
 }
 _resolve_bt_api_base
 
@@ -103,21 +115,37 @@ _bt_api_post() {
     local url="${BT_API_BASE}${action_path}"
     # 默认超时 30s；input_package 等同步执行 install.sh 的端点可临时覆盖 BT_API_TIMEOUT
     local timeout="${BT_API_TIMEOUT:-30}"
-    # BT 11.x 用 https + 自签名证书；-k 跳过证书校验（仅本机 127.0.0.1 调用，安全）
-    local resp
+    # 安全：-k（跳过 TLS 校验）仅在目标确为本机 loopback 时启用——BT 11.x 自签名证书
+    # 走 https 必须跳过校验，但 BT_API_BASE 可被 env 覆盖成任意地址，对非 loopback
+    # 主机跳过校验等于放任中间人。故断言 URL 必须以 https://127.0.0.1 开头才加 -k，
+    # 其余情况留空 → curl 正常校验 TLS。
+    local insecure_flag=""
+    case "$url" in
+        https://127.0.0.1 | https://127.0.0.1:* | https://127.0.0.1/*)
+            insecure_flag="-k"
+            ;;
+    esac
+    # 失败时把 curl stderr 一并输出，帮助诊断协议错配 / SSL 握手 / 连不上等问题
+    local resp curl_exit=0
     if [ -n "$form_data" ]; then
         # form_data 可能含多行 --data-urlencode 参数，用 eval 展开
         # 参数已在调用方控制，不引入用户输入
-        resp=$(eval curl -sk --connect-timeout 10 --max-time "$timeout" \
+        resp=$(eval curl -s $insecure_flag --show-error --connect-timeout 10 --max-time "$timeout" \
             --data-urlencode "request_token=$BT_REQ_TOKEN" \
             --data-urlencode "request_time=$BT_REQ_TIME" \
             "$form_data" \
-            "'$url'") || return 1
+            "'$url'" 2>&1) || curl_exit=$?
     else
-        resp=$(curl -sk --connect-timeout 10 --max-time "$timeout" \
+        resp=$(curl -s $insecure_flag --show-error --connect-timeout 10 --max-time "$timeout" \
             --data-urlencode "request_token=$BT_REQ_TOKEN" \
             --data-urlencode "request_time=$BT_REQ_TIME" \
-            "$url") || return 1
+            "$url" 2>&1) || curl_exit=$?
+    fi
+
+    if [ "$curl_exit" -ne 0 ]; then
+        log_warning "BT API curl 失败 (exit=$curl_exit) url=$url"
+        [ -n "$resp" ] && log_warning "curl 输出: $resp"
+        return 1
     fi
 
     printf '%s' "$resp"
@@ -159,67 +187,29 @@ except Exception:
 # ========================================
 
 # 从面板配置文件探测 API key
+# 项目最低要求 BT 11.5+，固定字段 token_crypt（用于 MD5 签名）；不再回落旧版本字段
 # 优先级：
 #   1. 环境变量 BT_KEY 已设置 → 直接用
-#   2. /www/server/panel/config/api.json (panel 9.x+)
-#   3. /www/server/panel/data/userInfo.json (panel 7.x，部分版本含 api_token)
-#   4. bt default 命令兜底（部分版本输出 API 接口信息）
+#   2. /www/server/panel/config/api.json 的 token_crypt
 # 成功：导出 BT_KEY，return 0
 # 失败：return 1（不打印 error，由调用方决定是否提示）
 bt_resolve_key() {
-    # 1. 已设置环境变量
     if [ -n "$BT_KEY" ]; then
         log_info "BT_KEY 来自环境变量"
         return 0
     fi
 
-    # 2. panel 9.x+ 的 api.json
-    # BT 11.x 字段：{"token":"<旧版兼容>", "token_crypt":"<11.x 实际签名 key>", ...}
-    # 优先读 token_crypt（11.x），fallback token（panel 9.x / 老版）
-    # 之前误读 "token" 字段导致签名错误 → "密钥校验失败" 累积触发 BT "连续 20 次失败禁 1 小时"
+    # BT 11.x api.json 字段：{"token_crypt":"<对外签名 key>", ...}
+    # 之前误读 "token" 字段会触发"密钥校验失败"累积 → BT "连续 20 次失败禁 1 小时"
+    # 用 awk -F'"' 准确字段名匹配，避免 grep "token" 误匹配 token_crypt 之外的字段
     local api_json="/www/server/panel/config/api.json"
     if [ -r "$api_json" ]; then
-        local token=""
-        # 优先 token_crypt（用 awk -F'"' 准确字段名匹配，避免 grep "token" 误匹配到 token_crypt 之外的字段）
+        local token
         token=$(awk -F'"' '/"token_crypt"/{for(i=1;i<=NF;i++) if($i=="token_crypt"){print $(i+2); exit}}' "$api_json" 2>/dev/null)
-        # fallback：旧版 panel 9.x 只有 token 字段
-        if [ -z "$token" ]; then
-            token=$(awk -F'"' '/"token"/{for(i=1;i<=NF;i++) if($i=="token"){print $(i+2); exit}}' "$api_json" 2>/dev/null)
-        fi
         if [ -n "$token" ]; then
             BT_KEY="$token"
             log_info "BT_KEY 来源: $api_json"
             return 0
-        fi
-    fi
-
-    # 3. panel 7.x 的 userInfo.json（罕见路径）
-    local user_info="/www/server/panel/data/userInfo.json"
-    if [ -r "$user_info" ]; then
-        local token
-        token=$(grep -oE '"api_token"[[:space:]]*:[[:space:]]*"[^"]+"' "$user_info" 2>/dev/null |
-            head -1 | sed -E 's/.*"api_token"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-        if [ -n "$token" ]; then
-            BT_KEY="$token"
-            log_info "BT_KEY 来源: $user_info"
-            return 0
-        fi
-    fi
-
-    # 4. bt default 命令兜底（解析输出中的 api 字样）
-    if command -v bt &>/dev/null; then
-        local default_out
-        default_out=$(bt default 2>/dev/null || true)
-        if [ -n "$default_out" ]; then
-            # 尝试匹配形如 "api 密钥: xxxx" 或 "api_secret_key: xxxx"
-            local token
-            token=$(echo "$default_out" | grep -iE 'api[[:space:]_-]*(密钥|key|secret)' |
-                head -1 | grep -oE '[a-fA-F0-9]{16,}' | head -1)
-            if [ -n "$token" ]; then
-                BT_KEY="$token"
-                log_info "BT_KEY 来源: bt default 命令"
-                return 0
-            fi
         fi
     fi
 
@@ -987,6 +977,109 @@ bt_inject_vhost_include() {
 }
 
 # ========================================
+# 6. PHP 自动化（安装扩展 / 启用函数 / 重启 PHP-FPM）
+# ========================================
+
+# 把 PHP 完整版本号转成宝塔紧凑形式（如 8.3.21 → 83）
+_bt_php_ver_compact() {
+    local full="$1"
+    echo "$full" | awk -F. '{print $1$2}'
+}
+
+# 重启 PHP-FPM
+# 用法：bt_reload_php_fpm <php_ver_compact>
+# return 0 成功；1 失败
+bt_reload_php_fpm() {
+    local php_ver="$1"
+
+    if [ -z "$php_ver" ]; then
+        log_error "bt_reload_php_fpm 缺少 php_ver"
+        return 1
+    fi
+
+    log_step "BT 重启 PHP-FPM $php_ver"
+
+    local resp
+    resp=$(_bt_api_post "/system?action=ServiceAdmin" \
+        "--data-urlencode 'name=php-fpm-$php_ver' --data-urlencode 'type=reload'") || {
+        log_warning "BT API ServiceAdmin 调用失败"
+        return 1
+    }
+
+    local status
+    status="$(_bt_json_get "$resp" "status")"
+    if [ "$status" = "true" ]; then
+        log_success "  PHP-FPM $php_ver 已重启"
+        return 0
+    fi
+
+    log_warning "BT ServiceAdmin 失败"
+    log_info "原始响应: $resp"
+    return 1
+}
+
+# ========================================
+# 7. cron / supervisor 的 PHP 绝对路径扫描与替换
+# ========================================
+
+# 列出所有 cron 任务（用于扫描 PHP 路径）
+# 输出：每行 JSON 形式 {"id":N,"name":"...","sBody":"...","type":"...","where1":"..."}
+# type/where1 给自动修复时保留原频率用（BT 不同版本字段名 type 或 sType 均做兜底）
+bt_list_crontab_all() {
+    local resp
+    resp=$(_bt_api_post "/crontab?action=GetCrontab" \
+        "--data-urlencode 'p=1' --data-urlencode 'limit=500'") || return 1
+
+    echo "$resp" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    items = d.get('data', []) if isinstance(d, dict) else d
+    if isinstance(items, dict):
+        items = items.get('data', [])
+    for it in items:
+        print(json.dumps({
+            'id': it.get('id'),
+            'name': it.get('name', ''),
+            'sBody': it.get('sBody', it.get('cmd', '')),
+            'type': it.get('type', it.get('sType', '')),
+            'where1': it.get('where1', ''),
+        }, ensure_ascii=False))
+except Exception:
+    pass
+" 2>/dev/null
+}
+
+# 列出 supervisor 进程（队列 worker 检测）
+# 输出：每行 JSON 形式 {"program":"...","name":"...","command":"...","user":"...","path":"...","numprocs":N}
+# BT 11.x GetProcessList 真实字段是 program（不是 name）；保留 name 兼容老调用方
+bt_list_supervisor_all() {
+    local resp
+    resp=$(_bt_api_post "/plugin?action=a&name=supervisor&s=GetProcessList" "") || return 1
+
+    echo "$resp" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    items = d if isinstance(d, list) else d.get('data', d.get('message', []))
+    if not isinstance(items, list):
+        items = []
+    for it in items:
+        program = it.get('program', it.get('name', ''))
+        print(json.dumps({
+            'program': program,
+            'name': program,
+            'command': it.get('command', ''),
+            'user': it.get('user', 'www'),
+            'path': it.get('path', ''),
+            'numprocs': it.get('numprocs', 1),
+        }, ensure_ascii=False))
+except Exception:
+    pass
+" 2>/dev/null
+}
+
+# ========================================
 # 主入口（独立运行时使用；source 时跳过）
 # ========================================
 
@@ -1057,7 +1150,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 Usage: bt-automate.sh <command> [args...]
 
 Commands:
-  resolve-key                                          Detect BT_KEY (env / api.json / userInfo.json / bt default)
+  resolve-key                                          Detect BT_KEY (env BT_KEY > api.json token_crypt; BT 11.5+)
   create-site <domain> <php_ver> <root_path>           Call BT API to create a site
   get-site-path <domain>                               Echo site root path if exists (exit 1 if not found)
   ensure-supervisor                                    Detect BT supervisor plugin; install via API if missing
@@ -1074,7 +1167,7 @@ Source mode (recommended for integration):
 
 Environment variables:
   BT_KEY        Override auto-detected API key
-  BT_API_BASE   Override BT API base URL (default: http://127.0.0.1:7800)
+  BT_API_BASE   Override BT API base URL (default: probe https/http on port.pl; fallback https://127.0.0.1:8888)
 EOF
             ;;
     esac

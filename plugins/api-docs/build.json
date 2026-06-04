@@ -1,0 +1,9 @@
+{
+  "name": "api-docs",
+  "include": [
+    "plugin.json"
+  ],
+  "exclude": [
+    ".gitignore"
+  ]
+}

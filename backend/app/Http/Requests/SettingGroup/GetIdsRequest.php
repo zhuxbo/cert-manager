@@ -14,7 +14,7 @@ class GetIdsRequest extends BaseRequest
     public function rules(): array
     {
         return [
-            'ids' => 'required|array',
+            'ids' => 'required|array|max:'.config('batch.max_ids'),
             'ids.*' => 'integer|exists:setting_groups,id',
         ];
     }

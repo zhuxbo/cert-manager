@@ -1,0 +1,52 @@
+# staleness 脚本预排除模式（防止内置 API / shell 命令被识别为反模式案例锚定）
+# 格式：每行一个 bash extended regex（用于 [[ "$item" =~ pattern ]] 匹配）
+# # 起注释行；空行允许；行首/行尾空白会被 trim
+# 新增反模式引用新内置命令时在此追加，不必改脚本本体
+#
+# 命名约定：
+# - `^cmd($|[[:space:]])` 形式表示命令本身或带参数（防止 `php` 误匹配 `phpstan`）
+# - `^Class::` 形式匹配 PHP/Laravel 类静态调用前缀
+# - `^func` 形式匹配以函数/关键字名开头的项
+
+# === PHP / Laravel 内置 ===
+^DB::
+^Schema::
+^Cache::
+^Log::
+^Carbon::
+^is_int
+^is_executable
+^is_string
+^file_exists
+^proc_open
+^exec
+^die
+^throw
+^return
+^echo
+^foreach
+
+# === shell / 系统命令 ===
+^php artisan
+^php($|[[:space:]])
+^git($|[[:space:]])
+^bash($|[[:space:]])
+^grep
+^cp
+^mv
+^rm
+^exit
+^composer
+^mysqldump
+^openssl
+^curl
+^docker
+^npm
+^pnpm
+
+# === 关键字 / 测试框架 ===
+^Pest
+^set($|[[:space:]])
+^trap($|[[:space:]])
+^before
+^after

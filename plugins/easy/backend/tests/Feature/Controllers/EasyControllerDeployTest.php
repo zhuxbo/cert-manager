@@ -72,7 +72,7 @@ test('active 状态默认返回 deploy 字段', function () {
     expect($data)->toHaveKey('deploy');
     expect($data['deploy'])->toHaveKeys(['install', 'deploy', 'iis_install', 'iis_deploy', 'bt_install', 'bt_deploy']);
     expect($data['deploy']['install'])->toHaveKeys(['linux', 'windows']);
-    expect($data['deploy']['iis_install'])->toHaveKeys(['download', 'windows']);
+    expect($data['deploy']['iis_install'])->toHaveKeys(['windows']);
 });
 
 test('deploy 命令包含正确的 order_id 和 token', function () {
@@ -183,5 +183,5 @@ test('配置 releaseDomain 时 deploy 命令使用独立域名', function () {
     expect($deploy['install']['linux'])->toContain('https://release.example.com/sslctl/install.sh');
     expect($deploy['install']['linux'])->toContain('-- release.example.com');
     expect($deploy['install']['windows'])->toContain('-ReleaseHost release.example.com');
-    expect($deploy['iis_install']['download'])->toContain('https://release.example.com/sslctlw/');
+    expect($deploy['iis_install']['windows'])->toContain('https://release.example.com/sslctlw/');
 });

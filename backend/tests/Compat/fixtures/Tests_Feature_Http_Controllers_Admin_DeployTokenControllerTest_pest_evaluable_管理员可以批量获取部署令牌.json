@@ -15,7 +15,6 @@
                     "__list_of__": {
                         "id": "integer",
                         "user_id": "integer",
-                        "token": "string",
                         "allowed_ips": "null",
                         "rate_limit": "integer",
                         "last_used_at": "null",

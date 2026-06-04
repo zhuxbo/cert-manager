@@ -9,6 +9,7 @@ use App\Models\Organization;
 use App\Models\Product;
 use App\Models\User;
 use App\Models\UserLevel;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 
 test('用户有多个订单', function () {
@@ -115,26 +116,44 @@ test('auto_settings 为 JSON cast', function () {
     expect($user->auto_settings['auto_reissue'])->toBeFalse();
 });
 
-test('allowsNotificationChannel 默认返回 true', function () {
+test('allowsNotification 默认返回 true', function () {
     $user = User::factory()->create(['notification_settings' => []]);
 
-    expect($user->allowsNotificationChannel('mail', 'cert_issued'))->toBeTrue();
+    expect($user->allowsNotification('cert_issued'))->toBeTrue();
 });
 
-test('allowsNotificationChannel 根据设置返回', function () {
-    // 先确保配置中有默认值
+test('allowsNotification 根据扁平设置返回', function () {
     config(['notification.user_default_preferences' => [
-        'mail' => ['cert_issued' => true, 'cert_expire' => true],
+        'cert_issued' => true,
+        'cert_expire' => true,
+    ]]);
+
+    $user = User::factory()->create([
+        'notification_settings' => [
+            'cert_issued' => false,
+            'cert_expire' => true,
+        ],
+    ]);
+
+    expect($user->allowsNotification('cert_issued'))->toBeFalse();
+    expect($user->allowsNotification('cert_expire'))->toBeTrue();
+});
+
+test('allowsNotification 兼容老的嵌套 mail 结构', function () {
+    config(['notification.user_default_preferences' => [
+        'cert_issued' => true,
+        'cert_expire' => true,
     ]]);
 
     $user = User::factory()->create([
         'notification_settings' => [
             'mail' => ['cert_issued' => false, 'cert_expire' => true],
+            'sms' => ['cert_issued' => true],
         ],
     ]);
 
-    expect($user->allowsNotificationChannel('mail', 'cert_issued'))->toBeFalse();
-    expect($user->allowsNotificationChannel('mail', 'cert_expire'))->toBeTrue();
+    expect($user->allowsNotification('cert_issued'))->toBeFalse();
+    expect($user->allowsNotification('cert_expire'))->toBeTrue();
 });
 
 test('JWT 标识符返回主键', function () {
@@ -155,8 +174,8 @@ test('日期字段正确转换', function () {
     $user = User::factory()->loggedIn()->create();
     $user->refresh();
 
-    expect($user->last_login_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
-    expect($user->join_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($user->last_login_at)->toBeInstanceOf(Carbon::class);
+    expect($user->join_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('用户通过订单关联证书', function () {

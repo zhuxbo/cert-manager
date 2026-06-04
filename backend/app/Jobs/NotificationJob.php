@@ -46,7 +46,8 @@ class NotificationJob implements ShouldQueue
 
         $notifiable = $this->resolveNotifiable();
         if (! $notifiable) {
-            $this->logSkip('通知接收者不存在');
+            // Job 延时执行期间接收者可能被删除（账号注销 / 数据清理），属预期降级路径
+            $this->logSkip('通知接收者不存在', level: 'debug');
 
             return;
         }
@@ -75,14 +76,8 @@ class NotificationJob implements ShouldQueue
         }
 
         if (! $payload) {
-            $this->logSkip('无需发送通知');
-
-            return;
-        }
-
-        // 通道验证：确保模板支持该通道
-        if (! in_array($this->channel, $template->channels ?? [])) {
-            $this->logSkip("模板不支持该通道: $this->channel");
+            // Builder 返回 null 表示合法的"无需发送"路径（如 CertExpire 委托有效时跳过）
+            $this->logSkip('无需发送通知', level: 'debug');
 
             return;
         }
@@ -94,9 +89,14 @@ class NotificationJob implements ShouldQueue
         $notification->setRelation('template', $template);
         $notification->save();
 
+        // 渲染期 transient：敏感字段（如初始密码）只注入内存供通道渲染，绝不写入 notifications.data。
+        // 此时 DB 行已落地为不含 transient 的 $preparedPayload，下面 finally 再还原内存数据。
+        if ($payload->transient !== []) {
+            $notification->setAttribute('data', array_merge($preparedPayload, $payload->transient));
+        }
+
         $isSuccessful = false;
         $result = [
-            'channel' => $this->channel,
             'status' => Notification::STATUS_FAILED,
             'message' => null,
             'timestamp' => now()->toDateTimeString(),
@@ -114,6 +114,11 @@ class NotificationJob implements ShouldQueue
             app(ApiExceptions::class)->logException($e);
             $result['message'] = '发送失败，请稍后重试';
             $result['timestamp'] = now()->toDateTimeString();
+        } finally {
+            // 还原为不含 transient 的持久化数据，避免 updateSendResult 把敏感字段写回库
+            if ($payload->transient !== []) {
+                $notification->setAttribute('data', $preparedPayload);
+            }
         }
 
         $notificationRepository->updateSendResult($notification, $result, $isSuccessful);
@@ -131,13 +136,18 @@ class NotificationJob implements ShouldQueue
         return $class::find($this->notifiableId);
     }
 
-    protected function logSkip(string $reason): void
+    /**
+     * 通知跳过日志：
+     *   - 默认 warning（生产可见，让运维感知模板缺失 / builder 异常等）
+     *   - 显式传 level='debug' 用于预期内的噪声场景
+     */
+    protected function logSkip(string $reason, string $level = 'warning'): void
     {
-        if (! config('app.debug')) {
+        if ($level === 'debug' && ! config('app.debug')) {
             return;
         }
 
-        Log::debug('[notification.dispatch.skip] '.$reason, [
+        Log::log($level, '[notification.dispatch.skip] '.$reason, [
             'template_id' => $this->templateId,
             'notifiable_type' => $this->notifiableType,
             'notifiable_id' => $this->notifiableId,

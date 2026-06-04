@@ -58,8 +58,20 @@ class CreateBackupJob implements ShouldQueue
             ]);
 
             // keep 参数由 BackupCommand 自行回落到 config('database.backup.keep_days')
-            Artisan::call('schedule:backup');
+            $exitCode = Artisan::call('schedule:backup');
             $output = trim(Artisan::output());
+
+            if ($exitCode !== 0) {
+                $service->setJobProgress($this->token, [
+                    'status' => 'failed',
+                    'message' => '备份失败',
+                    'output' => $output,
+                    'admin_id' => $this->adminId,
+                    'updated_at' => now()->toDateTimeString(),
+                ]);
+
+                return;
+            }
 
             $service->setJobProgress($this->token, [
                 'status' => 'completed',

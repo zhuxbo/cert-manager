@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\Backup;
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 
@@ -15,15 +17,19 @@ use Symfony\Component\Process\Process;
  *  2. mysqldump 流式输出 → gzip 文件
  *  3. 删除临时凭据
  *
- * 客户端探测复用 {@see BackupService::ensureMysqlClient}（含 open_basedir 解锁逻辑）。
+ * 客户端探测直接走 {@see BinaryLocator::mysqldump()}，与全项目二进制定位逻辑一致。
+ * BinaryNotFoundException 转抛为 RuntimeException('未找到 mysqldump 命令') 保留调用方
+ * （BackupCommand）原有 message 兼容。
  */
 class MysqlBackupHandler implements BackupHandlerInterface
 {
-    public function __construct(private BackupService $backupService) {}
-
     public function ensureClient(): string
     {
-        return $this->backupService->ensureMysqlClient('mysqldump');
+        try {
+            return app(BinaryLocator::class)->mysqldump();
+        } catch (BinaryNotFoundException $e) {
+            throw new RuntimeException('未找到 mysqldump 命令', previous: $e);
+        }
     }
 
     public function backup(array $config, string $outputPath, array $ignoreTables): string
@@ -72,6 +78,9 @@ class MysqlBackupHandler implements BackupHandlerInterface
 
     /**
      * mysqldump 流式写入 gzip 文件，一次完成。
+     *
+     * MariaDB / MySQL ≤ 5.7 的 mysqldump 不识别 --set-gtid-purged / --column-statistics，
+     * 失败时按错误信息逐个剔除后重试（参考 Laravel MySqlSchemaState 的回退策略）。
      */
     private function runDumpGzip(
         string $bin,
@@ -100,26 +109,67 @@ class MysqlBackupHandler implements BackupHandlerInterface
 
         $args[] = $database;
 
-        $gz = gzopen($outputPath, 'wb6');
-        if ($gz === false) {
-            throw new RuntimeException("无法创建 gzip 文件: $outputPath");
+        $maxAttempts = 3;
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $gz = gzopen($outputPath, 'wb6');
+            if ($gz === false) {
+                throw new RuntimeException("无法创建 gzip 文件: $outputPath");
+            }
+
+            $process = new Process($args);
+            $process->setTimeout(3600);
+
+            try {
+                $process->run(function ($type, $buffer) use ($gz) {
+                    if ($type === Process::OUT) {
+                        gzwrite($gz, $buffer);
+                    }
+                });
+            } finally {
+                gzclose($gz);
+            }
+
+            if ($process->isSuccessful()) {
+                return;
+            }
+
+            $err = trim($process->getErrorOutput() ?: $process->getOutput());
+            $removed = $this->removeIncompatibleArgs($args, $err);
+
+            if ($removed === [] || $attempt === $maxAttempts) {
+                throw new RuntimeException('mysqldump 失败: '.$err);
+            }
+
+            @unlink($outputPath);
         }
+    }
 
-        $process = new Process($args);
-        $process->setTimeout(3600);
+    /**
+     * 根据错误信息剔除对应的客户端选项，返回被剔除的参数列表。
+     */
+    private function removeIncompatibleArgs(array &$args, string $err): array
+    {
+        $candidates = [
+            '--column-statistics=0' => ['column-statistics', 'column_statistics'],
+            '--set-gtid-purged=OFF' => ['set-gtid-purged'],
+        ];
 
-        try {
-            $process->run(function ($type, $buffer) use ($gz) {
-                if ($type === Process::OUT) {
-                    gzwrite($gz, $buffer);
+        $removed = [];
+        foreach ($candidates as $flag => $needles) {
+            $hit = false;
+            foreach ($needles as $needle) {
+                if (str_contains($err, $needle)) {
+                    $hit = true;
+                    break;
                 }
-            });
-        } finally {
-            gzclose($gz);
+            }
+            if (! $hit) {
+                continue;
+            }
+            $args = array_values(array_filter($args, fn ($a) => $a !== $flag));
+            $removed[] = $flag;
         }
 
-        if (! $process->isSuccessful()) {
-            throw new RuntimeException('mysqldump 失败: '.trim($process->getErrorOutput() ?: $process->getOutput()));
-        }
+        return $removed;
     }
 }

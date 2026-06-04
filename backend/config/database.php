@@ -56,8 +56,5 @@ return [
         'keep_days' => (int) env('DB_BACKUP_KEEP_DAYS', 30),
         // 兜底最少保留份数：即使超过 keep_days，也始终保留最近 N 份 backup_，防止全部被清空
         'min_keep' => (int) env('DB_BACKUP_MIN_KEEP', 3),
-        // mysqldump / mysql 可执行文件路径（默认走 PATH 查找）
-        'mysqldump_bin' => env('MYSQLDUMP_BIN', 'mysqldump'),
-        'mysql_bin' => env('MYSQL_BIN', 'mysql'),
     ],
 ];

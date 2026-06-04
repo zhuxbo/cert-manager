@@ -31,7 +31,7 @@
       查看
     </el-button>
     <el-button
-      v-if="['active', 'cancelling'].includes(row.status) && !!row.api_id"
+      v-if="['active', 'cancelling'].includes(row.status)"
       class="reset-margin !outline-none"
       type="primary"
       :link="link"

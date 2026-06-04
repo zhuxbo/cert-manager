@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
+import { useResizeObserver, useDebounceFn } from "@vueuse/core";
 import * as echarts from "echarts/core";
 import { PieChart } from "echarts/charts";
 import {
@@ -132,22 +133,22 @@ const updateChart = () => {
   chartInstance.setOption(option, true);
 };
 
-const resizeChart = () => {
-  if (chartInstance) {
-    chartInstance.resize();
-  }
-};
+// 防抖 resize，避免窗口/容器频繁变化时高频重排
+const resizeChart = useDebounceFn(() => {
+  chartInstance?.resize();
+}, 120);
 
 onMounted(() => {
   initChart();
-  window.addEventListener("resize", resizeChart);
+  // 监听容器尺寸变化（含侧边栏折叠等布局驱动的 resize），自动随组件销毁清理
+  useResizeObserver(chartRef, resizeChart);
 });
 
 onBeforeUnmount(() => {
   if (chartInstance) {
     chartInstance.dispose();
+    chartInstance = null;
   }
-  window.removeEventListener("resize", resizeChart);
 });
 
 // 监听数据变化

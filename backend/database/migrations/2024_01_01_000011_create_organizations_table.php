@@ -12,6 +12,7 @@ return new class extends Migration
             Schema::create('organizations', function (Blueprint $table) {
                 $table->unsignedBigInteger('id')->primary()->comment('ID');
                 $table->unsignedBigInteger('user_id')->comment('用户ID');
+                $table->unsignedBigInteger('contact_id')->nullable()->index()->comment('联系人ID');
                 $table->string('name', 200)->index()->comment('组织名称');
                 $table->string('registration_number', 100)->nullable()->index()->comment('注册号');
                 $table->string('country', 100)->nullable()->comment('国家');

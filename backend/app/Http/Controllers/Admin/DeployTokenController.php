@@ -82,7 +82,8 @@ class DeployTokenController extends BaseController
             $this->error('部署令牌不存在');
         }
 
-        $this->success($deployToken->toArray());
+        // 隐藏 token 明文：admin 跨用户管理部署令牌无需查看他人高权限部署凭据（与 ApiToken 不可见基线一致）
+        $this->success($deployToken->makeHidden('token')->toArray());
     }
 
     /**
@@ -97,7 +98,7 @@ class DeployTokenController extends BaseController
             $this->error('部署令牌不存在');
         }
 
-        $this->success($deployTokens->toArray());
+        $this->success($deployTokens->makeHidden('token')->toArray());
     }
 
     /**

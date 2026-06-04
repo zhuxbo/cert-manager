@@ -1,5 +1,7 @@
 <?php
 
+use Tests\TestCase;
+
 /**
  * 架构白名单：数据库连接清单。
  *
@@ -11,7 +13,7 @@
  * shouldMergeFrameworkConfiguration() 合并 framework 自带的多种 driver
  * 默认条目，无法用于白名单匹配。我们要抓的是"项目源文件里有人又加了别的连接"。
  */
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 test('config/database.php 项目源文件 connections 仅声明 mysql', function () {
     $config = require base_path('config/database.php');

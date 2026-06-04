@@ -2,6 +2,7 @@
 
 use App\Models\CnameDelegation;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 test('委托记录属于用户', function () {
     $user = User::factory()->create();
@@ -64,7 +65,7 @@ test('last_checked_at 为日期时间 cast', function () {
     ]);
     $delegation->refresh();
 
-    expect($delegation->last_checked_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($delegation->last_checked_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('target_fqdn 由 label 和 proxy_zone 组合', function () {

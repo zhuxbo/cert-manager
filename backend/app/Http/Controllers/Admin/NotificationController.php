@@ -88,7 +88,6 @@ class NotificationController extends BaseController
         }
 
         $notifiable = $this->resolveNotifiable($validated['notifiable_type'], (int) $validated['notifiable_id']);
-        $preferredChannels = $this->sanitizeChannels($validated['channels'] ?? null);
 
         try {
             $payload = $this->buildTestPayload($template, $notifiable, $validated['data'] ?? []);
@@ -96,8 +95,7 @@ class NotificationController extends BaseController
                 $template->code,
                 $validated['notifiable_type'],
                 $notifiable->getKey(),
-                $payload,
-                $preferredChannels
+                $payload
             );
 
             $this->notificationCenter->dispatch($intent);
@@ -120,17 +118,15 @@ class NotificationController extends BaseController
 
         $data = $notification->data ?? [];
         unset($data['result']);
-        $preferredChannels = $this->sanitizeChannels($request->validated('channels'));
 
         try {
-            /** @var \App\Models\NotificationTemplate $template */
+            /** @var NotificationTemplate $template */
             $template = $notification->template;
             $intent = new NotificationIntent(
                 $template->code,
                 $notification->notifiable_type,
                 $notification->notifiable_id,
-                $data,
-                $preferredChannels
+                $data
             );
             $this->notificationCenter->dispatch($intent);
         } catch (Throwable $e) {
@@ -174,17 +170,5 @@ class NotificationController extends BaseController
         }
 
         return array_merge($payload, $input);
-    }
-
-    protected function sanitizeChannels(?array $channels): ?array
-    {
-        if (empty($channels)) {
-            return null;
-        }
-
-        return array_values(array_unique(array_filter(
-            $channels,
-            fn ($channel) => is_string($channel) && $channel !== ''
-        )));
     }
 }

@@ -205,13 +205,13 @@ class User extends BaseModel implements AuthenticatableContract, JWTSubject
     }
 
     /**
-     * 判断指定通道与类型是否允许发送通知
+     * 判断指定事件类型是否允许发送通知（主系统仅服务 mail，通道偏好由插件自治）
      */
-    public function allowsNotificationChannel(string $channel, string $type): bool
+    public function allowsNotification(string $code): bool
     {
         $settings = $this->notification_settings ?? [];
 
-        return (bool) data_get($settings, $channel.'.'.$type, true);
+        return (bool) ($settings[$code] ?? true);
     }
 
     /**
@@ -252,7 +252,9 @@ class User extends BaseModel implements AuthenticatableContract, JWTSubject
     }
 
     /**
-     * 归一化通知配置
+     * 归一化通知配置（扁平结构：code → bool）
+     *
+     * 兼容老的嵌套结构 {mail: {x: true}, sms: {...}}：仅取 mail 子树作为新结构来源。
      */
     protected function normalizeNotificationSettings(mixed $value): array
     {
@@ -264,13 +266,15 @@ class User extends BaseModel implements AuthenticatableContract, JWTSubject
             $value = [];
         }
 
+        if (isset($value['mail']) && is_array($value['mail'])) {
+            $value = $value['mail'];
+        }
+
         $defaults = config('notification.user_default_preferences', []);
         $normalized = [];
 
-        foreach ($defaults as $channel => $types) {
-            foreach ($types as $type => $default) {
-                $normalized[$channel][$type] = (bool) data_get($value, $channel.'.'.$type, $default);
-            }
+        foreach ($defaults as $code => $default) {
+            $normalized[$code] = (bool) ($value[$code] ?? $default);
         }
 
         return $normalized;

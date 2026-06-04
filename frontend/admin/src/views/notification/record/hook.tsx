@@ -37,7 +37,6 @@ export function useNotificationRecord() {
 
   // 重发对话框
   const resendDialogVisible = ref(false);
-  const resendChannels = ref<string[]>([]);
   const resendTarget = ref<NotificationRecord | null>(null);
 
   function handleSizeChange(val: number) {
@@ -111,22 +110,17 @@ export function useNotificationRecord() {
   // 打开重发对话框
   const openResend = (row: NotificationRecord) => {
     resendTarget.value = row;
-    resendChannels.value = [];
     resendDialogVisible.value = true;
   };
 
   // 确认重发
   const confirmResend = () => {
     if (!resendTarget.value) return;
-    notificationApi
-      .resend(resendTarget.value.id, {
-        channels: resendChannels.value.length ? resendChannels.value : undefined
-      })
-      .then(() => {
-        ElMessage.success("已提交重发任务");
-        resendDialogVisible.value = false;
-        onSearch();
-      });
+    notificationApi.resend(resendTarget.value.id, {}).then(() => {
+      ElMessage.success("已提交重发任务");
+      resendDialogVisible.value = false;
+      onSearch();
+    });
   };
 
   // 关闭重发对话框
@@ -151,7 +145,6 @@ export function useNotificationRecord() {
     showPayload,
     // 重发相关
     resendDialogVisible,
-    resendChannels,
     resendTarget,
     openResend,
     confirmResend,

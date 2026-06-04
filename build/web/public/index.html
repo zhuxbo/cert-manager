@@ -12,9 +12,10 @@
      * 入口跳转脚本
      *
      * 电商订单跳转说明：
-     * - /pdd/*  拼多多订单跳转
-     * - /tb/*   淘宝订单跳转
-     * - /tid/*  订单号充值跳转
+     * - /pdd/*       拼多多订单跳转
+     * - /tb/*        淘宝订单跳转
+     * - /tid/*       订单号充值跳转
+     * - /invoice/*   简易开票申请跳转（免登录，落到 /easy/invoice/<tid>）
      * 如使用电商订单自动发货功能，需设置此跳转
      *
      * 其他路径默认跳转到 /user
@@ -27,6 +28,11 @@
       // 电商订单路径：pdd（拼多多）、tb（淘宝）、tid（订单号充值）
       if (/^\/(pdd|tb)(\/.*)?$/i.test(path) || /^\/tid\/[^/]+/i.test(path)) {
         target = '/user' + path + search;
+      }
+
+      // 简易开票：/invoice/<tid> 跳到 /easy/invoice/<tid>（免登录）
+      if (/^\/invoice\/[^/]+/i.test(path)) {
+        target = '/easy' + path + search;
       }
 
       window.location.replace(target);

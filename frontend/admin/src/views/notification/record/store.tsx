@@ -40,14 +40,13 @@ export const notifiableOptions: NotifiableOption[] = [
 
 export function useNotificationRecordStore(onSearch: () => void) {
   const testDialogVisible = ref(false);
-  const templateOptionsRaw = ref<TemplateItem[]>([]); // 原始完整列表
+  const templateOptions = ref<TemplateItem[]>([]);
   const templateLoading = ref(false);
 
   const testForm = reactive({
     notifiable_type: notifiableOptions[0]?.value ?? "user",
     notifiable_id: null as number | null,
-    template_type: "",
-    channel: "" // 改为单选
+    template_type: ""
   });
 
   const testPayload = reactive<Record<string, any>>({});
@@ -59,23 +58,12 @@ export function useNotificationRecordStore(onSearch: () => void) {
       notifiableOptions[0]
   );
 
-  // 去重后的模板选项（用于显示）
-  const templateOptions = computed(() => {
-    return Array.from(
-      new Map(templateOptionsRaw.value.map(item => [item.code, item])).values()
-    );
-  });
-
   const selectedTemplate = computed(() => {
-    // 通道是必选的，没有选择通道则不返回模板
-    if (!testForm.template_type || !testForm.channel) return null;
+    if (!testForm.template_type) return null;
 
-    // 查找匹配 code 和 channel 的模板
     return (
-      templateOptionsRaw.value.find(
-        item =>
-          item.code === testForm.template_type &&
-          item.channels?.includes(testForm.channel)
+      templateOptions.value.find(
+        item => item.code === testForm.template_type
       ) ?? null
     );
   });
@@ -84,25 +72,9 @@ export function useNotificationRecordStore(onSearch: () => void) {
     () => selectedTemplate.value?.variables ?? []
   );
 
-  // 获取当前模板类型的所有可用通道（使用原始列表）
-  const availableChannelsForTemplate = computed(() => {
-    if (!testForm.template_type) return [];
-
-    const templates = templateOptionsRaw.value.filter(
-      item => item.code === testForm.template_type
-    );
-
-    const channelsSet = new Set<string>();
-    templates.forEach(template => {
-      template.channels?.forEach(channel => channelsSet.add(channel));
-    });
-
-    return Array.from(channelsSet);
-  });
-
   // 加载模板选项
   const ensureTemplateOptions = async () => {
-    if (templateOptionsRaw.value.length) return;
+    if (templateOptions.value.length) return;
     templateLoading.value = true;
     try {
       const { data } = await fetchTemplates({
@@ -110,8 +82,7 @@ export function useNotificationRecordStore(onSearch: () => void) {
         pageSize: 200,
         status: 1
       });
-      // 保存原始完整列表（不去重）
-      templateOptionsRaw.value = data.items ?? [];
+      templateOptions.value = data.items ?? [];
     } finally {
       templateLoading.value = false;
     }
@@ -129,7 +100,6 @@ export function useNotificationRecordStore(onSearch: () => void) {
   // 预填充测试数据
   const prefillTestPayload = () => {
     if (!selectedNotifiable.value) return;
-    // 不应该从通知对象中自动获取的字段（这些字段应该由用户手动输入）
     const excludedFields = [
       "created_at",
       "executed_at",
@@ -139,7 +109,6 @@ export function useNotificationRecordStore(onSearch: () => void) {
       "sent_at"
     ];
     templateVariables.value.forEach(field => {
-      // 跳过不应该自动填充的字段
       if (excludedFields.includes(field)) {
         return;
       }
@@ -159,7 +128,6 @@ export function useNotificationRecordStore(onSearch: () => void) {
   const openTestDialog = () => {
     testForm.notifiable_id = null;
     testForm.template_type = "";
-    testForm.channel = "";
     selectedNotifiable.value = null;
     resetTestPayload();
     testDialogVisible.value = true;
@@ -168,12 +136,8 @@ export function useNotificationRecordStore(onSearch: () => void) {
 
   // 确认测试发送
   const confirmTestSend = () => {
-    if (
-      !testForm.notifiable_id ||
-      !testForm.template_type ||
-      !testForm.channel
-    ) {
-      ElMessage.warning("请选择通知对象、模板和通道");
+    if (!testForm.notifiable_id || !testForm.template_type) {
+      ElMessage.warning("请选择通知对象和模板");
       return;
     }
 
@@ -187,7 +151,6 @@ export function useNotificationRecordStore(onSearch: () => void) {
       notifiable_type: testForm.notifiable_type,
       notifiable_id: Number(testForm.notifiable_id),
       template_type: testForm.template_type,
-      channels: [testForm.channel],
       data: Object.keys(payload).length ? payload : undefined
     }).then(() => {
       ElMessage.success("测试通知已提交");
@@ -204,18 +167,6 @@ export function useNotificationRecordStore(onSearch: () => void) {
   // 监听模板变化
   watch(
     () => testForm.template_type,
-    (newType, oldType) => {
-      // 如果模板类型改变，清除通道选择
-      if (newType !== oldType) {
-        testForm.channel = "";
-      }
-      resetTestPayload();
-    }
-  );
-
-  // 监听通道变化
-  watch(
-    () => testForm.channel,
     () => {
       resetTestPayload();
     }
@@ -261,7 +212,6 @@ export function useNotificationRecordStore(onSearch: () => void) {
     currentNotifiableOption,
     selectedTemplate,
     templateVariables,
-    availableChannelsForTemplate,
     openTestDialog,
     confirmTestSend,
     closeTestDialog,

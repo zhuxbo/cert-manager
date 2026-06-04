@@ -17,14 +17,8 @@
 frontend/
 ├── shared/     # 共享代码库
 ├── admin/      # 管理端应用
-├── user/       # 用户端应用
-└── base/       # 上游框架（只读）
+└── user/       # 用户端应用
 ```
-
-### base 目录规则
-
-- **只读** - 通过 git subtree 同步上游代码，不要修改
-- 本地开发需执行 `cd base && pnpm install --ignore-workspace`
 
 ---
 
@@ -221,6 +215,13 @@ Prettier 对 markdown 的处理：
 - TailwindCSS 工具类
 - 响应式设计
 - 主题定制化
+
+### 图表组件 (echarts)
+
+`@shared/components/Charts` 下 LineChart/BarChart/PieChart 各自 `echarts.use([...])` 按需注册（无全局 `$echarts`，旧 `plugins/echarts.ts` 已废弃删除）。
+
+- **首帧空数据陷阱**：LineChart 的 `yAxis` 由 `yAxisConfig` 数组 `map` 生成。父组件异步加载时首帧常传入空 `series` + 空 `yAxisConfig`（如 Dashboard 趋势图），option 变成「有 `xAxis` 但 `yAxis: []`」——echarts 没有 series 不建 Grid 坐标系、不给轴挂 `getAxesOnZeroOf`，但 x 轴视图仍渲染，抛 `axis.getAxesOnZeroOf is not a function`；数据到达后自愈（所以表现为"第一次报错、第二次正常"）。**修复：空 `yAxisConfig` 回退到单个默认 Y 轴**（见 `LineChart.vue`）。BarChart 的 yAxis 是单对象、PieChart 无 cartesian，均不受影响。
+- **排查方法**：此类 echarts 报错极易误判为版本不匹配 / Vite 依赖缓存 / 双实例。最快定位是 **node SSR 最小复现**——`echarts.init(null, null, { ssr: true, renderer: "svg", width, height })` + `setOption`，不依赖浏览器/DOM。能跑通即证明包与用法无问题、矛盾在集成或数据；用真实的空数据 option 一跑即可稳定复现边界 bug。
 
 ---
 

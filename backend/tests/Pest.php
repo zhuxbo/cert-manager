@@ -1,5 +1,11 @@
 <?php
 
+use App\Models\Setting;
+use App\Models\SettingGroup;
+use App\Services\FundAudit\FundInvariants;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
 /*
 |--------------------------------------------------------------------------
 | Test Case
@@ -11,13 +17,13 @@
 |
 */
 
-uses(Tests\TestCase::class)->in('Feature');
+uses(TestCase::class)->in('Feature');
 
 require_once __DIR__.'/Support/FundAuditGuard.php';
 
 // 仅 mysql：所有 Feature 测试统一走 RefreshDatabase；下方列出的子目录精确控制
 // 哪些用真实 DB（其它如 Feature/Compat 用 mock 或不跑 DB）。
-uses(Illuminate\Foundation\Testing\RefreshDatabase::class)->in(
+uses(RefreshDatabase::class)->in(
     'Feature/Commands',
     'Feature/Console',
     'Feature/Database',
@@ -42,7 +48,7 @@ uses(Illuminate\Foundation\Testing\RefreshDatabase::class)->in(
 | 测试期间的全部变更。
 */
 uses()->afterEach(function () {
-    $violations = app(\App\Services\FundAudit\FundInvariants::class)->all();
+    $violations = app(FundInvariants::class)->all();
     if (! empty($violations)) {
         $msg = '资金审计破：'.collect($violations)
             ->map(fn ($v) => $v['layer'].' '.$v['message'])
@@ -100,8 +106,27 @@ function something()
 }
 
 /**
+ * 创建或更新工商查询 Setting 配置项
+ */
+function setEnterpriseLookupSetting(string $key, mixed $value, string $type = 'string'): void
+{
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'enterprise'],
+        ['title' => '工商信息查询', 'weight' => 9],
+    );
+    $setting = Setting::where('group_id', $group->id)->where('key', $key)->first();
+    if (! $setting) {
+        $setting = new Setting(['group_id' => $group->id, 'key' => $key, 'type' => $type]);
+    }
+    $setting->type = $type;
+    $setting->value = $value;
+    $setting->save();
+    Setting::clearGroupCache($group->id);
+}
+
+/**
  * 造一个 shell 脚本，模拟 mysql/mysqldump 的 --version 输出，供
- * BackupService::ensureMysqlClient 的 proc_open 探测识别为合法 mysql 客户端。
+ * BinaryLocator::probeWith 的 proc_open 探测识别为合法 mysql 客户端。
  *
  * 返回脚本绝对路径。注册 shutdown 时自动清理。
  */

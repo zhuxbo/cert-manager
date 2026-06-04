@@ -21,7 +21,13 @@ class OrderController extends BaseController
     {
         parent::__construct();
 
-        $this->guard->id() || $this->error('用户不存在');
+        // document-preview 走短时签名 URL（signed 中间件、无 JWT 上下文）：归属在签发签名 URL 时
+        // 已按 UserScope 校验、签名保证 docId 不可篡改，故此路由跳过登录态校验；否则构造函数里
+        // guard->id() 为空会抢先返回“用户不存在”，签名预览方法体永远走不到（access_token 不进 URL 的前提）
+        if (! request()->routeIs('user.order.document-preview')) {
+            $this->guard->id() || $this->error('用户不存在');
+        }
+
         $this->action = app(Action::class);
     }
 
@@ -338,6 +344,14 @@ class OrderController extends BaseController
     public function previewDocument(int $id): BinaryFileResponse
     {
         return $this->action->previewDocument($id);
+    }
+
+    /**
+     * 获取文档预览/下载短时签名 URL（access_token 不进 URL）
+     */
+    public function previewDocumentUrl(int $id): void
+    {
+        $this->action->previewDocumentUrl($id, 'user.order.document-preview');
     }
 
     /**

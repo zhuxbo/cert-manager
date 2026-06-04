@@ -1,8 +1,9 @@
 <?php
 
 use Carbon\Carbon;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 test('AppServiceProvider 同步 mysql 连接 timezone 为数字偏移（避开 MySQL 时区表依赖）', function () {
     $appTz = config('app.timezone');

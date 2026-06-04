@@ -9,22 +9,18 @@ class UpdateRequest extends BaseRequest
 {
     public function rules(): array
     {
-        $id = $this->route('id');
-        $availableChannels = config('notification.available_channels', []);
-
         return [
             'name' => ['sometimes', 'string', 'max:100'],
             'code' => [
                 'sometimes',
                 'string',
                 'max:100',
+                Rule::unique('notification_templates', 'code')->ignore($this->route('id')),
             ],
             'content' => ['sometimes', 'string'],
             'variables' => ['nullable', 'array'],
             'example' => ['nullable', 'string'],
             'status' => ['sometimes', 'integer', Rule::in([0, 1])],
-            'channels' => ['sometimes', 'array', 'min:1'],
-            'channels.*' => ['string', Rule::in($availableChannels)],
         ];
     }
 }

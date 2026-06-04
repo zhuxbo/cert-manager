@@ -64,6 +64,41 @@ class AcmeController extends BaseController
     }
 
     /**
+     * 批量订单详情 — 用于详情聚合页同时查看多张订单
+     *
+     * 字段策略与 show 一致（Admin 端不隐藏字段）；按 ca 缓存 directory_url 避免重复计算。
+     */
+    public function batchShow(GetIdsRequest $request): void
+    {
+        $ids = $request->validated('ids');
+
+        $acmes = Acme::whereIn('id', $ids)
+            ->with(['user', 'product'])
+            ->orderByDesc('id')
+            ->get();
+
+        if ($acmes->isEmpty()) {
+            $this->error('订单不存在');
+        }
+
+        $dirUrls = [];
+        $items = $acmes->map(function ($acme) use (&$dirUrls) {
+            $ca = (string) ($acme->product->ca ?? '');
+            if (! array_key_exists($ca, $dirUrls)) {
+                $dirUrls[$ca] = $this->action->syncDirectoryUrl($acme);
+            }
+            $acme->makeVisible('eab_hmac');
+
+            $data = $acme->toArray();
+            $data['directory_url'] = $dirUrls[$ca];
+
+            return $data;
+        });
+
+        $this->success(['items' => $items->toArray()]);
+    }
+
+    /**
      * 创建 ACME 订单
      */
     public function new(Request $request): void
@@ -193,8 +228,9 @@ class AcmeController extends BaseController
             }
             $kid = $acme->makeVisible('eab_hmac')->eab_kid;
             $hmac = $acme->makeVisible('eab_hmac')->eab_hmac;
+            $email = $acme->contact_email ?? '';
 
-            return "directory_url={$dirUrls[$ca]}\neab_kid=$kid\neab_hmac=$hmac";
+            return "directory_url={$dirUrls[$ca]}\ncontact_email=$email\neab_kid=$kid\neab_hmac=$hmac";
         })->implode("\n\n");
 
         $this->success(['text' => $text, 'count' => $acmes->count()]);

@@ -5,6 +5,7 @@ use App\Http\Controllers\User\AuthController;
 use App\Http\Controllers\User\ContactController;
 use App\Http\Controllers\User\DashboardController;
 use App\Http\Controllers\User\DelegationController;
+use App\Http\Controllers\User\EnterpriseLookupController;
 use App\Http\Controllers\User\FundController;
 use App\Http\Controllers\User\OrderController;
 use App\Http\Controllers\User\OrganizationController;
@@ -13,16 +14,19 @@ use App\Http\Controllers\User\SettingController;
 use App\Http\Controllers\User\TopUpController;
 use App\Http\Controllers\User\TransactionController;
 use App\Http\Controllers\User\VerifyCodeController;
+use App\Http\Controllers\User\ZipcodeLookupController;
+use App\Http\Middleware\FilterUserIdParameter;
+use App\Http\Middleware\UserAuthenticate;
 use App\Utils\RouteHelper;
 use Illuminate\Support\Facades\Route;
 
 // 无需认证
 Route::middleware('login.limiter:user')->post('login', [AuthController::class, 'login']);
-Route::post('register', [AuthController::class, 'register']);
-Route::post('reset-password', [AuthController::class, 'resetPassword']);
+Route::middleware('verify.code.limiter:register')->post('register', [AuthController::class, 'register']);
+Route::middleware('verify.code.limiter:reset-password')->post('reset-password', [AuthController::class, 'resetPassword']);
 
 // 发送邮箱验证码 无需认证
-Route::post('send-email-code', [VerifyCodeController::class, 'sendEmail']);
+Route::middleware('verify.code.limiter:send-email-code')->post('send-email-code', [VerifyCodeController::class, 'sendEmail']);
 
 // 刷新Token
 Route::middleware('api.user.refresh')->group(function () {
@@ -90,7 +94,15 @@ Route::middleware('api.user')->group(function () {
         Route::get('{id}/certs', [OrderController::class, 'certs'])->where('id', '[0-9]+');
         Route::get('deploy-commands', [OrderController::class, 'deployCommands']);
         Route::post('upload-document/{id}', [OrderController::class, 'uploadDocument'])->where('id', '[0-9]+');
-        Route::get('document-preview/{id}', [OrderController::class, 'previewDocument'])->where('id', '[0-9]+');
+        // document-preview 改走短时签名 URL（signed）而非 JWT：access_token 不进 URL，仅验证签名
+        // withoutMiddleware 移除 api.user 组中间件（依赖 ApiMiddleware 中 api.user 组定义 = UserAuthenticate + FilterUserIdParameter）
+        Route::get('document-preview/{id}', [OrderController::class, 'previewDocument'])
+            ->where('id', '[0-9]+')
+            ->withoutMiddleware([UserAuthenticate::class, FilterUserIdParameter::class])
+            ->middleware('signed')
+            ->name('user.order.document-preview');
+        // 取预览/下载短时签名 URL（走 JWT header 鉴权 + UserScope 归属校验）
+        Route::get('document-preview-url/{id}', [OrderController::class, 'previewDocumentUrl'])->where('id', '[0-9]+');
         Route::get('documents/{id}', [OrderController::class, 'getDocuments'])->where('id', '[0-9]+');
         Route::patch('document/{id}', [OrderController::class, 'updateDocument'])->where('id', '[0-9]+');
         Route::delete('document/{id}', [OrderController::class, 'deleteDocument'])->where('id', '[0-9]+');
@@ -142,6 +154,7 @@ Route::middleware('api.user')->group(function () {
     // ACME 路由
     Route::prefix('acme')->group(function () {
         Route::get('/', [AcmeController::class, 'index']);
+        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::get('{id}', [AcmeController::class, 'show'])->where('id', '[0-9]+');
         Route::post('new', [AcmeController::class, 'new']);
         Route::post('pay/{id}', [AcmeController::class, 'pay'])->where('id', '[0-9]+');
@@ -164,4 +177,13 @@ Route::middleware('api.user')->group(function () {
         Route::post('check/{id}', [DelegationController::class, 'check'])->where('id', '[0-9]+');
         Route::post('batch-store', [DelegationController::class, 'batchStore']);
     });
+
+    // 工商信息查询
+    Route::get('enterprise-lookup/status', [EnterpriseLookupController::class, 'status']);
+    Route::post('enterprise-lookup', [EnterpriseLookupController::class, 'lookup'])
+        ->middleware('throttle:enterprise-lookup');
+
+    // 邮编查询(本地数据)
+    Route::post('zipcode-lookup', [ZipcodeLookupController::class, 'lookup'])
+        ->middleware('throttle:zipcode-lookup');
 });

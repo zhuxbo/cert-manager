@@ -1,5 +1,11 @@
 <script setup lang="tsx">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import {
+  ref,
+  onMounted,
+  onActivated,
+  onDeactivated,
+  onBeforeUnmount
+} from "vue";
 import { PureTableBar } from "@shared/components";
 import { PlusSearch } from "plus-pro-components";
 import { useOrder } from "./hook";
@@ -74,6 +80,31 @@ const handleCreateUser = () => {
 type TimerRef = ReturnType<typeof setInterval>;
 let searchTimer: TimerRef | null = null;
 
+// 启动 3 分钟轮询：幂等，重复调用不会产生多个定时器
+const startPolling = () => {
+  if (searchTimer !== null) return;
+  searchTimer = setInterval(
+    () => {
+      // 页面被切到后台标签页时跳过本次刷新，回到前台再恢复
+      if (document.hidden) return;
+      onSearch();
+    },
+    3 * 60 * 1000
+  ); // 3分钟 = 3 * 60 * 1000 毫秒
+};
+
+const stopPolling = () => {
+  if (searchTimer !== null) {
+    clearInterval(searchTimer);
+    searchTimer = null;
+  }
+};
+
+// 标签页重新可见时立即刷新一次，避免等待整个轮询周期
+const handleVisibilityChange = () => {
+  if (!document.hidden) onSearch();
+};
+
 onMounted(() => {
   // 检查是否有查询参数
   const query = route.query;
@@ -124,20 +155,26 @@ onMounted(() => {
   onSearch();
 
   // 定时每3分钟查询一次
-  searchTimer = setInterval(
-    () => {
-      onSearch();
-    },
-    3 * 60 * 1000
-  ); // 3分钟 = 3 * 60 * 1000 毫秒
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  startPolling();
 });
 
-// 组件卸载前清理定时器
+// keepAlive 缓存下离开页面不会触发卸载，需在 deactivated 暂停轮询，
+// 避免多个列表页同时在后台并发刷新
+onActivated(() => {
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  startPolling();
+});
+
+onDeactivated(() => {
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  stopPolling();
+});
+
+// 组件卸载前清理定时器与监听
 onBeforeUnmount(() => {
-  if (searchTimer !== null) {
-    clearInterval(searchTimer);
-    searchTimer = null;
-  }
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  stopPolling();
 });
 </script>
 

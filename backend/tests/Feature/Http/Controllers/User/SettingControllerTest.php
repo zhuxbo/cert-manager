@@ -3,8 +3,9 @@
 use App\Models\ApiToken;
 use App\Models\DeployToken;
 use App\Models\User;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 test('获取 API Token-无记录返回空', function () {
     $user = User::factory()->create();
@@ -86,7 +87,8 @@ test('更新通知设置', function () {
 
     $this->actingAsUser($user)
         ->putJson('/api/setting/notification-preferences', [
-            'email_enabled' => true,
+            'cert_issued' => false,
+            'cert_expire' => true,
         ])
         ->assertOk()
         ->assertJson(['code' => 1]);

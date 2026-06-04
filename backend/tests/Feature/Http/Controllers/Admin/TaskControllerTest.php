@@ -3,12 +3,15 @@
 use App\Models\Acme;
 use App\Models\Admin;
 use App\Models\Product;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\Task;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -152,9 +155,9 @@ test('batchExecute 路由 cancel_acme 到 AcmeAction', function () {
     ]);
 
     // 配置 gateway + fake 上游返回 cancelled
-    $group = \App\Models\SettingGroup::firstOrCreate(['name' => 'ca'], ['title' => 'CA', 'weight' => 2]);
+    $group = SettingGroup::firstOrCreate(['name' => 'ca'], ['title' => 'CA', 'weight' => 2]);
     foreach (['url' => 'https://fake-gateway.test/api/v2', 'token' => 'x'] as $k => $v) {
-        \App\Models\Setting::updateOrCreate(
+        Setting::updateOrCreate(
             ['group_id' => $group->id, 'key' => $k],
             ['type' => 'string', 'value' => $v, 'weight' => 0]
         );
@@ -188,9 +191,9 @@ test('batchExecute 路由 commit_acme 到 AcmeAction', function () {
         'status' => 'executing',
     ]);
 
-    $group = \App\Models\SettingGroup::firstOrCreate(['name' => 'ca'], ['title' => 'CA', 'weight' => 2]);
+    $group = SettingGroup::firstOrCreate(['name' => 'ca'], ['title' => 'CA', 'weight' => 2]);
     foreach (['url' => 'https://fake-gateway.test/api/v2', 'token' => 'x'] as $k => $v) {
-        \App\Models\Setting::updateOrCreate(
+        Setting::updateOrCreate(
             ['group_id' => $group->id, 'key' => $k],
             ['type' => 'string', 'value' => $v, 'weight' => 0]
         );
@@ -227,9 +230,9 @@ test('batchExecute 路由 sync_acme 到 AcmeAction', function () {
         'status' => 'executing',
     ]);
 
-    $group = \App\Models\SettingGroup::firstOrCreate(['name' => 'ca'], ['title' => 'CA', 'weight' => 2]);
+    $group = SettingGroup::firstOrCreate(['name' => 'ca'], ['title' => 'CA', 'weight' => 2]);
     foreach (['url' => 'https://fake-gateway.test/api/v2', 'token' => 'x'] as $k => $v) {
-        \App\Models\Setting::updateOrCreate(
+        Setting::updateOrCreate(
             ['group_id' => $group->id, 'key' => $k],
             ['type' => 'string', 'value' => $v, 'weight' => 0]
         );

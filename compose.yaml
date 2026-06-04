@@ -1,0 +1,59 @@
+# 开发环境：后端(PHP 8.4) + MySQL 8.4 + Redis 7
+# 前端在宿主机跑（本机已有 Node + pnpm）：`make front` 或 `pnpm install && pnpm dev`
+#
+# 启动：make up   测试：make test   进容器：make shell   停止：make down
+# 端口约定：后端 → 宿主 5300（前端 vite 默认代理目标 VITE_API_TARGET）
+
+services:
+  app:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.4} # 默认 8.4；测 8.3 兼容：PHP_VERSION=8.3 make rebuild && make up
+    image: ssl-manager-app:php${PHP_VERSION:-8.4}
+    restart: unless-stopped
+    volumes:
+      - ./backend:/var/www
+      # 插件目录 → /var/plugins（= 容器内 base_path('../plugins')），开发期后端识别插件
+      - ./plugins:/var/plugins
+    ports:
+      - "5300:8000" # 前端 proxy 默认指向 localhost:5300
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4 # 本地 ARM 原生（不依赖 Rosetta）；CI 仍 mysql:5.7，故锁 5.7 风格 collation 缩小差异
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4 # collation 不写死：由连接级 DB_COLLATION（entrypoint 按版本检测）控制
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: ssl_manager
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306" # 本机用 TablePlus 等连库；若与本地 MySQL 冲突改成 "3307:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ppassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql-data:

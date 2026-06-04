@@ -12,6 +12,7 @@ use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DatabaseBackupController;
 use App\Http\Controllers\Admin\DelegationController;
 use App\Http\Controllers\Admin\DeployTokenController;
+use App\Http\Controllers\Admin\EnterpriseLookupController;
 use App\Http\Controllers\Admin\FundController;
 use App\Http\Controllers\Admin\LogsController;
 use App\Http\Controllers\Admin\MetricsController;
@@ -29,6 +30,8 @@ use App\Http\Controllers\Admin\TransactionController;
 use App\Http\Controllers\Admin\UpgradeController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\UserLevelController;
+use App\Http\Controllers\Admin\ZipcodeLookupController;
+use App\Http\Middleware\AdminAuthenticate;
 use App\Utils\RouteHelper;
 use Illuminate\Support\Facades\Route;
 
@@ -137,7 +140,15 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::patch('amount/{id}', [OrderController::class, 'updateAmount'])->where('id', '[0-9]+');
         Route::get('deploy-commands', [OrderController::class, 'deployCommands']);
         Route::post('upload-document/{id}', [OrderController::class, 'uploadDocument'])->where('id', '[0-9]+');
-        Route::get('document-preview/{id}', [OrderController::class, 'previewDocument'])->where('id', '[0-9]+');
+        // document-preview 改走短时签名 URL（signed）而非 JWT：access_token 不进 URL，仅验证签名
+        // withoutMiddleware 移除 api.admin 组中间件（依赖 ApiMiddleware 中 api.admin 组定义 = AdminAuthenticate）
+        Route::get('document-preview/{id}', [OrderController::class, 'previewDocument'])
+            ->where('id', '[0-9]+')
+            ->withoutMiddleware([AdminAuthenticate::class])
+            ->middleware('signed')
+            ->name('admin.order.document-preview');
+        // 取预览/下载短时签名 URL（走 JWT header 鉴权，admin 全局可为任意 docId 生成）
+        Route::get('document-preview-url/{id}', [OrderController::class, 'previewDocumentUrl'])->where('id', '[0-9]+');
         Route::get('documents/{id}', [OrderController::class, 'getDocuments'])->where('id', '[0-9]+');
         Route::patch('document/{id}', [OrderController::class, 'updateDocument'])->where('id', '[0-9]+');
         Route::delete('document/{id}', [OrderController::class, 'deleteDocument'])->where('id', '[0-9]+');
@@ -198,6 +209,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     // ACME 路由
     Route::prefix('acme')->group(function () {
         Route::get('/', [AcmeController::class, 'index']);
+        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::get('{id}', [AcmeController::class, 'show'])->where('id', '[0-9]+');
         Route::post('new', [AcmeController::class, 'new']);
         Route::post('pay/{id}', [AcmeController::class, 'pay'])->where('id', '[0-9]+');
@@ -268,5 +280,15 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('unfreeze', [UpgradeController::class, 'unfreeze']);
         Route::post('opcache-reset', [UpgradeController::class, 'opcacheReset']);
         Route::post('smoke', [UpgradeController::class, 'smoke']);
+        Route::get('binary-health', [UpgradeController::class, 'binaryHealth']);
     });
+
+    // 工商信息查询
+    Route::get('enterprise-lookup/status', [EnterpriseLookupController::class, 'status']);
+    Route::post('enterprise-lookup', [EnterpriseLookupController::class, 'lookup'])
+        ->middleware('throttle:enterprise-lookup');
+
+    // 邮编查询(本地数据)
+    Route::post('zipcode-lookup', [ZipcodeLookupController::class, 'lookup'])
+        ->middleware('throttle:zipcode-lookup');
 });

@@ -5,8 +5,9 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 beforeEach(function () {
     Cache::flush();

@@ -132,15 +132,37 @@ export { routes };
 
 ```bash
 # 构建单端（在插件前端目录下）
-cd plugins/{name}/frontend/admin && pnpm install && pnpm build
+# install 必须加 --ignore-workspace（插件不在根 workspace 内，详见下方「依赖锁定」）
+cd plugins/{name}/frontend/admin && pnpm install --ignore-workspace && pnpm build
 
 # 或构建整个插件（admin + user）
 bash plugins/release-plugin.sh {name} --version x.y.z --build-only
 ```
 
-**开发环境静态资源映射**：`plugin.json` 中的 bundle 路径（如 `frontend/admin/notice-plugin.iife.js`）不含 `dist/`，但 Vite 构建产物输出在 `frontend/{side}/dist/`。主系统 admin/user 的 `vite.config.ts` 中 `servePlugins()` 中间件自动将 `/plugins/{name}/frontend/{side}/{file}` 映射到 `dist/{file}`，开发环境无需手动复制。
+**构建产物不入库（方案 B）+ 开发环境静态资源映射**：插件前端构建产物**一律不入 git**（`*/frontend/{admin,user}/*.{iife.js,css}` 已加入 `plugins/.gitignore`），dev 与 release 都现构建：
+
+- **新 clone 后**：先跑一次 `make plugins-build`（遍历所有插件 `pnpm install --ignore-workspace && pnpm build`，产物输出到各自 `dist/`），否则前端控制台报 `[PluginLoader] Failed to load plugin`（404）
+- **改了插件 src 后**：重跑该插件 `pnpm build`（或 `make plugins-build`）+ 主应用**硬刷新**（`<script>` 加载无 cache busting，**无 HMR**）
+- `servePlugins()` 中间件把请求的扁平路径映射到 `dist/{file}` 取产物（`plugin.json` bundle 路径不含 `dist/`）；**dist 不存在即返回 `503` + 终端 `[servePlugins]` warn 提示 `make plugins-build`**，不再静默 404 让人误判为路径/插件坏了。生产由 Nginx serve 安装包内的扁平产物
+
+> **为什么不入库**：入库构建产物会与 src **漂移**——`pnpm build` 只更新 `dist/`、不碰扁平副本，dev 又优先用 dist 显示「正常」，改 src 后极易忘记同步且无感（CI 也不构建插件前端、不会拦下）。而扁平副本对生产无用（`PluginManager` 装 release zip，包内产物由 `release-plugin.sh` 打包时现构建），纯属 dev 便利。故统一「不入库、现构建」，从源头消除漂移。
 
 **版本号不入仓库**：`plugin.json` 源文件不含 `version` 字段，由 `release-plugin.sh --version x.y.z` 在打包时动态注入到临时副本。开发环境下 `PluginManager` 读取时回落为 `0.0.0`。
+
+### 依赖锁定（pnpm workspace 注意）
+
+根 `pnpm-workspace.yaml` 的 `packages` 只含 `frontend/{shared,admin,user}`，**不含 `plugins/`**。插件前端是 workspace 之外的独立项目：
+
+- 在插件子目录直接 `pnpm install` 会被根 workspace「劫持」（去装主前端依赖、忽略插件本身），**既不生成也不更新插件自己的 `pnpm-lock.yaml`**（`git status` 看不到新 lock，易误以为已锁定）
+- 生成或更新插件 lock 必须加 `--ignore-workspace`：
+
+```bash
+pnpm -C plugins/{name}/frontend/admin install --ignore-workspace
+pnpm -C plugins/{name}/frontend/user  install --ignore-workspace
+```
+
+- 每个有 `package.json` 的插件前端子项目都应提交对应 `pnpm-lock.yaml`（锁定依赖、CI/他人构建可复现）。`build.json` 的 `exclude` 已含 `pnpm-lock.yaml`，不打入发布 zip
+- 各子项目依赖不同（notice 极简、invoice 含 `@pureadmin/*`），lock **不可跨子项目复用**，须按各自 `package.json` 生成
 
 ### 共享依赖
 
@@ -299,8 +321,8 @@ window.__registerPlugin({
 | `order`                | `views/order/dictionary`                 | `channelOptions`、`channel`、`channelType`、`productTypeOptions`、`productType` |
 | `system`               | `views/system/dictionary`                | `brandOptionsAll`、`productTypeOptions`、`productTypeLabels`                    |
 | `task`                 | `views/task/dictionary`                  | `actionLabels`、`actionTypes`、`statusLabels`、`statusTypes`                    |
-| `notificationRecord`   | `views/notification/record/dictionary`   | `availableChannels`、`statusOptions`                                            |
-| `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`、`channelOptions`                                               |
+| `notificationRecord`   | `views/notification/record/dictionary`   | `statusOptions`、`multilineFields`                                              |
+| `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`                                                                 |
 
 合并规则：数组用 `push` 追加，对象用 `Object.assign` 合并。
 
@@ -423,17 +445,30 @@ php artisan route:clear && php artisan config:clear
 - ZIP 解压前检查所有条目，拒绝含 `..` 的路径
 - 公共端点仅返回 bundle/css 路径，管理端返回完整信息
 - plugin-loader 校验 URL 必须以 `/` 开头
+- 插件包 sha256：`PluginManager` 安装/更新时若 `release.json` 提供 sha256 则强校验（verify-if-present）；下载入口 `validateReleaseUrl` 对**最终下载 URL**做 SSRF 校验（https 放行 / 公网 http 拒绝 / 明文 http 仅放行 RFC1918 私网 + loopback，**link-local 169.254（含云元数据 169.254.169.254）/CGNAT/保留段一律拒绝**，由 `isPrivateOrLoopbackIp` 判定）。下载 curl/Http 重定向限 `--proto-redir =https` + 限 5 跳（Guzzle `allow_redirects.protocols=['https']`），防「校验通过的 https → 302 降级到 http 内网/元数据」绕过
+- 插件可自注册限流中间件：`easy` 插件的 `EasyRateLimiter` 对其公开回调/简易开票端点限流（中间件别名插件内自注册，参考 `invoice` 插件）
 
 ---
 
 ## 内置插件参考
 
-新增插件可对照以下三个内置实现，按复杂度递增：
+新增插件可对照以下内置实现：
 
-| 插件              | 特点                                                             | 适合参考                              |
-| ----------------- | ---------------------------------------------------------------- | ------------------------------------- |
-| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory | 最小可用插件骨架                      |
-| `plugins/invoice` | 双端 CRUD（发票），含查询过滤 + 配额服务，无自带 tests           | CRUD 业务 + migrate-only CI 入口      |
-| `plugins/easy`    | 复杂度最高：多个回调控制器、log handler 接入主系统、产品级别映射 | 涉及 Callback / 日志处理 / 跨模型关联 |
+| 插件               | 特点                                                                                                                                                                                     | 适合参考                                                           |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `plugins/notice`   | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory                                                                                                                         | 最小可用插件骨架                                                   |
+| `plugins/invoice`  | 双端 CRUD（发票）+ 配额服务 + 外部开票方接入（`/api/invoice/external/{pending,complete}`，token+IP 鉴权）+ Admin 配置面板（storage 文件 + Crypt 加密 token）                             | 对外接口 + 中间件别名插件内自注册 + 跨插件被 `easy` 软依赖         |
+| `plugins/easy`     | 复杂度最高：多回调控制器、log handler 接入主系统、产品级别映射；简易开票（独立 web 静态页 `invoice.html`，tid+email 鉴权，class_exists 软依赖 invoice 插件）                             | 涉及 Callback / 日志处理 / 跨模型关联 / 跨插件软依赖               |
+| `plugins/api-docs` | **纯前端插件**（无 backend / 无迁移 / 无 CI job，仅 user 端）：iframe(srcdoc) 内嵌 Scalar 官方 standalone 渲染对外 API 文档；spec 由主系统 `/api/meta/api-doc` 提供、iframe 内同源 fetch | 纯前端插件骨架 + 第三方重型库 iframe 隔离 + Scalar Shadow DOM 定制 |
 
 各插件的 ServiceProvider `boot()` 同时调 `loadRoutesFrom`（admin / user / api / callback 视需要）+ `loadMigrationsFrom`，主系统 `php artisan migrate` 自动覆盖。
+
+### 纯前端插件（api-docs 范例）
+
+`api-docs` 无 `backend/`，纯前端接入对外 API 文档（Scalar 渲染），要点：
+
+- **无后端也能加载**：`PluginServiceProvider` 仅在存在 `backend/` 时注册命名空间/provider，`boot()` 对 `provider=null` 跳过，故纯前端插件正常加载、`/api/plugins` 仍返回 bundle 路径。无迁移、无 CI job。
+- **重型库进插件 + iframe 隔离**：Scalar（~1MB JS）用官方 standalone bundle —— `package.json` 的 `build` 跑 `vite build && cp node_modules/@scalar/api-reference/dist/browser/standalone.js dist/scalar-standalone.js`；外壳 IIFE 仅 ~1KB（external vue），页面用 `<iframe srcdoc>` 加载 standalone。好处：CSS 完全隔离、按需加载（打开才载）、布局 Scalar 原生。release 脚本自动 `cp frontend/{side}/dist/*`，`scalar-standalone.js` 随包。
+- **重型产物 `scalar-standalone.js` ~3.5MB**：`build` 脚本把它拷进 `dist/`、`release` 打包时进包。与所有插件一样产物不入库（见上方「构建产物不入库（方案 B）」），`make plugins-build` 会一并构建，无需单独处理。
+- **iframe srcdoc 三个坑**：① srcdoc 的 base 是 `about:srcdoc`、`location.origin` 可能为 `"null"`，spec 的相对 server 会拼成 null（test request 地址 null）→ **父页拼好绝对 url + 显式 `servers`** 传入。② 高度：Pure Admin 用 `el-scrollbar` 内部滚动、`documentElement` 不滚 → 向上找真正滚动祖先测 `scrollHeight-clientHeight` 扣除，避免高出页脚。③ Scalar 渲染在 **Shadow DOM**，外层 CSS/JS 穿不透 → 隐藏 Introduction 用 Scalar `customCss`（注入 shadow）+ JS 递归穿 `shadowRoot` 按文本隐藏侧栏项。
+- **开发期识别**：`compose.yaml` 把 `./plugins` 挂到 `/var/plugins`（= 容器内 `base_path('../plugins')`，注意 `/var/www` 父目录是 `/var`），`make restart` 后 `/api/plugins` 才返回插件；user dev 的 `servePlugins` 中间件把 `/plugins/{name}/frontend/user/*` 映射到宿主 `dist`。

@@ -4,9 +4,11 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Acme\Api\default\Sdk;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, RefreshDatabase::class)->group('database');
 
 /**
  * 创建 ACME SDK 所需的系统设置
@@ -116,7 +118,7 @@ test('returns error on connection failure', function () {
     createAcmeSdkSettings(acmeUrl: 'https://gateway.test/api/acme', acmeToken: 'test-acme-token');
 
     Http::fake(function () {
-        throw new \Illuminate\Http\Client\ConnectionException('Connection refused');
+        throw new ConnectionException('Connection refused');
     });
 
     $sdk = new Sdk;

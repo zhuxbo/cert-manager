@@ -5,7 +5,7 @@
 #   - 命令行 --bt-key=xxx 必须拒绝（明文进 history）
 #   - --bt-key-file=PATH 读取后销毁文件
 #   - --site-domain=xxx 解析正常
-#   - 自动探测顺序文档化（env > file > api.json > userInfo > bt default）
+#   - 自动探测顺序文档化（env BT_KEY > api.json token_crypt；BT 11.5+ 单字段）
 
 set -uo pipefail
 
@@ -151,30 +151,58 @@ else
     e2e_pass "三选项菜单已移除（单一路径生效）"
 fi
 
-# === 测试 6：bt-automate.sh BT_KEY 探测 4 级优先级 ===
-e2e_log "6. 验证 bt-automate.sh BT_KEY 4 级探测"
+# === 测试 6：bt-automate.sh BT_KEY 2 级探测（BT 11.5+ 单字段 token_crypt）===
+e2e_log "6. 验证 bt-automate.sh BT_KEY 2 级探测"
 if grep -qE 'if \[ -n "\$BT_KEY" \]' "$BT_AUTOMATE"; then
     e2e_pass "优先级 1: env BT_KEY"
 else
     e2e_fail "优先级 1 (env) 缺失"
 fi
 
-if grep -qE '/www/server/panel/config/api\.json' "$BT_AUTOMATE"; then
-    e2e_pass "优先级 2: api.json (panel 9.x+)"
+if grep -qE 'token_crypt' "$BT_AUTOMATE" && grep -qE '/www/server/panel/config/api\.json' "$BT_AUTOMATE"; then
+    e2e_pass "优先级 2: api.json 的 token_crypt 字段（BT 11.5+）"
 else
-    e2e_fail "优先级 2 (api.json) 缺失"
+    e2e_fail "优先级 2 (api.json token_crypt) 缺失"
 fi
 
+# 反向断言：旧版兼容路径已移除（BT 11.5+ 不再回落）
 if grep -qE '/www/server/panel/data/userInfo\.json' "$BT_AUTOMATE"; then
-    e2e_pass "优先级 3: userInfo.json (panel 7.x)"
+    e2e_fail "残留旧版 userInfo.json 路径（BT 11.5+ 应已移除）"
 else
-    e2e_fail "优先级 3 (userInfo.json) 缺失"
+    e2e_pass "userInfo.json 旧版路径已移除"
 fi
 
 if grep -qE 'bt default' "$BT_AUTOMATE"; then
-    e2e_pass "优先级 4: bt default 命令兜底"
+    e2e_fail "残留 bt default 命令兜底路径（BT 11.5+ 应已移除）"
 else
-    e2e_fail "优先级 4 (bt default) 缺失"
+    e2e_pass "bt default 命令兜底已移除"
+fi
+
+# 反向断言：函数体代码（剥离注释）不含 fallback "token" 字段读取
+# 关键设计：先 `grep -v '^[[:space:]]*#'` 剥离整行注释（注释里出现 "token" 是历史教训文档化，
+# 不应触发失败），再 grep -F '"token"' fixed-string 匹配 awk 字段读取字面量；
+# 绝不会误匹配 "token_crypt"（完整字面量中间是 _，不构成 "token" 子串）。
+# 比"if 结构匹配"鲁棒：fallback 不论怎么写（紧凑/分块/单行），读 "token" 字段都被捕获
+RESOLVE_BODY=$(awk '/^bt_resolve_key\(\) \{/,/^}/' "$BT_AUTOMATE")
+if echo "$RESOLVE_BODY" | grep -v '^[[:space:]]*#' | grep -qF '"token"'; then
+    e2e_fail "bt_resolve_key 残留 \"token\" 字段读取（BT 11.5+ 应仅读 token_crypt）"
+else
+    e2e_pass "bt_resolve_key 仅读 token_crypt 单字段"
+fi
+
+# 对称性反向断言：bt-deps.sh::_resolve_bt_api_key 是独立实现，要与 bt-automate.sh 对齐
+BT_DEPS="$E2E_REPO_ROOT/deploy/scripts/bt-deps.sh"
+DEPS_RESOLVE_BODY=$(awk '/^_resolve_bt_api_key\(\) \{/,/^}/' "$BT_DEPS")
+if echo "$DEPS_RESOLVE_BODY" | grep -v '^[[:space:]]*#' | grep -qF '"token"'; then
+    e2e_fail "bt-deps.sh::_resolve_bt_api_key 残留 \"token\" 字段读取（应只读 token_crypt 与 bt-automate.sh 对齐）"
+else
+    e2e_pass "bt-deps.sh::_resolve_bt_api_key 仅读 token_crypt 单字段（与 bt-automate.sh 对齐）"
+fi
+
+if echo "$DEPS_RESOLVE_BODY" | grep -qF 'token_crypt'; then
+    e2e_pass "bt-deps.sh::_resolve_bt_api_key 含 token_crypt 主路径"
+else
+    e2e_fail "bt-deps.sh::_resolve_bt_api_key 缺 token_crypt 主路径"
 fi
 
 # === 测试 7：bt_resolve_key env 路径实跑 ===

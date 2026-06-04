@@ -2,6 +2,7 @@
 
 use App\Models\Admin;
 use App\Models\Notification;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 
 test('密码自动哈希存储', function () {
@@ -57,7 +58,7 @@ test('日期字段正确转换', function () {
     $admin = Admin::factory()->loggedIn()->create();
     $admin->refresh();
 
-    expect($admin->last_login_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($admin->last_login_at)->toBeInstanceOf(Carbon::class);
 });
 
 test('管理员有多态通知关联', function () {

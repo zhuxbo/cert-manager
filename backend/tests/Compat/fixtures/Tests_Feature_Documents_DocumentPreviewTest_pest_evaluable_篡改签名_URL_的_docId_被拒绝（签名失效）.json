@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Documents\\DocumentPreviewTest::__pest_evaluable_篡改签名_URL_的_docId_被拒绝（签名失效）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/document-preview/{id}",
+            "request_keys": [
+                "expires",
+                "signature"
+            ],
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

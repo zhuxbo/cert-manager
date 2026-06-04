@@ -46,7 +46,7 @@ class CallbackController extends BaseController
             },
         ])
             ->select([
-                'id', 'user_id', 'url', 'token', 'status', 'created_at',
+                'id', 'user_id', 'url', 'status', 'created_at',
             ])
             ->orderBy('id', 'desc')
             ->offset(($currentPage - 1) * $pageSize)
@@ -85,7 +85,8 @@ class CallbackController extends BaseController
             $this->error('回调不存在');
         }
 
-        $this->success($callback->toArray());
+        // 隐藏 token：admin 跨用户管理回调无需查看各用户 webhook 校验密钥（防截图/日志泄漏伪造回调）
+        $this->success($callback->makeHidden('token')->toArray());
     }
 
     /**
@@ -100,7 +101,7 @@ class CallbackController extends BaseController
             $this->error('回调不存在');
         }
 
-        $this->success($callbacks->toArray());
+        $this->success($callbacks->makeHidden('token')->toArray());
     }
 
     /**

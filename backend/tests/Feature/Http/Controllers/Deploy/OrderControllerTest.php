@@ -7,6 +7,7 @@ use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
 
 uses(RefreshDatabase::class);
 
@@ -56,7 +57,7 @@ function createDeployOrder(
     return [$order, $cert, $product];
 }
 
-function deployGet(DeployToken $token, string $query = ''): \Illuminate\Testing\TestResponse
+function deployGet(DeployToken $token, string $query = ''): TestResponse
 {
     $sep = $query ? '?' : '';
 
@@ -64,7 +65,7 @@ function deployGet(DeployToken $token, string $query = ''): \Illuminate\Testing\
         ->getJson("/api/deploy/{$sep}{$query}");
 }
 
-function deployPost(DeployToken $token, string $uri, array $data = []): \Illuminate\Testing\TestResponse
+function deployPost(DeployToken $token, string $uri, array $data = []): TestResponse
 {
     return test()->withHeaders(['Authorization' => "Bearer $token->token"])
         ->postJson($uri, $data);
@@ -458,7 +459,7 @@ test('query processing 状态含 file 验证信息', function () {
 // query() — field 参数（certimate URL 拉取）
 // ========================================
 
-function deployGetRaw(DeployToken $token, string $query): \Illuminate\Testing\TestResponse
+function deployGetRaw(DeployToken $token, string $query): TestResponse
 {
     return test()->withHeaders(['Authorization' => "Bearer $token->token"])
         ->get("/api/deploy/?$query");

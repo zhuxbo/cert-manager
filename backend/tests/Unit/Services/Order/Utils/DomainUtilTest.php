@@ -1,8 +1,9 @@
 <?php
 
 use App\Services\Order\Utils\DomainUtil;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 // ==================== getRootDomain ====================
 

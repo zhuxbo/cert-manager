@@ -1,2 +1,10 @@
 temp/
 release.conf
+
+# 插件前端构建产物不入库（dev/release 均现构建，避免与 src 漂移）
+# clone 后或改插件 src 后跑 `make plugins-build` 重新生成 dist
+# 用 *.js 而非 *.iife.js：兼顾 api-docs 的 scalar-standalone.js 等非 iife 产物（源码在 src/ 不受影响）
+*/frontend/admin/*.js
+*/frontend/admin/*.css
+*/frontend/user/*.js
+*/frontend/user/*.css

@@ -2,10 +2,12 @@
 
 use App\Models\Admin;
 use App\Models\Contact;
+use App\Models\Organization;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Traits\ActsAsAdmin;
 
-uses(Tests\Traits\ActsAsAdmin::class);
+uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
@@ -123,4 +125,29 @@ test('未认证用户无法访问联系人管理', function () {
     $response = $this->getJson('/api/admin/contact');
 
     $response->assertUnauthorized();
+});
+
+test('destroy rejects when contact is referenced by organization', function () {
+    $contact = Contact::factory()->create(['user_id' => $this->user->id]);
+    Organization::factory()->create([
+        'user_id' => $this->user->id,
+        'contact_id' => $contact->id,
+    ]);
+
+    $resp = $this->actingAsAdmin($this->admin)->deleteJson("/api/admin/contact/{$contact->id}");
+
+    expect($resp->json('code'))->toBe(0);
+    expect($resp->json('msg'))->toContain('正被');
+    expect(Contact::find($contact->id))->not->toBeNull();
+});
+
+test('batchDestroy rejects any contact still referenced', function () {
+    $c1 = Contact::factory()->create(['user_id' => $this->user->id]);
+    $c2 = Contact::factory()->create(['user_id' => $this->user->id]);
+    Organization::factory()->create(['user_id' => $this->user->id, 'contact_id' => $c2->id]);
+
+    $resp = $this->actingAsAdmin($this->admin)->deleteJson('/api/admin/contact/batch', ['ids' => [$c1->id, $c2->id]]);
+
+    expect($resp->json('code'))->toBe(0);
+    expect(Contact::count())->toBe(2);
 });

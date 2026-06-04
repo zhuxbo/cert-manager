@@ -142,7 +142,9 @@ export const useDelegationTable = () => {
     {
       label: "失败次数",
       prop: "fail_count",
-      width: 100
+      width: 100,
+      formatter: ({ fail_count }) =>
+        fail_count >= 100 ? "99+" : String(fail_count ?? 0)
     },
     {
       label: "上次检查",

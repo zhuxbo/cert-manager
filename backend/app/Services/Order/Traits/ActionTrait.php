@@ -13,6 +13,8 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Task;
 use App\Models\Transaction;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Delegation\CnameDelegationService;
 use App\Services\Delegation\DelegationDnsService;
 use App\Services\Order\Utils\CsrUtil;
@@ -28,6 +30,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 trait ActionTrait
@@ -400,7 +403,11 @@ trait ActionTrait
             $method = 'txt';
         }
 
-        if (strtolower($ca) === 'sectigo' && in_array($method, ['cname', 'http', 'https'])) {
+        // site.sectigoDcv 开关：默认关闭，关闭时 Sectigo 走与其他 CA 相同的降级路径
+        // （仅返回 method，dns/file 字段由上游 API 回填，再经 mergeDcv 合并）
+        if (strtolower($ca) === 'sectigo'
+            && in_array($method, ['cname', 'http', 'https'])
+            && get_system_setting('site', 'sectigoDcv', false)) {
             $dcv = $this->generateSectigoDcv($method, $csr, $unique_value);
         } else {
             $dcv = ['method' => $method];
@@ -456,11 +463,16 @@ trait ActionTrait
 
         $csrDerFile = $tempDir.'/csr.der';
 
-        // 构建 OpenSSL 命令行命令
-        $cmd = 'openssl req -in '.escapeshellarg($csrPemFile).' -outform der -out '.escapeshellarg($csrDerFile);
-        @exec($cmd.' > /dev/null 2>&1');
-
-        $der = file_exists($csrDerFile) ? file_get_contents($csrDerFile) : null;
+        // openssl 不可用时降级返回仅含 method 的数组，保持与 $der === null 分支一致；DCV 单点失败不阻断订单流程
+        try {
+            $openssl = app(BinaryLocator::class)->openssl();
+            $cmd = escapeshellarg($openssl).' req -in '.escapeshellarg($csrPemFile).' -outform der -out '.escapeshellarg($csrDerFile);
+            @exec($cmd.' > /dev/null 2>&1');
+            $der = file_exists($csrDerFile) ? file_get_contents($csrDerFile) : null;
+        } catch (BinaryNotFoundException $e) {
+            Log::warning('openssl 不可用，无法生成 Sectigo DCV', ['diagnose' => $e->diagnose()]);
+            $der = null;
+        }
 
         // 使用 Laravel File 方法清理，更可靠
         if (file_exists($csrPemFile)) {
@@ -764,8 +776,18 @@ trait ActionTrait
                 // 前端可能传字符串形式的 ID，需要转换
                 $orgId = is_numeric($organization) ? (int) $organization : 0;
                 if ($orgId > 0) {
-                    $params['organization'] = FindUtil::Organization($orgId, $userId);
-                    $params['organization'] = FilterUtil::filterOrganization($params['organization']->toArray());
+                    $orgModel = FindUtil::Organization($orgId, $userId);
+
+                    // 当传了 organization 但没传 contact，自动从企业反查联系人
+                    if ($needContact && empty($contact)) {
+                        if (empty($orgModel->contact_id)) {
+                            $this->error('请先为该企业绑定联系人');
+                        }
+                        $params['contact'] = $orgModel->contact_id;
+                        $contact = $params['contact'];
+                    }
+
+                    $params['organization'] = FilterUtil::filterOrganization($orgModel->toArray());
                 } elseif (! is_array($organization)) {
                     // 如果需要组织但没有提供，让验证器处理
                     unset($params['organization']);

@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Documents\\DocumentPreviewTest::__pest_evaluable_admin_无_JWT_携带有效签名可访问_admin_document_preview",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/order/document-preview/{id}",
+            "request_keys": [
+                "expires",
+                "signature"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}

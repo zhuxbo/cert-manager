@@ -130,7 +130,7 @@ class Fund extends BaseModel
      */
     private static function createRecord(Model $model): void
     {
-        /** @var \App\Models\Fund $model */
+        /** @var Fund $model */
         $transaction['transaction_id'] = $model->id;
         $transaction = self::getTypeAmount($model, $transaction);
 

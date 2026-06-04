@@ -2,8 +2,10 @@
 
 namespace App\Services\Plugin;
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
+use App\Services\Upgrade\ArchiveGuard;
 use App\Services\Upgrade\VersionManager;
-use App\Traits\ResolvesExecutablePath;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
@@ -16,8 +18,6 @@ use ZipArchive;
 
 class PluginManager
 {
-    use ResolvesExecutablePath;
-
     protected string $pluginsPath;
 
     protected string $downloadPath;
@@ -144,10 +144,12 @@ class PluginManager
         // 检查兼容性
         $this->checkCompatibility($release);
 
-        // 下载
+        // 下载 + 完整性校验（有 sha256 则强校验，无则告警放行）
         $downloadUrl = $this->resolveAssetUrl($release, $resolvedUrl);
+        $expectedSha256 = $this->findPluginAssetSha256($release);
         $zipPath = "$this->downloadPath/plugin-$name-{$release['version']}.zip";
         $this->downloadPlugin($downloadUrl, $zipPath);
+        $this->verifyPluginPackageHash($zipPath, $expectedSha256);
 
         try {
             // 解压 → 验证 → 安装
@@ -292,10 +294,15 @@ class PluginManager
 
         // 下载新版本
         $downloadUrl = $this->resolveAssetUrl($release, $releaseUrl);
+        $expectedSha256 = $this->findPluginAssetSha256($release);
         $zipPath = "$this->downloadPath/plugin-$name-{$release['version']}.zip";
         $this->downloadPlugin($downloadUrl, $zipPath);
 
         try {
+            // 完整性校验（有 sha256 则强校验，无则告警放行）；放 try 内使失败时
+            // 走下方 catch 恢复备份 + finally 清理临时文件，旧版本不受影响
+            $this->verifyPluginPackageHash($zipPath, $expectedSha256);
+
             $extractDir = $this->extractPlugin($zipPath);
             $pluginSourceDir = $this->findPluginDir($extractDir, $name);
             $this->validatePlugin($pluginSourceDir, $name);
@@ -474,6 +481,12 @@ class PluginManager
      */
     protected function downloadPlugin(string $url, string $savePath): void
     {
+        // SSRF/传输层校验下沉到实际下载入口：releases.json 的 browser_download_url
+        // 由 release 内容决定（可控/可被篡改），与基础 release_url 是不同的值，必须对
+        // 最终下载 URL 再校验一次（对齐 ReleaseClient::downloadPackage 的入口校验），
+        // 否则合法 https 基址返回的 release 可把下载地址指向 http://169.254.169.254 等内网。
+        $this->validateReleaseUrl($url);
+
         $timeout = Config::get('upgrade.package.download_timeout', 300);
 
         // 优先使用 curl
@@ -484,7 +497,11 @@ class PluginManager
         // 回退到 PHP HTTP
         try {
             $response = Http::timeout($timeout)
-                ->withOptions(['sink' => $savePath])
+                ->withOptions([
+                    'sink' => $savePath,
+                    // 与 curl 对称：重定向仅允许 https（防降级到 http 内网/元数据 SSRF），限 5 跳
+                    'allow_redirects' => ['max' => 5, 'protocols' => ['https']],
+                ])
                 ->get($url);
 
             if ($response->successful() && file_exists($savePath)) {
@@ -504,13 +521,16 @@ class PluginManager
      */
     protected function downloadWithCurl(string $url, string $savePath, int $timeout): bool
     {
-        $curlPath = $this->resolveExecutablePath('curl');
-        if ($curlPath === null) {
+        try {
+            $curlPath = app(BinaryLocator::class)->curl();
+        } catch (BinaryNotFoundException) {
             return false;
         }
 
+        // -L 跟随重定向但收敛协议：初始仅 http/https，重定向仅允许 https，限 5 跳。
+        // 防 file/gopher/dict 等 SSRF 协议，并堵“https 预校验通过 → 302 降级到 http 内网/元数据”绕过。
         $command = sprintf(
-            '%s -sL --max-time %s -o %s %s 2>&1',
+            '%s -sL --proto =http,https --proto-redir =https --max-redirs 5 --max-time %s -o %s %s 2>&1',
             escapeshellarg($curlPath),
             escapeshellarg((string) $timeout),
             escapeshellarg($savePath),
@@ -542,14 +562,18 @@ class PluginManager
             throw new RuntimeException("无法打开 ZIP 文件: 错误码 $result");
         }
 
-        // 解压前检查所有条目，防止路径遍历攻击
-        for ($i = 0; $i < $zip->count(); $i++) {
-            $entryName = $zip->getNameIndex($i);
-            if ($entryName === false || str_contains($entryName, '..') || str_starts_with($entryName, '/')) {
-                $zip->close();
-                File::deleteDirectory($extractDir);
-                throw new RuntimeException('ZIP 包含非法路径');
-            }
+        // 解压前逐条目校验，防止路径遍历 / 符号链接攻击（与 BackupManager 共用 ArchiveGuard）
+        try {
+            ArchiveGuard::assertSafeEntries($zip);
+        } catch (RuntimeException $e) {
+            $zip->close();
+            File::deleteDirectory($extractDir);
+            throw $e;
+        }
+
+        $entryNames = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entryNames[] = $zip->getNameIndex($i);
         }
 
         if (! $zip->extractTo($extractDir)) {
@@ -559,6 +583,14 @@ class PluginManager
         }
 
         $zip->close();
+
+        // 解压后断言产物落点仍在解压目录内（纵深兜底，含符号链接绕过）
+        try {
+            ArchiveGuard::assertExtractedWithin($extractDir, array_filter($entryNames, 'is_string'));
+        } catch (RuntimeException $e) {
+            File::deleteDirectory($extractDir);
+            throw new RuntimeException('ZIP 包含非法路径');
+        }
 
         return $extractDir;
     }
@@ -909,23 +941,72 @@ class PluginManager
     }
 
     /**
-     * 验证更新地址安全性
+     * 验证插件更新地址的传输层安全性。
+     *
+     * 插件包是可执行代码载荷（供应链面）。release_url 由 Admin 任意指定，需双重收敛：
+     *   1. 传输层：公网必须 https，明文 http 仅放行私网/保留地址（内网离线部署），
+     *      与主系统 ReleaseClient::validateReleaseUrl 同策略 —— 否则公网 http 可被
+     *      中间人替换插件包 → 条件性 RCE。
+     *   2. SSRF：公网 http 指向私网/保留 IP（如 http://169.254.169.254 元数据服务、
+     *      http://10.x 内网）一律拒绝。这里的"http 仅私网放行"恰好双关地堵住了
+     *      公网→私网的 SSRF 取回（任何解析到私网的 http 才放行、解析到公网的 http 才拒绝）。
+     *
+     * 与 ReleaseClient 语义一致：https 全放行（含指向公网/私网的 https，TLS 已防篡改）；
+     * http 只对私网/保留段放行。本地路径（以 / 开头）是官方子目录回落场景，放行。
+     *
+     * @throws RuntimeException 不安全地址（非法 scheme / 公网 http / 主机无法解析）
      */
     protected function validateReleaseUrl(string $url): void
     {
         if (str_starts_with($url, '/')) {
-            return; // 本地路径
+            return; // 本地路径（官方子目录回落）
         }
 
-        if (str_starts_with($url, 'https://')) {
-            return; // HTTPS
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+
+        if ($scheme === 'https') {
+            return; // HTTPS：TLS 防篡改，一律放行
         }
 
-        if (str_starts_with($url, 'http://')) {
-            return; // HTTP（允许内网场景）
+        if ($scheme !== 'http') {
+            throw new RuntimeException('不安全的更新地址，仅支持 HTTPS、HTTP 或本地路径');
         }
 
-        throw new RuntimeException('不安全的更新地址，仅支持 HTTPS、HTTP 或本地路径');
+        // http：仅放行 RFC1918 私网与 loopback（内网离线部署），其余一律拒绝
+        $host = parse_url($url, PHP_URL_HOST);
+        if (! $host) {
+            throw new RuntimeException('无效的更新地址：无法解析主机');
+        }
+
+        $ip = filter_var($host, FILTER_VALIDATE_IP) ? $host : gethostbyname($host);
+        // gethostbyname 解析失败时原样返回主机名 → 非法 IP → 拒绝
+        if (! filter_var($ip, FILTER_VALIDATE_IP)) {
+            throw new RuntimeException("无效的更新地址：主机无法解析为 IP: {$host}");
+        }
+
+        // 明文 http 仅放行 RFC1918 私网（10/172.16/192.168）与 loopback（127/8、::1）；
+        // 显式拒绝 link-local 169.254.0.0/16（含云元数据 169.254.169.254）、CGNAT、保留/多播等
+        // 危险段，避免被诱导对内网/元数据发起 SSRF 取回。
+        if (! $this->isPrivateOrLoopbackIp($ip)) {
+            throw new RuntimeException('不安全的更新地址：明文 HTTP 仅限 RFC1918 私网或本机地址');
+        }
+    }
+
+    /**
+     * IP 是否为 RFC1918 私网或 loopback —— 明文 http 的唯一放行集合。
+     *
+     * 排除 link-local（169.254.0.0/16，含云元数据 169.254.169.254）、CGNAT（100.64/10）、
+     * 0.0.0.0/8、多播等危险保留段，防 SSRF。注意 loopback（127/8、::1）在 PHP filter_var
+     * 里归类为 reserved 而非 private，故单独放行。
+     */
+    protected function isPrivateOrLoopbackIp(string $ip): bool
+    {
+        if ($ip === '::1' || str_starts_with($ip, '127.')) {
+            return true;
+        }
+
+        // FILTER_FLAG_NO_PRIV_RANGE 命中私网段时返回 false（被过滤），取反即“是私网”
+        return ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE);
     }
 
     /**
@@ -1026,6 +1107,69 @@ class PluginManager
         $name = basename(rtrim($baseUrl, '/'));
 
         return rtrim($baseUrl, '/')."/$tagName/$name-plugin-$version.zip";
+    }
+
+    /**
+     * 从 release 中提取插件包 asset 的 sha256（hex）。
+     *
+     * 选取与 resolveAssetUrl 完全一致的 asset（第一个 .zip），保证"校验的哈希"对应
+     * "下载的文件"。缺失返回空字符串 —— 由调用方决定是否 fail-closed（当前为
+     * verify-if-present：发布端尚未产出 sha256，缺失时不阻断安装，见 verifyPluginPackageHash）。
+     */
+    protected function findPluginAssetSha256(array $release): string
+    {
+        foreach ($release['assets'] ?? [] as $asset) {
+            $name = $asset['name'] ?? '';
+            if (str_ends_with($name, '.zip')) {
+                return (string) ($asset['sha256'] ?? '');
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * 校验已下载插件包的 sha256（verify-if-present 语义）。
+     *
+     * 线协议与主系统 ReleaseClient::verifyPackageHash 一致：releases.json 的
+     * assets[].sha256 为 hex 小写（python hashlib.hexdigest）；比对大小写无关、用
+     * hash_equals 抗时序。不匹配即删文件并抛 RuntimeException（fail-closed）。
+     *
+     * 与 ReleaseClient 的差异：期望值为空时此处 **不** fail-closed，而是跳过校验并
+     * 记 warning。原因：插件发布端（plugins/release-plugin.sh）历史上未在 releases.json
+     * 写 sha256，强制 fail-closed 会让所有存量插件安装失败。一旦发布端补齐 sha256，
+     * 本方法立即对其强校验 —— 即"有则强校验、无则放行并告警"，平滑收敛不破坏存量。
+     *
+     * @param  string  $expectedSha256  release asset 的 sha256（空 = 发布端未提供）
+     *
+     * @throws RuntimeException sha256 不匹配（已删除下载文件）
+     */
+    protected function verifyPluginPackageHash(string $path, string $expectedSha256): void
+    {
+        $expected = strtolower(trim($expectedSha256));
+
+        if ($expected === '') {
+            // 发布端未提供 sha256：放行但告警，提示供应链校验缺失（待发布端补齐）
+            Log::warning('[Plugin] releases.json 未提供插件包 sha256，已跳过完整性校验（建议升级发布端以启用强校验）');
+
+            return;
+        }
+
+        if (! file_exists($path)) {
+            throw new RuntimeException("插件包不存在，无法校验 sha256: $path");
+        }
+
+        $actual = strtolower(hash_file('sha256', $path));
+
+        if (! hash_equals($expected, $actual)) {
+            @unlink($path);
+            throw new RuntimeException(
+                "插件包 sha256 校验不匹配，已中止安装并删除文件。期望: {$expected}，实际: {$actual}。".
+                '下载内容可能在传输中被篡改。'
+            );
+        }
+
+        Log::info("[Plugin] 插件包 sha256 校验通过: $expected");
     }
 
     /**

@@ -1,5 +1,10 @@
 <?php
 
+use App\Services\Backup\BackupHandlerInterface;
+use App\Services\Backup\BackupService;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
+use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Support\Facades\Artisan;
 
 /**
@@ -16,6 +21,36 @@ function makeBackup(string $dir, string $stamp, int $daysAgo): array
     touch($schema, $time);
 
     return ['sql' => $sql, 'schema' => $schema];
+}
+
+/**
+ * 用 fake handler 替换 BackupService::makeHandler，让 ensureClient 跳过 mysqldump
+ * 探测、backup 写一个 fake gz 文件即返回 —— 用于让命令在测试环境跑通到真正想验证的
+ * 路径（清理逻辑、prefix 校验等），不依赖本地 mysqldump 是否在标准 PATH 上。
+ *
+ * 之前依赖 Symfony ExecutableFinder + 开发者 shell PATH 隐式找到 mysqldump 才能跑，
+ * 是"开发机能跑、生产挂"的典型隐患。
+ *
+ * 用 makePartial：保留 BackupService 其他真实方法（如 filterStructureTables 在
+ * writeSchemaJson 阶段被调用），只覆盖 makeHandler/resolveIgnoreTables 两个口。
+ */
+function fakeOkBackupService(): void
+{
+    $handler = Mockery::mock(BackupHandlerInterface::class);
+    // 返回 fake 路径仅供 ensureClient 满足非空契约：backup() 整体被 mock，不会真去 exec 这条路径
+    $handler->shouldReceive('ensureClient')->andReturn('/fake/mysqldump');
+    $handler->shouldReceive('backup')->andReturnUsing(function ($cfg, $out) {
+        $gz = gzopen($out, 'wb');
+        gzwrite($gz, "-- fake\n");
+        gzclose($gz);
+
+        return $out;
+    });
+
+    $service = Mockery::mock(BackupService::class)->makePartial();
+    $service->shouldReceive('makeHandler')->andReturn($handler);
+    $service->shouldReceive('resolveIgnoreTables')->andReturn([]);
+    app()->instance(BackupService::class, $service);
 }
 
 beforeEach(function () {
@@ -40,11 +75,8 @@ test('keep_days 清理过期备份，同步删 schema.json', function () {
 
     config(['database.backup.min_keep' => 0]);
 
-    // 不触发实际备份（跳过 mysqldump），只测清理 — 用外部 path + keep=30 + 不创建新的
-    // 但 schedule:backup 会创建一个新的；我们改为直接调用 purge 逻辑的简化方式：
-    // 通过 --path 指向独立目录，再让命令做清理
-    // 简化：直接运行 handle() 不现实，手动造文件 + 命令 +keep=30，命令会创建新文件后清理旧的
-    $this->mock(App\Services\Upgrade\DatabaseStructureService::class)
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
         ->shouldReceive('exportCurrentStructure')
         ->andReturn(['tables' => []]);
 
@@ -68,7 +100,8 @@ test('min_keep 兜底：即使全部过期也至少保留 N 份最新的', funct
 
     config(['database.backup.min_keep' => 2]);
 
-    $this->mock(App\Services\Upgrade\DatabaseStructureService::class)
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
         ->shouldReceive('exportCurrentStructure')
         ->andReturn(['tables' => []]);
 
@@ -93,7 +126,8 @@ test('pre_restore_ 前缀永不自动清理', function () {
 
     config(['database.backup.min_keep' => 0]);
 
-    $this->mock(App\Services\Upgrade\DatabaseStructureService::class)
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
         ->shouldReceive('exportCurrentStructure')
         ->andReturn(['tables' => []]);
 
@@ -106,6 +140,9 @@ test('pre_restore_ 前缀永不自动清理', function () {
 });
 
 test('--prefix 含非法字符（大写/数字/横线）时报错并中止', function () {
+    // mysqldump 探测必须先通过才能跑到 prefix 校验（命令执行顺序：ensureClient → prefix）
+    fakeOkBackupService();
+
     $exit = Artisan::call('schedule:backup', [
         '--path' => $this->testDir,
         '--prefix' => 'Bad-Name1',
@@ -142,12 +179,15 @@ test('未支持的驱动时立即中止', function () {
     }
 });
 
-test('mysqldump 不可用（绝对路径不存在）时立即中止', function () {
+test('mysqldump 不可用（BinaryLocator 抛 BinaryNotFoundException）时立即中止', function () {
     if (config('database.connections.'.config('database.default').'.driver') !== 'mysql') {
         test()->markTestSkipped('mysql-only');
     }
 
-    config(['database.backup.mysqldump_bin' => '/nonexistent/path/to/mysqldump']);
+    // delegate 后通过 mock BinaryLocator 模拟"找不到 mysqldump"（不再依赖 config 路径）
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andThrow(new BinaryNotFoundException(tool: 'mysqldump', triedPaths: ['/nonexistent']));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $exit = Artisan::call('schedule:backup', [
         '--path' => $this->testDir,
@@ -155,5 +195,5 @@ test('mysqldump 不可用（绝对路径不存在）时立即中止', function (
 
     $output = Artisan::output();
     expect($exit)->not->toBe(0)
-        ->and($output)->toContain('mysqldump 不可执行');
+        ->and($output)->toContain('未找到 mysqldump 命令');
 });

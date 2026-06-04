@@ -204,6 +204,7 @@ const storeRules: FormRules = {
   organization: [
     { required: true, message: "请输入组织名称", trigger: "blur" }
   ],
+  taxation: [{ required: true, message: "请输入税号", trigger: "blur" }],
   email: [
     { required: true, message: "请输入邮箱", trigger: "blur" },
     { type: "email", message: "请输入正确的邮箱格式", trigger: "blur" }

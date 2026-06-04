@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, nextTick, computed } from "vue";
 import { useRouter } from "vue-router";
 import { getProfile } from "@/api/auth";
 import {
@@ -30,6 +30,7 @@ const dashboardTopWidgets = getPluginWidgets("user-dashboard-top");
 
 // 用户信息
 const userInfo = ref();
+// 首屏加载状态：仅等待用户信息 + 首批关键数据
 const loading = ref(true);
 
 // Dashboard数据
@@ -38,8 +39,14 @@ const ordersData = ref<OrdersData>();
 const trendData = ref<TrendDataPoint[]>([]);
 const monthlyComparison = ref<MonthlyComparisonData>();
 
-// 加载状态
+// 次批（图表）加载状态：与首批卡片解耦，进入视口后才触发
 const chartsLoading = ref(true);
+
+// 图表区域哨兵元素 + IntersectionObserver，用于延迟加载二屏图表
+const chartsSentinel = ref<HTMLElement>();
+let chartsObserver: IntersectionObserver | null = null;
+// 防止 observer 多次触发或与刷新重复发起请求
+const chartsRequested = ref(false);
 
 // 二维码放大模态框
 const showQRModal = ref(false);
@@ -254,41 +261,115 @@ const fetchUserInfo = async () => {
   }
 };
 
-// 获取Dashboard数据
-const fetchDashboardData = async () => {
+// 首批：关键指标卡片（资产 / 订单概览），进页立即加载并渲染
+const fetchOverviewData = async () => {
+  // 各接口独立结算，单个失败不连累其它卡片
+  const [assetsRes, ordersRes] = await Promise.allSettled([
+    getAssetsData(),
+    getOrdersData()
+  ]);
+
+  if (assetsRes.status === "fulfilled") {
+    assetsData.value = assetsRes.value.data;
+  } else {
+    console.error("获取资产数据失败:", assetsRes.reason);
+  }
+  if (ordersRes.status === "fulfilled") {
+    ordersData.value = ordersRes.value.data;
+  } else {
+    console.error("获取订单数据失败:", ordersRes.reason);
+  }
+};
+
+// 次批：图表（趋势 / 月度对比），二屏内容延后加载
+// 注：订单状态分布饼图复用首批 ordersData，无需在此重复请求
+const fetchChartsData = async () => {
+  // 标记已发起，避免 observer 重复触发；刷新时由调用方先复位
+  chartsRequested.value = true;
   try {
     chartsLoading.value = true;
 
-    const [assetsRes, ordersRes, trendRes, comparisonRes] = await Promise.all([
-      getAssetsData(),
-      getOrdersData(),
+    const [trendRes, comparisonRes] = await Promise.allSettled([
       getTrendData(30),
       getMonthlyComparison()
     ]);
 
-    assetsData.value = assetsRes.data;
-    ordersData.value = ordersRes.data;
-    trendData.value = trendRes.data;
-    monthlyComparison.value = comparisonRes.data;
-  } catch (error) {
-    console.error("获取Dashboard数据失败:", error);
+    if (trendRes.status === "fulfilled") {
+      trendData.value = trendRes.value.data;
+    } else {
+      console.error("获取趋势数据失败:", trendRes.reason);
+    }
+    if (comparisonRes.status === "fulfilled") {
+      monthlyComparison.value = comparisonRes.value.data;
+    } else {
+      console.error("获取月度对比数据失败:", comparisonRes.reason);
+    }
   } finally {
     chartsLoading.value = false;
   }
 };
 
+// 触发次批加载（仅首次有效）：observer 命中或兜底调用
+const triggerChartsLoad = () => {
+  if (chartsRequested.value) return;
+  disconnectChartsObserver();
+  fetchChartsData();
+};
+
+const disconnectChartsObserver = () => {
+  if (chartsObserver) {
+    chartsObserver.disconnect();
+    chartsObserver = null;
+  }
+};
+
+// 建立 IntersectionObserver，图表区域进入视口即加载次批
+const setupChartsObserver = () => {
+  if (chartsRequested.value) return;
+
+  // 环境不支持 IntersectionObserver 时直接加载，保证降级可用
+  if (typeof IntersectionObserver === "undefined") {
+    triggerChartsLoad();
+    return;
+  }
+
+  const el = chartsSentinel.value;
+  if (!el) {
+    triggerChartsLoad();
+    return;
+  }
+
+  chartsObserver = new IntersectionObserver(
+    entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        triggerChartsLoad();
+      }
+    },
+    // 提前 200px 预加载
+    { rootMargin: "200px 0px" }
+  );
+  chartsObserver.observe(el);
+};
+
 onMounted(async () => {
   loading.value = true;
-  await Promise.all([fetchUserInfo(), fetchDashboardData()]);
+  // 首屏仅等待用户信息 + 首批关键卡片数据
+  await Promise.all([fetchUserInfo(), fetchOverviewData()]);
   loading.value = false;
 
   // 添加键盘事件监听
   document.addEventListener("keydown", handleKeydown);
+
+  // 等待 v-else 分支 DOM 渲染后再观察图表哨兵元素
+  await nextTick();
+  setupChartsObserver();
 });
 
 onUnmounted(() => {
   // 移除键盘事件监听
   document.removeEventListener("keydown", handleKeydown);
+  // 断开图表 observer
+  disconnectChartsObserver();
 });
 </script>
 
@@ -476,8 +557,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 图表区域 -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- 图表区域（chartsSentinel 标记次批触发点，进入视口即加载图表） -->
+      <div ref="chartsSentinel" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- 订单状态分布 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between mb-4">

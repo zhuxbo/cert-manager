@@ -11,6 +11,7 @@ use App\Services\Order\AutoRenewService;
 use App\Services\Order\Utils\DomainUtil;
 use App\Services\Order\Utils\OrderUtil;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Throwable;
 
 class AutoRenewCommand extends Command
@@ -272,8 +273,7 @@ class AutoRenewCommand extends Command
                     'action' => $action,
                     'reason' => $reason,
                     'email' => $user->email,
-                ],
-                ['mail']
+                ]
             ));
         } catch (Throwable $e) {
             $this->error("发送通知失败: {$e->getMessage()}");
@@ -294,7 +294,7 @@ class AutoRenewCommand extends Command
      * 用 JSON_UNQUOTE(JSON_EXTRACT(...)) = 'true' / 'false' 字符串比较，
      * 与 model auto_settings cast 'array' 序列化后的 JSON 表示匹配。
      */
-    private function whereJsonBoolEq(\Illuminate\Database\Eloquent\Builder $query, string $column, string $key, bool $value): \Illuminate\Database\Eloquent\Builder
+    private function whereJsonBoolEq(Builder $query, string $column, string $key, bool $value): Builder
     {
         $jsonPath = '$.'.json_encode($key);
         $expected = $value ? 'true' : 'false';
@@ -308,7 +308,7 @@ class AutoRenewCommand extends Command
     /**
      * MySQL 兼容的 JSON 路径不存在（key missing 或 value 是 JSON null）。
      */
-    private function whereJsonKeyMissing(\Illuminate\Database\Eloquent\Builder $query, string $column, string $key): \Illuminate\Database\Eloquent\Builder
+    private function whereJsonKeyMissing(Builder $query, string $column, string $key): Builder
     {
         $jsonPath = '$.'.json_encode($key);
 

@@ -295,8 +295,7 @@ class UserController extends BaseController
                     'site_name' => get_system_setting('site', 'name', 'SSL证书管理系统'),
                     'site_url' => get_system_setting('site', 'url', '/'),
                     'email' => $user->email,
-                ],
-                ['mail']
+                ]
             );
 
             app(NotificationCenter::class)->dispatch($intent);

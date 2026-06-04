@@ -22,7 +22,7 @@ class ContactFactory extends Factory
             'first_name' => fake()->firstName(),
             'last_name' => fake()->lastName(),
             'identification_number' => fake()->numerify('##################'),
-            'title' => fake()->jobTitle(),
+            'title' => fake()->randomElement(['Manager', 'Engineer', 'Director', 'Officer', 'Analyst', 'Specialist', 'Consultant', 'Coordinator', 'Supervisor', 'Administrator']),
             'email' => fake()->unique()->safeEmail(),
             'phone' => fake()->phoneNumber(),
         ];

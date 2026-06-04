@@ -1,9 +1,11 @@
 <?php
 
 use App\Models\Contact;
+use App\Models\Organization;
 use App\Models\User;
+use Tests\Traits\ActsAsUser;
 
-uses(Tests\Traits\ActsAsUser::class);
+uses(ActsAsUser::class);
 
 test('获取联系人列表', function () {
     $user = User::factory()->create();
@@ -122,4 +124,27 @@ test('批量删除联系人', function () {
 test('联系人列表-未认证', function () {
     $this->getJson('/api/contact')
         ->assertUnauthorized();
+});
+
+test('destroy rejects when contact is referenced by organization', function () {
+    $user = User::factory()->create();
+    $contact = Contact::factory()->create(['user_id' => $user->id]);
+    Organization::factory()->create([
+        'user_id' => $user->id,
+        'contact_id' => $contact->id,
+    ]);
+    $resp = $this->actingAsUser($user)->deleteJson("/api/contact/{$contact->id}");
+    expect($resp->json('code'))->toBe(0);
+    expect($resp->json('msg'))->toContain('正被');
+    expect(Contact::find($contact->id))->not->toBeNull();
+});
+
+test('batchDestroy rejects any contact still referenced', function () {
+    $user = User::factory()->create();
+    $c1 = Contact::factory()->create(['user_id' => $user->id]);
+    $c2 = Contact::factory()->create(['user_id' => $user->id]);
+    Organization::factory()->create(['user_id' => $user->id, 'contact_id' => $c2->id]);
+    $resp = $this->actingAsUser($user)->deleteJson('/api/contact/batch', ['ids' => [$c1->id, $c2->id]]);
+    expect($resp->json('code'))->toBe(0);
+    expect(Contact::count())->toBe(2);  // 整批未删
 });

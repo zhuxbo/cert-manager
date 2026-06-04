@@ -68,8 +68,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 # 6. 配置 npm 国内镜像
 RUN npm config set registry https://registry.npmmirror.com
 
-# 7. 安装 pnpm
-RUN npm install -g pnpm && \
+# 7. 安装 pnpm（固定版本，与根 package.json 的 packageManager: pnpm@9.0.0 对齐）
+RUN npm install -g pnpm@9.0.0 && \
     pnpm --version && \
     pnpm config set registry https://registry.npmmirror.com
 

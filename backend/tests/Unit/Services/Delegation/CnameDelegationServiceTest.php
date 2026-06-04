@@ -3,10 +3,12 @@
 use App\Models\CnameDelegation;
 use App\Services\Delegation\CnameDelegationService;
 use Database\Seeders\DatabaseSeeder;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
-uses(Tests\TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     $this->seed = true;
@@ -267,6 +269,32 @@ test('check and update validity failure increments fail count', function () {
     expect($delegation->fail_count)->toBeGreaterThan(0);
 });
 
+test('check and update validity caps fail count at 100', function () {
+    $user = $this->createTestUser();
+
+    // 99 → 失败一次 → 100
+    $d99 = $this->createTestDelegation($user, [
+        'zone' => 'example99.com',
+        'prefix' => '_dnsauth',
+        'valid' => true,
+        'fail_count' => 99,
+    ]);
+    $this->service->checkAndUpdateValidity($d99);
+    $d99->refresh();
+    expect($d99->fail_count)->toBe(100);
+
+    // 100 → 失败一次 → 仍然 100（不会溢出到 101，防 TINYINT 越界）
+    $d100 = $this->createTestDelegation($user, [
+        'zone' => 'example100.com',
+        'prefix' => '_dnsauth',
+        'valid' => true,
+        'fail_count' => 100,
+    ]);
+    $this->service->checkAndUpdateValidity($d100);
+    $d100->refresh();
+    expect($d100->fail_count)->toBe(100);
+});
+
 // ==================== withCnameGuide ====================
 
 test('with cname guide', function () {
@@ -312,4 +340,4 @@ test('update throws exception for other user', function () {
     ]);
 
     $this->service->update($user2->id, $delegation->id, ['regen_label' => true]);
-})->throws(\Illuminate\Database\Eloquent\ModelNotFoundException::class);
+})->throws(ModelNotFoundException::class);

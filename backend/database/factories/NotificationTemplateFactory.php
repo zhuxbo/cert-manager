@@ -22,7 +22,6 @@ class NotificationTemplateFactory extends Factory
             'content' => '<p>{{ $title }}</p><p>{{ $content }}</p>',
             'variables' => ['title', 'content'],
             'example' => '<p>测试标题</p><p>测试内容</p>',
-            'channels' => ['site'],
             'status' => 1,
         ];
     }
@@ -33,30 +32,6 @@ class NotificationTemplateFactory extends Factory
     public function disabled(): static
     {
         return $this->state(['status' => 0]);
-    }
-
-    /**
-     * 邮件通道
-     */
-    public function email(): static
-    {
-        return $this->state(['channels' => ['email']]);
-    }
-
-    /**
-     * 站内信通道
-     */
-    public function site(): static
-    {
-        return $this->state(['channels' => ['site']]);
-    }
-
-    /**
-     * 多通道
-     */
-    public function multiChannel(array $channels = ['site', 'email']): static
-    {
-        return $this->state(['channels' => $channels]);
     }
 
     /**

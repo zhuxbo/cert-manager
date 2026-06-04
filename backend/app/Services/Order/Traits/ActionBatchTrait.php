@@ -94,6 +94,9 @@ trait ActionBatchTrait
         $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
         $orderIds = array_map('intval', $orderIds);
 
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($orderIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
+
         // 首先查询状态为unpaid或pending的订单
         $unpaidOrPendingOrders = Order::with(['product', 'latestCert'])
             ->whereHas('product')
@@ -170,6 +173,9 @@ trait ActionBatchTrait
     {
         $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
         $orderIds = array_map('intval', $orderIds);
+
+        $maxUpstream = (int) config('batch.max_upstream');
+        count($orderIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         // 前置过滤：只保留 cancelling 状态的订单，避免对非 cancelling 订单触发报错
         // 锁内二次校验由 revokeCancel 自身兜住（处理并发竞争）

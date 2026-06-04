@@ -10,6 +10,7 @@ use App\Services\Delegation\CnameDelegationService;
 use App\Services\Order\Action;
 use App\Services\Order\Utils\VerifyUtil;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
@@ -41,9 +42,36 @@ class ValidateCommand extends Command
     ];
 
     /**
+     * 互斥锁 cache key 与 TTL（秒）。
+     * Cache::add 实现原子获取；每个订单处理前 Cache::put 刷新 TTL 模拟心跳。
+     * 健康任务无论跑多久都不会被锁过期；死进程停止续期后 TTL 到期自动释放。
+     */
+    private const LOCK_KEY = 'cmd:schedule:validate';
+
+    private const LOCK_TTL = 120;
+
+    /**
      * Execute the console command.
+     *
+     * sub-minute 调度可能在 30 秒就再次触发，靠 Cache::add 返回 false 跳过。
      */
     public function handle(): void
+    {
+        if (! Cache::add(self::LOCK_KEY, 1, self::LOCK_TTL)) {
+            return; // 已有实例在跑
+        }
+
+        // 让锁的 TTL 来管生命周期，避免 PHP 默认 max_execution_time 提前杀进程
+        @set_time_limit(0);
+
+        try {
+            $this->runValidation();
+        } finally {
+            Cache::forget(self::LOCK_KEY);
+        }
+    }
+
+    private function runValidation(): void
     {
         // 查询所有待验证的订单：状态为processing或approving且有DCV配置的证书
         $orders = Order::with(['latestCert'])
@@ -59,6 +87,9 @@ class ValidateCommand extends Command
         $this->info("待验证订单数量: {$orders->count()}");
 
         foreach ($orders as $order) {
+            // 心跳：刷新锁 TTL，让健康长任务不被误杀
+            Cache::put(self::LOCK_KEY, 1, self::LOCK_TTL);
+
             try {
                 // 查找或创建域名验证记录
                 $record = DomainValidationRecord::where('order_id', $order->id)->first();

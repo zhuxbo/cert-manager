@@ -2,21 +2,14 @@
 
 use App\Models\Admin;
 use App\Models\User;
-use App\Services\Notification\Builders\CertExpireMailNotificationBuilder;
-use App\Services\Notification\Builders\CertExpireSmsNotificationBuilder;
-use App\Services\Notification\Builders\CertIssuedMailNotificationBuilder;
-use App\Services\Notification\Builders\CertIssuedSmsNotificationBuilder;
+use App\Services\Notification\Builders\CertExpireNotificationBuilder;
+use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
-use App\Services\Notification\Builders\FinanceAuditAlertMailNotificationBuilder;
-use App\Services\Notification\Builders\TaskFailedMailNotificationBuilder;
-use App\Services\Notification\Guards\BuilderChannelGuard;
-use App\Services\Notification\Guards\ContactChannelGuard;
-use App\Services\Notification\Guards\SystemChannelGuard;
-use App\Services\Notification\Guards\UserPreferenceGuard;
+use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
+use App\Services\Notification\Builders\TaskFailedNotificationBuilder;
+use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 
 return [
-    'available_channels' => ['mail', 'sms'],
-
     'notifiables' => [
         'user' => User::class,
         'admin' => Admin::class,
@@ -27,46 +20,37 @@ return [
     | Notification Builders
     |--------------------------------------------------------------------------
     |
-    | 通知构建器配置，格式为 'code.channel' => BuilderClass
-    | - 如果配置为空字符串 ''，表示明确禁用该通道组合
+    | 通知构建器配置，格式为 'code' => BuilderClass
+    | - 如果配置为空字符串 ''，表示明确禁用该事件类型
     | - 如果未配置，将使用 default_builder
-    | - Builder 负责验证必需参数并组装 payload
-    |
-    | 示例：
-    |   'cert_issued.mail' => CertIssuedMailBuilder::class,
-    |   'cert_issued.sms' => CertIssuedSmsBuilder::class,
-    |   'cert_issued.whatsapp' => '', // 禁用 WhatsApp 通道
+    | - Builder 负责验证必需参数并组装 payload（payload.data 对所有通道通用，
+    |   mail 用 _meta.attachments，插件通道按需读取 data 中的变量）
     |
     */
 
     'builders' => [
-        'cert_issued.mail' => CertIssuedMailNotificationBuilder::class,
-        'cert_issued.sms' => CertIssuedSmsNotificationBuilder::class,
-        'cert_expire.mail' => CertExpireMailNotificationBuilder::class,
-        'cert_expire.sms' => CertExpireSmsNotificationBuilder::class,
-        'task_failed.mail' => TaskFailedMailNotificationBuilder::class,
-        'finance_audit_alert.mail' => FinanceAuditAlertMailNotificationBuilder::class,
+        'cert_issued' => CertIssuedNotificationBuilder::class,
+        'cert_expire' => CertExpireNotificationBuilder::class,
+        'task_failed' => TaskFailedNotificationBuilder::class,
+        'finance_audit' => FinanceAuditNotificationBuilder::class,
+        // 携带初始密码：用专用 Builder 把密码走 transient（仅渲染、不入库），
+        // 不能回落 DefaultNotificationBuilder（会把明文密码直通进 notifications.data）
+        'user_created' => UserCreatedNotificationBuilder::class,
     ],
 
     'default_builder' => DefaultNotificationBuilder::class,
 
-    'guards' => [
-        BuilderChannelGuard::class,      // 检查 builder 配置是否有效（必须在最前面）
-        SystemChannelGuard::class,        // 检查通道是否全局启用
-        ContactChannelGuard::class,       // 检查用户是否有对应联系方式
-        UserPreferenceGuard::class,       // 检查用户通知偏好设置
-    ],
-
+    /*
+    |--------------------------------------------------------------------------
+    | 用户邮件通知默认开关（扁平结构：code → bool）
+    |--------------------------------------------------------------------------
+    |
+    | 主系统仅服务 mail 通道。插件通道的偏好由插件自治存储。
+    |
+    */
     'user_default_preferences' => [
-        'mail' => [
-            'cert_issued' => true,
-            'cert_expire' => true,
-            'security' => true,
-        ],
-        'sms' => [
-            'cert_issued' => false,
-            'cert_expire' => false,
-            'security' => false,
-        ],
+        'cert_issued' => true,
+        'cert_expire' => true,
+        'security' => true,
     ],
 ];

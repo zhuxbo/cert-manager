@@ -68,12 +68,12 @@ test('有 L1 违反 → 命令成功 + NotificationCenter dispatch 被调', func
         ],
     ]);
 
-    // 期望 NotificationCenter::dispatch 被调一次，code = finance_audit_alert
+    // 期望 NotificationCenter::dispatch 被调一次，code = finance_audit
     $this->notificationCenter->shouldReceive('dispatch')
         ->once()
         ->with(Mockery::on(function ($intent) {
             return $intent instanceof NotificationIntent
-                && $intent->code === 'finance_audit_alert'
+                && $intent->code === 'finance_audit'
                 && $intent->notifiableType === 'admin'
                 && ($intent->context['violation_count'] ?? 0) === 1
                 && isset($intent->context['violations'][0]['layer'])
@@ -184,7 +184,7 @@ test('rows 超过 10 行只显示前 10 行', function () {
 test('FundInvariants 抛异常 → 命令返回 1（FAILURE）', function () {
     $this->fundInvariants->shouldReceive('all')
         ->once()
-        ->andThrow(new \RuntimeException('DB connection lost'));
+        ->andThrow(new RuntimeException('DB connection lost'));
 
     // 异常路径不应 dispatch
     $this->notificationCenter->shouldNotReceive('dispatch');

@@ -3,7 +3,10 @@
 namespace App\Services\Notification\Channels;
 
 use App\Models\Notification;
+use App\Models\NotificationTemplate;
+use App\Models\User;
 use App\Utils\Email;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
 use PHPMailer\PHPMailer\Exception;
@@ -16,7 +19,7 @@ class MailChannel implements ChannelInterface
      */
     public function send(Notification $notification): array
     {
-        /** @var \App\Models\User|null $notifiable */
+        /** @var User|null $notifiable */
         $notifiable = $notification->notifiable;
         $email = $notification->data['email'] ?? $notifiable?->email;
         if (! $email) {
@@ -35,7 +38,7 @@ class MailChannel implements ChannelInterface
             return ['code' => 0, 'msg' => '邮件服务未配置'];
         }
 
-        /** @var \App\Models\NotificationTemplate|null $template */
+        /** @var NotificationTemplate|null $template */
         $template = $notification->template;
         $subject = $meta['subject'] ?? $template?->name ?? '通知'; // @phpstan-ignore nullsafe.neverNull
         $body = $meta['content'] ?? $template?->render($notification->data ?? []) ?? '';
@@ -53,7 +56,9 @@ class MailChannel implements ChannelInterface
             }
 
             if (! $mail->send()) {
-                return ['code' => 0, 'msg' => '邮件发送失败'];
+                $errorInfo = trim((string) $mail->ErrorInfo);
+
+                return ['code' => 0, 'msg' => $errorInfo !== '' ? "邮件发送失败: $errorInfo" : '邮件发送失败'];
             }
         } catch (Throwable $e) {
             return ['code' => 0, 'msg' => $e->getMessage()];
@@ -105,5 +110,18 @@ class MailChannel implements ChannelInterface
         }
 
         return $mail->configured;
+    }
+
+    public function shouldSend(Model $notifiable, string $code): bool
+    {
+        if (empty($notifiable->email)) {
+            return false;
+        }
+
+        if (method_exists($notifiable, 'allowsNotification')) {
+            return (bool) $notifiable->allowsNotification($code);
+        }
+
+        return true;
     }
 }

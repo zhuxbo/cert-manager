@@ -3,8 +3,9 @@
 use App\Models\Traits\HasLocalTimezone;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Config;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->originalTz = config('app.timezone');

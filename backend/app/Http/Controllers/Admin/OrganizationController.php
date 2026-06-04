@@ -2,14 +2,18 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Http\Controllers\Concerns\ResolvesContactId;
 use App\Http\Requests\Organization\GetIdsRequest;
 use App\Http\Requests\Organization\IndexRequest;
 use App\Http\Requests\Organization\StoreRequest;
 use App\Http\Requests\Organization\UpdateRequest;
 use App\Models\Organization;
+use Illuminate\Support\Facades\DB;
 
 class OrganizationController extends BaseController
 {
+    use ResolvesContactId;
+
     public function __construct()
     {
         parent::__construct();
@@ -86,13 +90,20 @@ class OrganizationController extends BaseController
      */
     public function store(StoreRequest $request): void
     {
-        $organization = Organization::create($request->validated());
+        $data = $request->validated();
+        $userId = (int) $data['user_id'];
 
-        if (! $organization->exists) {
-            $this->error('添加失败');
-        }
+        $organization = null;
+        DB::transaction(function () use ($data, $userId, &$organization) {
+            $contactId = $this->resolveContactId($data, $userId);
 
-        $this->success();
+            $orgData = collect($data)->except(['contact', 'contact_id'])->all();
+            $organization = Organization::create(array_merge($orgData, [
+                'contact_id' => $contactId,
+            ]));
+        });
+
+        $this->success($organization->load('contact')->toArray());
     }
 
     /**
@@ -128,15 +139,30 @@ class OrganizationController extends BaseController
      */
     public function update(UpdateRequest $request, $id): void
     {
+        $data = $request->validated();
+        $userId = (int) $data['user_id'];
+
         $organization = Organization::find($id);
         if (! $organization) {
             $this->error('组织不存在');
         }
 
-        $organization->fill($request->validated());
-        $organization->save();
+        if ($organization->user_id !== $userId) {
+            $this->error('不允许变更企业归属');
+        }
 
-        $this->success();
+        DB::transaction(function () use ($data, $userId, $organization) {
+            // 未传 contact_id/contact 时保留原绑定；显式传 null 才清空。
+            $contactId = array_key_exists('contact_id', $data) || array_key_exists('contact', $data)
+                ? $this->resolveContactId($data, $userId)
+                : $organization->contact_id;
+
+            $orgData = collect($data)->except(['contact', 'contact_id'])->all();
+            $organization->fill(array_merge($orgData, ['contact_id' => $contactId]));
+            $organization->save();
+        });
+
+        $this->success($organization->refresh()->load('contact')->toArray());
     }
 
     /**

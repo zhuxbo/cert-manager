@@ -12,6 +12,7 @@ class Organization extends BaseModel
 
     protected $fillable = [
         'user_id',
+        'contact_id',
         'name',
         'registration_number',
         'country',
@@ -22,8 +23,15 @@ class Organization extends BaseModel
         'phone',
     ];
 
+    protected $with = ['contact'];
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class)->withoutGlobalScopes();
+    }
+
+    public function contact(): BelongsTo
+    {
+        return $this->belongsTo(Contact::class);
     }
 }

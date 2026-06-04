@@ -123,8 +123,8 @@ const showOperate = computed(() => {
     "cancelling"
   ];
   if (!validStatuses.includes(cert.value?.status)) return false;
-  if (!order.value?.period_till) return true;
-  const periodTill = dayjs(order.value.period_till);
+  if (!order?.period_till) return true;
+  const periodTill = dayjs(order.period_till);
   return periodTill.isValid() && periodTill.isAfter(dayjs());
 });
 

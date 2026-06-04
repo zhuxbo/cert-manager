@@ -1,0 +1,28 @@
+{
+    "test": "P\\Tests\\Feature\\Documents\\DocumentPreviewTest::__pest_evaluable_previewDocumentUrl_返回短时签名_URL，且不含_access__token",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/document-preview-url/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "url": "string"
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/document-preview/{id}",
+            "request_keys": [
+                "expires",
+                "signature"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}

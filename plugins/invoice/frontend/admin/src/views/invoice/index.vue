@@ -1,11 +1,23 @@
 <script setup lang="tsx">
-import { onMounted, onActivated, nextTick, getCurrentInstance } from "vue";
+import {
+  onMounted,
+  onActivated,
+  nextTick,
+  getCurrentInstance,
+  ref
+} from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { PlusSearch, PlusDrawerForm } from "plus-pro-components";
 import { useInvoice } from "./hook";
 import { useInvoiceSearch } from "./search";
 import { useInvoiceStore } from "./store";
 import { useInvoiceTable } from "./table";
 import { useDrawerSize } from "../../shared/utils";
+import {
+  getExternalConfig,
+  updateExternalConfig,
+  regenerateExternalToken
+} from "../../api/invoice";
 
 defineOptions({
   name: "Invoice"
@@ -57,6 +69,39 @@ const triggerResize = () => {
   nextTick(() => window.dispatchEvent(new Event("resize")));
 };
 
+const externalDialog = ref(false);
+const external = ref({ has_token: false, token_masked: "", allowed_ips: "" });
+
+async function loadExternal() {
+  const { data } = await getExternalConfig();
+  external.value = data;
+}
+
+async function openExternal() {
+  await loadExternal();
+  externalDialog.value = true;
+}
+
+async function onSaveIps() {
+  await updateExternalConfig({ allowed_ips: external.value.allowed_ips });
+  ElMessage.success("已保存");
+}
+
+async function onRegenerate() {
+  await ElMessageBox.confirm(
+    "重置后旧 Token 立即失效，且新 Token 仅本次显示一次，是否继续？",
+    "重置 Token",
+    { type: "warning" }
+  );
+  const { data } = await regenerateExternalToken();
+  await ElMessageBox.alert(
+    `新 Token（请妥善保管，关闭此窗后将无法再次查看）：\n\n${data.token}`,
+    "新 Token",
+    { customClass: "select-text" }
+  );
+  await loadExternal();
+}
+
 onMounted(() => {
   if (route?.query?.id) {
     search.value.id = Number(route.query.id);
@@ -96,6 +141,7 @@ onActivated(() => {
     <PureTableBar title="发票管理" :columns="tableColumns" @refresh="onSearch">
       <template #buttons>
         <el-button type="primary" @click="openStoreForm()">新增发票</el-button>
+        <el-button @click="openExternal">外部接入</el-button>
       </template>
       <template v-slot="{ size, dynamicColumns }">
         <div
@@ -200,6 +246,46 @@ onActivated(() => {
       @confirm="confirmStoreForm"
       @cancel="closeStoreForm"
     />
+    <el-dialog
+      v-model="externalDialog"
+      title="外部接入设置"
+      width="560px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="90" label-position="right" label-suffix="">
+        <el-form-item label="Token">
+          <div class="flex items-center gap-2 w-full">
+            <el-input
+              v-model="external.token_masked"
+              readonly
+              :placeholder="external.has_token ? '已设置' : '未设置'"
+            />
+            <el-button type="primary" @click="onRegenerate">
+              重置 Token
+            </el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="IP 白名单">
+          <div class="flex items-center gap-2 w-full">
+            <el-input
+              v-model="external.allowed_ips"
+              placeholder="逗号分隔，空 = 不限制"
+            />
+            <el-button type="primary" @click="onSaveIps">保存</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="接入端点">
+          <div class="text-xs text-gray-500 leading-6">
+            <div>GET <code>/api/invoice/external/pending</code></div>
+            <div>POST <code>/api/invoice/external/complete/&#123;id&#125;</code></div>
+            <div>鉴权：Authorization: Bearer &lt;token&gt;</div>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="externalDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

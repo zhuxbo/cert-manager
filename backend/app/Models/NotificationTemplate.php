@@ -19,38 +19,25 @@ class NotificationTemplate extends BaseModel
         'variables',
         'example',
         'status',
-        'channels',
     ];
 
     protected $casts = [
         'variables' => 'json',
         'status' => 'integer',
-        'channels' => 'array',
     ];
 
     protected static function booted(): void
     {
         static::saving(function (NotificationTemplate $template) {
-            $template->channels = $template->normalizeChannels($template->channels ?? []);
+            $conflict = self::query()
+                ->where('code', $template->code)
+                ->when($template->exists, fn ($query) => $query->where('id', '!=', $template->getKey()))
+                ->exists();
 
-            if (empty($template->channels)) {
+            if ($conflict) {
                 throw ValidationException::withMessages([
-                    'channels' => ['通知模板至少需要启用一个通道'],
+                    'code' => ["$template->code 已存在，请勿重复配置"],
                 ]);
-            }
-
-            foreach ($template->channels as $channel) {
-                $conflict = self::query()
-                    ->where('code', $template->code)
-                    ->when($template->exists, fn ($query) => $query->where('id', '!=', $template->getKey()))
-                    ->whereJsonContains('channels', $channel)
-                    ->exists();
-
-                if ($conflict) {
-                    throw ValidationException::withMessages([
-                        'channels' => ["$template->code 已绑定 $channel 通道，请勿重复配置"],
-                    ]);
-                }
             }
         });
     }
@@ -103,21 +90,5 @@ class NotificationTemplate extends BaseModel
         }
 
         return base64_encode($trimmed);
-    }
-
-    protected function normalizeChannels(mixed $channels): array
-    {
-        if (is_string($channels)) {
-            $channels = json_decode($channels, true) ?? [$channels];
-        }
-
-        if (! is_array($channels)) {
-            $channels = [];
-        }
-
-        $channels = array_map(fn ($channel) => is_string($channel) ? trim($channel) : null, $channels);
-        $channels = array_filter($channels, fn ($channel) => ! empty($channel));
-
-        return array_values(array_unique($channels));
     }
 }

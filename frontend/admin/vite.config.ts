@@ -32,17 +32,24 @@ function servePlugins(): Plugin {
         } catch {
           return next();
         }
-        // 开发环境：frontend/{admin,user}/file → frontend/{admin,user}/dist/file
-        decodedPath = decodedPath.replace(
+        // 方案 B：插件前端产物只在 dist/（不入库），请求的扁平路径映射到 dist 取产物
+        const distPath = decodedPath.replace(
           /^([^/]+\/frontend\/(admin|user))\/([^/]+\.(js|css))$/,
           "$1/dist/$3"
         );
-        const filePath = resolve(pluginsRoot, decodedPath);
+        const filePath = resolve(pluginsRoot, distPath);
         // 防止路径遍历（不要使用 startsWith 前缀判断）
         const relPath = relative(pluginsRoot, filePath);
         if (relPath.startsWith("..") || isAbsolute(relPath)) return next();
-        if (!existsSync(filePath) || !statSync(filePath).isFile())
-          return next();
+        if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+          // 产物不入库：未构建时明确报错，而非静默 404 让人误以为路径/插件坏了
+          const hint = `插件前端未构建：${decodedPath} → 运行 \`make plugins-build\``;
+          console.warn(`[servePlugins] ${hint}`);
+          res.statusCode = 503;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end(hint);
+          return;
+        }
         const ext = filePath.split(".").pop();
         const mime: Record<string, string> = {
           js: "application/javascript",
@@ -84,6 +91,10 @@ export default ({ mode }: ConfigEnv): UserConfigExport => {
         "/api/plugins": {
           target: apiTarget,
           changeOrigin: true
+        },
+        "/api/meta": {
+          target: apiTarget,
+          changeOrigin: true
         }
       },
       // 预热文件以提前转换和缓存结果，降低启动期间的初始页面加载时长并防止转换瀑布
@@ -101,8 +112,8 @@ export default ({ mode }: ConfigEnv): UserConfigExport => {
       // https://cn.vitejs.dev/guide/build.html#browser-compatibility
       target: "es2015",
       sourcemap: false,
-      // 消除打包大小超过500kb警告
-      chunkSizeWarningLimit: 4000,
+      // 超过此大小（KB）的 chunk 触发警告，便于及时发现过大产物
+      chunkSizeWarningLimit: 1000,
       rollupOptions: {
         // 限制并行文件操作数，降低内存峰值
         maxParallelFileOps: 2,
@@ -113,7 +124,32 @@ export default ({ mode }: ConfigEnv): UserConfigExport => {
         output: {
           chunkFileNames: "static/js/[name]-[hash].js",
           entryFileNames: "static/js/[name]-[hash].js",
-          assetFileNames: "static/[ext]/[name]-[hash].[ext]"
+          assetFileNames: "static/[ext]/[name]-[hash].[ext]",
+          // 拆分稳定大依赖为独立 vendor chunk，提升长期缓存命中率
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return;
+            // vue 全家桶归一个 chunk，避免运行时初始化顺序/循环依赖问题
+            if (
+              /node_modules\/(@vue\/|vue\/|vue-router\/|pinia\/|@pinia\/|vue-demi\/)/.test(
+                id
+              )
+            ) {
+              return "vue-vendor";
+            }
+            if (id.includes("node_modules/echarts/")) {
+              return "echarts";
+            }
+            // zrender 是 echarts 的渲染底座，并入同一 chunk
+            if (id.includes("node_modules/zrender/")) {
+              return "echarts";
+            }
+            if (
+              id.includes("node_modules/element-plus/") ||
+              id.includes("node_modules/@element-plus/")
+            ) {
+              return "element-plus";
+            }
+          }
         }
       }
     },

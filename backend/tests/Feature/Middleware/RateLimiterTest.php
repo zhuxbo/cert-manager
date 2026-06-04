@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Http\Middleware\RateLimiter;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -11,14 +12,16 @@ beforeEach(function () {
 
 // ── 辅助函数 ──
 
+// 用 now()->timestamp 而非 time()，与 RateLimiter::checkLimit 时钟来源对称，
+// 让未来加 Carbon::setTestNow 的限流测试时，辅助函数算出的窗口键能和中间件实际键匹配。
 function currentWindowKey(string $baseKey): string
 {
-    return "$baseKey:".(int) floor(time() / 60);
+    return "$baseKey:".(int) floor(now()->timestamp / 60);
 }
 
 function prevWindowKey(string $baseKey): string
 {
-    return "$baseKey:".((int) floor(time() / 60) - 1);
+    return "$baseKey:".((int) floor(now()->timestamp / 60) - 1);
 }
 
 // ── 基础行为 ──
@@ -59,7 +62,7 @@ test('RateLimiter IP 限流 - 超过限制抛出异常', function () {
     $middleware->handle($request, function () {
         return new Response('ok');
     }, 'v2');
-})->throws(\App\Exceptions\ApiResponseException::class);
+})->throws(ApiResponseException::class);
 
 test('RateLimiter ACME 模式仅检查 IP', function () {
     $middleware = new RateLimiter;
@@ -83,7 +86,7 @@ test('RateLimiter 默认限流更严格', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'default'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'default'))->toThrow(ApiResponseException::class);
 });
 
 test('RateLimiter 计数器递增正确', function () {
@@ -138,7 +141,7 @@ test('滑动窗口 - 上一窗口计数加权影响当前判定', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'v2'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'v2'))->toThrow(ApiResponseException::class);
 });
 
 test('滑动窗口 - 无上一窗口数据时仅看当前窗口', function () {
@@ -167,7 +170,7 @@ test('滑动窗口 - 当前窗口满载触发限流', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'v2'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'v2'))->toThrow(ApiResponseException::class);
 });
 
 test('滑动窗口 - 上一窗口少量请求不影响当前窗口正常使用', function () {
@@ -201,7 +204,7 @@ test('滑动窗口 - 两个窗口累计超限被拒绝', function () {
 
     expect(fn () => $middleware->handle($request, function () {
         return new Response('ok');
-    }, 'v2'))->toThrow(\App\Exceptions\ApiResponseException::class);
+    }, 'v2'))->toThrow(ApiResponseException::class);
 });
 
 test('滑动窗口 - 不同 limiter 隔离计数', function () {
@@ -233,7 +236,7 @@ test('滑动窗口 - key 包含窗口序号', function () {
         return new Response('ok');
     }, 'v2');
 
-    $windowNumber = (int) floor(time() / 60);
+    $windowNumber = (int) floor(now()->timestamp / 60);
     $expectedKey = "rate_limit_ip:v2:127.0.0.1:$windowNumber";
 
     expect(Cache::has($expectedKey))->toBeTrue();

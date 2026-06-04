@@ -2,8 +2,9 @@
 
 use App\Jobs\Middleware\SkipWhenUpgradeFrozen;
 use App\Utils\UpgradeFreezeLock;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function () {
     UpgradeFreezeLock::unfreeze();

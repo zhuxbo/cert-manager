@@ -10,10 +10,16 @@ if (! function_exists('fundAuditGuardedTestPaths')) {
             'Feature/Database/FundTransactionUniqueIndexesTest.php',
             'Feature/FundAudit/FundInvariantsTest.php',
             'Feature/Http/Controllers/Admin/FundControllerTest.php',
+            'Feature/Http/Controllers/Admin/OrderControllerTest.php',
+            'Feature/Http/Controllers/Admin/TransactionControllerTest.php',
             'Feature/Http/Controllers/User/FundControllerTest.php',
+            'Feature/Http/Controllers/User/OrderControllerTest.php',
             'Feature/Http/Controllers/User/TopUpControllerTest.php',
+            'Feature/Http/Controllers/V2/ApiControllerFundFlowTest.php',
             'Feature/Models/FundCasTest.php',
             'Feature/Models/FundTest.php',
+            'Feature/Services/Order/SyncedCancelRefundTest.php',
+            'Unit/Jobs/TaskJobTest.php',
             'Unit/Services/Acme/ActionTest.php',
             'Unit/Services/Order/ActionTest.php',
         ];
@@ -35,7 +41,7 @@ if (! function_exists('fundAuditGuardExcludedTestPaths')) {
             'Feature/Models/TransactionTest.php',
             'Unit/FundAuditGuardCoverageTest.php',
             'Unit/Models/FundCasTransactionGuardTest.php',
-            'Unit/Services/Notification/Builders/FinanceAuditAlertMailNotificationBuilderTest.php',
+            'Unit/Services/Notification/Builders/FinanceAuditNotificationBuilderTest.php',
         ];
     }
 }

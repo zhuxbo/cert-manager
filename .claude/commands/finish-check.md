@@ -16,6 +16,25 @@ git diff --cached --stat
 
 确认本次改动涉及的目录（backend / frontend/admin / frontend/user / frontend/shared / plugins / deploy）和敏感路径（migrations / 资金路径 / 索引 / 部署脚本）。变更范围决定后面要重点跑哪些测试。
 
+**结构化范围产出**（后续阶段判定依据，必须在 finish-check 总结里逐项填）：
+
+| 维度 | 本次涉及？ | 触发后续什么 |
+|------|------------|--------------|
+| backend/app/Services/Acme | 是/否 | ACME 测试集必跑 |
+| backend/app/Services/Order | 是/否 | Order 测试集必跑 |
+| backend/app/Models/Fund / Transaction / 资金路径 | 是/否 | §2.6 资金证据必贴 + §2.4 mysql 5.7 容器必跑 |
+| backend/database/migrations | 是/否 | 检查 enum/索引/外键/DDL → 任一是 → §2.4 必跑 |
+| 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`） | 是/否 | §2.4 必跑 |
+| AppServiceProvider 连接/时区注入 | 是/否 | §2.4 必跑 |
+| frontend/shared | 是/否 | admin + user 两端构建必验 |
+| plugins/ | 是/否 | §4 插件检查必跑 |
+| deploy/ 升级脚本 | 是/否 | 反模式 4/7 重点扫描 |
+| tests/ 文件本身（新增/修改测试） | 是/否 | §2.3 测试集 + 评审改测试是否伪绿（删断言/mock 过度） |
+| 通知模板 / NotificationTemplate / NotificationCenter | 是/否 | §7 部署风险加 `db:seed --class=NotificationTemplateSeeder` + 模板渲染单测 |
+| 删除了类/配置/命令/表/字段/函数 | 是/否 | §1.5 删除审核必跑 |
+
+每行"是/否"必须明确，不允许"不确定"；不确定的视为"是"。
+
 ---
 
 ## 1.5 删除审核（仅当本次改动删除了类 / 配置 / 命令 / 表 / 字段 / 函数时执行）
@@ -44,6 +63,15 @@ git diff --cached --stat
 3. 检查 `tests/` 是否还有引用已删概念的断言/夹具
 4. 检查 `*.md` / 行内注释是否还有误导（README / skills / 代码注释字面量）
 5. 复杂场景（删除概念跨多目录、需要按文件类型分批 / 用豁免列表过滤特例）：临时反向断言脚本写在 `.superpowers/`（已 gitignore），用完即弃，不入库
+
+**证据格式要求**（防止"声称做了"）：
+
+- 每个被 grep 的概念必须在 finish-check 总结中贴出对应命令的**实际终端输出片段**
+- 输出格式约定（避免上下文爆炸）：
+  - 命中 0 条 → 贴 `` `<command>` → 0 命中 `` 一行即可
+  - 命中 1-5 条 → 贴完整 stdout
+  - 命中 > 5 条 → 贴前 5 行 + 最后一行 `... 共 N 命中`
+- 主智能体不得仅声称"已 grep 全部通过"而不贴输出
 
 **判定通过**：清单 1~4 全部 grep 0 命中；命中只剩"故意保留的反向断言/兼容拒绝/工具链文件"等明确豁免。
 
@@ -82,7 +110,7 @@ cd backend && ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G
 cd backend && php artisan test --parallel
 ```
 
-> 默认走 `.env.testing` 的 mysql；本地 MySQL 偶发 "server has gone away" / "Connection refused"（资源压力间歇性闪断 / paratest 连接占满）时，**等 5s 重跑一次即可**，不是代码问题。重跑仍稳定失败才视为真实回归。
+> 默认走 `.env.testing` 的 mysql；本地 MySQL 偶发 "server has gone away" / "Connection refused"（资源压力间歇性闪断 / paratest 连接占满）时，**最多重跑 2 次**。第 3 次仍失败 → 当真实回归处理，必须排查根因，禁止"重试到通过"。
 
 改特定模块时优先跑对应测试：
 
@@ -94,12 +122,12 @@ cd backend && php artisan test --parallel
 
 ### 2.4 测试 — mysql 5.7 容器(可选,模拟 CI 环境)
 
-**何时必跑**：
+**何时触发**：§1 结构化范围产出中以下任一行为"是" → §2.4 必跑（不允许主智能体自判跳过）：
 
-- 改了 `database/migrations/` 中的 enum / 索引 / 外键 / DDL 类型字段
-- 改了资金路径（`Fund.php` / `Transaction.php` / `FundController` / `TopUpController` / Fund 相关 invariant / 唯一索引）
-- 改了原生 SQL（`DB::raw` / `DB::statement` / `whereRaw`）
-- 改了 `AppServiceProvider` 的 connection / 时区注入
+- backend/app/Models/Fund / Transaction / 资金路径
+- backend/database/migrations
+- 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`）
+- AppServiceProvider 连接/时区注入
 
 > 本地 MySQL 一般是 8.x（你本地用 8.4），跑过 ≠ 5.7 兼容（项目声明最小版本）。CI 用 mysql:5.7，本地先验避免 PR 红 CI。
 
@@ -131,6 +159,8 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 
 ### 2.5 Laravel 专项检查
 
+> 详见 [skills/backend-dev.md](../../skills/backend-dev.md)（Laravel 架构、迁移规范、自动续费/重签等章节）+ [skills/acme-module.md](../../skills/acme-module.md)（ACME 三步流程）
+
 - [ ] 迁移幂等（`Schema::hasColumn`/`Schema::hasTable`/索引存在性 守卫），不写 down
 - [ ] Model 的 `$fillable`、`$casts`、`$hidden` 是否需要更新
 - [ ] Action 无 userId 构造参数（用户隔离由 UserScope 保证）
@@ -143,6 +173,8 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 
 ### 2.6 资金路径专项（涉及 funds/transactions/users.balance 时）
 
+> 详见 [skills/backend-dev.md](../../skills/backend-dev.md) "资金确定性体系（4 道网）" 章节
+
 - [ ] 状态转换走 CAS UPDATE（`Fund::transitionToSuccessful`），CAS WHERE 必须完整字段匹配（不能简化为单一 status）
 - [ ] 写 transaction 不依赖应用层 `exists` 防重 — 靠 DB 唯一索引兜底
 - [ ] 修改 `user.balance` 必须在 `DB::transaction(fn)` 内 + 同事务内创建对应 transaction
@@ -150,7 +182,14 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 - [ ] 新增"资金相关"测试必须登记 `fundAuditGuardedTestPaths()` 或 `fundAuditGuardExcludedTestPaths()`（元测试 `tests/Unit/FundAuditGuardCoverageTest.php` 强制兜底）
 - [ ] 上线前先跑 `php artisan finance:audit`（dry-run），确认现有数据干净再加新约束/索引
 
+**证据格式要求**（防止"声称做了"）：
+
+- 涉及资金路径的 PR 必须在 finish-check 总结中贴出 `php artisan finance:audit --dry-run` 的 stdout（无违反贴"全部 invariant 通过"一行 + 退出码 0；有违反 ≤ 5 条贴完整列表，>5 条按 §1.5 截断规则贴前 5 行 + "... 共 N 命中"）
+- 涉及新增资金测试时贴出 `php artisan test --filter=FundAuditGuardCoverage` 的退出码（确认测试登记到 guarded/excluded 列表）
+
 ### 2.7 PHP 8.3 规范
+
+> 详见 [CLAUDE.md](../../CLAUDE.md) "核心指令" 章节 PHP 8.3+ 条目
 
 - [ ] 双引号变量不加大括号（`"$var"` 而非 `"{$var}"`）
 - [ ] 例外：变量后紧跟中文等非 ASCII 字符时必须加（`"{$var}，中文"` 而非 `"$var，中文"`）
@@ -279,6 +318,7 @@ git status --short | grep "^??"
 - [ ] 部署相关 → 更新 `DEPLOY.md`
 - [ ] 升级回滚相关 → 更新 `UPGRADE.md`
 - [ ] 模块架构改动 → 更新 `skills/*.md`（按领域）
+- [ ] 跑 `bash skills/scripts/check-review-checklist-staleness.sh`，把 warning 项贴入 finish-check 总结的"已知局限性"段；若 warning 数 ≥ 3 → 必须列入 follow-up 维护任务（避免清单长期失真）
 
 ---
 
@@ -327,4 +367,82 @@ git status --short | grep "^??"
 
 ---
 
-逐项检查完毕后输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。
+## 8. 独立 Review 循环（必跑，不可跳过）
+
+**目的**：用干净上下文的独立 reviewer subagent 以"破坏模式"找毛病，避开主智能体改完测试通过就停手的天然偏差。
+
+**质量门定义**：声明"完成"前必须满足 — reviewer 输出过 **以 `REVIEW_PASS:` 为前缀的签字行**（前缀后人读说明文字可变，仅前缀参与 `grep -F` 验证）。`REVIEW_PASS:` 仅表示 critical/high 已清零；reviewer 可同时列出 medium/low 供用户决议，不影响签字。
+
+### 8.1 执行结构（循环到收敛，最多 5 轮）
+
+```
+loop:
+  ① 派 reviewer subagent（见 §8.2 调用方式）
+  ② 主智能体读 reviewer 报告
+     ├─ Critical / High：必须修 → 修完跳回 §2/§3（只对改动文件）→ 重新执行 §8
+     ├─ Medium：报告给用户决议（当场修 / follow-up issue / 接受）—— 主智能体不擅自处理
+     │   └─ 用户选"当场修"：视同 Critical/High 处理（修完跳回 §2/§3 → 重新执行 §8；修完后主智能体必须把此项加入下一轮 reviewer prompt 的"上一轮 medium 用户决议为'当场修'的项"字段，避免下轮重复报告）
+     └─ Low / Nit：默认 follow-up，不阻塞
+  ③ reviewer 输出 `REVIEW_PASS:` 前缀的签字行 → 主智能体 grep 验证 → 退出循环
+  ④ 第 5 轮结束仍有 critical/high 未收敛 → 主智能体停止执行，
+     输出 `REVIEW_STALLED:` 前缀标记，由用户决定拆 PR / 接受残留 / 强行继续
+```
+
+**强制约束**：
+
+- 声明完成前**必须用 `grep -F "REVIEW_PASS:"` 检测 reviewer 输出前缀**，并在最终报告中引用该行。没有这行 grep 命中 → 流程未完成。冒号后的人读说明文字不参与 grep。
+- Reviewer 输出以 `REVIEW_FAIL:` 为前缀的签字行 → 等同于有 critical/high 问题，**必须按"修 critical/high → 重跑 §8"路径处理**，不允许只读 `REVIEW_PASS:` 缺失就推断"继续循环"。
+- Medium 问题不允许主智能体擅自修或忽略 — 必须列给用户决议。**用户选"当场修"时视同 Critical/High：修完必须重新执行 §8**，不允许跳过下一轮 review。
+- 第 5 轮硬停 — 不论是否还有问题，主智能体必须停下来等用户指令，不允许进入第 6 轮。停止时**必须输出可 grep 标记**：`REVIEW_STALLED: 已达 5 轮上限，等待用户决策` —— 与 `REVIEW_PASS:` / `REVIEW_FAIL:` 对称，便于用户和外部工具感知流程实际卡在哪一步。
+
+### 8.2 Reviewer Subagent 调用方式
+
+用 Claude Code 的 Agent tool 派出独立子对话：
+
+```
+Agent({
+  subagent_type: "feature-dev:code-reviewer",
+  description: "<3-5 字描述>",
+  prompt: <prompt 模板见 skills/review-checklist.md "Reviewer Subagent 任务模板" 章节>
+})
+```
+
+**Fallback**：若 `feature-dev:code-reviewer` 不可用（subagent_type 未注册 / 报错），改用通用 reviewer：
+
+```
+Agent({
+  description: "<3-5 字描述>",
+  prompt: <同上>
+})
+```
+
+**Prompt 模板的单一来源**：`skills/review-checklist.md` 中 "Reviewer Subagent 任务模板" 章节是唯一权威。本文件不内嵌模板内容，避免漂移。主智能体派 reviewer 前先读该章节，按模板填空（改动范围 / 已知 review 历史 / 主要功能背景）。
+
+**Plan 文档路径必填**（无 plan 时显式填"无"）：主智能体必须把 `.superpowers/plans/` 下对应 plan 文档的路径填入 reviewer prompt 的"相关 plan 文档"字段（让 reviewer 可读到设计期"杀手场景 + 对端检查"两栏）；若本次改动确实无 plan，显式填"无"，否则视为主智能体认定本次改动无 plan（设计期清单缺失，reviewer 会跳过 plan 阅读无法验证设计期一致性）。
+
+### 8.3 终止防御机制
+
+防无限循环和噪音：
+
+1. **传"已知问题 + 决议"给下一轮 reviewer**：每轮把上一轮发现作为 context，让它不要重复报告同一处
+2. **置信度阈值**：`confidence ≥ 80` 才报告（过滤理论问题）
+3. **轮次硬上限**：5 轮；第 5 轮后无论结果主智能体停止，输出 `REVIEW_STALLED:` 标记等用户决策（拆 PR / 接受残留 / 强行继续）
+4. **三类机器可验证标记**（前缀固定，全程用 `grep -F` 验证前缀，不允许凭语义判断近义句；前缀**后**的人读说明文字可在不同场景下调整）：
+   - `REVIEW_PASS:` — reviewer 通过签字（critical/high 清零；可附 medium/low 供用户决议），主智能体见到即退出循环
+   - `REVIEW_FAIL:` — reviewer 失败签字（critical/high > 0），主智能体进入"修 → 重跑 §8"路径
+   - `REVIEW_STALLED:` — 主智能体在第 5 轮硬停时自己输出，reviewer 不输出此标记
+
+### 8.4 真实参考
+
+`feat: 升级链路加入 PHP 环境检测与流程加固`（commit `9dd8ce1d`）实际跑了 4 轮 review 才收敛：
+
+- 第 1 轮 → DRY / 跨脚本工具复制 / python3 → PHP / 一致性问题（5-6 条）
+- 第 2 轮 → 防御机制完全失效（清单未打进升级包）/ 数据丢失风险（检测过晚导致 storage 被 trap cleanup 删）/ shell 函数名笔误（log_warn vs log_warning）
+- 第 3 轮 → 字符串拼接路径不安全 / autoload 兜底对称性缺失 / 新方法无单测
+- 第 4 轮 → 0 new → 通过
+
+每一轮的发现都对应 `skills/review-checklist.md` 反模式 1-13 的某条，案例锚定可双向验证。本节就是把这次自然形成的流程显式化，防止下次"跑一次就停"。
+
+---
+
+逐项检查完毕、阶段 8 reviewer 输出以 `REVIEW_PASS:` 为前缀的签字行并被主智能体 `grep -F` 命中后，输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。

@@ -7,23 +7,64 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 # 全局变量
-PHP_VERSION=""
-PHP_CMD=""
-PHP_INI=""
+# 允许父进程（bt-install.sh）通过环境变量传入选好的版本；缺失时为空，待 detect_php_version 自行扫描填充
+PHP_VERSION="${PHP_VERSION:-}"
+PHP_CMD="${PHP_CMD:-}"
+PHP_INI="${PHP_INI:-}"
 NEED_MANUAL_ACTION=false
 MANUAL_ACTIONS=()
 
-# 检测并选择 PHP 版本（仅支持 8.3/8.4）
+# 检测并选择 PHP 版本。
+# 从 php-requirements.json 读 php_min（缺失兜底 8.3.0），扫 /www/server/php/* 并用
+# PHP 自身 version_compare 过滤，最后选最高版本。与 bt-install.sh::select_php_version 对齐，
+# 但本函数是 noninteractive（被 bt-install.sh 通过子进程调用），多版本时静默选最高。
+#
+# 子进程语义：父进程（bt-install.sh）通过环境变量 PHP_VERSION/PHP_CMD 传递已交互选择的版本，
+# 优先使用；缺失才走独立扫描（直接 bt-deps.sh 入口或测试时）。否则子进程独立选最高版本
+# 会和父进程选择不一致（如父选 8.4，子重扫选最高 8.5）。
 detect_php_version() {
-    for ver in 84 83; do
-        if [ -d "/www/server/php/$ver" ] && [ -x "/www/server/php/$ver/bin/php" ]; then
-            PHP_VERSION="$ver"
-            PHP_CMD="/www/server/php/$ver/bin/php"
-            PHP_INI="/www/server/php/$ver/etc/php.ini"
-            return 0
+    # 父进程已选好 PHP 版本时直接复用
+    if [ -n "${PHP_VERSION:-}" ] && [ -x "/www/server/php/$PHP_VERSION/bin/php" ]; then
+        PHP_CMD="${PHP_CMD:-/www/server/php/$PHP_VERSION/bin/php}"
+        PHP_INI="/www/server/php/$PHP_VERSION/etc/php.ini"
+        return 0
+    fi
+
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local php_min
+    php_min=$(_read_req_field "$req_file" "php_min" "8.3.0")
+
+    local php_versions=()
+    for ver_dir in /www/server/php/*; do
+        [ -d "$ver_dir" ] || continue
+        local php_bin="$ver_dir/bin/php"
+        [ -x "$php_bin" ] || continue
+        local actual
+        actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null) || continue
+        if "$php_bin" -r "exit(version_compare('$actual','$php_min','>=')?0:1);" 2>/dev/null; then
+            php_versions+=("$(basename "$ver_dir")")
         fi
     done
-    return 1
+
+    [ ${#php_versions[@]} -eq 0 ] && return 1
+
+    # 多版本时按目录名数字倒序选最高
+    if [ ${#php_versions[@]} -gt 1 ]; then
+        readarray -t php_versions < <(printf '%s\n' "${php_versions[@]}" | sort -rn)
+    fi
+    PHP_VERSION="${php_versions[0]}"
+    PHP_CMD="/www/server/php/$PHP_VERSION/bin/php"
+    PHP_INI="/www/server/php/$PHP_VERSION/etc/php.ini"
+    return 0
+}
+
+# 提取 ini 文件的 disable_functions 值（截断行尾注释 + 去空白和引号）
+# 用法：_ini_disabled_functions <ini_file>
+# stdout：函数名逗号分隔字符串（如 exec,shell_exec），无禁用或文件无该字段时输出空
+_ini_disabled_functions() {
+    grep -E "^disable_functions[[:space:]]*=" "$1" |
+        sed -e 's/disable_functions[[:space:]]*=[[:space:]]*//' -e 's/[[:space:]]*;.*//' |
+        tr -d ' "'
 }
 
 # 从配置文件中解除禁用函数
@@ -39,7 +80,8 @@ enable_functions_in_ini() {
     cp "$ini_file" "$ini_file.bak.$(date +%Y%m%d%H%M%S)"
 
     # 获取当前禁用函数列表
-    local disabled_functions=$(grep -E "^disable_functions\s*=" "$ini_file" | sed 's/disable_functions\s*=\s*//' | tr -d ' ')
+    local disabled_functions
+    disabled_functions=$(_ini_disabled_functions "$ini_file")
     local new_disabled="$disabled_functions"
 
     # 移除指定的函数
@@ -47,8 +89,8 @@ enable_functions_in_ini() {
         new_disabled=$(echo "$new_disabled" | sed "s/,$func,/,/g" | sed "s/^$func,//g" | sed "s/,$func$//g" | sed "s/^$func$//g")
     done
 
-    # 更新配置文件
-    sed -i "s/^disable_functions\s*=.*/disable_functions = $new_disabled/" "$ini_file"
+    # 更新配置文件（POSIX [[:space:]]，兼容 BusyBox sed）
+    sed -i "s/^disable_functions[[:space:]]*=.*/disable_functions = $new_disabled/" "$ini_file"
 }
 
 # 检测禁用函数
@@ -59,19 +101,27 @@ check_disabled_functions() {
     local php_ini="$PHP_INI"
     local php_cli_ini="/www/server/php/$PHP_VERSION/etc/php-cli.ini"
 
-    # 必需的函数：Composer 和 Laravel 运行所需
-    # - putenv, proc_*: Composer 依赖安装
-    # - exec, shell_exec: 系统命令执行
-    # - pcntl_*: Laravel 队列和进程管理
-    local required_functions=("putenv" "proc_open" "proc_close" "proc_get_status" "proc_terminate" "exec" "shell_exec" "pcntl_signal" "pcntl_alarm" "pcntl_async_signals")
+    # 必需函数从 php-requirements.json 的 functions.required[] 读取（与版本绑定）
+    # fallback 到内置兜底列表：putenv/proc_* 是 Composer/Laravel 运行所需；pcntl_* 是队列管理
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local required_functions=()
+    local from_req
+    from_req=$(_read_req_array "$req_file" "functions.required")
+    if [ -n "$from_req" ]; then
+        readarray -t required_functions <<<"$from_req"
+    fi
+
+    if [ ${#required_functions[@]} -eq 0 ]; then
+        required_functions=("putenv" "proc_open" "proc_close" "proc_get_status" "proc_terminate" "exec" "shell_exec" "pcntl_signal" "pcntl_alarm" "pcntl_async_signals")
+    fi
 
     # 检查两个配置文件中的禁用函数
     local all_disabled=""
     if [ -f "$php_ini" ]; then
-        all_disabled="$all_disabled,$(grep -E "^disable_functions\s*=" "$php_ini" | sed 's/disable_functions\s*=\s*//' | tr -d ' ')"
+        all_disabled="$all_disabled,$(_ini_disabled_functions "$php_ini")"
     fi
     if [ -f "$php_cli_ini" ]; then
-        all_disabled="$all_disabled,$(grep -E "^disable_functions\s*=" "$php_cli_ini" | sed 's/disable_functions\s*=\s*//' | tr -d ' ')"
+        all_disabled="$all_disabled,$(_ini_disabled_functions "$php_cli_ini")"
     fi
 
     if [ -z "$all_disabled" ] || [ "$all_disabled" = "," ]; then
@@ -131,6 +181,7 @@ _resolve_bt_api_key() {
     local api_json="/www/server/panel/config/api.json"
     if [ -r "$api_json" ]; then
         # token_crypt 是 BT 11.x 对外 API key（用于 MD5 签名）
+        # 项目最低要求 BT 11.5+，不再回落旧版 token 字段
         BT_KEY=$(awk -F'"' '/"token_crypt"/{for(i=1;i<=NF;i++) if($i=="token_crypt"){print $(i+2); exit}}' "$api_json" 2>/dev/null)
     fi
     # 默认面板端口（BT 11.x 自定义端口存在 /www/server/panel/data/port.pl）
@@ -143,6 +194,23 @@ _resolve_bt_api_key() {
     [ -n "$BT_KEY" ]
 }
 
+# BT API 基础 URL 探测（协议自适应；BT 11.x 默认 http，启用面板 SSL 后改 https）
+# 与 bt-automate.sh::_resolve_bt_api_base 对称；不复用是为了 bt-deps.sh 独立可跑
+# 必须在 _resolve_bt_api_key 设置 BT_PANEL_PORT 之后调用
+_resolve_bt_api_base() {
+    if [ -n "${BT_API_BASE:-}" ]; then return 0; fi
+    local proto status_line
+    for proto in https http; do
+        status_line=$(curl -ksI --connect-timeout 3 --max-time 3 "$proto://127.0.0.1:$BT_PANEL_PORT/" 2>/dev/null | head -1)
+        if echo "$status_line" | grep -qE "^HTTP/"; then
+            BT_API_BASE="$proto://127.0.0.1:$BT_PANEL_PORT"
+            return 0
+        fi
+    done
+    # 都失败兜底 https（让后续 curl 错误暴露具体问题）
+    BT_API_BASE="https://127.0.0.1:$BT_PANEL_PORT"
+}
+
 # 通过 BT 11.x API 安装 PHP 扩展
 # 端点：POST /files?action=InstallSoft, name=<ext>&version=<phpv>&type=1（type=1 表示 PHP 扩展）
 # 用法：bt_install_so_via_api <ext_name>
@@ -152,6 +220,7 @@ bt_install_so_via_api() {
     if ! _resolve_bt_api_key; then
         return 1
     fi
+    _resolve_bt_api_base
 
     local key_md5
     key_md5=$(printf %s "$BT_KEY" | md5sum | awk '{print $1}')
@@ -160,13 +229,27 @@ bt_install_so_via_api() {
     local token
     token=$(printf %s "${now}${key_md5}" | md5sum | awk '{print $1}')
 
-    local resp
-    resp=$(curl -sk -X POST "https://127.0.0.1:${BT_PANEL_PORT}/files?action=InstallSoft" \
+    local resp curl_exit=0
+    resp=$(curl -sk --show-error -X POST "${BT_API_BASE}/files?action=InstallSoft" \
         -d "request_time=${now}&request_token=${token}&name=${ext}&version=${PHP_VERSION}&type=1" \
-        -m 30 2>/dev/null)
+        -m 30 2>&1) || curl_exit=$?
+
+    if [ "$curl_exit" -ne 0 ]; then
+        log_warning "BT API curl 失败 (exit=$curl_exit) url=${BT_API_BASE}/files?action=InstallSoft"
+        [ -n "$resp" ] && log_warning "curl 输出: $(echo "$resp" | head -c 200)"
+        return 1
+    fi
 
     if ! echo "$resp" | grep -q '"status":[[:space:]]*true'; then
-        log_warning "BT API 返回未成功: $(echo "$resp" | head -c 200)"
+        # HTML 响应（404 / nginx 错误页）单独识别，避免多行 HTML 把日志撑爆
+        # 已知触发场景：重装已卸载的扩展、BT 内部短时状态等；不下根因结论，fallback 会处理
+        if echo "$resp" | grep -qi '<html'; then
+            local title
+            title=$(echo "$resp" | grep -oE '<title>[^<]+</title>' | sed -E 's|</?title>||g' | head -1)
+            log_info "  BT API 装扩展未成功（${title:-HTML 错误页}），将走 fallback"
+        else
+            log_info "  BT API 装扩展未成功: $(echo "$resp" | tr -d '\n\r' | head -c 200)，将走 fallback"
+        fi
         return 1
     fi
     log_info "  → BT 装扩展任务已入队: $ext"
@@ -185,24 +268,77 @@ bt_install_so_via_api() {
 
 # 自动安装缺失扩展
 # 用法：./bt-deps.sh auto_install_ext [extra_ext1 extra_ext2 ...]
-# - base 扩展：fileinfo / intl / mbstring / calendar（Laravel 11 必备 + cal_days_in_month）
-# - extra 参数：额外扩展（bt-install.sh 在调用时显式追加 pdo_mysql）
+# - 基础列表从 php-requirements.json 的 extensions.required[] 全量读取（与 check_php_extensions 同源）
+# - extra 参数：补充清单之外的扩展（如 bt-install.sh 按数据库类型动态追加 pdo_mysql / pdo_pgsql）
+# - 已加载的扩展自动 skip（循环内 $PHP_CMD -m 检查），无副作用
 # - 优先用 BT 11.x API（/files?action=InstallSoft）
 # - fallback 1: 老版 BT install.sh 路径（向后兼容）
 # - fallback 2: 已编译 .so 直接 sed 启用 php.ini（PHP 内置扩展如 calendar 已随 BT 编译进 extension_dir，
 #                BT API 不可用时直接 enable 即可生效）
 # 失败的扩展回填 MANUAL_ACTIONS
-# 注：redis 不在 base 列表（项目默认 CACHE_DRIVER=file；BT 11.x 装 phpredis 还要先装 igbinary 依赖链复杂）
+# 注：redis 不在 required 清单（项目默认 CACHE_DRIVER=file；BT 11.x 装 phpredis 还要先装 igbinary 依赖链复杂）
 auto_install_ext() {
     local extra_exts=("$@")
-    local target_extensions=("fileinfo" "intl" "mbstring" "calendar" "${extra_exts[@]}")
-
-    log_step "尝试自动安装缺失的 PHP 扩展: ${target_extensions[*]}"
 
     if [ -z "$PHP_VERSION" ] || [ -z "$PHP_CMD" ]; then
         log_error "PHP 版本未检测，请先运行 detect_php_version"
         return 1
     fi
+
+    # 从 php-requirements.json 读完整 required 清单（单一来源；不同 PHP 版本默认扩展不同，
+    # 用清单驱动避免 hardcode 跨版本不准）
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local target_extensions=()
+    local all_required
+    all_required=$(_read_req_array "$req_file" "extensions.required")
+    if [ -n "$all_required" ]; then
+        readarray -t target_extensions <<<"$all_required"
+    fi
+    # 追加 extra（如 pdo_mysql；放后面让清单内的扩展先尝试）
+    if [ ${#extra_exts[@]} -gt 0 ]; then
+        target_extensions+=("${extra_exts[@]}")
+    fi
+
+    # 去重（extra 与 requirements.json 可能有重叠，去重避免日志噪音）
+    local seen_exts="|"
+    local dedup_ext=()
+    for ext in "${target_extensions[@]}"; do
+        [ -z "$ext" ] && continue
+        case "$seen_exts" in
+            *"|$ext|"*) ;;
+            *)
+                dedup_ext+=("$ext")
+                seen_exts="$seen_exts$ext|"
+                ;;
+        esac
+    done
+    target_extensions=("${dedup_ext[@]}")
+
+    if [ ${#target_extensions[@]} -eq 0 ]; then
+        log_warning "php-requirements.json 不可读且未传入 extra 扩展，无目标"
+        return 0
+    fi
+
+    # 先一次性查已加载模块，把 target_extensions 拆为待装 / 已装两组（避免 log_step 误列全量清单）
+    local installed_modules
+    installed_modules=$("$PHP_CMD" -m 2>/dev/null)
+    local to_install=()
+    local skipped_ext=()
+    for ext in "${target_extensions[@]}"; do
+        if echo "$installed_modules" | grep -qi "^$ext$"; then
+            skipped_ext+=("$ext")
+        else
+            to_install+=("$ext")
+        fi
+    done
+
+    if [ ${#to_install[@]} -eq 0 ]; then
+        log_success "所有 required 扩展均已加载（共 ${#skipped_ext[@]} 项）"
+        return 0
+    fi
+
+    log_step "尝试自动安装缺失的 PHP 扩展: ${to_install[*]}"
+    [ ${#skipped_ext[@]} -gt 0 ] && log_info "已装跳过: ${skipped_ext[*]}"
 
     # fallback 老版 BT install.sh 路径
     local legacy_install_cmd=""
@@ -221,15 +357,8 @@ auto_install_ext() {
 
     local installed_any=false
     local failed_ext=()
-    local skipped_ext=()
 
-    for ext in "${target_extensions[@]}"; do
-        # 已装则跳过
-        if $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
-            skipped_ext+=("$ext")
-            continue
-        fi
-
+    for ext in "${to_install[@]}"; do
         log_info "正在安装扩展: $ext"
         local installed=false
 
@@ -277,9 +406,7 @@ auto_install_ext() {
         fi
     done
 
-    if [ ${#skipped_ext[@]} -gt 0 ]; then
-        log_info "已装跳过: ${skipped_ext[*]}"
-    fi
+    # 已装跳过日志已在 log_step 之前打印（避免循环结束后重复列出）
 
     if [ "$installed_any" = "true" ]; then
         log_info "重启 PHP-FPM 让新扩展生效"
@@ -292,7 +419,7 @@ auto_install_ext() {
 
     if [ ${#failed_ext[@]} -gt 0 ]; then
         log_warning "以下扩展自动安装失败: ${failed_ext[*]}"
-        log_info "请到宝塔面板 → 软件商店 → PHP 8.${PHP_VERSION: -1} → 设置 → 安装扩展 手工安装"
+        log_info "请到宝塔面板 → 软件商店 → PHP $(_php_pretty_version "$PHP_VERSION") → 设置 → 安装扩展 手工安装"
         NEED_MANUAL_ACTION=true
         MANUAL_ACTIONS+=("以下扩展自动安装失败，请在宝塔面板手工安装:")
         for ext in "${failed_ext[@]}"; do
@@ -306,37 +433,31 @@ auto_install_ext() {
 }
 
 # 检测 PHP 扩展
+# 部署环境固定为 BT（宝塔面板）；BT 不同 PHP 版本默认编译的扩展不同（如 PHP 8.4 vs 8.3 默认集合可能变化），
+# 故按 php-requirements.json 的 extensions.required[] 全量检测，不再 hardcode 排除/手工列表。
+# 缺失的扩展统一引导用户运行 auto_install_ext（BT API 自动安装），失败时回落到宝塔面板手工安装。
 check_php_extensions() {
     log_step "检测 PHP 扩展"
 
-    # 必要扩展分类
-    # - 可自动安装：宝塔面板可直接安装
-    # - 需手工处理：某些版本需要手工编译或特殊处理
-    # - pdo_mysql：Laravel 连 MySQL 必备；bt-install.sh check_dependencies 调用时
-    #   通过 auto_install_ext 显式装上，缺它会让 artisan migrate 直接失败
-    # - 不含 redis：项目默认 CACHE_DRIVER=file，redis 是可选优化
-    #   而非 Laravel 11 必备；用户切到 redis driver 时再装。BT 11.x 装 phpredis 还要先装
-    #   igbinary 依赖链复杂，硬性要求会卡住绝大多数无 redis 需求的部署
-    # - calendar：composer.json require ext-calendar（cal_days_in_month 在 Date.php 用）；
-    #   PHP 内置扩展，BT 编译时已生成 calendar.so，仅需在 ini 启用（auto_install_ext 走 path 3）
-    local required_ext=("gd" "zip" "bcmath" "pcntl" "intl" "fileinfo" "openssl" "mbstring" "curl" "xml" "calendar" "pdo_mysql")
+    local req_file="$SCRIPT_DIR/../php-requirements.json"
+    local required_ext=()
+    local all_required
+    all_required=$(_read_req_array "$req_file" "extensions.required")
+    if [ -n "$all_required" ]; then
+        readarray -t required_ext <<<"$all_required"
+    fi
 
-    # 需要手工在宝塔面板安装的扩展（无法自动安装）
-    local manual_ext=("fileinfo" "intl")
+    # fallback：requirements.json 缺失或解析失败时用兜底列表
+    if [ ${#required_ext[@]} -eq 0 ]; then
+        # pdo_mysql：Laravel 连 MySQL 必备；calendar：composer.json require ext-calendar
+        # 不含 redis：项目默认 CACHE_DRIVER=file，redis 切到 redis driver 时再装
+        required_ext=("gd" "zip" "bcmath" "pcntl" "intl" "fileinfo" "openssl" "mbstring" "curl" "xml" "calendar" "pdo_mysql")
+    fi
 
     local missing_ext=()
-    local missing_manual=()
-
     for ext in "${required_ext[@]}"; do
         if ! $PHP_CMD -m 2>/dev/null | grep -qi "^$ext$"; then
             missing_ext+=("$ext")
-            # 检查是否需要手工安装
-            for m in "${manual_ext[@]}"; do
-                if [ "$ext" = "$m" ]; then
-                    missing_manual+=("$ext")
-                    break
-                fi
-            done
         fi
     done
 
@@ -346,17 +467,10 @@ check_php_extensions() {
     fi
 
     log_warning "缺少扩展: ${missing_ext[*]}"
-
-    # 检查是否有需要手工安装的扩展
-    if [ ${#missing_manual[@]} -gt 0 ]; then
-        NEED_MANUAL_ACTION=true
-        MANUAL_ACTIONS+=("请在宝塔面板中安装以下 PHP 扩展:")
-        for ext in "${missing_manual[@]}"; do
-            MANUAL_ACTIONS+=("  - $ext")
-        done
-        MANUAL_ACTIONS+=("")
-        MANUAL_ACTIONS+=("安装路径: 宝塔面板 → 软件商店 → PHP 8.${PHP_VERSION: -1} → 设置 → 安装扩展")
-    fi
+    NEED_MANUAL_ACTION=true
+    MANUAL_ACTIONS+=("缺少 PHP 扩展，请运行: bash $SCRIPT_DIR/bt-deps.sh auto_install_ext")
+    MANUAL_ACTIONS+=("  缺失列表: ${missing_ext[*]}")
+    MANUAL_ACTIONS+=("自动安装失败的扩展请到宝塔面板 → 软件商店 → PHP $(_php_pretty_version "$PHP_VERSION") → 设置 → 安装扩展")
 
     return 1
 }
@@ -450,11 +564,11 @@ main() {
     # 检测 PHP 版本
     log_step "检测 PHP 环境"
     if ! detect_php_version; then
-        log_error "未找到 PHP 8.3+"
-        log_info "请在宝塔面板安装 PHP 8.3 或更高版本"
+        log_error "未找到符合要求的 PHP 版本"
+        log_info "请在宝塔面板安装 PHP（最低 php-requirements.json 中 php_min，默认 8.3.0）"
         exit 1
     fi
-    log_success "PHP 8.${PHP_VERSION: -1}: $($PHP_CMD -v | head -1)"
+    log_success "PHP $(_php_pretty_version "$PHP_VERSION"): $($PHP_CMD -v | head -1)"
 
     # 检测并修复禁用函数
     check_disabled_functions
@@ -479,7 +593,7 @@ main() {
         exit 1
     fi
 
-    log_info "依赖检测完成"
+    # 末尾不再打"依赖检测完成"——父进程 bt-install.sh::check_dependencies 会统一打 [OK] 依赖检测完成
 }
 
 # 子命令派发
@@ -487,14 +601,44 @@ main() {
 # - auto_install_ext：先 detect_php_version，再调 auto_install_ext
 case "${1:-}" in
     auto_install_ext)
-        log_step "检测 PHP 环境"
+        # 子命令场景：父进程 bt-install.sh 已经打过 [STEP] 检测系统依赖 + PHP 版本，不重复输出
+        # shift 把子命令名移出，剩余参数（extra 扩展，如 redis）原样转发给函数
+        shift
         if ! detect_php_version; then
-            log_error "未找到 PHP 8.3+"
+            log_error "未找到符合要求的 PHP 版本"
             exit 1
         fi
-        log_success "PHP 8.${PHP_VERSION: -1}: $($PHP_CMD -v | head -1)"
-        auto_install_ext
+        auto_install_ext "$@"
         exit $?
+        ;;
+    enable_functions)
+        # 子命令：从 disable_functions 移除指定函数（同时改 php.ini + php-cli.ini）
+        # 用法：PHP_VERSION=84 PHP_CMD=... bash bt-deps.sh enable_functions fn1 fn2 ...
+        # 直接 sed ini 文件，绕过 BT API GetPHPConfig（在 CLI ini 单独配置时返回不准）
+        shift
+        if [ $# -eq 0 ]; then
+            log_error "enable_functions 至少需要一个函数名"
+            exit 1
+        fi
+        if ! detect_php_version; then
+            log_error "未找到符合要求的 PHP 版本"
+            exit 1
+        fi
+        functions_str="$*"
+        log_step "解除 PHP 函数禁用: $functions_str"
+        updated_any=false
+        for ini_file in "/www/server/php/$PHP_VERSION/etc/php.ini" "/www/server/php/$PHP_VERSION/etc/php-cli.ini"; do
+            [ -f "$ini_file" ] || continue
+            enable_functions_in_ini "$ini_file" "$functions_str"
+            log_info "  已更新: $(basename "$ini_file")"
+            updated_any=true
+        done
+        if [ "$updated_any" = false ]; then
+            log_warning "未找到 PHP ini 文件，跳过函数启用"
+            exit 1
+        fi
+        log_success "函数启用完成（FPM 重启由调用方负责）"
+        exit 0
         ;;
     "")
         main "$@"
@@ -502,8 +646,9 @@ case "${1:-}" in
     *)
         echo "未知子命令: $1"
         echo "用法:"
-        echo "  $0                  # 检测依赖（默认）"
-        echo "  $0 auto_install_ext # 自动安装缺失 PHP 扩展（fileinfo/intl/redis）"
+        echo "  $0                              # 检测依赖（默认）"
+        echo "  $0 auto_install_ext [ext...]    # 自动安装缺失 PHP 扩展"
+        echo "  $0 enable_functions <fn...>     # 从 disable_functions 移除指定函数"
         exit 1
         ;;
 esac

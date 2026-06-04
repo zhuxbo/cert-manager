@@ -63,16 +63,25 @@ provide("get", get);
 type TimerRef = ReturnType<typeof setInterval>;
 let autoRefreshIntervalId: TimerRef | null = null;
 
+// 标签页重新可见时立即刷新一次，避免等待整个轮询周期
+const handleVisibilityChange = () => {
+  if (!document.hidden) get();
+};
+
 onMounted(() => {
   autoRefreshIntervalId = setInterval(
     () => {
+      // 页面被切到后台标签页时跳过本次刷新，回到前台再恢复
+      if (document.hidden) return;
       get();
     },
     3 * 60 * 1000
   );
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   if (autoRefreshIntervalId !== null) {
     clearInterval(autoRefreshIntervalId);
     autoRefreshIntervalId = null;

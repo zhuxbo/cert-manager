@@ -166,53 +166,40 @@
               itemsField="items"
               totalField="total"
               placeholder="请选择组织"
+              clearable
               :disabled="!formData.product_id"
+              :refresh-key="orgSelectRefreshKey"
               style="flex: 1"
             />
             <el-button
-              link
-              :icon="
-                useRenderIcon('ep/edit', {
-                  color: 'var(--el-color-primary)'
-                })
-              "
+              :type="formData.organization ? 'default' : 'primary'"
               :disabled="!formData.product_id"
-              class="ml-auto"
-              @click="handleGoTo('/organization')"
-            />
+              class="ml-2"
+              @click="openOrgEditor"
+            >
+              {{ formData.organization ? "编辑" : "添加" }}
+            </el-button>
           </div>
         </el-form-item>
-        <!-- 联系人：OV/EV、SMIME(individual/sponsor) 需要 -->
+
+        <!-- 联系人：SMIME individual 仅需联系人 -->
         <el-form-item
-          v-if="(isOrg || smimeNeedContact) && props.actionType !== 'reissue'"
+          v-if="smimeNeedContactOnly && props.actionType !== 'reissue'"
           label="联系人"
           prop="contact"
           :rules="rules.contact"
         >
-          <div class="inline-field">
-            <re-remote-select
-              v-model="formData.contact"
-              uri="/contact"
-              searchField="first_name"
-              labelField="full_name"
-              valueField="id"
-              itemsField="items"
-              totalField="total"
-              placeholder="请选择联系人"
-              :disabled="!formData.product_id"
-            />
-            <el-button
-              link
-              :icon="
-                useRenderIcon('ep/edit', {
-                  color: 'var(--el-color-primary)'
-                })
-              "
-              :disabled="!formData.product_id"
-              class="ml-auto"
-              @click="handleGoTo('/contact')"
-            />
-          </div>
+          <re-remote-select
+            v-model="formData.contact"
+            uri="/contact"
+            search-field="first_name"
+            label-field="full_name"
+            value-field="id"
+            items-field="items"
+            total-field="total"
+            placeholder="请选择联系人"
+            :disabled="!formData.product_id"
+          />
         </el-form-item>
 
         <!-- 加密选项折叠面板：自动生成 CSR 时显示 -->
@@ -280,6 +267,13 @@
         >
       </div>
     </template>
+    <organization-editor
+      v-model:visible="orgEditorVisible"
+      role="user"
+      :organization-id="formData.organization"
+      :country-options="countryCodes"
+      @success="onOrgSaved"
+    />
   </el-dialog>
 </template>
 
@@ -306,7 +300,8 @@ import {
 import router from "@/router";
 import type { FormInstance, FormRules } from "element-plus";
 import { useDialogSize } from "@/views/system/dialog";
-import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
+import { OrganizationEditor } from "@shared/components/OrganizationEditor";
+import { countryCodes } from "@/views/system/country";
 import { ElMessageBox } from "element-plus";
 const props = defineProps({
   visible: {
@@ -347,6 +342,19 @@ const productQueryParams = computed(() => {
 const disabledFields = ref<string[]>([]);
 // 表单数据
 const formData = reactive<any>({});
+
+// 组织编辑器
+const orgEditorVisible = ref(false);
+const orgSelectRefreshKey = ref(0);
+
+function openOrgEditor() {
+  orgEditorVisible.value = true;
+}
+
+function onOrgSaved(org: { id: number }) {
+  formData.organization = org.id;
+  orgSelectRefreshKey.value = Date.now();
+}
 
 // 周期选项
 const periodOptions = ref<{ label: string; value: any }[]>([]);
@@ -413,11 +421,6 @@ const smimeType = computed(() => {
   return "unknown";
 });
 
-// SMIME 是否需要联系人（individual, sponsor, organization 需要 - Certum API 要求 requestorInfo）
-const smimeNeedContact = computed(() =>
-  ["individual", "sponsor", "organization"].includes(smimeType.value)
-);
-
 // SMIME 是否需要组织（sponsor 可选, organization 必需）
 const smimeNeedOrganization = computed(() =>
   ["sponsor", "organization"].includes(smimeType.value)
@@ -426,6 +429,11 @@ const smimeNeedOrganization = computed(() =>
 // SMIME 组织是否必填（sponsor 和 organization 类型必填）
 const smimeOrganizationRequired = computed(() =>
   ["sponsor", "organization"].includes(smimeType.value)
+);
+
+// SMIME individual: 仅需要联系人，不需要组织（与 OrganizationEditor 互斥）
+const smimeNeedContactOnly = computed(
+  () => isSMIME.value && smimeType.value === "individual"
 );
 
 // 是否需要 CSR（所有产品类型都需要 CSR）
@@ -720,7 +728,7 @@ const productSelected = (productId: any) => {
     // 更新验证规则（根据产品类型）
     updateValidationRules();
 
-    // 组织/联系人验证规则（根据产品类型和 SMIME 子类型）
+    // 组织验证规则（根据产品类型和 SMIME 子类型）
     // 组织：OV/EV 必需，CodeSign/DocSign 必需，SMIME(sponsor/organization 必需)
     const needOrgRequired =
       isOrg.value ||
@@ -736,12 +744,11 @@ const productSelected = (productId: any) => {
         trigger: "change"
       }
     ];
-    // 联系人：OV/EV 需要，SMIME(individual/sponsor) 需要
-    const needContactRequired = isOrg.value || smimeNeedContact.value;
+
     rules.contact = [
       {
         required:
-          needContactRequired &&
+          smimeNeedContactOnly.value &&
           ["apply", "batchApply", "renew"].includes(props.actionType),
         message: "请选择联系人",
         trigger: "change"
@@ -829,11 +836,8 @@ const prepareOrderData = () => {
     params.organization = formData.organization;
   }
 
-  // 联系人：OV/EV、SMIME(individual/sponsor) 需要
-  if (
-    (isOrg.value || smimeNeedContact.value) &&
-    props.actionType !== "reissue"
-  ) {
+  // 联系人：SMIME individual 仅需联系人
+  if (smimeNeedContactOnly.value && props.actionType !== "reissue") {
     params.contact = formData.contact;
   }
 
@@ -887,15 +891,6 @@ const handleSubmit = async () => {
 const handleClose = () => {
   emit("update:visible", false);
   emit("close");
-};
-
-// 先关闭弹窗再跳转到组织页面
-const handleGoTo = (path: string) => {
-  emit("update:visible", false);
-  emit("close");
-  setTimeout(() => {
-    router.push(path);
-  }, 200);
 };
 
 // 初始化表单数据

@@ -10,41 +10,21 @@ class NotificationTemplateSeeder extends Seeder
     public function run(): void
     {
         $templates = [
-            // 证书签发通知 - 短信版
-            [
-                'code' => 'cert_issued',
-                'name' => '证书签发通知',
-                'content' => '您好 {{ $username }}，您的证书 {{ $domain }} 已签发。',
-                'variables' => ['order_id', 'mobile'],
-                'example' => '您好 test，您的证书 example.com 已签发。',
-                'channels' => ['sms'],
-            ],
-            // 证书签发通知 - 邮件版
+            // 证书签发通知
             [
                 'code' => 'cert_issued',
                 'name' => '证书签发通知',
                 'content' => $this->getOrderIssuedHtml(),
                 'variables' => ['order_id', 'email'],
                 'example' => null,
-                'channels' => ['mail'],
             ],
-            // 证书到期提醒 - 短信版
-            [
-                'code' => 'cert_expire',
-                'name' => '证书到期提醒',
-                'content' => '您好 {{ $username }}，您的以下证书即将到期：{{ $certificates }}',
-                'variables' => ['user_id', 'mobile'],
-                'example' => '您好 test，您的以下证书即将到期：example.com',
-                'channels' => ['sms'],
-            ],
-            // 证书到期提醒 - 邮件版
+            // 证书到期提醒
             [
                 'code' => 'cert_expire',
                 'name' => '证书到期提醒',
                 'content' => $this->getOrderExpireHtml(),
                 'variables' => ['user_id', 'email'],
                 'example' => null,
-                'channels' => ['mail'],
             ],
             // 安全通知
             [
@@ -53,7 +33,6 @@ class NotificationTemplateSeeder extends Seeder
                 'content' => '您好 {{ $username }}，您的账号发生安全变更：{{ $event }}，如非本人操作请及时处理。',
                 'variables' => ['username', 'event'],
                 'example' => '您好 test，您的密码已修改，如非本人操作请及时处理。',
-                'channels' => ['mail', 'sms'],
             ],
             // 用户创建通知
             [
@@ -62,9 +41,8 @@ class NotificationTemplateSeeder extends Seeder
                 'content' => '您好，我们为您创建了账号，用户名 {{ $username }}，密码 {{ $password }}，登录地址 {{ $site_url }}',
                 'variables' => ['username', 'password', 'site_url'],
                 'example' => '您好，我们为您创建了账号，用户名 test，密码 123456，登录地址 www.example.com',
-                'channels' => ['mail'],
             ],
-            // 任务失败告警 - 邮件版
+            // 任务失败告警
             [
                 'code' => 'task_failed',
                 'name' => '任务失败告警',
@@ -74,59 +52,32 @@ class NotificationTemplateSeeder extends Seeder
                     'error_message',
                 ],
                 'example' => null,
-                'channels' => ['mail'],
             ],
-            // 任务失败告警 - 短信版
+            // 资金审计告警（finance:audit 命令每天 03:00 触发）
             [
-                'code' => 'task_failed',
-                'name' => '任务失败告警',
-                'content' => '任务 ID {{ $task_id }} 失败：{{ $error_message }}',
-                'variables' => [
-                    'task_id',
-                    'error_message',
-                ],
-                'example' => null,
-                'channels' => ['sms'],
-            ],
-            // 资金审计告警 - 邮件版（finance:audit 命令每天 03:00 触发）
-            [
-                'code' => 'finance_audit_alert',
+                'code' => 'finance_audit',
                 'name' => '资金审计告警',
-                'content' => $this->getFinanceAuditAlertHtml(),
+                'content' => $this->getFinanceAuditHtml(),
                 'variables' => [
                     'violation_count',
                     'violations',
                     'detected_at',
                 ],
                 'example' => null,
-                'channels' => ['mail'],
             ],
         ];
 
         foreach ($templates as $template) {
-            // 根据模型的唯一性约束：code + channels（数组）组合需要唯一
-            // 查找是否存在相同 code 且 channels 完全相同的记录
-            $existing = NotificationTemplate::where('code', $template['code'])
-                ->get()
-                ->first(function ($item) use ($template) {
-                    // 比较 channels 数组是否完全相同（忽略顺序）
-                    $existingChannels = collect($item->channels)->sort()->values()->toArray();
-                    $newChannels = collect($template['channels'])->sort()->values()->toArray();
-
-                    return $existingChannels === $newChannels;
-                });
-
-            if (! $existing) {
-                NotificationTemplate::create([
-                    'code' => $template['code'],
+            NotificationTemplate::firstOrCreate(
+                ['code' => $template['code']],
+                [
                     'name' => $template['name'],
                     'content' => $template['content'],
                     'variables' => $template['variables'],
                     'example' => $template['example'] ?? null,
-                    'channels' => $template['channels'],
                     'status' => 1,
-                ]);
-            }
+                ]
+            );
         }
     }
 
@@ -588,7 +539,7 @@ HTML;
      * @noinspection XmlDeprecatedElement
      * @noinspection CssReplaceWithShorthandSafely
      */
-    private function getFinanceAuditAlertHtml(): string
+    private function getFinanceAuditHtml(): string
     {
         return <<<'HTML'
 <!DOCTYPE html>

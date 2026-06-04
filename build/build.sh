@@ -349,7 +349,11 @@ log_step "启动容器执行构建"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 构建 docker run 选项
-DOCKER_OPTS=(--rm --memory=4g)
+# 默认不设 --memory：orbstack/cgroup v2 下给容器加内存硬限制会让 pnpm install
+# 遍历 node_modules 时 open() 返回 ENOMEM（与内存量无关——6g 在 12g VM 下仍 3 秒崩，
+# 不设限制则秒级通过）。仅当显式配置 BUILD_MEMORY 时才加（自担 ENOMEM 风险）。
+DOCKER_OPTS=(--rm)
+[ -n "${BUILD_MEMORY:-}" ] && DOCKER_OPTS+=(--memory="$BUILD_MEMORY")
 
 # 挂载 monorepo 源代码（只读）
 DOCKER_OPTS+=(-v "$MONOREPO_ROOT:/source:ro")
@@ -381,8 +385,13 @@ DOCKER_OPTS+=(-v "$TEMP_DIR/caches/pnpm-store:/pnpm/store")
 # 运行容器
 log_info "容器将在构建完成后自动销毁"
 set +e
+# 临时移除 ERR trap：本脚本 set -E（errtrace）下，trap 会在管道失败时触发，
+# 其内部 echo 会重置 $PIPESTATUS，使下面 RUN_STATUS 读到 0 而非容器真实退出码
+# —— 构建失败被误报成功。捕获退出码后立即恢复 trap。
+trap - ERR
 docker run "${DOCKER_OPTS[@]}" "$BUILD_IMAGE_FULL" 2>&1 | tee "$BUILD_REPORT"
 RUN_STATUS=${PIPESTATUS[0]}
+trap 'echo -e "\033[0;31m[ERROR]\033[0m 命令失败: ${BASH_COMMAND} (行号: ${LINENO})"' ERR
 set -e
 
 if [ "$RUN_STATUS" -eq 0 ]; then

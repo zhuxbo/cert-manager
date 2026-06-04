@@ -4,16 +4,18 @@
 
 ## Skill 列表
 
-| Skill           | 文件               | 触发场景                                      |
-| --------------- | ------------------ | --------------------------------------------- |
-| 后端开发        | `backend-dev.md`   | Laravel API、升级系统、认证、委托验证         |
-| ACME 模块       | `acme-module.md`   | ACME 协议服务端、上游对接、订阅计费、状态流转 |
-| 前端开发        | `frontend-dev.md`  | Vue 3、Monorepo、共享组件                     |
-| 部署运维        | `deploy-ops.md`    | 宝塔部署、环境配置                            |
-| 构建发布        | `build-release.md` | 版本发布、打包、CI/CD                         |
-| 插件开发        | `plugin-dev.md`    | 插件系统、IIFE 打包、安装/更新/卸载           |
-| ACME E2E 测试   | `acme-e2e-test/`   | certbot 端到端测试（Manager + 上游系统）      |
-| Source API 接入 | `source-api.md`    | 新增上游来源（Order\Api + Acme\Api）          |
+| Skill           | 文件                                          | 触发场景                                                                         |
+| --------------- | --------------------------------------------- | -------------------------------------------------------------------------------- |
+| 后端开发        | `backend-dev.md`                              | Laravel API、升级系统、认证、委托验证                                            |
+| ACME 模块       | `acme-module.md`                              | ACME 协议服务端、上游对接、订阅计费、状态流转                                    |
+| 前端开发        | `frontend-dev.md`                             | Vue 3、Monorepo、共享组件                                                        |
+| 部署运维        | `deploy-ops.md`                               | 宝塔部署、环境配置                                                               |
+| 构建发布        | `build-release.md`                            | 版本发布、打包、CI/CD                                                            |
+| 插件开发        | `plugin-dev.md`                               | 插件系统、IIFE 打包、安装/更新/卸载                                              |
+| ACME E2E 测试   | `acme-e2e-test/`                              | certbot 端到端测试（Manager + 上游系统）                                         |
+| Source API 接入 | `source-api.md`                               | 新增上游来源（Order\Api + Acme\Api）                                             |
+| Review 清单     | `review-checklist.md`                         | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描          |
+| 案例腐烂检测    | `scripts/check-review-checklist-staleness.sh` | finish-check §6 文档同步阶段跑，验证 review-checklist.md 引用的类/方法是否仍存在 |
 
 ## 知识积累
 

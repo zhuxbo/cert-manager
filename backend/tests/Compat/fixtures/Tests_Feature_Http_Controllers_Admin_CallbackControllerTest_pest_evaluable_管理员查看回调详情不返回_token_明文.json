@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\CallbackControllerTest::__pest_evaluable_管理员查看回调详情不返回_token_明文",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/callback/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "user_id": "integer",
+                    "url": "string",
+                    "status": "integer",
+                    "created_at": "string",
+                    "updated_at": "string"
+                }
+            }
+        }
+    ]
+}

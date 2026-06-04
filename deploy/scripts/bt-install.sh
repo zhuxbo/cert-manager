@@ -209,29 +209,47 @@ check_environment() {
     log_success "检测到宝塔面板环境"
 }
 
-# 选择 PHP 版本（仅支持 8.3/8.4）
 select_php_version() {
     log_step "检测 PHP 版本"
 
-    local php_versions=()
+    # 读 php-requirements.json 的 php_min（与版本绑定）；缺失兜底 8.3.0
+    local req_file="$DEPLOY_DIR/php-requirements.json"
+    local php_min
+    php_min=$(_read_req_field "$req_file" "php_min" "8.3.0")
+    if [ -f "$req_file" ]; then
+        log_info "需求 PHP >= $php_min"
+    fi
 
-    for ver in 84 83; do
-        if [ -d "/www/server/php/$ver" ] && [ -x "/www/server/php/$ver/bin/php" ]; then
-            php_versions+=("$ver")
+    # 扫描 /www/server/php/* 目录，按 PHP_VERSION 对比 php_min 筛选
+    local php_versions=()
+    for ver_dir in /www/server/php/*; do
+        [ -d "$ver_dir" ] || continue
+        local php_bin="$ver_dir/bin/php"
+        [ -x "$php_bin" ] || continue
+        local actual
+        actual=$("$php_bin" -r 'echo PHP_VERSION;' 2>/dev/null) || continue
+        # 用 PHP 自身比较（避免 bash 处理语义化版本不准）
+        if "$php_bin" -r "exit(version_compare('$actual','$php_min','>=')?0:1);" 2>/dev/null; then
+            php_versions+=("$(basename "$ver_dir")")
         fi
     done
 
+    # 按版本号倒序（高版本优先展示）
+    if [ ${#php_versions[@]} -gt 1 ]; then
+        readarray -t php_versions < <(printf '%s\n' "${php_versions[@]}" | sort -rn)
+    fi
+
     if [ ${#php_versions[@]} -eq 0 ]; then
-        log_error "未检测到 PHP 8.3 或 8.4"
-        log_info "请在宝塔面板中安装 PHP 8.3 或 8.4"
+        log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+        log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
         exit 1
     elif [ ${#php_versions[@]} -eq 1 ]; then
         PHP_VERSION="${php_versions[0]}"
     else
-        log_info "检测到多个可用的 PHP 版本："
+        log_info "检测到多个符合要求的 PHP 版本："
         for i in "${!php_versions[@]}"; do
             local ver="${php_versions[$i]}"
-            echo " $((i + 1)). PHP 8.${ver: -1}"
+            echo " $((i + 1)). PHP $(_php_pretty_version "$ver")"
         done
 
         while true; do
@@ -245,7 +263,7 @@ select_php_version() {
     fi
 
     PHP_CMD="/www/server/php/$PHP_VERSION/bin/php"
-    log_success "使用 PHP 8.${PHP_VERSION: -1}"
+    log_success "使用 PHP $(_php_pretty_version "$PHP_VERSION")"
 }
 
 # 检测依赖
@@ -294,13 +312,16 @@ check_dependencies() {
     # 自动安装 base 扩展（fileinfo / intl / mbstring / calendar）+ pdo_mysql
     # pdo_mysql 是 Laravel 连 MySQL 的强需扩展，缺它会让 artisan migrate 失败
     # 失败仍走原 manual_actions 兜底
+    # 子进程必须接受父进程选好的 PHP_VERSION/PHP_CMD，否则子进程独立扫描会选最高版本
     if [ -f "$SCRIPT_DIR/bt-deps.sh" ]; then
-        bash "$SCRIPT_DIR/bt-deps.sh" auto_install_ext pdo_mysql || true
+        PHP_VERSION="$PHP_VERSION" PHP_CMD="$PHP_CMD" \
+            bash "$SCRIPT_DIR/bt-deps.sh" auto_install_ext pdo_mysql || true
     fi
 
     # 运行依赖检测脚本（manual_actions 兜底，强校验 MySQL + pdo_mysql）
     if [ -f "$SCRIPT_DIR/bt-deps.sh" ]; then
-        if ! bash "$SCRIPT_DIR/bt-deps.sh"; then
+        if ! PHP_VERSION="$PHP_VERSION" PHP_CMD="$PHP_CMD" \
+            bash "$SCRIPT_DIR/bt-deps.sh"; then
             log_error "依赖检测未通过，请按提示处理后重试"
             exit 1
         fi
@@ -543,17 +564,21 @@ download_application() {
         local version_file="$INSTALL_DIR/version.json"
 
         # 使用 PHP 处理 JSON（确保格式正确）
-        $PHP_CMD -r "
-            \$json = json_decode(file_get_contents('$version_file'), true);
+        # 安全：所有外部值（version_file 路径 / CUSTOM_RELEASE_URL）一律走环境变量 + getenv()
+        # 读取，绝不字符串插值进 PHP 代码——否则 URL 含单引号即可闭合注入任意 PHP（root RCE）
+        VERSION_FILE="$version_file" RELEASE_URL="$CUSTOM_RELEASE_URL" "$PHP_CMD" -r '
+            $file = getenv("VERSION_FILE");
+            $json = json_decode(file_get_contents($file), true);
             // 注入 release_url
-            if (!empty('$CUSTOM_RELEASE_URL')) {
-                \$json['release_url'] = '$CUSTOM_RELEASE_URL';
+            $releaseUrl = getenv("RELEASE_URL");
+            if (!empty($releaseUrl)) {
+                $json["release_url"] = $releaseUrl;
             }
             // 注入 network 配置（从环境变量读取）
-            \$network = getenv('NETWORK_ENV') ?: 'china';
-            \$json['network'] = \$network;
-            file_put_contents('$version_file', json_encode(\$json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . \"\\n\");
-        "
+            $network = getenv("NETWORK_ENV") ?: "china";
+            $json["network"] = $network;
+            file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        '
 
         if [ -n "$CUSTOM_RELEASE_URL" ]; then
             log_info "已配置 release_url: $CUSTOM_RELEASE_URL"
@@ -583,11 +608,57 @@ check_composer() {
         log_success "Composer 已安装: $COMPOSER_BIN"
     else
         # 安装 Composer（在临时目录中执行，避免污染当前目录）
+        # 安全：按 Composer 官方做法——先下载 installer 到本地文件，用官方权威来源
+        # https://composer.github.io/installer.sig 提供的 SHA384 校验通过后再执行；
+        # 不再 curl ... | php 直接管道执行（installer 被篡改即 root RCE）。
+        # installer.sig 随 installer 版本动态更新，是 Composer 官方维护的权威指纹，故运行时拉取而非硬编码。
         log_info "安装 Composer..."
         local temp_composer_dir="/tmp/composer-install-$$"
         mkdir -p "$temp_composer_dir"
         cd "$temp_composer_dir"
-        curl -sS https://getcomposer.org/installer | "$PHP_CMD"
+
+        if ! curl -fsSL --connect-timeout 10 --max-time 60 -o composer-setup.php https://getcomposer.org/installer; then
+            log_error "Composer installer 下载失败"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
+
+        local expected_sig
+        expected_sig=$(curl -fsSL --connect-timeout 10 --max-time 30 https://composer.github.io/installer.sig | tr -d '[:space:]')
+        if [ -z "$expected_sig" ]; then
+            log_error "无法获取 Composer installer 官方 SHA384 签名（installer.sig），安装中止"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
+
+        local actual_sig
+        actual_sig=$(file_sha384 composer-setup.php) || {
+            log_error "缺少 sha384sum/shasum/openssl 工具，无法校验 Composer installer，安装中止"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        }
+        actual_sig=$(echo "$actual_sig" | tr 'A-Z' 'a-z')
+        expected_sig=$(echo "$expected_sig" | tr 'A-Z' 'a-z')
+
+        if [ "$actual_sig" != "$expected_sig" ]; then
+            log_error "Composer installer SHA384 校验不匹配，可能被篡改，安装中止"
+            log_error "  期望: $expected_sig"
+            log_error "  实际: $actual_sig"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
+        log_success "Composer installer SHA384 校验通过"
+
+        if ! "$PHP_CMD" composer-setup.php; then
+            log_error "Composer installer 执行失败"
+            cd - >/dev/null
+            rm -rf "$temp_composer_dir"
+            exit 1
+        fi
         mv composer.phar /usr/local/bin/composer
         chmod +x /usr/local/bin/composer
         cd - >/dev/null
@@ -865,6 +936,31 @@ _set_env_var() {
     fi
 }
 
+# 按数据库版本选择最优 collation（恢复旧 install.php 的版本自动切换逻辑，整合安装后曾遗漏）
+# MySQL 8.0+ → utf8mb4_0900_ai_ci；MySQL 5.7 → utf8mb4_unicode_520_ci；
+# MariaDB（不支持 0900 系列）→ utf8mb4_unicode_ci；连不上/无客户端时回落全版本通用的 unicode_ci
+_detect_db_collation() {
+    local version="" major
+    if command -v mysql &>/dev/null; then
+        version=$(MYSQL_PWD="$DB_PASSWORD" mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" \
+            -N -s -e "SELECT VERSION()" 2>/dev/null | head -n1)
+    fi
+    if [ -z "$version" ]; then
+        printf 'utf8mb4_unicode_ci'
+        return
+    fi
+    if printf '%s' "$version" | grep -qiE 'mariadb'; then
+        printf 'utf8mb4_unicode_ci'
+        return
+    fi
+    major=$(printf '%s' "$version" | grep -oE '[0-9]+\.[0-9]+' | head -n1)
+    if [ -n "$major" ] && awk "BEGIN{exit !($major >= 8.0)}"; then
+        printf 'utf8mb4_0900_ai_ci'
+    else
+        printf 'utf8mb4_unicode_520_ci'
+    fi
+}
+
 # 生成 .env 文件
 # - APP_KEY / JWT_SECRET 现场生成
 # - mysql DB_CONNECTION + 连接字段
@@ -922,6 +1018,12 @@ generate_env_file() {
     _set_env_var "$env_file" "DB_DATABASE" "$DB_DATABASE"
     _set_env_var "$env_file" "DB_USERNAME" "$DB_USERNAME"
     _set_env_var "$env_file" "DB_PASSWORD" "$DB_PASSWORD"
+
+    # DB_COLLATION：按数据库版本自动选择最优排序规则（恢复旧 install.php 逻辑）
+    local db_collation
+    db_collation=$(_detect_db_collation)
+    _set_env_var "$env_file" "DB_COLLATION" "$db_collation"
+    log_info "DB_COLLATION=$db_collation（按数据库版本自动选择）"
 
     # CACHE_DRIVER / QUEUE_CONNECTION / SESSION_DRIVER 不写入 — 已是 config 默认值
 
@@ -1028,7 +1130,7 @@ show_manual_site_hint() {
     echo " 网站 → 添加站点"
     echo " 域名: ${SITE_DOMAIN:-<您的域名>}"
     echo " 网站目录: $INSTALL_DIR"
-    echo " PHP 版本: 8.${PHP_VERSION: -1}"
+    echo " PHP 版本: $(_php_pretty_version "$PHP_VERSION")"
     echo " 建站后到 网站 → ${SITE_DOMAIN:-<域名>} → 配置文件，在 root 行下方加："
     echo " include $INSTALL_DIR/nginx/manager.conf;"
     echo
@@ -1202,7 +1304,7 @@ show_complete_info() {
     echo "============================================"
     echo
     echo "安装目录: $INSTALL_DIR"
-    echo "PHP 版本: 8.${PHP_VERSION: -1}"
+    echo "PHP 版本: $(_php_pretty_version "$PHP_VERSION")"
     if [ -n "${SITE_DOMAIN:-}" ]; then
         echo "站点域名: $SITE_DOMAIN"
         echo
@@ -1244,12 +1346,14 @@ main() {
     # 注：仅选 driver，mysql 连接信息收集留在 collect_db_credentials
     select_db_driver
 
-    # 4-7. 依赖 / BT API 预检 / 目录 / 下载 / Composer（check_dependencies 已知 DB_DRIVER）
-    # detect_bt_key 在 check_dependencies 之后；其结果决定 select_install_dir 走的单一路径
-    # BT API 可用 → 仅问站点域名（已存在询问是否复用）
-    # BT API 不可用 → 仅问安装目录绝对路径
-    check_dependencies
+    # 4. BT API 预检（提前到 check_dependencies 之前；子进程 bt-deps.sh 通过 env 继承 BT_KEY 复用）
+    # 探测结果决定 select_install_dir 走的单一路径：
+    #   BT API 可用 → 仅问站点域名（已存在询问是否复用）
+    #   BT API 不可用 → 仅问安装目录绝对路径
     detect_bt_key
+
+    # 5-7. 依赖 / 目录 / 下载 / Composer（check_dependencies 已知 DB_DRIVER + BT_KEY）
+    check_dependencies
     select_install_dir
     download_application
     check_composer

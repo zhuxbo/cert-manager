@@ -3,8 +3,31 @@
 use App\Services\Upgrade\BackupManager;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
+
+/**
+ * 在指定备份目录写一个含给定条目的 backend.zip / frontend.zip。
+ *
+ * @param  array<string, string>  $entries  条目名 => 内容
+ */
+function writeRestoreZip(string $backupDir, string $zipName, array $entries): void
+{
+    File::makeDirectory($backupDir, 0755, true);
+    $zip = new ZipArchive;
+    $zip->open("$backupDir/$zipName", ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    foreach ($entries as $name => $content) {
+        $zip->addFromString($name, $content);
+    }
+    $zip->close();
+}
+
+function invokeRestore(BackupManager $manager, string $method, string $backupDir): void
+{
+    $ref = new ReflectionMethod($manager, $method);
+    $ref->invoke($manager, $backupDir);
+}
 
 beforeEach(function () {
     $this->testBackupPath = storage_path('test-backups');
@@ -29,7 +52,7 @@ test('validate backup id valid', function () {
     $manager = new BackupManager;
 
     // 有效的备份 ID 应该不抛出异常
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('validateBackupId');
 
     // 不抛出异常即为通过
@@ -42,7 +65,7 @@ test('validate backup id valid', function () {
 test('validate backup id invalid format', function () {
     $manager = new BackupManager;
 
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('validateBackupId');
 
     $method->invoke($manager, '../../../etc/passwd');
@@ -51,7 +74,7 @@ test('validate backup id invalid format', function () {
 test('validate backup id path traversal', function () {
     $manager = new BackupManager;
 
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $method = $reflection->getMethod('validateBackupId');
 
     $invalidIds = [
@@ -67,7 +90,7 @@ test('validate backup id path traversal', function () {
     foreach ($invalidIds as $id) {
         try {
             $method->invoke($manager, $id);
-            throw new \Exception("Expected exception for invalid ID: $id");
+            throw new Exception("Expected exception for invalid ID: $id");
         } catch (RuntimeException $e) {
             expect($e->getMessage())->toContain('无效的备份 ID');
         }
@@ -189,4 +212,49 @@ test('delete backup', function () {
 
     expect($result)->toBeTrue();
     expect(File::isDirectory("$this->testBackupPath/$backupId"))->toBeFalse();
+});
+
+test('restoreBackend 拒绝含 .. 路径遍历的备份包', function () {
+    $manager = new BackupManager;
+    $backupDir = "$this->testBackupPath/evil-backend";
+
+    writeRestoreZip($backupDir, 'backend.zip', [
+        'app/Foo.php' => '<?php',
+        '../../../tmp/zipslip-backend-evil' => 'pwned',
+    ]);
+
+    // 校验在 extractTo 之前发生 → 抛异常且不落地任何越界文件
+    expect(fn () => invokeRestore($manager, 'restoreBackend', $backupDir))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+
+    expect(File::exists('/tmp/zipslip-backend-evil'))->toBeFalse();
+});
+
+test('restoreBackend 拒绝绝对路径条目的备份包', function () {
+    $manager = new BackupManager;
+    $backupDir = "$this->testBackupPath/abs-backend";
+
+    writeRestoreZip($backupDir, 'backend.zip', [
+        '/tmp/zipslip-backend-abs' => 'pwned',
+    ]);
+
+    expect(fn () => invokeRestore($manager, 'restoreBackend', $backupDir))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+
+    expect(File::exists('/tmp/zipslip-backend-abs'))->toBeFalse();
+});
+
+test('restoreFrontend 拒绝含 .. 路径遍历的前端备份包', function () {
+    $manager = new BackupManager;
+    $backupDir = "$this->testBackupPath/evil-frontend";
+
+    writeRestoreZip($backupDir, 'frontend.zip', [
+        'admin/index.html' => '<html>',
+        '../../../tmp/zipslip-frontend-evil' => 'pwned',
+    ]);
+
+    expect(fn () => invokeRestore($manager, 'restoreFrontend', $backupDir))
+        ->toThrow(RuntimeException::class, 'ZIP 包含非法路径');
+
+    expect(File::exists('/tmp/zipslip-frontend-evil'))->toBeFalse();
 });

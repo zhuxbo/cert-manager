@@ -1,0 +1,474 @@
+openapi: 3.1.0
+info:
+  title: API v2
+  version: "2.0"
+  description: |
+    供下游接入方对接证书申请、续费、重签、取消、查询与验证文档上传。
+
+    - **鉴权**：请求头 `Authorization: Bearer {API Token}`（在「设置 → API」获取）。
+    - **统一响应**：`{ "code": 1|0, "msg": "", "data": {...}, "errors": null }`，`code=1` 成功、`code=0` 失败。
+    - POST 端点请求体为 `application/json`。
+    - **不支持** `delegation`（委托）验证方法。
+
+# 相对 server，Scalar 会基于当前站点 origin 解析，使「试一试」打到本站 /api/v2
+servers:
+  - url: /api/v2
+    description: 当前站点
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: 产品与订单
+  - name: 申请
+  - name: 订单操作
+  - name: 验证文档
+
+paths:
+  /health:
+    get:
+      tags: [产品与订单]
+      summary: 健康检查
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          status: { type: string, example: ok }
+                          version: { type: string, example: v2 }
+                          timestamp: { type: integer, example: 1733000000 }
+
+  /get-products:
+    get:
+      tags: [产品与订单]
+      summary: 产品列表
+      description: 返回当前 Token 用户可见的非 ACME 产品，含按周期的会员价。`validation_methods` 不含 delegation。
+      parameters:
+        - { name: brand, in: query, required: false, schema: { type: string }, description: 品牌过滤（小写匹配） }
+        - { name: code, in: query, required: false, schema: { type: string }, description: 产品编码模糊匹配 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Product" }
+
+  /get-orders:
+    get:
+      tags: [产品与订单]
+      summary: 订单列表
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 100, minimum: 1, maximum: 100 } }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, default: all }
+          description: 证书状态过滤，`all` 不过滤
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          page: { type: integer }
+                          page_size: { type: integer }
+                          data:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                order: { type: object }
+                                cert: { type: object }
+                                product: { type: object }
+
+  /new:
+    post:
+      tags: [申请]
+      summary: 申请证书
+      description: 创建并支付订单。返回 `dcv`/`validation` 供完成域名验证。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewOrderRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ApplyResult" }
+
+  /renew:
+    post:
+      tags: [申请]
+      summary: 续费
+      description: 入参同 `/new`，外加 `order_id`（原订单）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/NewOrderRequest"
+                - type: object
+                  required: [order_id]
+                  properties:
+                    order_id: { type: integer, description: 原订单 ID }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ApplyResult" }
+
+  /reissue:
+    post:
+      tags: [申请]
+      summary: 重签
+      description: 取 `order_id` + csr/domains/organization。不涉及计费周期。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id: { type: integer }
+                csr_generate: { type: integer, enum: [0, 1] }
+                csr: { type: string }
+                encryption: { type: string, description: 系统生成 CSR 时的密钥算法 }
+                domains: { type: string, description: 逗号分隔 }
+                validation_method: { $ref: "#/components/schemas/ValidationMethod" }
+                organization: { $ref: "#/components/schemas/Organization" }
+                issue_verify: { type: integer, enum: [0, 1] }
+                refer_id: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/ApplyResult" }
+
+  /get:
+    get:
+      tags: [订单操作]
+      summary: 订单详情
+      description: |
+        返回订单与证书：`common_name`、`alternative_names`、`dcv`、`validation`、`csr`、
+        `private_key`、`cert`、`issued_at`、`expires_at`、`status` 等。
+        调用会顺带推进待支付/待提交/可同步订单（有节流，签发态 120s、其他 10s）。
+      parameters:
+        - { name: order_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/OrderDetail" }
+
+  /get-order-id-by-refer-id:
+    get:
+      tags: [订单操作]
+      summary: 用 refer_id 查订单 ID
+      parameters:
+        - { name: refer_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          order_id: { type: integer }
+
+  /cancel:
+    post:
+      tags: [订单操作]
+      summary: 取消订单
+      description: 未支付删除、待提交取消、已签发按退款期取消。超出退款期或终态返回失败。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiResponse" }
+
+  /revalidate:
+    post:
+      tags: [订单操作]
+      summary: 重新验证
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiResponse" }
+
+  /update-dcv:
+    post:
+      tags: [订单操作]
+      summary: 修改验证方法
+      description: 不支持 `delegation`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, method]
+              properties:
+                order_id: { type: integer }
+                method: { $ref: "#/components/schemas/ValidationMethod" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiResponse" }
+
+  /download:
+    get:
+      tags: [订单操作]
+      summary: 下载证书
+      parameters:
+        - { name: order_id, in: query, required: true, schema: { type: integer } }
+        - name: type
+          in: query
+          required: false
+          schema: { type: string, default: all }
+          description: "`all` / `certificate` / `private_key` / `intermediate` 等"
+      responses:
+        "200":
+          description: 证书内容（按 type 返回打包或文本）
+
+  /upload-document:
+    post:
+      tags: [验证文档]
+      summary: 上传验证文档
+      description: |
+        Certum 系 OV/EV 需上传验证材料。**幂等去重**：同一订单下相同内容只存一份（按内容哈希），
+        重复上传安全。上传后异步入队提交上游。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, type, fileName, document_content]
+              properties:
+                order_id: { type: integer }
+                type:
+                  type: string
+                  enum: [APPLICANT, ORGANIZATION, AUTHORIZATION, ADDITIONAL]
+                fileName: { type: string, description: 含扩展名 PDF/JPG/JPEG/PNG/XADES，≤5MB }
+                document_content: { type: string, description: 文件内容 base64 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiResponse" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API Token（在「设置 → API」获取）
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code: { type: integer, enum: [0, 1], description: 1 成功 / 0 失败 }
+        msg: { type: string }
+        data: {}
+        errors: { type: [object, "null"] }
+
+    ValidationMethod:
+      type: string
+      description: 域名验证方法，不含 delegation；取值对应系统验证方法字典，admin/administrator/postmaster/webmaster/hostmaster 为邮箱前缀验证，具体以产品 validation_methods 为准
+      enum: [txt, cname, file, http, https, admin, administrator, postmaster, webmaster, hostmaster]
+
+    NewOrderRequest:
+      type: object
+      required: [product_code, domains, validation_method]
+      properties:
+        product_code: { type: string, description: 产品编码（见 get-products） }
+        domains: { type: string, description: 域名，逗号分隔 }
+        validation_method: { $ref: "#/components/schemas/ValidationMethod" }
+        period: { type: integer, description: 周期（月），默认按产品 }
+        csr_generate: { type: integer, enum: [0, 1], description: 1=系统生成，0=用 csr }
+        csr: { type: string, description: csr_generate=0 时必填 }
+        encryption: { type: string, description: 系统生成 CSR 时的密钥算法 }
+        plus: { type: integer, enum: [0, 1], description: 赠送时间标记 }
+        contact: { $ref: "#/components/schemas/Contact" }
+        organization: { $ref: "#/components/schemas/Organization" }
+        refer_id: { type: string, maxLength: 64, description: 端到端幂等键 }
+        issue_verify: { type: integer, enum: [0, 1], description: 1=提交后立即尝试验证 }
+
+    ApplyResult:
+      type: object
+      properties:
+        order_id: { type: integer }
+        cert_apply_status: { type: integer }
+        dcv: { $ref: "#/components/schemas/Dcv" }
+        validation:
+          type: array
+          items: { $ref: "#/components/schemas/ValidationItem" }
+
+    OrderDetail:
+      type: object
+      properties:
+        common_name: { type: string }
+        alternative_names: { type: string }
+        organization:
+          anyOf:
+            - $ref: "#/components/schemas/Organization"
+            - type: "null"
+        contact:
+          anyOf:
+            - $ref: "#/components/schemas/Contact"
+            - type: "null"
+        period_from: { type: [string, "null"] }
+        period_till: { type: [string, "null"] }
+        csr: { type: string }
+        private_key: { type: string, description: 仅系统生成密钥时返回 }
+        cert: { type: [string, "null"] }
+        issued_at: { type: [string, "null"] }
+        expires_at: { type: [string, "null"] }
+        cert_apply_status: { type: integer }
+        domain_verify_status: { type: [integer, "null"] }
+        org_verify_status: { type: [integer, "null"] }
+        status: { type: string, description: 对外不返回 unpaid/pending（统一显示为 processing） }
+        dcv: { $ref: "#/components/schemas/Dcv" }
+        validation:
+          type: array
+          items: { $ref: "#/components/schemas/ValidationItem" }
+
+    Dcv:
+      type: [object, "null"]
+      properties:
+        method: { type: string }
+        dns: { type: object }
+        file: { type: object }
+
+    ValidationItem:
+      type: object
+      properties:
+        domain: { type: string }
+        method: { type: string }
+        verified: { type: [boolean, integer] }
+        host: { type: string }
+        value: { type: string }
+        name: { type: string }
+        content: { type: string }
+        link: { type: string }
+        path: { type: string }
+        email: { type: string }
+        error: { type: string }
+        expires_date: { type: string }
+
+    Product:
+      type: object
+      description: 字段为产品属性子集，`cost.price` 按周期键。
+      properties:
+        code: { type: string }
+        brand: { type: string }
+        periods:
+          type: array
+          items: { type: integer }
+        validation_methods:
+          type: array
+          items: { type: string }
+        cost:
+          type: object
+          properties:
+            price: { type: object, additionalProperties: { type: number } }
+            alternative_standard_price: { type: object, additionalProperties: { type: number } }
+            alternative_wildcard_price: { type: object, additionalProperties: { type: number } }
+
+    Organization:
+      type: object
+      description: 企业信息（OV/EV 必填）；可传 contact_id 复用已绑定联系人，或顶层另传 contact
+      properties:
+        name: { type: string, description: 企业名称 }
+        registration_number: { type: string, description: 注册号 / 统一社会信用代码 }
+        country: { type: string, description: 国家代码（如 CN） }
+        state: { type: string, description: 省 / 州 }
+        city: { type: string, description: 城市 }
+        address: { type: string, description: 详细地址 }
+        postcode: { type: string, description: 邮政编码 }
+        phone: { type: string, description: 企业电话 }
+        contact_id: { type: integer, description: 复用已绑定联系人 ID（可选） }
+
+    Contact:
+      type: object
+      description: 联系人信息（OV/EV 必填）
+      properties:
+        last_name: { type: string, description: 姓 }
+        first_name: { type: string, description: 名 }
+        title: { type: string, description: 职位 / 头衔 }
+        email: { type: string, format: email, description: 邮箱 }
+        phone: { type: string, description: 电话 }

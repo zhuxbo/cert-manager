@@ -390,6 +390,13 @@ class BackupManager
         $basePath = base_path();
         $projectRoot = dirname($basePath);
 
+        // 解压前逐条目校验，防止路径遍历 / 符号链接攻击（与 PluginManager 共用 ArchiveGuard）。
+        // 备份包内 `../version.json` 是合法条目（下方白名单单独安全落地），精确放行。
+        ArchiveGuard::assertSafeEntries($zip, ['../version.json']);
+
+        // 收集落到 base_path 的条目名，供解压后落点断言（白名单条目另行处理，不参与断言）
+        $extractedToBase = [];
+
         // 逐个解压文件，处理特殊路径（权限受限文件使用 File::put）
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $filename = $zip->getNameIndex($i);
@@ -405,10 +412,16 @@ class BackupManager
             } else {
                 // 其他文件解压到 base_path
                 $zip->extractTo($basePath, $filename);
+                if (is_string($filename)) {
+                    $extractedToBase[] = $filename;
+                }
             }
         }
 
         $zip->close();
+
+        // 解压后断言产物落点仍在 base_path 内（纵深兜底，含符号链接绕过）
+        ArchiveGuard::assertExtractedWithin($basePath, $extractedToBase);
     }
 
     /**
@@ -437,8 +450,19 @@ class BackupManager
             File::makeDirectory($frontendPath, 0755, true);
         }
 
+        // 解压前逐条目校验，防止路径遍历 / 符号链接攻击（与 PluginManager 共用 ArchiveGuard）
+        ArchiveGuard::assertSafeEntries($zip);
+
+        $entryNames = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entryNames[] = $zip->getNameIndex($i);
+        }
+
         $zip->extractTo($frontendPath);
         $zip->close();
+
+        // 解压后断言产物落点仍在前端目录内（纵深兜底，含符号链接绕过）
+        ArchiveGuard::assertExtractedWithin($frontendPath, array_filter($entryNames, 'is_string'));
     }
 
     /**

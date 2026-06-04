@@ -66,8 +66,7 @@ test('new 一步到位成功', function () {
 
     $response = test()->withHeaders(['Authorization' => "Bearer $deployToken->token"])
         ->postJson('/api/deploy/acme/new', [
-            'product_id' => $product->id,
-            'period' => 12,
+            'product_code' => $product->code,
             'contact_email' => 'deploy@example.com',
         ])
         ->assertOk()
@@ -121,8 +120,7 @@ test('new 支持自选 contact_email 并透传给 Gateway', function () {
 
     $response = test()->withHeaders(['Authorization' => "Bearer $deployToken->token"])
         ->postJson('/api/deploy/acme/new', [
-            'product_id' => $product->id,
-            'period' => 12,
+            'product_code' => $product->code,
             'contact_email' => 'acme-deploy@example.com',
         ])
         ->assertOk()
@@ -145,8 +143,7 @@ test('new 产品不存在报错', function () {
 
     test()->withHeaders(['Authorization' => "Bearer $deployToken->token"])
         ->postJson('/api/deploy/acme/new', [
-            'product_id' => 99999,
-            'period' => 12,
+            'product_code' => 'nonexistent-acme-code',
             'contact_email' => 'x@example.com',
         ])
         ->assertOk()
@@ -165,8 +162,7 @@ test('new 缺少 contact_email 校验失败', function () {
 
     test()->withHeaders(['Authorization' => "Bearer $deployToken->token"])
         ->postJson('/api/deploy/acme/new', [
-            'product_id' => $product->id,
-            'period' => 12,
+            'product_code' => $product->code,
         ])
         ->assertOk()
         ->assertJson(['code' => 0])
@@ -194,8 +190,8 @@ test('new 余额不足报错', function () {
 
     test()->withHeaders(['Authorization' => "Bearer $deployToken->token"])
         ->postJson('/api/deploy/acme/new', [
-            'product_id' => $product->id,
-            'period' => 12,
+            'product_code' => $product->code,
+            'contact_email' => 'x@example.com',
         ])
         ->assertOk()
         ->assertJson(['code' => 0]);

@@ -83,6 +83,15 @@ if [ "${BUILD_BACKEND:-false}" = "true" ]; then
 
         # 生成排除列表文件
         EXCLUDE_FILE="$(mktemp)"
+
+        # 保护：对外接口文档随后端打包（运行时 MetaController::apiDoc 读取 resources/docs/api/*.yaml）
+        # 必须在下面 *.md 通配排除“之前” include —— rsync 过滤规则按顺序首个匹配生效
+        cat >>"$EXCLUDE_FILE" <<'EOF'
++ /resources/docs/
++ /resources/docs/api/
++ /resources/docs/api/**
+EOF
+
         jq -r '.exclude_patterns.backend[]' "$CONFIG_FILE" 2>/dev/null >>"$EXCLUDE_FILE" || true
 
         # 额外排除
@@ -206,3 +215,13 @@ log_success "version.json 已生成"
 log_info "版本: $VERSION"
 log_info "通道: $RELEASE_CHANNEL"
 log_info "Monorepo commit: ${MONOREPO_COMMIT:-N/A}"
+
+# 复制 PHP 环境需求清单到生产代码根（后续 package.sh 会随 rsync 带入 FULL/UPGRADE 包）
+# 后台升级 EnvironmentChecker / upgrade.sh 启动前都从这里读
+PHP_REQ_SRC="$SOURCE_DIR/build/php-requirements.json"
+if [ -f "$PHP_REQ_SRC" ]; then
+    cp "$PHP_REQ_SRC" "$PRODUCTION_DIR/php-requirements.json"
+    log_success "php-requirements.json 已生成"
+else
+    log_warning "未找到 build/php-requirements.json，跳过（旧版本无此文件时升级流程会自动 skip 检测）"
+fi

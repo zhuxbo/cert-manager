@@ -8,15 +8,13 @@ export interface SearchParams {
   name?: string;
   code?: string;
   status?: "" | 0 | 1;
-  channel?: string | "";
 }
 
 export function useNotificationTemplate() {
   const search = ref<SearchParams>({
     name: "",
     code: "",
-    status: "",
-    channel: ""
+    status: ""
   });
 
   const dataList = ref<TemplateItem[]>([]);
@@ -65,7 +63,6 @@ export function useNotificationTemplate() {
     search.value.name = "";
     search.value.code = "";
     search.value.status = "";
-    search.value.channel = "";
     pagination.currentPage = 1;
     onSearch();
   };

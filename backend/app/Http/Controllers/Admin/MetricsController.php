@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers\Admin;
 
-use App\Models\CaLog;
 use App\Models\Order;
 use App\Traits\ApiResponse;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -18,33 +18,54 @@ class MetricsController extends BaseController
 {
     use ApiResponse;
 
+    /**
+     * 系统状态页可能轮询此端点，整份指标快照走 30s 短 TTL 缓存，
+     * 避免每次轮询都重复跑全表聚合 / information_schema 查询。
+     * collected_at 放进缓存闭包内，反映数据真实采集时刻而非读取时刻。
+     */
+    private const int CACHE_TTL_SECONDS = 30;
+
     public function index(): void
     {
-        $this->success([
-            'orders' => $this->orders(),
-            'queue' => $this->queue(),
-            'ca' => $this->ca(),
-            'logs' => $this->logs(),
-            'database' => $this->database(),
-            'collected_at' => now()->toIso8601String(),
-        ]);
+        $data = Cache::remember('metrics:index', self::CACHE_TTL_SECONDS, function () {
+            return [
+                'orders' => $this->orders(),
+                'queue' => $this->queue(),
+                'ca' => $this->ca(),
+                'logs' => $this->logs(),
+                'database' => $this->database(),
+                'collected_at' => now()->toIso8601String(),
+            ];
+        });
+
+        $this->success($data);
     }
 
     /**
-     * 订单 24h / 7d 总单量 + 按 latestCert.status 分布。
+     * 订单状态分布的统计窗口：仅近 30 天下单的订单。
+     *
+     * 避免无界全表 join certs 聚合 —— 历史订单越积越多，全表 join + group by
+     * 在大库下会随数据量线性变慢。系统状态页只关心近期分布，30 天足够。
+     */
+    private const int ORDERS_WINDOW_DAYS = 30;
+
+    /**
+     * 订单 24h / 7d 总单量 + 近 30 天按 latestCert.status 分布。
      */
     private function orders(): array
     {
         $now = now();
         $h24 = $now->copy()->subDay();
         $d7 = $now->copy()->subDays(7);
+        $window = $now->copy()->subDays(self::ORDERS_WINDOW_DAYS);
 
         $count24h = Order::where('created_at', '>=', $h24)->count();
         $count7d = Order::where('created_at', '>=', $d7)->count();
 
-        // 状态分布走 latestCert.status（订单本身不存状态）
+        // 状态分布走 latestCert.status（订单本身不存状态），限近 30 天下单的订单
         $statusRows = DB::table('orders')
             ->join('certs', 'orders.latest_cert_id', '=', 'certs.id')
+            ->where('orders.created_at', '>=', $window)
             ->selectRaw('certs.status as status, COUNT(*) as cnt')
             ->groupBy('certs.status')
             ->get();
@@ -90,7 +111,9 @@ class MetricsController extends BaseController
     /**
      * CA 出站调用：最近 24h 总数 / 成功率 / 延迟 P50 / P95（基于 ca_logs.duration 秒列）。
      *
-     * P50/P95 在 PHP 端计算（数据量预期 < 10k）。
+     * P50/P95 走 SQL 侧 OFFSET 定位（ORDER BY duration LIMIT 1 OFFSET N），不把全量
+     * duration 拉进 PHP 排序。MySQL 5.7 无 percentile 函数，OFFSET 定位法 5.7+8.x 通用。
+     * 依赖 ca_logs(created_at) 索引（窗口过滤）；排序由 duration 列承担。
      */
     private function ca(): array
     {
@@ -110,26 +133,13 @@ class MetricsController extends BaseController
         $p95Ms = 0;
 
         if ($total > 0) {
-            // duration 单位为秒（DECIMAL），对外统一暴露毫秒
-            $durations = CaLog::where('created_at', '>=', $since)
-                ->orderBy('duration')
-                ->pluck('duration')
-                ->map(fn ($v) => (float) $v)
-                ->all();
+            // 0-based 分位下标，与历史 PHP 实现一致：floor(n * p)，并 clamp 到 [0, n-1]
+            $p50Offset = min((int) floor($total * 0.5), $total - 1);
+            $p95Offset = min((int) floor($total * 0.95), $total - 1);
 
-            $count = count($durations);
-            if ($count > 0) {
-                $p50Index = (int) floor($count * 0.5);
-                $p95Index = (int) floor($count * 0.95);
-                if ($p50Index >= $count) {
-                    $p50Index = $count - 1;
-                }
-                if ($p95Index >= $count) {
-                    $p95Index = $count - 1;
-                }
-                $p50Ms = (int) round($durations[$p50Index] * 1000);
-                $p95Ms = (int) round($durations[$p95Index] * 1000);
-            }
+            // duration 单位为秒（DECIMAL），对外统一暴露毫秒
+            $p50Ms = $this->durationPercentileMs($since, $p50Offset);
+            $p95Ms = $this->durationPercentileMs($since, $p95Offset);
         }
 
         return [
@@ -138,6 +148,23 @@ class MetricsController extends BaseController
             'latency_p50_ms' => $p50Ms,
             'latency_p95_ms' => $p95Ms,
         ];
+    }
+
+    /**
+     * 取窗口内 ca_logs.duration 升序排列第 $offset 行（0-based）的值，秒转毫秒。
+     *
+     * 单行查询，不把全量 duration 进 PHP。$offset 由调用方保证落在 [0, n-1]。
+     */
+    private function durationPercentileMs(\DateTimeInterface $since, int $offset): int
+    {
+        $value = DB::table('ca_logs')
+            ->where('created_at', '>=', $since)
+            ->orderBy('duration')
+            ->offset($offset)
+            ->limit(1)
+            ->value('duration');
+
+        return (int) round((float) $value * 1000);
     }
 
     /**

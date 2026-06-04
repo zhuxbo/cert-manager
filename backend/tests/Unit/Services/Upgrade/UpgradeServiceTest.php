@@ -1,13 +1,16 @@
 <?php
 
+use App\Services\Binary\BinaryLocator;
 use App\Services\Upgrade\BackupManager;
 use App\Services\Upgrade\DatabaseStructureService;
+use App\Services\Upgrade\EnvironmentChecker;
 use App\Services\Upgrade\PackageExtractor;
 use App\Services\Upgrade\ReleaseClient;
 use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\VersionManager;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 afterEach(function () {
     Mockery::close();
@@ -38,7 +41,8 @@ test('check for update returns no update when same version', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->checkForUpdate();
@@ -74,7 +78,8 @@ test('check for update returns update available', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->checkForUpdate();
@@ -102,7 +107,8 @@ test('check for update handles no release', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->checkForUpdate();
@@ -131,7 +137,8 @@ test('get release history returns releases', function () {
         $releaseClient,
         Mockery::mock(BackupManager::class),
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->getReleaseHistory(5);
@@ -154,7 +161,8 @@ test('get backups returns backup list', function () {
         Mockery::mock(ReleaseClient::class),
         $backupManager,
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->getBackups();
@@ -174,7 +182,8 @@ test('rollback fails for missing backup', function () {
         Mockery::mock(ReleaseClient::class),
         $backupManager,
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->rollback('invalid_backup');
@@ -195,7 +204,8 @@ test('delete backup calls backup manager', function () {
         Mockery::mock(ReleaseClient::class),
         $backupManager,
         Mockery::mock(PackageExtractor::class),
-        Mockery::mock(DatabaseStructureService::class)
+        Mockery::mock(DatabaseStructureService::class),
+        Mockery::mock(EnvironmentChecker::class)
     );
 
     $result = $service->deleteBackup('backup_123');
@@ -203,22 +213,17 @@ test('delete backup calls backup manager', function () {
     expect($result)->toBeTrue();
 });
 
-test('find composer command', function () {
-    $service = app(UpgradeService::class);
+test('binary locator resolves composer command', function () {
+    // 在开发环境中，composer 应该是可用的；BinaryLocator::composer() 返回完整 "{php} {phar}" 命令串
+    $cmd = app(BinaryLocator::class)->composer();
 
-    $reflection = new \ReflectionClass($service);
-    $method = $reflection->getMethod('findComposerCommand');
-
-    $result = $method->invoke($service);
-
-    // 在开发环境中，composer 应该是可用的
-    expect($result)->not->toBeNull();
+    expect($cmd)->toBeString()->not->toBeEmpty();
 });
 
 test('check network access method', function () {
     $service = app(UpgradeService::class);
 
-    $reflection = new \ReflectionClass($service);
+    $reflection = new ReflectionClass($service);
     $method = $reflection->getMethod('checkNetworkAccess');
 
     // 测试本地地址

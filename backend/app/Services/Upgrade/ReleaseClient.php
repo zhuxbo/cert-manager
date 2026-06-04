@@ -2,7 +2,8 @@
 
 namespace App\Services\Upgrade;
 
-use App\Traits\ResolvesExecutablePath;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -14,8 +15,6 @@ use RuntimeException;
  */
 class ReleaseClient
 {
-    use ResolvesExecutablePath;
-
     protected ?string $baseUrl = null;
 
     public function __construct()
@@ -56,11 +55,11 @@ class ReleaseClient
             foreach ($releases as $release) {
                 $tagName = $release['tag_name'] ?? '';
                 if ($this->matchChannel($tagName, $channel)) {
+                    // 直接对完整版本号比较；PHP 原生 version_compare 能正确处理
+                    // dev 通道下 beta.10 > beta.9 / rc > beta > alpha > dev 等场景
+                    // strtolower 与 VersionManager::compareVersions 对齐（大写关键字标准化）
                     $version = ltrim($tagName, 'vV');
-                    $compareVersion = $this->stripPreReleaseSuffix($version);
-                    $compareLatest = $this->stripPreReleaseSuffix($latestVersion);
-
-                    if (version_compare($compareVersion, $compareLatest, '>')) {
+                    if (version_compare(strtolower($version), strtolower($latestVersion), '>')) {
                         $latestVersion = $version;
                         $latestRelease = $release;
                     }
@@ -110,10 +109,10 @@ class ReleaseClient
             $releases = $this->fetchReleases();
             $filtered = [];
 
-            // 按版本号降序排序
+            // 按版本号降序排序（strtolower 与 VersionManager::compareVersions 对齐）
             usort($releases, function ($a, $b) {
-                $va = ltrim($a['tag_name'] ?? '', 'vV');
-                $vb = ltrim($b['tag_name'] ?? '', 'vV');
+                $va = strtolower(ltrim($a['tag_name'] ?? '', 'vV'));
+                $vb = strtolower(ltrim($b['tag_name'] ?? '', 'vV'));
 
                 return version_compare($vb, $va);
             });
@@ -141,6 +140,13 @@ class ReleaseClient
      */
     public function downloadPackage(string $url, string $savePath): bool
     {
+        // 传输层安全：公网必须 https，仅内网/私网地址放开 http（兼容内网离线部署）
+        if (! $this->validateReleaseUrl($url)) {
+            Log::error("下载升级包失败: 不安全的下载地址（公网必须使用 HTTPS）: $url");
+
+            return false;
+        }
+
         $timeout = Config::get('upgrade.package.download_timeout', 300);
 
         // 优先使用 curl 命令
@@ -151,7 +157,11 @@ class ReleaseClient
         // 回退到 PHP HTTP 客户端
         try {
             $response = Http::timeout($timeout)
-                ->withOptions(['sink' => $savePath])
+                ->withOptions([
+                    'sink' => $savePath,
+                    // 与 curl 对称：重定向仅允许 https（防降级到 http 内网/元数据 SSRF），限 5 跳
+                    'allow_redirects' => ['max' => 5, 'protocols' => ['https']],
+                ])
                 ->get($url);
 
             if ($response->successful() && file_exists($savePath)) {
@@ -169,9 +179,143 @@ class ReleaseClient
     }
 
     /**
-     * 下载升级包（从自建服务）
+     * 校验下载地址的传输层安全性。
+     *
+     * 升级包是可执行代码载荷，明文 http 下载可被中间人替换 → 条件性 RCE。
+     * 策略（与 deploy/install.sh 允许 `--url http://内网` 的部署语义兼容）：
+     *   - https：一律放行
+     *   - http：仅当主机解析为私有/保留 IP 段时放行（内网离线部署）；公网 http 拒绝
+     *   - 其他 scheme / 无法解析：拒绝
+     *
+     * 注意与 SSRF 防护（ActionCallbackTrait::isPrivateUrl）语义相反：那里禁内网，
+     * 这里恰恰只对内网放宽 http。
      */
-    public function downloadPackageWithFallback(string $filename, string $tag, string $savePath): bool
+    public function validateReleaseUrl(string $url): bool
+    {
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+
+        if ($scheme === 'https') {
+            return true;
+        }
+
+        if ($scheme !== 'http') {
+            return false;
+        }
+
+        // http：只允许内网/私网/保留地址
+        $host = parse_url($url, PHP_URL_HOST);
+        if (! $host) {
+            return false;
+        }
+
+        $ip = filter_var($host, FILTER_VALIDATE_IP) ? $host : gethostbyname($host);
+        // gethostbyname 解析失败时原样返回主机名
+        if (! filter_var($ip, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+
+        // 明文 http 仅放行 RFC1918 私网与 loopback；显式拒绝 link-local 169.254.0.0/16
+        // （含云元数据 169.254.169.254）、CGNAT、保留/多播等危险段，防 SSRF。
+        return $this->isPrivateOrLoopbackIp($ip);
+    }
+
+    /**
+     * IP 是否为 RFC1918 私网或 loopback —— 明文 http 的唯一放行集合。
+     *
+     * 排除 link-local（169.254.0.0/16，含云元数据 169.254.169.254）、CGNAT、0.0.0.0/8、
+     * 多播等危险保留段，防 SSRF。loopback（127/8、::1）在 filter_var 里归类为 reserved，单独放行。
+     */
+    protected function isPrivateOrLoopbackIp(string $ip): bool
+    {
+        if ($ip === '::1' || str_starts_with($ip, '127.')) {
+            return true;
+        }
+
+        return ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE);
+    }
+
+    /**
+     * 下载升级包并强校验 sha256。
+     *
+     * fail-closed：releases.json 未提供该 asset 的 sha256，或哈希不匹配，
+     * 一律视为失败并删除已下载文件，绝不放行未验证的可执行包。
+     *
+     * @param  string  $expectedSha256  releases.json 中对应 asset 的 sha256（hex，大小写无关）
+     *
+     * @throws RuntimeException 校验失败时抛出（引导用户改用 upgrade.sh）
+     */
+    public function downloadAndVerify(string $url, string $savePath, string $expectedSha256): bool
+    {
+        if (! $this->downloadPackage($url, $savePath)) {
+            return false;
+        }
+
+        $this->verifyPackageHash($savePath, $expectedSha256);
+
+        return true;
+    }
+
+    /**
+     * 校验已下载文件的 sha256，不匹配或缺失期望值时删除文件并抛异常。
+     *
+     * @throws RuntimeException
+     */
+    public function verifyPackageHash(string $path, string $expectedSha256): void
+    {
+        $expected = strtolower(trim($expectedSha256));
+
+        if ($expected === '') {
+            @unlink($path);
+            throw new RuntimeException(
+                'releases.json 缺少升级包的 sha256 校验值，已中止升级。'.
+                '为防止下载内容被篡改（条件性 RCE），不校验的升级包不会被应用。'.
+                '请确认 release 站 releases.json 的 assets[].sha256 已生成，或改用 upgrade.sh 升级。'
+            );
+        }
+
+        if (! file_exists($path)) {
+            throw new RuntimeException("升级包不存在，无法校验 sha256: $path");
+        }
+
+        $actual = strtolower(hash_file('sha256', $path));
+
+        if (! hash_equals($expected, $actual)) {
+            @unlink($path);
+            throw new RuntimeException(
+                "升级包 sha256 校验不匹配，已中止升级并删除文件。期望: {$expected}，实际: {$actual}。".
+                '下载内容可能在传输中被篡改，请改用 upgrade.sh 升级。'
+            );
+        }
+
+        Log::info("升级包 sha256 校验通过: {$expected}");
+    }
+
+    /**
+     * 提取 Release 中指定 asset 的 sha256（hex）。
+     *
+     * @param  string  $type  'upgrade' | 'full'，匹配 asset 文件名关键字
+     */
+    public function findPackageSha256(array $release, string $type): string
+    {
+        foreach ($release['assets'] ?? [] as $asset) {
+            $name = $asset['name'] ?? '';
+            if (str_contains($name, $type) && str_ends_with($name, '.zip')) {
+                return (string) ($asset['sha256'] ?? '');
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * 下载升级包（从自建服务）。
+     *
+     * @param  string  $expectedSha256  非空时下载后强校验 sha256（fail-closed）；
+     *                                  空字符串保留旧行为（仅供无 sha256 上下文的兼容调用）
+     *
+     * @throws RuntimeException sha256 校验失败（$expectedSha256 非空时）
+     */
+    public function downloadPackageWithFallback(string $filename, string $tag, string $savePath, string $expectedSha256 = ''): bool
     {
         $this->ensureConfigured();
         $url = "$this->baseUrl/$tag/$filename";
@@ -179,6 +323,10 @@ class ReleaseClient
 
         if ($this->downloadPackage($url, $savePath)) {
             Log::info('下载成功');
+
+            if ($expectedSha256 !== '') {
+                $this->verifyPackageHash($savePath, $expectedSha256);
+            }
 
             return true;
         }
@@ -194,54 +342,64 @@ class ReleaseClient
     }
 
     /**
-     * 根据 Release 下载升级包
+     * 根据 Release 下载升级包并强校验 sha256（fail-closed）。
+     *
+     * @throws RuntimeException sha256 缺失或不匹配
      */
     public function downloadUpgradePackage(array $release, string $savePath): bool
     {
-        $version = $release['version'] ?? '';
-        $tagName = $release['tag_name'] ?? "v$version";
-
-        // 尝试从 assets 中获取文件名和 URL
-        $filename = null;
-        $assetUrl = null;
-        foreach ($release['assets'] ?? [] as $asset) {
-            $name = $asset['name'] ?? '';
-            if (str_contains($name, 'upgrade') && str_ends_with($name, '.zip')) {
-                $filename = $name;
-                $assetUrl = $asset['browser_download_url'] ?? null;
-                break;
-            }
-        }
-
-        // 如果找到 asset URL，直接使用
-        if ($assetUrl) {
-            Log::info("下载: $assetUrl");
-
-            return $this->downloadPackage($assetUrl, $savePath);
-        }
-
-        // 否则构造标准文件名
-        if (! $filename) {
-            $filename = "ssl-manager-upgrade-$version.zip";
-        }
-
-        return $this->downloadPackageWithFallback($filename, $tagName, $savePath);
+        return $this->downloadReleaseAsset($release, $savePath, 'upgrade');
     }
 
     /**
-     * 根据 Release 下载完整包
+     * 根据 Release 下载完整包并强校验 sha256（fail-closed）。
+     *
+     * @throws RuntimeException sha256 缺失或不匹配
      */
     public function downloadFullPackage(array $release, string $savePath): bool
+    {
+        return $this->downloadReleaseAsset($release, $savePath, 'full');
+    }
+
+    /**
+     * 根据 Release 下载指定类型的 asset 并强校验 sha256。
+     *
+     * sha256 来自 releases.json 对应 asset 条目（fail-closed：缺失即视为校验失败）。
+     * URL 解析与历史一致：优先用 asset 的 browser_download_url，否则按版本目录构造 fallback。
+     *
+     * fail-closed（覆盖所有下载路径）：releases.json 未提供匹配 asset 的 sha256 时，
+     * 在任何下载发生之前直接拒绝，绝不退化到无校验的 fallback 下载。
+     * 否则攻击者只要影响 releases.json（省略/改名 asset → sha256 取空），即可迫使走
+     * downloadPackageWithFallback 的空 sha256 分支跳过校验，下载未经验证的可执行包 → 条件性 RCE。
+     *
+     * @param  string  $type  'upgrade' | 'full'
+     *
+     * @throws RuntimeException sha256 缺失或不匹配（已删除下载文件）
+     */
+    protected function downloadReleaseAsset(array $release, string $savePath, string $type): bool
     {
         $version = $release['version'] ?? '';
         $tagName = $release['tag_name'] ?? "v$version";
 
+        // sha256 在 normalizeRelease 阶段从 releases.json 保留下来
+        $expectedSha256 = $this->findPackageSha256($release, $type);
+
+        // fail-closed：缺少 sha256（asset 缺失/改名/无 sha256 字段）一律拒绝，
+        // 不下载、不走无校验 fallback。文案与 verifyPackageHash 一致，引导改用 upgrade.sh。
+        if (trim($expectedSha256) === '') {
+            throw new RuntimeException(
+                'releases.json 缺少升级包的 sha256 校验值，已中止升级。'.
+                '为防止下载内容被篡改（条件性 RCE），不校验的升级包不会被应用。'.
+                '请确认 release 站 releases.json 的 assets[].sha256 已生成，或改用 upgrade.sh 升级。'
+            );
+        }
+
         // 尝试从 assets 中获取文件名和 URL
         $filename = null;
         $assetUrl = null;
         foreach ($release['assets'] ?? [] as $asset) {
             $name = $asset['name'] ?? '';
-            if (str_contains($name, 'full') && str_ends_with($name, '.zip')) {
+            if (str_contains($name, $type) && str_ends_with($name, '.zip')) {
                 $filename = $name;
                 $assetUrl = $asset['browser_download_url'] ?? null;
                 break;
@@ -252,15 +410,15 @@ class ReleaseClient
         if ($assetUrl) {
             Log::info("下载: $assetUrl");
 
-            return $this->downloadPackage($assetUrl, $savePath);
+            return $this->downloadAndVerify($assetUrl, $savePath, $expectedSha256);
         }
 
         // 否则构造标准文件名
         if (! $filename) {
-            $filename = "ssl-manager-full-$version.zip";
+            $filename = "ssl-manager-$type-$version.zip";
         }
 
-        return $this->downloadPackageWithFallback($filename, $tagName, $savePath);
+        return $this->downloadPackageWithFallback($filename, $tagName, $savePath, $expectedSha256);
     }
 
     /**
@@ -268,14 +426,20 @@ class ReleaseClient
      */
     protected function downloadWithCurl(string $url, string $savePath, int $timeout): bool
     {
-        $curlPath = $this->resolveExecutablePath('curl');
-        if ($curlPath === null) {
+        try {
+            $curlPath = app(BinaryLocator::class)->curl();
+        } catch (BinaryNotFoundException) {
             return false;
         }
 
         $args = [
             escapeshellarg($curlPath),
             '-fsL',
+            // 收敛重定向协议：初始仅 http/https，重定向仅 https，限 5 跳 —— 防 file/gopher 等
+            // SSRF 协议，并堵“https 预校验通过 → 302 降级到 http 内网/元数据”绕过
+            '--proto', '=http,https',
+            '--proto-redir', '=https',
+            '--max-redirs', '5',
             '--connect-timeout',
             '10',
             '--max-time',
@@ -379,14 +543,6 @@ class ReleaseClient
     }
 
     /**
-     * 移除预发布后缀用于版本比较
-     */
-    protected function stripPreReleaseSuffix(string $version): string
-    {
-        return preg_replace('/-(dev|alpha|beta|rc)(\.\d+)?$/', '', $version);
-    }
-
-    /**
      * 标准化 Release 数据
      */
     protected function normalizeRelease(array $release): array
@@ -405,6 +561,10 @@ class ReleaseClient
             $assets[] = [
                 'name' => $asset['name'] ?? '',
                 'size' => $asset['size'] ?? 0,
+                // 保留发布端写入的 sha256（hex 小写）——下载后强校验依赖，
+                // 字段名/编码与 build/scripts/release-common.sh 及 deploy/scripts/common.sh
+                // 的线协议一致；缺失则置空，由 downloadAndVerify fail-closed 拦截
+                'sha256' => $asset['sha256'] ?? '',
                 'browser_download_url' => $url,
             ];
         }

@@ -5,16 +5,27 @@
 ```
 plugins/
 ├── release-plugin.sh     # 通用构建脚本
-├── temp/               # 构建产物（git 忽略）
-└── {name}/             # 已安装的插件
-    ├── plugin.json     # 插件元数据（必须）
-    ├── build.json      # 打包配置（开发用）
-    ├── backend/        # PHP 后端
-    ├── admin/          # 管理端前端
-    ├── user/           # 用户端前端
-    ├── frontend/       # 静态页面（可选）
-    └── nginx/          # nginx 配置（可选）
+├── temp/                 # 构建产物（git 忽略）
+└── {name}/               # 已安装的插件
+    ├── plugin.json       # 插件元数据（必须）
+    ├── build.json        # 打包配置（开发用）
+    ├── backend/          # PHP 后端
+    ├── frontend/         # 前端（可选）
+    │   ├── admin/        # 管理端 IIFE Vue 组件
+    │   ├── user/         # 用户端 IIFE Vue 组件
+    │   └── web/          # 独立静态页（原生 HTML+JS，如 Easy 简易申请/简易开票）
+    └── nginx/            # nginx 配置（可选）
 ```
+
+## 内置插件
+
+| 插件              | 功能                                                                        | 参考用途                               |
+| ----------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称                                      | 最小可用插件骨架                       |
+| `plugins/invoice` | 发票管理（双端 CRUD）+ 外部开票方接入（pending/complete）+ Admin 配置面板   | CRUD + 对外鉴权接口 + storage 加密配置 |
+| `plugins/easy`    | Easy 简易证书申请 + 简易开票（依赖 `invoice` 插件，软 `class_exists` 守门） | 多回调、跨插件协作、tid+email 业务鉴权 |
+
+详见 [`skills/plugin-dev.md`](../skills/plugin-dev.md)。
 
 ## 安装插件
 

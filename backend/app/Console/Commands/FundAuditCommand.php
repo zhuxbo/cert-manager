@@ -24,7 +24,7 @@ use Throwable;
  *
  * - 命令始终 return 0：违反不算崩溃，靠邮件告警驱动人工介入；命令崩溃（DB 连不上等）
  *   才返回 1 让外层重试
- * - 邮件链路走 NotificationCenter（同 TaskJob::failed 模式），code=finance_audit_alert
+ * - 邮件链路走 NotificationCenter（同 TaskJob::failed 模式），code=finance_audit
  * - Log::error 兜底：模板未配置时 NotificationCenter 仅 logSkip，落日志保证可观测
  * - --freeze-on-violation：仅 freeze L1/L3/L4 涉事 user（L2 是事件唯一不针对 user）
  */
@@ -131,7 +131,7 @@ class FundAuditCommand extends Command
             }, $violations);
 
             $intent = new NotificationIntent(
-                'finance_audit_alert',
+                'finance_audit',
                 'admin',
                 $admin->id,
                 [
@@ -139,8 +139,7 @@ class FundAuditCommand extends Command
                     'violation_count' => count($violations),
                     'violations' => $compact,
                     'detected_at' => now()->toDateTimeString(),
-                ],
-                ['mail']
+                ]
             );
 
             app(NotificationCenter::class)->dispatch($intent);

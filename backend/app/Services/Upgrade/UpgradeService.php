@@ -2,6 +2,9 @@
 
 namespace App\Services\Upgrade;
 
+use App\Exceptions\PhpEnvironmentException;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -15,6 +18,7 @@ class UpgradeService
         protected BackupManager $backupManager,
         protected PackageExtractor $packageExtractor,
         protected DatabaseStructureService $databaseStructureService,
+        protected EnvironmentChecker $environmentChecker,
     ) {}
 
     /**
@@ -53,263 +57,6 @@ class UpgradeService
             'release_date' => $latestRelease['published_at'] ?? '',
             'channel' => $channel,
         ];
-    }
-
-    /**
-     * 执行升级
-     */
-    public function performUpgrade(string $version = 'latest'): array
-    {
-        $steps = [];
-
-        try {
-            // 步骤 1: 获取目标版本信息
-            $steps[] = ['step' => 'fetch_release', 'status' => 'running'];
-
-            if ($version === 'latest') {
-                $channel = $this->versionManager->getChannel();
-                $release = $this->releaseClient->getLatestRelease($channel);
-            } else {
-                $tag = str_starts_with($version, 'v') ? $version : "v$version";
-                $release = $this->releaseClient->getReleaseByTag($tag);
-            }
-
-            if (! $release) {
-                throw new RuntimeException("无法获取版本 $version 的信息");
-            }
-
-            $steps[count($steps) - 1]['status'] = 'completed';
-            $targetVersion = $release['version'];
-            $currentVersion = $this->versionManager->getVersionString();
-
-            // 步骤 2: 检查版本
-            $steps[] = ['step' => 'check_version', 'status' => 'running'];
-
-            if ($targetVersion === $currentVersion) {
-                throw new RuntimeException("当前已是最新版本 {$currentVersion}，无需升级");
-            }
-
-            if (! $this->versionManager->isUpgradeAllowed($targetVersion)) {
-                throw new RuntimeException("不允许从 $currentVersion 升级到 {$targetVersion}（目标版本低于当前版本）");
-            }
-
-            $steps[count($steps) - 1]['status'] = 'completed';
-
-            // 检查版本顺序约束（默认关闭，支持跨版本升级）
-            $requireSequential = Config::get('upgrade.constraints.require_sequential', false);
-            if ($requireSequential) {
-                $steps[] = ['step' => 'check_sequential', 'status' => 'running'];
-
-                // 获取可用版本列表
-                $releases = $this->releaseClient->getReleaseHistory(50);
-                $availableVersions = array_column($releases, 'version');
-
-                if (! $this->versionManager->isSequentialUpgrade($targetVersion, $availableVersions)) {
-                    $nextVersion = $this->versionManager->getNextUpgradeVersion($availableVersions);
-                    $currentVersion = $this->versionManager->getVersionString();
-
-                    if ($nextVersion) {
-                        throw new RuntimeException(
-                            "必须按版本顺序升级。当前版本: {$currentVersion}，下一个可升级版本: {$nextVersion}，".
-                            "目标版本: {$targetVersion}。请先升级到 $nextVersion"
-                        );
-                    } else {
-                        throw new RuntimeException('没有可用的升级版本');
-                    }
-                }
-
-                $steps[count($steps) - 1]['status'] = 'completed';
-            }
-
-            // 检查 PHP 版本
-            if (! $this->versionManager->checkPhpVersion()) {
-                $minVersion = $this->versionManager->getMinPhpVersion();
-                throw new RuntimeException("PHP 版本不满足要求，需要 PHP >= $minVersion");
-            }
-
-            // 步骤 3: 创建备份
-            $forceBackup = Config::get('upgrade.behavior.force_backup', true);
-            $backupId = null;
-
-            if ($forceBackup) {
-                $steps[] = ['step' => 'backup', 'status' => 'running'];
-                $backupId = $this->backupManager->createBackup();
-                $steps[count($steps) - 1]['status'] = 'completed';
-                $steps[count($steps) - 1]['backup_id'] = $backupId;
-            }
-
-            // 步骤 4: 进入维护模式
-            $maintenanceMode = Config::get('upgrade.behavior.maintenance_mode', true);
-            if ($maintenanceMode) {
-                $steps[] = ['step' => 'maintenance_on', 'status' => 'running'];
-                Artisan::call('down', ['--retry' => 60]);
-                $steps[count($steps) - 1]['status'] = 'completed';
-            }
-
-            // 步骤 5: 下载升级包
-            $steps[] = ['step' => 'download', 'status' => 'running'];
-            $packagePath = $this->packageExtractor->getDownloadPath()."/upgrade-$targetVersion.zip";
-
-            if (! $this->releaseClient->downloadUpgradePackage($release, $packagePath)) {
-                throw new RuntimeException('下载升级包失败（所有下载源都不可用）');
-            }
-            $steps[count($steps) - 1]['status'] = 'completed';
-
-            // 步骤 6: 解压并验证
-            $steps[] = ['step' => 'extract', 'status' => 'running'];
-            $extractedPath = $this->packageExtractor->extract($packagePath);
-            $this->packageExtractor->validatePackage($extractedPath);
-            $steps[count($steps) - 1]['status'] = 'completed';
-
-            // 记录当前 composer 文件的 hash（用于检测变化）
-            $oldComposerHashes = $this->getComposerHashes(base_path());
-            Log::info('[Upgrade] Current composer hashes', $oldComposerHashes);
-
-            // 步骤 7: 应用升级
-            $steps[] = ['step' => 'apply', 'status' => 'running'];
-            $this->packageExtractor->applyUpgrade($extractedPath);
-            $steps[count($steps) - 1]['status'] = 'completed';
-
-            // 步骤 8: 安装 Composer 依赖（比较 hash 决定是否需要安装）
-            $newComposerHashes = $this->getComposerHashes(base_path());
-            Log::info('[Upgrade] New composer hashes', $newComposerHashes);
-
-            $needComposerInstall = $this->hasComposerChanges($oldComposerHashes, $newComposerHashes);
-
-            if ($needComposerInstall) {
-                $steps[] = ['step' => 'composer_install', 'status' => 'running'];
-                Log::info('[Upgrade] Detected composer changes, running composer install');
-
-                $composerInstallSuccess = $this->runComposerInstall();
-                if (! $composerInstallSuccess) {
-                    throw new RuntimeException('Composer 依赖安装失败');
-                }
-
-                $steps[count($steps) - 1]['status'] = 'completed';
-            } else {
-                Log::info('[Upgrade] No composer changes detected, skipping composer install');
-            }
-
-            // 步骤 9: 清理 opcache 以便加载新代码
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-                Log::info('[Upgrade] opcache_reset called after applying upgrade');
-            }
-
-            // 步骤 10: 运行迁移
-            $autoMigrate = Config::get('upgrade.behavior.auto_migrate', true);
-            if ($autoMigrate) {
-                $steps[] = ['step' => 'migrate', 'status' => 'running'];
-                Artisan::call('migrate', ['--force' => true]);
-                $steps[count($steps) - 1]['status'] = 'completed';
-            }
-
-            // 步骤 11: 数据库结构校验
-            $structureCheckResult = $this->checkAndFixDatabaseStructure();
-            if ($structureCheckResult && ! ($structureCheckResult['skipped'] ?? false)) {
-                $steps[] = [
-                    'step' => 'structure_check',
-                    'status' => 'completed',
-                    'result' => $structureCheckResult,
-                ];
-            }
-
-            // 步骤 12: 运行种子
-            $autoSeed = Config::get('upgrade.behavior.auto_seed', true);
-            if ($autoSeed) {
-                $steps[] = ['step' => 'seed', 'status' => 'running'];
-                $seedClass = Config::get('upgrade.behavior.seed_class');
-                $seedOptions = ['--force' => true];
-                if ($seedClass) {
-                    $seedOptions['--class'] = $seedClass;
-                }
-                Artisan::call('db:seed', $seedOptions);
-                $steps[count($steps) - 1]['status'] = 'completed';
-            }
-
-            // 步骤 13: 清理缓存
-            $clearCache = Config::get('upgrade.behavior.clear_cache', true);
-            if ($clearCache) {
-                $steps[] = ['step' => 'clear_cache', 'status' => 'running'];
-                Log::info('[Upgrade] Step: clear_cache - starting optimize:clear');
-                Artisan::call('optimize:clear', ['--except' => 'view']);
-                Log::info('[Upgrade] optimize:clear done, output: '.Artisan::output());
-
-                // 重建缓存
-                Log::info('[Upgrade] Starting config:cache');
-                Artisan::call('config:cache');
-                Log::info('[Upgrade] config:cache done, output: '.Artisan::output());
-
-                Log::info('[Upgrade] Starting route:cache');
-                try {
-                    Artisan::call('route:cache');
-                    Log::info('[Upgrade] route:cache done, output: '.Artisan::output());
-                } catch (\Exception $e) {
-                    Log::warning("[Upgrade] route:cache 失败（不影响升级）: {$e->getMessage()}");
-                }
-
-                // 验证路由缓存文件
-                $routeCacheFile = base_path('bootstrap/cache/routes-v7.php');
-                Log::info('[Upgrade] Route cache file exists: '.(file_exists($routeCacheFile) ? 'YES' : 'NO'));
-
-                $steps[count($steps) - 1]['status'] = 'completed';
-            }
-
-            // 步骤 14: 更新版本号（所有操作完成后再更新）
-            $steps[] = ['step' => 'update_version', 'status' => 'running'];
-            $this->updateEnvVersion($targetVersion);
-            $steps[count($steps) - 1]['status'] = 'completed';
-
-            // 步骤 15: 清理临时文件
-            $steps[] = ['step' => 'cleanup', 'status' => 'running'];
-            $this->packageExtractor->cleanup($extractedPath);
-            $this->packageExtractor->cleanupOldPackages();
-            $steps[count($steps) - 1]['status'] = 'completed';
-
-            // 步骤 16: 退出维护模式
-            if ($maintenanceMode) {
-                $steps[] = ['step' => 'maintenance_off', 'status' => 'running'];
-                Artisan::call('up');
-                $steps[count($steps) - 1]['status'] = 'completed';
-            }
-
-            // 最终清理 opcache
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-                Log::info('[Upgrade] Final opcache_reset called');
-            }
-
-            Log::info("升级完成: {$this->versionManager->getVersionString()} -> $targetVersion");
-
-            return [
-                'success' => true,
-                'from_version' => $this->versionManager->getVersionString(),
-                'to_version' => $targetVersion,
-                'backup_id' => $backupId,
-                'steps' => $steps,
-            ];
-
-        } catch (\Exception $e) {
-            // 标记当前步骤失败
-            $steps[count($steps) - 1]['status'] = 'failed';
-            $steps[count($steps) - 1]['error'] = $e->getMessage();
-
-            // 尝试恢复
-            try {
-                // 退出维护模式
-                Artisan::call('up');
-            } catch (\Exception $upError) {
-                Log::error("退出维护模式失败: {$upError->getMessage()}");
-            }
-
-            Log::error("升级失败: {$e->getMessage()}");
-
-            return [
-                'success' => false,
-                'error' => $e->getMessage(),
-                'steps' => $steps,
-            ];
-        }
     }
 
     /**
@@ -378,7 +125,10 @@ class UpgradeService
                 $statusManager->completeStep('maintenance_on');
             }
 
-            // 步骤 5: 下载升级包
+            // 步骤 5: 下载升级包（内部强校验 sha256，fail-closed）
+            // downloadUpgradePackage 在下载完成后立即比对 releases.json 的 sha256：
+            // 缺失或不匹配会抛 RuntimeException 并删除已下载文件 → 被本方法外层 catch 接住，
+            // 保证未经校验 / 被篡改的可执行包绝不会进入后续 extract / applyUpgrade。
             $statusManager->startStep('download');
             $packagePath = $this->packageExtractor->getDownloadPath()."/upgrade-$targetVersion.zip";
 
@@ -392,6 +142,23 @@ class UpgradeService
             $extractedPath = $this->packageExtractor->extract($packagePath);
             $this->packageExtractor->validatePackage($extractedPath);
             $statusManager->completeStep('extract');
+
+            // 步骤 6.5: PHP 环境检测（仅检测，不修复；不通过提示用 upgrade.sh）
+            // 重要：必须在 packageExtractor->applyUpgrade 之前完成；该方法会切换代码目录
+            // ——破坏现场之前先拦下不满足环境的升级
+            $statusManager->startStep('check_environment');
+            $requirementsPath = $this->packageExtractor->findRequirementsJson($extractedPath)
+                ?? "$extractedPath/php-requirements.json"; // 兜底：让 check() 命中 file_missing 走 skipped
+            $envReport = $this->environmentChecker->check($requirementsPath);
+            if (! $envReport['ok']) {
+                $details = $this->environmentChecker->summarize($envReport);
+                $statusManager->failStep('check_environment', $details['message']);
+                throw new PhpEnvironmentException($details['message'], $details);
+            }
+            if (! empty($envReport['skipped'])) {
+                Log::info('[Upgrade] check_environment skipped: '.($envReport['reason'] ?? 'unknown'));
+            }
+            $statusManager->completeStep('check_environment');
 
             // 记录当前 composer 文件的 hash（用于检测变化）
             $oldComposerHashes = $this->getComposerHashes(base_path());
@@ -417,6 +184,11 @@ class UpgradeService
                 $statusManager->completeStep('composer_install');
             } else {
                 Log::info('[Upgrade] No composer changes detected, skipping composer install');
+            }
+
+            // 无条件重建 autoload（修复跨小版本升级时 classmap 漂移；对齐 upgrade.sh 策略）
+            if (! $this->runDumpAutoload()) {
+                throw new RuntimeException('Composer autoload 重建失败');
             }
 
             // 步骤 9: 清理 opcache
@@ -489,6 +261,14 @@ class UpgradeService
                 $statusManager->completeStep('maintenance_off');
             }
 
+            // 重启队列 worker（让常驻 worker 跑完当前 job 后退出，加载新代码）
+            try {
+                Artisan::call('queue:restart');
+                Log::info('[Upgrade] queue:restart 信号已发送');
+            } catch (\Exception $e) {
+                Log::warning('[Upgrade] queue:restart 失败: '.$e->getMessage());
+            }
+
             // 最终清理
             if (function_exists('opcache_reset')) {
                 opcache_reset();
@@ -517,11 +297,14 @@ class UpgradeService
             }
 
             Log::error("升级失败: {$e->getMessage()}");
-            $statusManager->fail($e->getMessage());
+            // PHP 环境检测失败时，把结构化 details 一并写入 status.json，前端据此引导用户用 upgrade.sh
+            $details = $e instanceof PhpEnvironmentException ? $e->getDetails() : null;
+            $statusManager->fail($e->getMessage(), $details);
 
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
+                'error_details' => $details,
             ];
         }
     }
@@ -737,10 +520,10 @@ class UpgradeService
     {
         $basePath = base_path();
 
-        // 尝试查找 composer 命令
-        $composerCmd = $this->findComposerCommand();
-        if (! $composerCmd) {
-            Log::error('[Upgrade] Composer not found');
+        try {
+            $composerCmd = app(BinaryLocator::class)->composer();
+        } catch (BinaryNotFoundException $e) {
+            Log::error('[Upgrade] Composer not found: '.$e->getMessage());
 
             return false;
         }
@@ -748,8 +531,15 @@ class UpgradeService
         // 自动检测并切换镜像
         $mirrorConfigured = $this->configureComposerMirror($basePath, $composerCmd);
 
+        // 关键：composer install 加 --no-scripts 防止 post-autoload-dump 触发 package:discover
+        // 旧 vendor 残留时跑 package:discover 会加载老代码导致 fatal，进而把 vendor 写成半成品
+        // 改为：composer install 仅装包 → 单独跑 dump-autoload 重建 autoload → 再跑 package:discover
+        //
+        // 与 deploy/upgrade.sh 不对称：shell 入口走 root SSH，流量已隔离/维护模式生效，fatal 只
+        // 影响终端不会死锁前端，故保留 scripts 让 composer 跑完默认流程。本路径走 PHP-FPM www
+        // 用户，必须 --no-scripts 兜底，避免 vendor 半成品后请求轮询全员瘫痪。
         $command = sprintf(
-            'cd %s && %s install --no-dev --optimize-autoloader --no-interaction 2>&1',
+            'cd %s && %s install --no-dev --no-scripts --no-interaction 2>&1',
             escapeshellarg($basePath),
             $composerCmd
         );
@@ -773,6 +563,55 @@ class UpgradeService
         }
 
         Log::info('[Upgrade] Composer install completed successfully');
+
+        return true;
+    }
+
+    /**
+     * 无条件重建 autoload + package:discover。
+     *
+     * 由主流程在 applyUpgrade 之后调用，不依赖 composer.json 是否变化 —— 对齐
+     * deploy/upgrade.sh 的"无条件 dump-autoload"策略，修复跨小版本升级时 PSR-4
+     * 映射 / classmap 漂移导致的 ClassNotFoundException（如 Laravel 13.7→13.8
+     * 内部文件路径调整但 composer 依赖未变）。
+     *
+     * dump-autoload 失败必须 fail-fast：autoload 不一致会让后续 migrate / seed
+     * 加载到不存在的类。package:discover 失败仅 warn（缓存可在 clear_cache 时重生）。
+     */
+    protected function runDumpAutoload(): bool
+    {
+        $basePath = base_path();
+
+        try {
+            $composerCmd = app(BinaryLocator::class)->composer();
+        } catch (BinaryNotFoundException $e) {
+            Log::error('[Upgrade] Composer not found (runDumpAutoload): '.$e->getMessage());
+
+            return false;
+        }
+
+        $dumpCommand = sprintf(
+            'cd %s && %s dump-autoload --optimize --no-scripts --no-interaction 2>&1',
+            escapeshellarg($basePath),
+            $composerCmd
+        );
+        Log::info("[Upgrade] Running: $dumpCommand");
+        exec($dumpCommand, $dumpOutput, $dumpReturnCode);
+        Log::info('[Upgrade] dump-autoload output: '.implode("\n", $dumpOutput));
+        if ($dumpReturnCode !== 0) {
+            Log::error("[Upgrade] dump-autoload failed with code: $dumpReturnCode");
+
+            return false;
+        }
+
+        // package:discover 生成 bootstrap/cache/packages.php（新版代码 + 新 autoload 已就绪）
+        // 失败仅警告不阻断（package 缓存可在下一次清缓存时重生成）
+        $discoverResult = $this->runArtisanInSubprocess('package:discover', ['--ansi']);
+        if ($discoverResult['exit_code'] !== 0) {
+            Log::warning("[Upgrade] package:discover failed (non-blocking) exit={$discoverResult['exit_code']} output: ".$discoverResult['output']);
+        } else {
+            Log::info('[Upgrade] package:discover ok output: '.$discoverResult['output']);
+        }
 
         return true;
     }
@@ -883,12 +722,19 @@ class UpgradeService
      */
     protected function runArtisanInSubprocess(string $command, array $args = []): array
     {
-        $phpBinary = $this->findPhpBinary();
+        $phpBinary = app(BinaryLocator::class)->php();
         $artisan = base_path('artisan');
 
+        // 三种合法形态：
+        //   1. 位置参数 ['--ansi', '--force']                  → numeric key, value 即 flag
+        //   2. flag 形态 ['--force' => true]                   → key 即 flag
+        //   3. key=value 形态 ['--except' => 'view']           → "key=value"
+        // 历史代码漏了形态 1，导致 ['--ansi'] 被拼成 '0=--ansi' 让 artisan 报"参数不识别"
         $argString = '';
         foreach ($args as $key => $value) {
-            if ($value === true) {
+            if (is_int($key)) {
+                $argString .= ' '.escapeshellarg((string) $value);
+            } elseif ($value === true) {
                 $argString .= ' '.escapeshellarg($key);
             } else {
                 $argString .= ' '.escapeshellarg("$key=$value");
@@ -912,73 +758,6 @@ class UpgradeService
             'exit_code' => $exitCode,
             'command' => $cmd,
         ];
-    }
-
-    /**
-     * 查找 PHP CLI 二进制
-     *
-     * HTTP 入口（如回滚）下 PHP_BINARY 是 php-fpm，不能直接 exec，需要查找真实 CLI。
-     * CLI 入口（upgrade:run 子进程）下 PHP_BINARY 即 php，直接返回。
-     */
-    protected function findPhpBinary(): string
-    {
-        if (! str_contains(PHP_BINARY, 'fpm')) {
-            return PHP_BINARY;
-        }
-
-        // 从 php-fpm 路径推断 php 路径（宝塔/aapanel 通常在 open_basedir 允许范围内）
-        $phpFpmPath = PHP_BINARY;
-        $phpPath = str_replace(['php-fpm', 'sbin'], ['php', 'bin'], $phpFpmPath);
-        if ($phpPath !== $phpFpmPath && @file_exists($phpPath) && @is_executable($phpPath)) {
-            return $phpPath;
-        }
-
-        // 常见路径兜底（最低 PHP 8.3）
-        $candidates = [
-            '/www/server/php/84/bin/php',
-            '/www/server/php/83/bin/php',
-            '/usr/bin/php',
-            '/usr/local/bin/php',
-            '/opt/php/bin/php',
-        ];
-        foreach ($candidates as $path) {
-            if (@file_exists($path) && @is_executable($path)) {
-                return $path;
-            }
-        }
-
-        // PATH 中查找
-        $output = [];
-        @exec('which php 2>/dev/null', $output);
-        if (! empty($output[0]) && @file_exists($output[0])) {
-            return $output[0];
-        }
-
-        return 'php';
-    }
-
-    /**
-     * 查找 Composer 命令
-     */
-    protected function findComposerCommand(): ?string
-    {
-        // 检查常见的 composer 命令
-        $commands = ['composer', 'composer.phar', '/usr/local/bin/composer', '/usr/bin/composer'];
-
-        foreach ($commands as $cmd) {
-            exec("which $cmd 2>/dev/null", $output, $returnCode);
-            if ($returnCode === 0 && ! empty($output)) {
-                return $cmd;
-            }
-        }
-
-        // 检查当前目录是否有 composer.phar
-        $pharPath = base_path('composer.phar');
-        if (file_exists($pharPath)) {
-            return "php $pharPath";
-        }
-
-        return null;
     }
 
     /**

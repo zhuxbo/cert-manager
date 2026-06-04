@@ -382,7 +382,7 @@ abstract class AbstractClient
      */
     private function getRequest($action, $request)
     {
-        $query = $this->formatRequestData($action, $request, httpProfile::$REQ_GET);
+        $query = $this->formatRequestData($action, $request, HttpProfile::$REQ_GET);
         $connect = $this->getConnect();
 
         return $connect->getRequest($this->path, $query, []);
@@ -393,7 +393,7 @@ abstract class AbstractClient
      */
     private function postRequest($action, $request)
     {
-        $body = $this->formatRequestData($action, $request, httpProfile::$REQ_POST);
+        $body = $this->formatRequestData($action, $request, HttpProfile::$REQ_POST);
         $connect = $this->getConnect();
 
         return $connect->postRequest($this->path, [], $body);

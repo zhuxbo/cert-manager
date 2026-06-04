@@ -1,5 +1,11 @@
 <?php
 
+use App\Models\Admin;
+use App\Models\AdminRefreshToken;
+use App\Models\ApiToken;
+use App\Models\User;
+use App\Models\UserRefreshToken;
+
 return [
     'guards' => [
         'admin' => [
@@ -27,23 +33,23 @@ return [
     'providers' => [
         'admins' => [
             'driver' => 'eloquent',
-            'model' => App\Models\Admin::class,
+            'model' => Admin::class,
         ],
         'users' => [
             'driver' => 'eloquent',
-            'model' => App\Models\User::class,
+            'model' => User::class,
         ],
         'api_tokens' => [
             'driver' => 'eloquent',
-            'model' => App\Models\ApiToken::class,
+            'model' => ApiToken::class,
         ],
         'admin_refresh_tokens' => [
             'driver' => 'eloquent',
-            'model' => App\Models\AdminRefreshToken::class,
+            'model' => AdminRefreshToken::class,
         ],
         'user_refresh_tokens' => [
             'driver' => 'eloquent',
-            'model' => App\Models\UserRefreshToken::class,
+            'model' => UserRefreshToken::class,
         ],
     ],
 
@@ -89,6 +95,30 @@ return [
         'guards' => [
             'admin' => [],
             'user' => [],
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | 验证码 / 账户接口限流
+    |--------------------------------------------------------------------------
+    |
+    | 用于无需认证的 register / reset-password / send-email-code 端点。
+    | email 维度防换 IP 绕过 + NAT 误伤；ip 维度做粗粒度上限。
+    | *_max 为窗口内最大次数，*_decay 为窗口分钟数；可在 actions.{action} 覆盖。
+    |
+    */
+    'verify_code_rate_limiter' => [
+        'default' => [
+            'email_max' => (int) env('VERIFY_CODE_RL_EMAIL_MAX', 5),
+            'email_decay' => (int) env('VERIFY_CODE_RL_EMAIL_DECAY', 10),
+            'ip_max' => (int) env('VERIFY_CODE_RL_IP_MAX', 20),
+            'ip_decay' => (int) env('VERIFY_CODE_RL_IP_DECAY', 10),
+        ],
+        'actions' => [
+            'register' => [],
+            'reset-password' => [],
+            'send-email-code' => [],
         ],
     ],
 ];

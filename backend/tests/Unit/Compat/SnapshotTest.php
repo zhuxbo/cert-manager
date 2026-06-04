@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Tests\Compat\Helpers;
+use Tests\Compat\SchemaDiffer;
+use Tests\Compat\SnapshotListener;
 
 /**
  * Snapshot 测试自检（meta test）。
@@ -58,8 +60,8 @@ test('Compat fixture JSON 格式合法', function () {
 });
 
 test('SnapshotListener 已加载', function () {
-    expect(class_exists(\Tests\Compat\SnapshotListener::class))->toBeTrue();
-    expect(class_exists(\Tests\Compat\SchemaDiffer::class))->toBeTrue();
+    expect(class_exists(SnapshotListener::class))->toBeTrue();
+    expect(class_exists(SchemaDiffer::class))->toBeTrue();
     expect(function_exists('expectsBreakingChange'))->toBeTrue('expectsBreakingChange() 全局函数应存在');
 });
 

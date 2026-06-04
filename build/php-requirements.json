@@ -1,0 +1,52 @@
+{
+    "$schema": "https://json-schema.org/draft-07/schema#",
+    "description": "PHP 运行环境需求清单。随版本一起发布到 release zip 根；后台升级/upgrade.sh 在切代码前读取并校验。",
+    "php_min": "8.3.0",
+    "php_recommended": "8.4",
+    "extensions": {
+        "required": [
+            "bcmath",
+            "calendar",
+            "ctype",
+            "curl",
+            "dom",
+            "fileinfo",
+            "filter",
+            "gd",
+            "hash",
+            "iconv",
+            "intl",
+            "json",
+            "mbstring",
+            "openssl",
+            "pcntl",
+            "pcre",
+            "pdo",
+            "pdo_mysql",
+            "session",
+            "tokenizer",
+            "xml",
+            "xmlwriter",
+            "zip"
+        ],
+        "recommended": [
+            "opcache",
+            "redis"
+        ]
+    },
+    "functions": {
+        "required": [
+            "exec",
+            "shell_exec",
+            "proc_open",
+            "proc_close",
+            "proc_get_status",
+            "proc_terminate",
+            "putenv",
+            "pcntl_signal",
+            "pcntl_alarm",
+            "pcntl_async_signals"
+        ],
+        "recommended": []
+    }
+}

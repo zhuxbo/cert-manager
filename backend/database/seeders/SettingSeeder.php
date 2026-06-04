@@ -23,6 +23,7 @@ class SettingSeeder extends Seeder
             ['name' => 'alipay', 'title' => '支付宝设置', 'description' => null, 'weight' => 6],
             ['name' => 'wechat', 'title' => '微信支付设置', 'description' => null, 'weight' => 7],
             ['name' => 'bankAccount', 'title' => '银行账户设置', 'description' => null, 'weight' => 8],
+            ['name' => 'enterprise', 'title' => '工商信息查询', 'description' => null, 'weight' => 9],
         ];
 
         // 创建 setting groups 并保存到数组中，用 name 作为 key
@@ -42,6 +43,7 @@ class SettingSeeder extends Seeder
                 ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '站点名称', 'weight' => 2],
                 ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
                 ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
+                ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
             ],
             'ca' => [
                 ['key' => 'sources', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['default' => 'Default'], 'description' => '来源', 'weight' => 1],
@@ -86,6 +88,13 @@ class SettingSeeder extends Seeder
             ],
             'callback' => [
                 ['key' => 'default', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['sources' => '', 'token' => '', 'id_field' => 'id', 'allowed_ips' => ''], 'description' => '默认回调配置', 'weight' => 1],
+            ],
+            'enterprise' => [
+                ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '接口URL', 'weight' => 1],
+                ['key' => 'appCode', 'type' => 'base64', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => 'AppCode（base64 编码存储，非加密）', 'weight' => 2],
+                ['key' => 'queryField', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => 'company', 'description' => '请求参数名', 'weight' => 3],
+                ['key' => 'fieldMap', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['name' => 'result.basic.name', 'registration_number' => 'result.basic.creditno', 'address' => 'result.basic.regaddress', 'state' => 'result.basic.province', 'city' => 'result.basic.city', 'regionname' => 'result.basic.regionname', 'legal_person' => 'result.basic.legalperson'], 'description' => '字段映射', 'weight' => 4],
+                ['key' => 'dailyLimit', 'type' => 'integer', 'options' => null, 'is_multiple' => 0, 'value' => 100, 'description' => '全局每日查询接口上限（0 为无限）', 'weight' => 5],
             ],
         ];
 
