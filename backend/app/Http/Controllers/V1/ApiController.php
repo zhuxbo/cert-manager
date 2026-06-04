@@ -284,10 +284,9 @@ class ApiController extends Controller
         }
 
         $cacheKey = 'api_get_'.$order_id;
-        // 获取上次缓存的时间戳
-        $lastTime = Cache::get($cacheKey);
-        // 签发状态120秒 其他状态10秒 内不能重复调用接口
-        if (! $lastTime) {
+        // 原子占位：Cache::add（SETNX）保证并发下只放一个请求进 sync/pay/commit，防击穿重复调上游。
+        // 保守 10s 占位；末尾按最终状态刷新滑动窗口（签发 120s / 其他 10s）
+        if (Cache::add($cacheKey, time(), 10)) {
             // 待验证、待审批、已签发的订单同步（同步失败不影响返回已有数据）
             if (in_array($order->latestCert->status, ['processing', 'approving', 'active'])) {
                 $this->action->sync($order_id, true);

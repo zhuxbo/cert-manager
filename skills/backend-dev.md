@@ -430,6 +430,20 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 **关键认识**：死锁是 InnoDB 行锁并发写的正常现象，**无法根除，只能降频 + 重试自愈**（MySQL 官方亦要求应用层重试）；把"偶发死锁"放大成"持续雪崩"的是错误的死锁后处理（吞异常 + 死事务上继续写 + 无脑重试），那才是真正的炸点。嵌套事务（TaskJob 包 sync/commit）里 Laravel 对并发错误直接抛 `DeadlockException` 到最外层、不在内层重试（`ManagesTransactions::handleTransactionException` 的 `transactions > 1` 分支）——故 `attempts` 只在 controller 直调（最外层）时生效，TaskJob 路径统一由 job 级重试兜底。**减少多入口并发（如 V2 get 去内联 sync）不是根治方向**：并发不可消除、且会动对外 API 契约。
 
+### 节流统一 Cache::add 原子占位
+
+**坑**：业务防重/节流若用 `Cache::get` 判断 + `Cache::set` 写入（check-then-act），两步之间有窗口，并发请求都读到空 → 都放行 → 击穿（重复调上游 sync/pay/commit、超发验证码）。
+
+**规则**：所有"N 秒内防重复"节流统一用 `Cache::add($key, $val, $ttl)`（SETNX 语义，redis/database/array driver 均原子）—— 返回 true = 抢占成功放行，false = 已有占位拒绝。已落地的范式（新增节流点照此写，勿再用 get+set）：
+
+- `ActionTrait::checkDuplicate`（Order new/batchNew/renew/reissue/sync/revalidate/updateDCV 7 入口防重）：返回 `0`=放行 / `>0`=剩余秒数拒绝；`Cache::add` 抛异常时 catch 降级**放行**（return 0），不阻塞业务
+- `Acme\Action::sync` 内联 `acme_sync_` 节流：占位放在 `find`+api_id 校验**之后**、上游调用**之前**（acme 不存在始终走 error，不因占位变 success）；占位后删除原末尾 `Cache::set`
+- V1/V2 `ApiController::get` 的 `api_get_`：`Cache::add` 决定是否进 sync/pay/commit（并发只放一个）；**末尾保留 `Cache::set`** 按最终 status 刷新滑动窗口（active=120s/其他=10s，避免已签发证书每 10s 重复 sync 打上游）
+- `VerifyCodeHelper::checkSendCooldown` 发送冷却：占位前移到发送前 → **所有发送失败路径必须 `releaseSendCooldown` 释放占位**（sendSmsCode else / sendEmailCode 未配置 return / catch），否则失败后正常用户白卡 60s；今日超限也要释放冷却
+- 计数型配额（每日上限）仿 `AliyunDriver::enforceAndIncrementDailyQuota`：`Cache::add(0)+increment` 后判 `>limit`，超限 `decrement` 回滚
+
+**例外（不必改）**：登录限流 `LoginRateLimiter` / `VerifyCodeRateLimiter` 走 Laravel `RateLimiter` facade，`tooManyAttempts`+`hit` 有固有 TOCTOU（注释已承认，登录/发码场景可接受）；自定义 `RateLimiter` 中间件滑动窗口已是 `Cache::add+increment` 原子；互斥锁用 `Cache::lock`（`ValidateCommand`/`SnowFlake`/Backup Job）。
+
 ### 批量操作上限（`config/batch.php`）
 
 - `max_ids=100`：所有 `GetIdsRequest` 的 ids 数量上限（`BaseRequest::messages` 统一错误文案）

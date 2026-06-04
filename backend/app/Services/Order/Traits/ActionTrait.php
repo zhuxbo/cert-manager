@@ -40,28 +40,27 @@ trait ActionTrait
      */
     protected function checkDuplicate(string $action, array $params, int $expire = 60): int
     {
-        $paramsMd5 = md5(json_encode($params));
-        $cacheKey = $action.'_'.$paramsMd5;
+        $cacheKey = $action.'_'.md5(json_encode($params));
 
-        // 获取上次缓存的时间戳
-        $lastTime = Cache::get($cacheKey);
-
-        // 提示在缓存剩余时间内不能重复提交
-        if ($lastTime) {
-            $remainingTime = $lastTime + $expire - time();
-
-            // 确保返回值在 0-$expire 之间
-            return max(0, min($remainingTime, $expire));
-        }
-
-        // 更新缓存时间
+        // 原子占位：Cache::add 仅在 key 不存在时写入（SETNX 语义），并发下只有一个请求抢占成功，
+        // 避免 get 判断 + set 写入之间的 check-then-act 窗口被并发击穿
         try {
-            Cache::set($cacheKey, time(), $expire);
+            if (Cache::add($cacheKey, time(), $expire)) {
+                return 0; // 抢占成功 → 放行
+            }
         } catch (Throwable $e) {
             app(ApiExceptions::class)->logException($e);
+
+            return 0; // 缓存故障降级放行，不阻塞业务
         }
 
-        return 0;
+        // 未抢到（add 返回 false = key 已存在、有占位、疑似重复）：读剩余秒数仅为友好提示。
+        // 此处 Cache::get 故意不 try-catch：add 已证明有占位，get 若失败应让异常抛出走 fail-closed（拒绝），
+        // 绝不可 catch 后 return 0 放行——那会放行已知重复。与上方 add 抛异常的 fail-open 方向相反
+        // （add 挂 = 是否重复未知 → 放行不阻塞业务，资金安全由 DB 唯一索引/CAS/锁兜底）。
+        $lastTime = Cache::get($cacheKey);
+
+        return $lastTime ? max(0, min($lastTime + $expire - time(), $expire)) : 0;
     }
 
     /**

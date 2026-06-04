@@ -953,3 +953,15 @@ test('commit 非 pending 状态报错：订单状态不是待提交', function (
     // 状态未变化
     expect($cert->fresh()->status)->toBe('active');
 });
+
+test('checkDuplicate 原子占位：首次放行 0，同参数重复返回剩余秒数，不同参数独立', function () {
+    $method = new ReflectionMethod($this->service, 'checkDuplicate');
+    $method->setAccessible(true);
+
+    // 首次抢占成功 → 放行（0）
+    expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBe(0);
+    // 同参数重复 → Cache::add 失败 → 返回剩余秒数（>0 拒绝重复）
+    expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBeGreaterThan(0);
+    // 不同参数 → 独立 cacheKey 放行（0）
+    expect($method->invoke($this->service, 'atomicDupTest', ['p2'], 10))->toBe(0);
+});
