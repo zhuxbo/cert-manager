@@ -354,8 +354,14 @@ class Action
         $order = null;
         $result = null;
 
-        DB::beginTransaction();
-        try {
+        // 用 DB::transaction 闭包而非手写 begin/commit/rollback：经 TaskJob 调用时本方法是嵌套事务，
+        // 手写 catch 内的 DB::rollback() 在 1213 死锁（InnoDB 已释放所有 savepoint）时会抛 1305
+        // 「SAVEPOINT does not exist」淹没原始死锁异常，致 TaskJob 识别不到并发错误、连接事务计数漂移、雪崩。
+        // 闭包形态交 Laravel 统一处理：嵌套死锁直接抛 DeadlockException 到最外层（与 sync 一致）。
+        // attempts 固定 1：上游下单 $this->api->$action() 在事务内，绝不能事务级重试（重复下单）；
+        // 死锁牺牲点 lock() 在上游调用之前，job 级重试由 status!='pending' 守卫防重
+        // （上游已建单后 save() 死锁的极窄窗口属传统 Order 既有行为，不在本次范围）。
+        DB::transaction(function () use ($orderId, &$order, &$result) {
             // 事务查询不锁定产品
             $order = Order::with(['latestCert'])
                 ->whereHas('user')
@@ -414,11 +420,7 @@ class Action
                 : $order->latestCert->validation;
             $order->latestCert->status = 'processing';
             $order->latestCert->save();
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        }, 1);
 
         $this->success([
             'order_id' => $orderId,
@@ -581,7 +583,8 @@ class Action
 
             $order->save();
             $cert->update($data);
-        });
+        }, 3); // attempts=3：controller 直调时本事务为最外层，死锁/锁超时自动重试（上游 get 在事务外，重试只重跑锁+写回，安全）；
+        // 经 TaskJob 调用时为嵌套事务，Laravel 直接抛 DeadlockException 到外层，由 TaskJob job 级重试兜底
 
         // 强制更新不返回提示（success 抛 ApiResponseException 须在事务闭包外）
         $force || $this->success();
@@ -905,8 +908,10 @@ class Action
      */
     public function cancel(int $orderId): void
     {
-        DB::beginTransaction();
-        try {
+        // 同 commit：改 DB::transaction 闭包，避免手写 rollback 在嵌套死锁时抛 1305 淹没死锁异常 / 计数漂移。
+        // attempts 固定 1：上游 cancel + 退款 Transaction::create 在事务内，绝不能事务级重试（重复取消/退款）；
+        // 死锁牺牲点 lock() 在上游调用之前，job 级重试由锁内 status 校验 + transactions 唯一索引兜底防重。
+        DB::transaction(function () use ($orderId) {
             // 事务查询不锁定产品
             $order = Order::with(['latestCert'])
                 ->whereHas('user')
@@ -954,12 +959,7 @@ class Action
 
             // 保存取消时间
             $order->update(['cancelled_at' => now()]);
-
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        }, 1);
 
         $this->success();
     }
@@ -1048,7 +1048,7 @@ class Action
                 $this->createTask($order->id, 'callback');
             }
             $this->deleteTask($order->id, 'commit,sync,revalidate');
-        });
+        }, 3); // attempts=3：与 sync 主事务一致；本事务无上游 HTTP，退款由 transactions 唯一索引保证幂等，重试不双退
     }
 
     /**

@@ -548,7 +548,7 @@ class Action
             }
 
             return (string) ($acme->product->ca ?? '');
-        });
+        }, 3); // attempts=3：与 Order sync 对齐；上游 get 在事务外（line 508），重试只重跑锁+写回，不重复调上游
 
         if ($directoryUrl !== '') {
             $this->cacheDirectoryUrl($ca, $directoryUrl);

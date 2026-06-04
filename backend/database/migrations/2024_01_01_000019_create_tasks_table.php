@@ -24,6 +24,10 @@ return new class extends Migration
                     ->index()
                     ->comment('状态:executing=待执行,successful=已成功,failed=已失败,stopped=已停止');
                 $table->timestamps();
+
+                // 复合索引：覆盖 sync/checkRepeat/createTask 的 (order_id, action, status) FOR UPDATE 查询，
+                // 收窄二级索引间隙锁范围，消除 sync×commit 跨 action 抢同一批 task 行的 InnoDB 死锁
+                $table->index(['order_id', 'action', 'status'], 'tasks_order_action_status_index');
             });
         }
     }

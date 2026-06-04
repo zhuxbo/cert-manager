@@ -418,6 +418,18 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - `Order\Action::sync`/`Acme\Action::sync` 锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，防上游旧状态把已取消/已吊销订单复活回 active（与 commitCancel 串行化配合）
 
+### tasks 死锁防护与并发错误处理
+
+**线上现象（2026-06）**：同一订单被 V2 `get`（内联 sync）+ `POST /api/order/sync` + queue worker 多入口高频并发，都抢 `tasks` 表 `WHERE order_id=X AND action IN (commit,sync,revalidate) AND status IN (executing,stopped) FOR UPDATE`，触发 InnoDB 死锁（1213）；TaskJob 的 `catch (Throwable)` 又把死锁异常当普通业务异常吞掉后继续 `$task->update()`，外层 `DB::transaction` 提交时抛 `PDOException: There is no active transaction`，job 失败被 queue 无脑重试 → 雪崩刷屏。
+
+**三层修复（缺一不可，对应 `TaskJob` / `Order\Action` / `create_tasks_table` 迁移）**：
+
+1. **复合索引 `tasks(order_id, action, status)`（降频）**：让 `FOR UPDATE` 精确定位，二级索引间隙锁范围从"整个 order_id 区间"收窄到精确区间，消除大部分 sync×commit 跨 action 抢锁的死锁。命中 `sync`/`checkRepeat`/`createTask`/`batchCommitCancel`/`refundForSyncedCancel` 所有 task 查询。
+2. **TaskJob 死锁不可吞（治本）**：`TaskJob::handle` 的 `catch (Throwable)` 对并发错误（`Illuminate\Database\DeadlockException` 或 `DetectsConcurrencyErrors::causedByConcurrencyError`：1213/1205/序列化失败）**重新抛出**，绝不在已被 MySQL 回滚的事务里继续 `$task->update()` 或让闭包正常返回触发 commit。抛出 → 外层事务回滚 → queue `--tries --delay` 错峰重试自愈；重试耗尽由 `failed()` 钩子兜底标记 `task=failed`（守卫 `status==='executing'`，否则普通异常路径重复 update）——不标记会永久卡 executing 被 `checkRepeat` 当"处理中"阻塞该订单后续 commit/sync。
+3. **sync 事务死锁自动重试（web 入口自愈）**：`Order\Action::sync` / `refundForSyncedCancel` / `Acme\Action::sync` 的 `DB::transaction(..., 3)` 加 `attempts=3`。controller 直调时本事务为最外层、上游 `get` 在事务外，重试只重跑锁+写回，安全。**`commit` 绝不加重试**——其上游下单 `$this->api->$action()` 在事务内（`Action.php:401`），重试 = 重复下单/重复扣费；且 commit 只锁 order 行、不执行 `tasks FOR UPDATE`，本就不是死锁受害者。
+
+**关键认识**：死锁是 InnoDB 行锁并发写的正常现象，**无法根除，只能降频 + 重试自愈**（MySQL 官方亦要求应用层重试）；把"偶发死锁"放大成"持续雪崩"的是错误的死锁后处理（吞异常 + 死事务上继续写 + 无脑重试），那才是真正的炸点。嵌套事务（TaskJob 包 sync/commit）里 Laravel 对并发错误直接抛 `DeadlockException` 到最外层、不在内层重试（`ManagesTransactions::handleTransactionException` 的 `transactions > 1` 分支）——故 `attempts` 只在 controller 直调（最外层）时生效，TaskJob 路径统一由 job 级重试兜底。**减少多入口并发（如 V2 get 去内联 sync）不是根治方向**：并发不可消除、且会动对外 API 契约。
+
 ### 批量操作上限（`config/batch.php`）
 
 - `max_ids=100`：所有 `GetIdsRequest` 的 ids 数量上限（`BaseRequest::messages` 统一错误文案）

@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-06-03 12:49:29",
+    "generated_at": "2026-06-04 18:57:32",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -4863,6 +4863,20 @@
                         "action"
                     ],
                     "sub_parts": [
+                        null
+                    ]
+                },
+                "tasks_order_action_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "order_id",
+                        "action",
+                        "status"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null,
                         null
                     ]
                 },
