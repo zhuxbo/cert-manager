@@ -6,16 +6,13 @@
             "method": "POST",
             "uri_pattern": "/api/deploy/acme/new",
             "request_keys": [
-                "period",
-                "product_id"
+                "contact_email",
+                "product_code"
             ],
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string",
-                "errors": {
-                    "contact_email": "array<string>"
-                }
+                "msg": "string"
             }
         }
     ]

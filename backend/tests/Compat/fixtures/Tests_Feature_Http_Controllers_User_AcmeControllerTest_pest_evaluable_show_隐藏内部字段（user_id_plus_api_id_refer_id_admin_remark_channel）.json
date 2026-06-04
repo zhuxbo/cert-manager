@@ -1,0 +1,42 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_show_隐藏内部字段（user__id___plus___api__id___refer__id___admin__remark___channel）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/acme/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "product_id": "integer",
+                    "brand": "string",
+                    "period": "integer",
+                    "purchased_standard_count": "integer",
+                    "purchased_wildcard_count": "integer",
+                    "vendor_id": "null",
+                    "contact_email": "string",
+                    "eab_kid": "string",
+                    "eab_hmac": "string",
+                    "period_from": "string",
+                    "period_till": "string",
+                    "cancelled_at": "null",
+                    "status": "string",
+                    "remark": "null",
+                    "amount": "string",
+                    "created_at": "string",
+                    "updated_at": "string",
+                    "product": {
+                        "id": "integer",
+                        "name": "string",
+                        "product_type": "string",
+                        "ca": "string"
+                    },
+                    "directory_url": "null"
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,38 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V2\\ApiControllerFundFlowTest::__pest_evaluable_get_同_token_取回自己订单经真实路由：携带私钥（出口归属正向用例）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/v2/get",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "organization": "null",
+                    "contact": "null",
+                    "period_from": "string",
+                    "period_till": "string",
+                    "vendor_id": "string",
+                    "common_name": "string",
+                    "alternative_names": "string",
+                    "dcv": "array<unknown>",
+                    "validation": "array<unknown>",
+                    "csr": "null",
+                    "private_key": "string",
+                    "cert": "null",
+                    "issued_at": "string",
+                    "expires_at": "string",
+                    "cert_apply_status": "integer",
+                    "domain_verify_status": "integer",
+                    "org_verify_status": "integer",
+                    "status": "string",
+                    "intermediate_cert": "null"
+                }
+            }
+        }
+    ]
+}

@@ -15,6 +15,7 @@
                     "__list_of__": {
                         "id": "integer",
                         "user_id": "integer",
+                        "contact_id": "null",
                         "name": "string",
                         "registration_number": "string",
                         "country": "string",
@@ -24,7 +25,8 @@
                         "postcode": "string",
                         "phone": "string",
                         "created_at": "string",
-                        "updated_at": "string"
+                        "updated_at": "string",
+                        "contact": "null"
                     }
                 }
             }

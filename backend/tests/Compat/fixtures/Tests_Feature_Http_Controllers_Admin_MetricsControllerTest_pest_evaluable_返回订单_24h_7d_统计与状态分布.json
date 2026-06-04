@@ -15,8 +15,8 @@
                         "count_7d": "integer",
                         "status_distribution": {
                             "active": "integer",
-                            "pending": "integer",
-                            "cancelled": "integer"
+                            "cancelled": "integer",
+                            "pending": "integer"
                         }
                     },
                     "queue": {

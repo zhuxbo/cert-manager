@@ -1,0 +1,40 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrganizationUpdateOwnershipTest::__pest_evaluable_用户更新组织时无法将企业转移给其他用户",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/organization/{id}",
+            "request_keys": [
+                "address",
+                "city",
+                "country",
+                "name",
+                "phone",
+                "postcode",
+                "registration_number",
+                "state"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "user_id": "integer",
+                    "contact_id": "null",
+                    "name": "string",
+                    "registration_number": "string",
+                    "country": "string",
+                    "state": "string",
+                    "city": "string",
+                    "address": "string",
+                    "postcode": "string",
+                    "phone": "string",
+                    "created_at": "string",
+                    "updated_at": "string",
+                    "contact": "null"
+                }
+            }
+        }
+    ]
+}

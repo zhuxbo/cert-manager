@@ -11,15 +11,11 @@
                 "code": "integer",
                 "data": {
                     "id": "integer",
-                    "user_id": "integer",
                     "product_id": "integer",
                     "brand": "string",
                     "period": "integer",
-                    "plus": "integer",
                     "purchased_standard_count": "integer",
                     "purchased_wildcard_count": "integer",
-                    "refer_id": "null",
-                    "api_id": "null",
                     "vendor_id": "null",
                     "contact_email": "string",
                     "eab_kid": "string",
@@ -28,64 +24,15 @@
                     "period_till": "string",
                     "cancelled_at": "null",
                     "status": "string",
-                    "channel": "string",
                     "remark": "null",
                     "amount": "string",
-                    "admin_remark": "null",
                     "created_at": "string",
                     "updated_at": "string",
                     "product": {
                         "id": "integer",
                         "name": "string",
-                        "code": "string",
-                        "api_id": "string",
-                        "source": "string",
                         "product_type": "string",
-                        "brand": "string",
-                        "ca": "string",
-                        "warranty_currency": "string",
-                        "warranty": "string",
-                        "server": "integer",
-                        "encryption_standard": "string",
-                        "encryption_alg": "array<string>",
-                        "signature_digest_alg": "array<string>",
-                        "validation_type": "string",
-                        "common_name_types": "array<string>",
-                        "alternative_name_types": "array<string>",
-                        "validation_methods": "array<string>",
-                        "periods": "array<integer>",
-                        "standard_min": "integer",
-                        "standard_max": "integer",
-                        "wildcard_min": "integer",
-                        "wildcard_max": "integer",
-                        "total_min": "integer",
-                        "total_max": "integer",
-                        "add_san": "integer",
-                        "replace_san": "integer",
-                        "reissue": "integer",
-                        "renew": "integer",
-                        "reuse_csr": "integer",
-                        "gift_root_domain": "integer",
-                        "refund_period": "integer",
-                        "remark": "string",
-                        "weight": "integer",
-                        "cost": {
-                            "price": {
-                                "12": "integer",
-                                "24": "integer"
-                            },
-                            "alternative_standard_price": {
-                                "12": "integer",
-                                "24": "integer"
-                            },
-                            "alternative_wildcard_price": {
-                                "12": "integer",
-                                "24": "integer"
-                            }
-                        },
-                        "status": "integer",
-                        "created_at": "string",
-                        "updated_at": "string"
+                        "ca": "string"
                     },
                     "directory_url": "null"
                 }

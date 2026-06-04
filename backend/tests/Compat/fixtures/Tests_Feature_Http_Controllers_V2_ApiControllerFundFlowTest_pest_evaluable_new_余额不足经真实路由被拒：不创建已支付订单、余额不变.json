@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V2\\ApiControllerFundFlowTest::__pest_evaluable_new_余额不足经真实路由被拒：不创建已支付订单、余额不变",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/v2/new",
+            "request_keys": [
+                "csr_generate",
+                "domains",
+                "period",
+                "product_code",
+                "validation_method"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

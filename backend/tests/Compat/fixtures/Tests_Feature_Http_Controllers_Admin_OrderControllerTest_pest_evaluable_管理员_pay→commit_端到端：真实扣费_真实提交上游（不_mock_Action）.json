@@ -1,0 +1,28 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员_pay→commit_端到端：真实扣费___真实提交上游（不_mock_Action）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/order/pay/{id}",
+            "request_keys": [
+                "issue_verify"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "cert_apply_status": "integer",
+                    "dcv": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    },
+                    "validation": "array<unknown>"
+                }
+            }
+        }
+    ]
+}

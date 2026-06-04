@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\EnterpriseLookupControllerTest::__pest_evaluable_admin_lookup_throttled_at_30_per_minute",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/enterprise-lookup",
+            "request_keys": [
+                "name"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "name": "string",
+                    "registration_number": "string",
+                    "address": "string",
+                    "state": "null",
+                    "city": "null",
+                    "regionname": "null",
+                    "legal_person": "null"
+                }
+            }
+        }
+    ]
+}
