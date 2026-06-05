@@ -63,8 +63,10 @@ version.json
 # Superpowers specs/plans（本地开发文档，不入版本库）
 .superpowers/
 
-# Claude Code worktree（开发时按需创建，不入版本库）
-.claude/
+# Claude Code 本地目录：worktree / 个人配置不入库，仅放行共享的 commands/
+# （如需共享 settings.json 再加一行 !.claude/settings.json）
+.claude/*
+!.claude/commands/
 
 # 测试运行时临时目录（如 deploy/docker/test-startup.sh 的 .tmp/ / .tmp_iso/ / .tmp_log/）
 .tmp/
