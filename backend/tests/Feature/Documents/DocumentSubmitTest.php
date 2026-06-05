@@ -336,6 +336,28 @@ test('submitDocument 上游调用抛异常时也记录 submit_error（observabil
     @unlink(storage_path("app/$rel"));
 });
 
+test('failed() 不抹空已记录的 submit_error（ApiResponseException 的 getMessage 恒空）', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    // submitDocument 每次失败已写入更具体的可读错误；重试耗尽的 failed() 兜底不应覆盖它
+    $doc = newDoc($order->id, $user->id, ['submit_error' => '产品配置错误']);
+
+    (new SubmitDocumentJob($doc->id))->failed(new ApiResponseException('上游返回错误'));
+
+    expect($doc->refresh()->submit_error)->toBe('产品配置错误');
+});
+
+test('failed() 在 submit_error 为空时回填 ApiResponseException 的可读 msg（取 getApiResponse 而非空 getMessage）', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $doc = newDoc($order->id, $user->id, ['submit_error' => null]);
+
+    (new SubmitDocumentJob($doc->id))->failed(new ApiResponseException('上游返回错误 ABC'));
+
+    // ApiResponseException 的可读消息在 getApiResponse()['msg']，不是空的 getMessage()
+    expect($doc->refresh()->submit_error)->toBe('上游返回错误 ABC');
+});
+
 // ==========================================
 // 并发唯一索引(1062)兜底分支（catch QueryException）
 // ==========================================

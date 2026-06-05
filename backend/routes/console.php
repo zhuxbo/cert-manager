@@ -14,10 +14,10 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote')->hourly()->skip($skipWhenFrozen);
 
 // SSL证书管理系统定时任务调度
-// 证书验证任务 - 每 30 秒执行（Laravel sub-minute 调度，无需外部 30 秒 cron）
+// 证书验证任务 - 每分钟执行（生产由 1 分钟 cron 调 schedule:run，sub-minute 不会触发；如需 30 秒需改用常驻 schedule:work）
 // 互斥由 ValidateCommand 内部 Cache::add + Cache::put 心跳续期实现（支持长任务，不在此处加 withoutOverlapping）
 Schedule::command('schedule:validate')
-    ->everyThirtySeconds()
+    ->everyMinute()
     ->skip($skipWhenFrozen)
     ->name('validate-certificates')
     ->description('自动验证处理中的证书');

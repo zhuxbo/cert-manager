@@ -673,11 +673,12 @@ const handleUserChange = () => {
   formData.organization = undefined;
 };
 
-// 切换用户时清空 organization select
+// 切换用户时清空 organization 与已选联系人（避免残留旧用户的联系人随新用户订单一起提交，导致"联系人不存在"报错）
 watch(
   () => formData.user_id,
   () => {
     formData.organization = null;
+    formData.contact = null;
     orgSelectRefreshKey.value = Date.now();
   }
 );

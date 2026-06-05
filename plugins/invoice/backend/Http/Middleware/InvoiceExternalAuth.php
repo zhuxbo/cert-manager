@@ -25,6 +25,10 @@ class InvoiceExternalAuth
             $this->error('Invalid token');
         }
 
+        // IP 白名单为可选的纵深防御（主鉴权是上面的 token）。注意 $request->ip() 取 REMOTE_ADDR：
+        // 本项目 TrustProxies 未配置可信代理，当前 nginx→PHP-FPM(fastcgi) 单层拓扑下它即真实客户端 IP，白名单正常工作。
+        // 若在 nginx 前再叠 CDN/反向代理，必须先在 bootstrap/app.php 配置 trustProxies()，
+        // 否则 $request->ip() 会变成上游代理 IP，导致白名单恒失败或被绕过。
         $allowedIps = InvoiceConfig::get('external_allowed_ips', '');
         if (is_string($allowedIps) && $allowedIps !== '') {
             $whitelist = array_filter(array_map('trim', explode(',', $allowedIps)));

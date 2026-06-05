@@ -22,10 +22,10 @@ class UpdateRequest extends BaseRequest
             'contact' => 'nullable|array',
             'contact.first_name' => 'required_with:contact|string|max:50',
             'contact.last_name' => 'nullable|string|max:50',
-            'contact.identification_number' => 'nullable|string|max:50',
-            'contact.title' => 'nullable|string|max:100',
+            'contact.identification_number' => 'nullable|string|max:100',
+            'contact.title' => 'nullable|string|max:50',
             'contact.email' => 'required_with:contact|email|max:100',
-            'contact.phone' => 'required_with:contact|string|max:50',
+            'contact.phone' => 'required_with:contact|string|max:20',
         ];
     }
 }

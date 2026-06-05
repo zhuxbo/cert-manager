@@ -33,7 +33,10 @@ trait ResolvesContactId
             }
 
             if ($contactData !== null) {
-                $diff = collect($contactData)->filter(fn ($v, $k) => $v !== $contact->$k);
+                // 过滤 null，避免把 null 写入 NOT NULL 的 last_name/first_name 列（与创建分支 array_filter 一致）
+                $diff = collect($contactData)
+                    ->reject(fn ($v) => $v === null)
+                    ->filter(fn ($v, $k) => $v !== $contact->$k);
                 if ($diff->isNotEmpty()) {
                     $contact->update($diff->all());
                 }

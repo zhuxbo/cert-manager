@@ -17,7 +17,7 @@ class AcmeController extends Controller
      * 创建 ACME 订单（一步到位：创建 + 支付 + 提交）
      *
      * 入参与上游 /api/acme/new 字段对齐：product_code / contact_email / plus / refer_id
-     * + period（manager 提前增加，预留 Certum 多年期产品；未传默认 12）
+     * + period（manager 提前增加，预留 Certum 多年期产品；未传则取产品默认周期 product.periods[0]）
      */
     public function new(Request $request): void
     {
@@ -52,7 +52,7 @@ class AcmeController extends Controller
             'product_id' => $product->id,
             'plus' => (int) $request->input('plus', 1),
             'contact_email' => $request->input('contact_email'),
-            'refer_id' => $request->input('refer_id') ?: null,
+            'refer_id' => $request->filled('refer_id') ? $request->input('refer_id') : null,
             'channel' => 'deploy',
         ];
         if ($request->filled('period')) {

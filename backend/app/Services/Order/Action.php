@@ -528,7 +528,12 @@ class Action
         ) {
             // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
             $this->refundForSyncedCancel($order, $data);
-            $this->success();
+            // force 模式（V1/V2 ApiController::get 无 try-catch 直调 sync）必须沿用"不抛 success"契约，
+            // 否则 success() 抛 ApiResponseException 会打断 get 使其返回空 {code:1}，而非订单数据；
+            // 且无论是否 force 都要 return，避免 fall through 到下方第二个事务重复加锁处理已 cancelled 订单。
+            $force || $this->success();
+
+            return;
         }
 
         // 锁内重取 + 终态守卫 + 写回：慢 IO（上游 get）已在锁外完成，此事务只包状态判定副作用 + 写回。
