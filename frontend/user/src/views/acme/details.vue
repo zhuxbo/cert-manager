@@ -25,13 +25,9 @@ const items = ref<Acme[]>([]);
 const getDetails = () => {
   const idsParam = route.params.ids?.toString() ?? "";
   if (!idsParam) return;
-  const ids = idsParam
-    .split(",")
-    .map(s => Number(s))
-    .filter(n => !!n);
-  if (ids.length === 0) return;
 
-  batchShowAcmes(ids).then(res => {
+  // 与 order 对齐：直接传逗号连接字符串，后端 BaseRequest.prepareForValidation 统一 explode 成数组
+  batchShowAcmes(idsParam).then(res => {
     const fresh = res.data?.items ?? [];
     if (items.value.length === 0) {
       items.value = fresh;
