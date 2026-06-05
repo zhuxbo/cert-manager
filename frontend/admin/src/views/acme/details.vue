@@ -9,7 +9,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onBeforeUnmount, ref } from "vue";
 import { batchShowAcmes } from "@/api/acme";
 import type { Acme } from "@/api/acme";
 import { useRoute } from "vue-router";
@@ -32,13 +32,46 @@ const getDetails = () => {
   if (ids.length === 0) return;
 
   batchShowAcmes(ids).then(res => {
-    items.value = res.data?.items ?? [];
+    const fresh = res.data?.items ?? [];
+    if (items.value.length === 0) {
+      items.value = fresh;
+      return;
+    }
+    // 刷新：按 id 就地 mutate 已有卡片对象。子组件 reactive(props.modelValue) 持同一引用，
+    // 替换整个 items 数组不会更新已挂载子组件，故按 id 匹配 Object.assign 保持卡片位置与内部状态。
+    const map = new Map(fresh.map(it => [it.id, it]));
+    items.value.forEach(it => {
+      const updated = map.get(it.id);
+      if (updated) Object.assign(it, updated);
+    });
   });
 };
 
-// 父组件只在 mount 时拉一次 batchShow；3 分钟自动刷新由每个 DetailCard 子组件自治（与传统 Order 详情聚合页一致）
+// 定时刷新上提到父级：单个 batchShowAcmes 批量刷新所有卡片，避免子卡片各自 setInterval
+// 在多卡片 / 切标签页时产生并发请求风暴。切到后台标签页跳过本次；切回前台立即刷新一次。
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+const handleVisibilityChange = () => {
+  if (!document.hidden) getDetails();
+};
+
 onMounted(() => {
   getDetails();
+  refreshTimer = setInterval(
+    () => {
+      if (document.hidden) return;
+      getDetails();
+    },
+    3 * 60 * 1000
+  );
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 });
 </script>
 
