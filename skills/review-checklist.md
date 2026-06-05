@@ -4,7 +4,7 @@
 >
 > **两处共同引用**:
 >
-> - `/finish-check` 阶段 8 Review 循环 — reviewer subagent 必查清单(反模式 1-13)
+> - `/finish-check` 阶段 8 Review 循环 — reviewer subagent 必查清单(反模式 1-21)
 > - plan / 设计阶段 — 写实现前的"杀手场景 + 对端检查"两栏(设计期清单章节)
 >
 > **维护原则**:每次真实回归后,把根因抽象成"反模式"加进来,带案例锚定;不写空泛规则。
@@ -13,12 +13,15 @@
 
 ## 反模式分级（reviewer 应用范围）
 
-- **核心层**（每轮 reviewer 必扫，与改动无关）：反模式 1（失败路径数据安全）、2（端到端机制可达性）、3（对称性）、6（现有正确范式优先）、9（资金路径四道网）
+- **核心层**（每轮 reviewer 必扫，与改动无关）：反模式 1（失败路径数据安全）、2（端到端机制可达性）、3（对称性）、6（现有正确范式优先）、9（资金路径四道网）、15（伪绿测试）
 - **条件层**（按改动目录/文件类型触发）：
-  - 改 backend → 加 10（锁顺序）、11（afterCommit）、13（Transaction 事务）
+  - 改 backend → 加 10（锁顺序）、11（afterCommit）、13（Transaction 事务）、16（ApiResponseException 消息）、20（并发 check-then-act / 死事务续写）
   - 改 .sh / 部署脚本 → 加 4（同类扩散）、7（set -e 笔误）
-  - 改外部命令调用 → 加 12（BinaryLocator）
+  - 改外部命令调用 → 加 12（BinaryLocator + 开发机/生产环境差异）
   - 改公开 API / 新增 public 方法 → 加 5（新方法边界测试）、8（数组键类型混淆）
+  - 改 tests/（新增 / 修改测试）→ 加 14（测试 flaky 四源）
+  - 改鉴权 / 下载 / 解压 / CORS / 通知 / 公开端点（安全面）→ 加 17（免登录端点与凭据暴露）、18（外部输入下载 / 解压纵深防御）、19（敏感数据落库与响应头基线）
+  - 改 migrations / 升级同步 / 数据库结构 → 加 21（部署 / 迁移静默失败）
 
 ---
 
@@ -46,6 +49,9 @@
 
 **真实案例**:做完整套 PHP 环境检测(`EnvironmentChecker` + 前端弹窗 + status_details),结果 `php-requirements.json` 没被打进升级包 → `EnvironmentChecker` 收到"文件缺失"走 skipped → 整套防御机制等于不存在。
 **修复**:`package.sh` 加 cp + `PackageExtractor::findRequirementsJson()` 兼容多种解压形态。
+
+**第二例(鉴权/签名/限流类防御被运行路径挡死或绕过 = 半修假绿)**:`76a2f58` 一次性补了三处"上一轮声称修了但运行路径根本没生效"的防御 —— ① 文档预览改签名 URL(`f58320c`),但 `OrderController::__construct` 无条件 `guard->id() || error('用户不存在')`,**无 JWT 的 signed 请求被构造函数挡死**,签名方法体永远走不到;② SSRF 校验用 `FILTER_FLAG_NO_RES_RANGE` 黑名单(`39cd024`),**169.254 云元数据被当 reserved 放行**;③ 改密吊销会话只修了 `updatePassword`(`dc97990`),漏了 `resetPassword`(账号已失陷的高危入口)。三处都不是"忘了写",是"写了但没在真实路径上生效",单元测试还绿(只断 `assertOk` / data provider 把应拒输入放进放行集)。
+**教训**:对任何"声称有鉴权/签名/限流/回调校验"的机制,reviewer 必须**实际制造一次绕过请求**(无 token 的 signed 请求 / 169.254 的下载 / 改密后用旧 token)看是否真被拦住 —— 静态读到"加了防御代码"≠ 防御生效。这也是独立 reviewer 存在的根本理由:防"改完测试绿就停手"的半修。
 
 ---
 
@@ -176,6 +182,9 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 **真实案例**:commit `9dd8ce1d` (feat: 升级链路加入 PHP 环境检测与流程加固)引入 `App\Services\Binary\BinaryLocator`,把所有外部命令调用收口 — 在此之前多版本 PHP 系统升级时 `exec("php artisan ...")` 走的是 system 默认 PHP(可能是 7.4)而非项目所需的 8.3+,导致升级运行时崩溃。
 **修复**:所有 `exec` 类调用必须 `app(\App\Services\Binary\BinaryLocator::class)->find('tool')` 解析路径 + `escapeshellarg($path).' arg1 arg2'`,不允许变量插值或裸命令。失败抛 `BinaryNotFoundException`,调用方按场景 catch 静默降级(如 keytool 找不到跳过 JKS)或向上抛(升级流程内 PHP/composer 失败应阻塞)。
 
+**第二例(开发机能跑 / 生产挂的环境差异 — 最隐蔽,本地全绿)**:`a546f16` 修了三处"开发机 CLI 跑得通、宝塔 FPM 生产挂"的探测假设 —— ① `open_basedir` 非空时 Symfony `ExecutableFinder` **强制只在 open_basedir 内目录找命令**,宝塔站点必不含 `/usr/bin` → FPM 下永远 miss、CLI 又被候选路径覆盖,留着只让差异被偷偷接住(删 `ExecutableFinder`,让 FPM/CLI 走完全一致路径);② openssl 探测参数 `--version` 在 **OpenSSL 3.0.x 不识别**(3.2+ 才加),Ubuntu 24.04 默认 3.0.13 在 FPM 下报"openssl 不可用",改 `version` 子命令(1.x/2.x/3.x 全系列支持);③ 宝塔 FPM `clear_env=yes` + `env[PATH]` 默认注释 → 子 `sh -c 'command -v'` 拿不到 PATH 必 miss,须显式注入 `SHELL_FALLBACK_PATH` 并返回绝对路径,不依赖调用方 env PATH。
+**检查动作**:`git grep -n "ExecutableFinder" backend/app` 应为空;二进制探测参数选**全版本工具都支持**的形式(`openssl version` 而非 `--version`);探测 / exec 子进程不依赖父进程 `env[PATH]`(显式注入或返绝对路径);测试**不得用 `markTestSkipped` 兜底吞"工具找不到"**(否则再次让生产 bug 静默,见反模式 14)。
+
 ---
 
 ## 反模式 13: `Transaction::create` 在 `DB::transaction` 外
@@ -184,6 +193,115 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 
 **真实案例**:commit `3dd44b84` 把 `Transaction::creating` / `Fund::createRecord` 内嵌事务移除,改为强制调用方在 `DB::transaction` 内调用;同时新增异常提示"`Transaction::create` 必须在 `DB::transaction` 内调用(防止 balance 修改与 INSERT 非原子)"。
 **修复**:所有 `Transaction::create` 调用前确认包在 `DB::transaction(fn)` 闭包内;`Fund::updating` 同理。资金事务优先用 `DB::transaction(fn)` 闭包(Laravel 自动管 commit/rollback),避免"`$row=null` 控制流穿透"导致的事务计数器漂移;如必须手写 `DB::beginTransaction` + try/catch,所有控制流分支必须 commit 或 rollback(含 no-row、early-return、异常路径),并补单元测试覆盖这些分支。
+
+---
+
+## 反模式 14: 测试 flaky 的不确定源(随机 / 共享磁盘 / 时钟 / 清理顺序)
+
+测试偶发失败(本地绿、CI 偶红 / 只在 coverage+parallel 才复现)几乎都源于四类不确定性,写测试时主动收敛:
+
+- **随机数据撞业务校验**:`fake()->jobTitle()` / `sentence()` / `word()` / `text()` / `catchPhrase()` 在 `faker_locale=zh_CN` 下无实现、回落基类 lorem,长度随机,喂给有长度/格式/枚举校验的字段时低概率越界。改 `randomElement([固定值])`。
+- **并行共享真实磁盘**:paratest 各 worker 独立 DB 但**共享 `storage/` 真实目录**,一个测试造文件、另一个跑扫描/删除命令(按本 worker DB 判"孤立") → 跨 worker 误删。运行时 path + Storage 门面按 `TEST_TOKEN` 隔离到 worker 专属目录。
+- **时钟不可控**:限流 / 滑动窗口 / 冷却用 `time()` 不受 `Carbon::setTestNow` 控制 → 跨窗口边界 flaky。生产代码改 `now()->timestamp`,测试冻结窗口中点(如 elapsed=30)。
+- **tearDown 抛异常跳过父类清理**:`parent::tearDown()`(含 RefreshDatabase 事务 rollback)之前任何可能抛异常的逻辑(如 snapshot compare 的 `Assert::fail`)未 `try/finally` 兜住 → 跳过 rollback → 连接持锁泄漏 → 串行全套 `Lock wait timeout` 雪崩(曾卡 CI 68 分钟)。
+- **Pest `->skip(<非闭包>)` 收集期 eager 求值**:skip 条件引用尚未 autoload 的类(插件类晚于 ServiceProvider 注册) → 整个文件收集崩溃。改 `fn () => ...` 延迟求值。
+
+**真实案例**:`45e442a`(faker jobTitle 0.4% 概率 1 字符撞 `title between:2,16`)/ `802804b`(PurgeCommand 跨 worker 误删文档)/ `a546f16`(RateLimiter `time()`→`now()->timestamp`)/ `e2e6a3e`(tearDown 吞 rollback)/ `dff3d07`(Pest skip eager)。
+**检查动作**:`grep -rn "fake()->\(jobTitle\|sentence\|word\|text\|paragraph\|catchPhrase\)" backend/database/factories` 命中字段若喂业务校验即改固定值;`grep -n "parent::tearDown" tests/TestCase.php` 确认前置清理被 try/finally 包住;`grep -rn "\->skip(" tests | grep -v "fn ()"`;`grep -rn "\btime()\b" backend/app/Http/Middleware backend/app/Services`。细节见 `skills/backend-dev.md` `## 测试`。
+
+---
+
+## 反模式 15: 伪绿测试 — 断言没真验证行为(核心层,与改动无关每轮必扫)
+
+测试通过 ≠ 行为正确。reviewer 必须确认绿灯断的是**真产出物 + 正确方向**:
+
+- **只 `assertOk()` 假绿**:本项目业务用 `200 + {code:0,msg}` 表错,失败路径也返 200,`assertOk` 永远绿。返文件流 / 重定向 / 真业务产出的端点必须断 `content-type` / `content-disposition` / 真实业务字段,不能只断状态码。
+- **安全 data provider 方向反置**:把**应拒绝**的输入(`169.254` 云元数据 / `0.0.0.0` / CGNAT)放进**放行集** → 测试反向锁死漏洞、修复防护时反而"弄红"测试。安全相关 provider 逐条核对"放行集 vs 拒绝集"方向与防护意图一致(保留段必在拒绝集)。
+- **`markTestSkipped` 兜底吞 bug**:对"环境前置可能缺失"用 skip 兜底 → 关键能力探测在 CI 静默跳过、生产才炸(openssl 探测参数选错就这么漏过)。关键能力测试应硬要求 CI 镜像装齐,禁 skip 吞错。
+- **依赖开发者本机环境**:测试依赖 shell PATH 装了某二进制(mysqldump/composer)才能跑 → mock 掉,否则是"开发机能跑、CI/他人挂"的差异源。
+
+**真实案例**:`76a2f58`(DocumentPreviewTest 改断真文件流 / PluginManagerTest 把 169.254 由放行改判拒绝,杀掉前一轮三处半修的假绿)/ `a546f16`(去 markTestSkipped 兜底 + mock BinaryLocator)。
+**检查动作**:`grep -rn "assertOk()" tests | grep -v "content-type\|content-disposition\|assertJson"` 核对返产出物的端点;`grep -rn "markTestSkipped" tests` 逐处反问"真环境无关 vs 在吞 bug";安全 provider 人工核对方向。**这条是独立 reviewer 的灵魂 —— 防"改完测试绿就停手",与反模式 2 第二例(机制实际可达)互为表里。**
+
+---
+
+## 反模式 16: `ApiResponseException` 的消息在 `getApiResponse()['msg']`,`getMessage()` 恒空
+
+项目自定义异常 `ApiResponseException`(`$this->error()` 抛出)的业务消息存在 `getApiResponse()['msg']`,标准 `getMessage()` **恒返回空串**。两处反复踩:
+
+- **测试假绿**:`->throws(ApiResponseException::class, '某消息')` 第二参与 `getMessage()` 比对 → 恒不匹配(消息内容永远没被真正验证)。改 `try/catch` + `expect($e->getApiResponse()['msg'])->toContain(...)`。
+- **生产丢错**:`catch (ApiResponseException $e)` 后用 `$e->getMessage()` 写日志 / 落库 → 恒空抹掉真实错误(`SubmitDocumentJob::failed()` 曾把 `submit_error` 写成空串,线上排障无据)。改 `getApiResponse()['msg'] ?? ''`,fallback `$e::class`。
+
+**真实案例**:`dff3d07`(测试 `->throws` 断言恒空)/ `9588fa9`(`SubmitDocumentJob::failed()` 落库被抹空)。同一陷阱跨测试 + 生产两次出现,属反模式 4(同类扩散)的具体实例。
+**检查动作**:`grep -rn "throws(ApiResponseException::class," tests` 应为 0;`grep -rn "getMessage()" backend/app | grep -iE "catch.*ApiResponse|Log::|->update\(|submit_error"` 逐处确认改走 `getApiResponse()['msg']`。
+
+---
+
+## 反模式 17: 免登录端点与凭据暴露(安全面)
+
+免鉴权 / 自证端点、凭据回显、会话失效是安全审核反复命中的面,新增任何对外端点必逐项核对:
+
+- **免登录端点必挂限流**:免鉴权或凭弱组合自证(email / tid+email)的端点缺限流可被爆破 / 枚举 / 滥用。挂双维度限流(业务键防换 IP + IP 维度防轰炸),且**同插件 / 同模块多个路由文件逐个比对中间件栈**(对称性,见反模式 3) —— `0d91294` 就是 easy `invoice.php` 漏挂 `easy.throttle` 而 `api.php` 有。
+- **防账号枚举**:登录 / 重置 / 发码 validator 不用 `exists:users`,查无此人不走可区分分支(不抛"用户不存在");限流 key 归一化大小写 + 去空白(否则大小写变体分散绕过爆破限制)。
+- **改密所有入口吊销旧会话**:每个写 `password` 的方法必须**同事务** bump `token_version` + `logout_at` + 删 refresh token —— `dc97990` 只修 `updatePassword`、漏 `resetPassword`(账号已失陷的高危入口),`76a2f58` 才补齐。一处会改密就全部入口都要吊销。
+- **凭据不进 URL / 不回显**:长效 token 不拼进前端 URL(用短时签名 URL);admin 详情接口 `makeHidden` 他人 token 明文、编辑留空不覆盖原 token。**签名 / `withoutMiddleware` 路由要核对 Controller 构造函数 / 父类没抢先做登录校验**(否则签名形同虚设,见反模式 2 第二例)。
+- **鉴权配置双空 fail-close**:回调等端点 token 与 IP 白名单**双空时必须拒绝**,不能默默放行(出厂双空裸奔被刷 sync / 探测 api_id)。
+
+**真实案例**:`39cd024`(验证码限流 + reset 去 exists 防枚举)/ `c81ce00`(DeployToken/Callback 隐藏 token + 回调双空拒绝 + 登录限流 account 归一化)/ `dc97990`(改密撤销 token)/ `f58320c`+`76a2f58`(签名 URL + 构造函数放行)/ `0d91294`(easy/invoice 端点补限流)。
+**检查动作**:grep 免登录路由组逐条核对限流中间件;grep 写 `password` 的方法逐个核对同事务吊销会话;grep `access_token` 是否进前端 URL;**实际发一次绕过请求**验证签名 / 限流真生效。细节见 `skills/backend-dev.md` `## 安全补强` + `### 凭据不进 URL`。
+
+---
+
+## 反模式 18: 外部输入下载 / 解压的纵深防御(SSRF / 供应链)
+
+下载可执行载荷(升级包 / 插件包)和解压外部归档是高危面,缺一层即可被供应链投毒 / SSRF:
+
+- **sha256 fail-closed**:校验值缺失即**拒绝**(不是空串跳过)。插件侧 verify-if-present 是过渡例外。
+- **SSRF 用白名单制,不用黑名单**:明文 http 只放行 RFC1918 私网 + loopback,**显式拒 169.254 link-local(云元数据 169.254.169.254)/ CGNAT / 0.0.0.0**。禁用 `FILTER_FLAG_NO_RES_RANGE` 这类黑名单过滤(169.254 落在 reserved 内会被当"可放行")。
+- **重定向收敛协议**:`curl --proto-redir =https --max-redirs 5` / Guzzle `allow_redirects.protocols=['https']` —— 堵"https 预校验过 → 302 降级到内网 http"。
+- **最终下载 URL 再校验**:来自可被篡改的 `releases.json`(`browser_download_url`)的最终 URL 必须**再校验一次**,不能只校验 Admin 填的配置基址。
+- **解压走 ArchiveGuard**:zip-slip / 符号链接统一防护,备份恢复与插件 / 升级包解压共用。
+
+**真实案例**:`39cd024`(升级包 sha256 fail-closed + 强制 HTTPS,但 169.254 半修)/ `dc97990`(插件 sha256 + SSRF 双重收敛 + ArchiveGuard)/ `76a2f58`(补 link-local 拒绝 + 重定向限 https)。
+**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单 `isPrivateOrLoopbackIp`);grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugin-dev.md` `## 安全机制` + `skills/backend-dev.md` `### 归档解压统一防护`。
+
+---
+
+## 反模式 19: 敏感数据落库与跨域 / 响应头基线
+
+- **携密 / 安全字段走专用 Builder,不回落 Default**:`DefaultNotificationBuilder` 把 context 明文直通 `notifications.data` 列。携初始密码走 `NotificationPayload.transient`(仅渲染入邮件、不入库);安全事件走白名单字段的专用 Builder,**显式不回落 Default**(防调用方误塞敏感字段被直通)。
+- **CORS 单一白名单**:不 reflect 任意 Origin、下载直出流不回落 `*`。
+- **用户可控字节下载**:非图片强制 `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`,不 inline(防钓鱼 / 存储型 XSS)。
+- **部署脚本外部值**:走 env + `getenv` 不插值进 PHP / shell 字符串(防注入);`curl -k` 仅限 loopback;composer 等下载校验 SHA384。
+
+**真实案例**:`0d91294`(user_created 密码走 transient)/ `3f716ec`(security 专用 Builder 白名单 + 不回落 Default)/ `dc97990`(CORS 白名单 + nosniff attachment + 部署脚本 URL env 传参 + composer SHA384)。
+**检查动作**:grep 新增通知 code 是否注册专用 Builder(携密 / 安全字段绝不回落 Default);`grep -rn "Access-Control-Allow-Origin.*\*" backend`;`grep -rn "Content-Disposition: inline" backend` 是否限图片;部署脚本 `php -r "...$VAR..."` 插值。细节见 `CLAUDE.md` 通知体系章节。
+
+---
+
+## 反模式 20: 并发 check-then-act 与死事务续写
+
+(与反模式 10 互补:10 防死锁发生、20 防把偶发竞态放大成持续故障)
+
+- **check-then-act 必须原子化**:防重 / 节流用 `Cache::get` 判断 + `Cache::set` 写入,两步间窗口被并发击穿(重复打上游 sync/pay/commit、超发验证码)。改 `Cache::add`(SETNX 原子占位)。占位提交点要在**业务前置校验之后、副作用之前**(否则对象不存在也因占位变 success);catch 降级方向按场景区分 —— 资金类 `add` 异常 fail-open 放行(靠 DB 唯一索引兜底),已知重复的 `get` 失败 fail-closed 不放行,两个相反方向用注释固化。
+- **死锁不可吞、不可在回滚事务上续写**:InnoDB 死锁(1213/1205/序列化失败)被 `catch(Throwable)` 当普通业务异常吞掉,再在**已被 MySQL 整体回滚的连接上** `$task->update()` → `PDOException: no active transaction`,job 失败被 queue 无脑重试 → 雪崩。并发错误必须**重抛交 queue 错峰重试**,`failed()` 钩子守卫兜底标记;手写 `begin/commit/rollback` 改 `DB::transaction` 闭包(嵌套死锁时手写 `DB::rollback` 抛 1305 淹没原异常);事务级 `attempts>1` 仅当上游 HTTP 调用在事务外(`sync` 可重试、`commit` 下单在事务内不可)。
+
+**真实案例**:`1bac824`(Order checkDuplicate / Acme sync 占位 / VerifyCode 冷却统一 `Cache::add`)/ `19384ef`(TaskJob 死锁重抛 + 死事务续写致 no active transaction 雪崩)。
+**检查动作**:`grep -rn "Cache::get\|Cache::has" backend/app | grep -iE "重复|节流|cooldown|sync|防重"` 看是否紧跟 `Cache::set`(TOCTOU);`grep -rn "catch.*Throwable" backend/app/Jobs backend/app/Services` 看 catch 体是否对并发错误分流;`grep -rn "DB::beginTransaction\|DB::rollback" backend/app/Services` 应趋零。细节见 `skills/backend-dev.md` `### tasks 死锁防护与并发错误处理` + `### 节流统一 Cache::add 原子占位`。
+
+---
+
+## 反模式 21: 部署 / 迁移静默失败("绿了但线上没生效" — 最阴险)
+
+CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
+
+- **迁移内 `SHOW INDEX/COLUMNS/TABLES` 禁带 `?` 占位符**:这类 SHOW 语句不支持服务端 prepared 参数绑定,`EMULATE_PREPARES=false`(Laravel 默认)下抛 1064;若该异常落在 try / 早退分支被"幂等跳过"吃掉 → migration 记录入表(看似成功)但索引 / 列**根本没建**。一律全量 `SHOW INDEX` 取回 + Collection 过滤。
+- **结构校验要比 indexes,不止 columns**:`db:structure --check` 只 diff columns 会漏报索引差异(后台 manual_actions 报警但 `--check` 绿)。
+- **增量迁移回灌建表迁移**:`add_*/drop_*` 加的列 / 索引必须同步回 `create_*_table`,否则干净库 `migrate:fresh` 与线上结构漂移。
+- **升级同步用动态发现,非硬编码目录白名单**:后台升级硬编码同步白名单漏新增顶层目录(`resources` 被漏 → 对外 API 文档 yaml 不部署 → 端点 404);改 `File::directories()` 动态发现 + skip storage/vendor,同步范围与可写预检对齐。
+
+**真实案例**:`7fda164`(`SHOW INDEX WHERE ?` 抛 1064,迁移看似成功但 code 唯一索引没升级 + 结构校验漏 `modified_indexes`)/ `1050297`(增量列/索引回灌建表迁移)/ `0c97e50`(升级漏 resources 目录致文档 404)。
+**检查动作**:`git grep -n "SHOW INDEX\|SHOW COLUMNS\|SHOW TABLES" backend | grep "?"` 必须为空;含 `add_*/drop_*` 迁移 → 改结构后**实跑 `php artisan migrate` 再 `db:structure --check` 验证确已生效**(不能只信 migration 入表);`migrate:fresh` + `--check` 双跑验建表同步;`grep -rn "\['app'.*'config'.*'database'" backend/app/Services/Upgrade` 硬编码目录列表应消除。细节见 `skills/backend-dev.md` `### 数据库结构校验` + `## 迁移规范`。
 
 ---
 
@@ -206,11 +324,11 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 
 ## B. 对端检查
 
-| 维度            | 当前改动   | 对端需要同步?      |
-| --------------- | ---------- | ------------------ |
+| 维度            | 当前改动   | 对端需要同步?  |
+| --------------- | ---------- | -------------- |
 | backend ↔ shell | (具体什么) | (是/否/已对齐) |
-| admin ↔ user    | ...        | ...                |
-| 同文件已有范式  | ...        | (列出参考函数)     |
+| admin ↔ user    | ...        | ...            |
+| 同文件已有范式  | ...        | (列出参考函数) |
 
 ---
 
@@ -236,18 +354,20 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 - 重要：同一处已修复的问题不要重复报告
 
 ## 必查反模式清单
-读 `skills/review-checklist.md` "反模式分级" 章节 + 设计期清单，按本次改动确定本轮扫描范围（核心层 5 条必扫 + 条件层按改动目录触发）。当前项目特有反模式由该文件保持单一来源。
+读 `skills/review-checklist.md` "反模式分级" 章节 + 设计期清单，按本次改动确定本轮扫描范围（核心层 6 条必扫 + 条件层按改动目录触发）。当前项目特有反模式由该文件保持单一来源。
 - 反模式 4 特别强调：遇到"对称副本"模式（多处保留同名函数 / 同语义算法）→ 必须验证是否有 build 时 grep 等价校验或运行时输出等价测试；只靠注释提示同步 = 报 high
+- 反模式 2 + 15 特别强调：对任何"声称有鉴权/签名/限流/回调校验"的防御机制，必须**实际制造一次绕过请求**（无 token 的 signed 请求 / 169.254 下载 / 改密后用旧 token）确认真被拦——静态读到"加了防御代码"≠ 生效；测试只断 `assertOk` / 把应拒输入放进放行集 = 伪绿。这是上一批 `76a2f58` 三处"半修"的根因，命中报 high
+- 反模式 21 特别强调：改了 migrations / 数据库结构 → 不能只信 CI 绿 / migration 入表，必须**实跑 `migrate` 再 `db:structure --check`** 验证索引/列确已生效（`SHOW INDEX WHERE ?` 静默失败曾让索引"看似升级实则没建"）
 
 ## 必须实际跑(不只是静态推理!)
 1. `cd backend && ./vendor/bin/pint --test`(PHP 格式)
 2. `cd backend && ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G`(静态分析)
 3. `bash -n` 改过的 .sh 文件 + `shfmt -d` 看格式
 4. `cd backend && php artisan test --filter=<改动相关>`(改动涉及的测试集)
-5. **至少 1 个失败场景模拟**(关键 — 静态推理 ≠ 实际验证):
+5. **至少 1 个失败场景 / 绕过请求模拟**(关键 — 静态推理 ≠ 实际验证):
    - 删一个新引入的配置文件 / 给个非法输入 / mock 命令失败
-   - 看防御机制是否真的拦住
-   - 这条曾经漏掉过"防御机制完全失效"(产出物没打进包,整套机制等于不存在)
+   - 安全机制必做:发一次**绕过请求**(无 token 的 signed 请求 / 169.254 下载 / 改密后用旧 token / 免登录端点超频)看是否真被拦
+   - 这条曾漏掉"防御机制完全失效"(产出物没打进包,整套机制等于不存在)与三处"半修"(`76a2f58`:签名被构造函数挡死 / SSRF 黑名单漏保留段 / 改密只修一个入口),都是"代码加了 + 测试绿"的伪装
 6. **挑 3-5 个 §2.5-§2.7 / §1.5 / §2.6 与本次 diff 相关的复选框做反向断言验证**(如改了 ACME → 验证"Action 无 userId 构造参数";改了资金 → 验证"CAS UPDATE 完整字段")。证据不足或与主智能体声称不符 → 报 critical
 
 ## 输出格式

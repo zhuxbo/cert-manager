@@ -23,13 +23,17 @@ git diff --cached --stat
 | backend/app/Services/Acme | 是/否 | ACME 测试集必跑 |
 | backend/app/Services/Order | 是/否 | Order 测试集必跑 |
 | backend/app/Models/Fund / Transaction / 资金路径 | 是/否 | §2.6 资金证据必贴 + §2.4 mysql 5.7 容器必跑 |
-| backend/database/migrations | 是/否 | 检查 enum/索引/外键/DDL → 任一是 → §2.4 必跑 |
+| backend/database/migrations | 是/否 | 检查 enum/索引/外键/DDL → 任一是 → §2.4 必跑；改结构后**实跑 migrate + `db:structure --check` 验证生效**、增量迁移回灌建表迁移（反模式 21）|
 | 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`） | 是/否 | §2.4 必跑 |
 | AppServiceProvider 连接/时区注入 | 是/否 | §2.4 必跑 |
 | frontend/shared | 是/否 | admin + user 两端构建必验 |
 | plugins/ | 是/否 | §4 插件检查必跑 |
-| deploy/ 升级脚本 | 是/否 | 反模式 4/7 重点扫描 |
-| tests/ 文件本身（新增/修改测试） | 是/否 | §2.3 测试集 + 评审改测试是否伪绿（删断言/mock 过度） |
+| deploy/ 升级脚本 / 后台升级目录同步 | 是/否 | 反模式 4/7/21 重点扫描（升级同步动态发现、外部值 env 传参）|
+| tests/ 文件本身（新增/修改测试） | 是/否 | §2.3 测试集 + 反模式 14（flaky 四源：faker/共享 storage/时钟/tearDown）+ 15（伪绿：`assertOk`、provider 方向反置、`markTestSkipped` 吞 bug）|
+| 鉴权 / 下载 / 解压 / CORS / 通知 / 公开端点（安全面） | 是/否 | §7 安全风险细化 + 反模式 17/18/19；**实际发一次绕过请求**验证防御生效 |
+| 外部命令调用（`exec`/`proc_open`/二进制探测） | 是/否 | 反模式 12（BinaryLocator + 开发机/生产环境差异）|
+| 节流 / 防重 / 并发事务（`Cache::add` / 锁 / TaskJob / 死锁） | 是/否 | 反模式 20（check-then-act 原子化、死锁不可吞 / 不可续写）|
+| catch 自定义异常后日志/落库（`ApiResponseException`） | 是/否 | 反模式 16（消息走 `getApiResponse()['msg']`，`getMessage()` 恒空）|
 | 通知模板 / NotificationTemplate / NotificationCenter | 是/否 | §7 部署风险加 `db:seed --class=NotificationTemplateSeeder` + 模板渲染单测 |
 | 删除了类/配置/命令/表/字段/函数 | 是/否 | §1.5 删除审核必跑 |
 
@@ -111,6 +115,8 @@ cd backend && php artisan test --parallel
 ```
 
 > 默认走 `.env.testing` 的 mysql；本地 MySQL 偶发 "server has gone away" / "Connection refused"（资源压力间歇性闪断 / paratest 连接占满）时，**最多重跑 2 次**。第 3 次仍失败 → 当真实回归处理，必须排查根因，禁止"重试到通过"。
+>
+> **重跑只赦免基础设施闪断，不赦免测试本身的不确定性**：若失败与断言/数据相关（非连接闪断），是 flaky bug，按 `review-checklist.md` 反模式 14 排查根因（faker 随机数据撞校验 / paratest 共享 storage 跨 worker 误删 / `time()` 时钟不可控 / tearDown 吞 rollback / Pest skip eager 求值），禁止靠重跑掩盖。新增或改测试时主动收敛这四类不确定源，并防伪绿（反模式 15：只断 `assertOk`、安全 provider 方向反置、`markTestSkipped` 吞 bug）。
 
 改特定模块时优先跑对应测试：
 
@@ -335,11 +341,14 @@ git status --short | grep "^??"
 
 ### 安全风险
 
-- 新增 API 是否有认证中间件（JWT / Token）
-- 用户输入是否经 Request 类验证
-- UserScope 是否覆盖新增查询
+- 新增 API 是否有认证中间件（JWT / Token）；UserScope 是否覆盖新增查询
+- 用户输入是否经 Request 类验证；敏感字段在响应中是否隐藏（`makeHidden`）
 - 支付相关改动（yansongda/pay）是否安全（CAS 路径金额/方式校验完整？回调失败让支付平台重试而非吞错？）
-- 敏感字段在响应中是否隐藏
+- **免登录 / 自证端点是否挂限流**（防爆破/枚举/滥用）；账号枚举防护（去 `exists:users`、查无此人不分叉响应、限流 key 归一化大小写）—— 反模式 17
+- **改密所有入口**是否同事务 bump `token_version` + 清 refresh token；凭据不进 URL（短时签名 URL）、admin 详情 `makeHidden` 他人 token；鉴权配置双空 fail-close —— 反模式 17
+- **外部 URL 下载**（升级包 / 插件包）：sha256 fail-closed、SSRF 白名单制（拒 169.254 云元数据 / CGNAT）、重定向限 https、最终下载 URL 再校验；解压走 ArchiveGuard —— 反模式 18
+- **敏感数据落库**：通知携密 / 安全字段走专用 Builder 不回落 Default；CORS 白名单不 reflect 任意 Origin；用户可控字节下载 `attachment` + `nosniff` —— 反模式 19
+- **机制可达性**：任何"声称有鉴权 / 签名 / 限流"的防御，实际发一次绕过请求验证真被拦（反模式 2 第二例 + 15，防半修假绿）
 
 ### 数据风险
 
@@ -441,7 +450,9 @@ Agent({
 - 第 3 轮 → 字符串拼接路径不安全 / autoload 兜底对称性缺失 / 新方法无单测
 - 第 4 轮 → 0 new → 通过
 
-每一轮的发现都对应 `skills/review-checklist.md` 反模式 1-13 的某条，案例锚定可双向验证。本节就是把这次自然形成的流程显式化，防止下次"跑一次就停"。
+每一轮的发现都对应 `skills/review-checklist.md` 反模式 1-21 的某条，案例锚定可双向验证。本节就是把这次自然形成的流程显式化，防止下次"跑一次就停"。
+
+**反面教材（reviewer 没跑够 = 半修流入主干）**：`76a2f58` 一次性补了三处"上一轮声称修了、实际运行路径上没生效"的防御 —— 签名预览被 Controller 构造函数挡死（`f58320c` 半修）、SSRF 黑名单漏 169.254 云元数据（`39cd024` 半修）、改密吊销会话只修了一个入口漏 `resetPassword`（`dc97990` 半修）。三处单元测试当时都绿（只断 `assertOk` / 把应拒输入放进放行集）。教训：reviewer 必须**实际制造绕过请求**验证机制真生效（反模式 2 第二例 + 15），否则"加了防御代码 + 测试绿"恰好是半修的最佳伪装。
 
 ---
 
