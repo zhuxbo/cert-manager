@@ -4,6 +4,8 @@ namespace App\Http\Controllers\User;
 
 use App\Models\User;
 use App\Models\UserRefreshToken;
+use App\Services\Notification\DTOs\NotificationIntent;
+use App\Services\Notification\NotificationCenter;
 use App\Utils\VerifyCodeHelper;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -318,6 +320,9 @@ class AuthController extends BaseController
             UserRefreshToken::deleteTokenByUserId($user->id);
         });
 
+        // 改密成功后发安全提醒邮件（用户关闭 security 偏好 / 无邮箱则由通道 shouldSend 自动跳过）
+        $this->notifySecurityChange($user, '登录密码已修改');
+
         $this->success();
     }
 
@@ -443,6 +448,9 @@ class AuthController extends BaseController
 
                 UserRefreshToken::deleteTokenByUserId($user->id);
             });
+
+            // 重置成功后发安全提醒邮件（已过邮箱验证码必有邮箱）；dispatch 异步入队、响应仍统一 success，不放大账号枚举
+            $this->notifySecurityChange($user, '登录密码已通过邮箱验证码重置');
         }
 
         $this->success();
@@ -504,5 +512,21 @@ class AuthController extends BaseController
         $this->guard->logout();
 
         $this->success();
+    }
+
+    /**
+     * 派发账号安全变更通知（仅 mail 通道；用户关闭 security 偏好或无邮箱时由 shouldSend 自动跳过）。
+     *
+     * 在改密事务提交后调用；NotificationJob 经 ->afterCommit() 入队，发送失败不影响改密主流程。
+     * event 仅传安全事件的可读描述，绝不含密码等凭据。
+     */
+    private function notifySecurityChange(User $user, string $event): void
+    {
+        app(NotificationCenter::class)->dispatch(new NotificationIntent(
+            'security',
+            'user',
+            $user->id,
+            ['event' => $event, 'email' => (string) $user->email]
+        ));
     }
 }
