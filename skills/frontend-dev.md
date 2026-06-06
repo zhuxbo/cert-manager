@@ -9,7 +9,7 @@
 - **HTTP**: Axios
 - **构建**: Vite
 - **样式**: Sass + TailwindCSS
-- **包管理**: pnpm 9+ (workspace)
+- **包管理**: pnpm 11 (corepack + workspace)
 
 ## Monorepo 架构
 
@@ -238,5 +238,14 @@ Prettier 对 markdown 的处理：
 
 ## 环境要求
 
-- Node.js >= 18.18.0
-- pnpm >= 9.0.0
+- Node.js >= 22.13.0（pnpm 11 要求；vite 7 要 `^20.19 || >=22.12`，CI 用 Node 22）
+- pnpm >= 11，本地 `corepack enable` 启用（按 `package.json` 的 `packageManager` 字段解析）
+
+### pnpm 11 供应链安全（默认开启）
+
+- **minimumReleaseAge**（默认拒 24h 内新发布的包）——**何时撞、何时不用管**：
+  - 日常 `pnpm install --frozen-lockfile`（CI / 容器构建 / 部署）**永不撞**：锁定的版本都早过 24h
+  - 主动升级时，**纯传递依赖**（未在 package.json 声明的）resolution 阶段自动回落到 cutoff 前版本（如 electron-to-chromium 1.5.368→1.5.367），无感；但**直接依赖**（package.json 显式声明）pnpm 按你的 range 选 caret 内最新、**不回落**，撞到它当天发版才需处理
+  - 处理：**最省事是等一天**（cutoff 滚动，今天发的明天必合规）；急则 `override` 钉稳定版 + `minimumReleaseAgeExclude` 豁免（注意 override 在校验**之后**应用、单独救不了，须二者配合：实际装合规版、豁免只绕验证时机）。**预防**：升级直接依赖别用 `--latest` 盲追当天最新
+- **allowBuilds**（build 脚本白名单，取代 `onlyBuiltDependencies`）：依赖的 postinstall/native build 须在 `pnpm-workspace.yaml` 的 `allowBuilds` 显式 `true`，否则被忽略（如 `esbuild` binary 不装致 vite build 挂）。当前已批准 `@parcel/watcher`、`esbuild`
+- **切版本首次 install** 在无 TTY 环境（脚本/后台）需设 `CI=true`，否则报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`（GitHub Actions 自带）

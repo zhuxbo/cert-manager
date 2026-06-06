@@ -75,3 +75,7 @@ version.json
 # e2e 集成层运行时产物（自动生成；不入版本库）
 deploy/test/e2e/integration/env/
 deploy/test/e2e/integration/data/
+
+# pnpm 11 在插件独立 install（--ignore-workspace）时会自动生成 allowBuilds 占位的 pnpm-workspace.yaml，
+# 但 --ignore-workspace 又会忽略它（死文件），不入库
+plugins/*/frontend/*/pnpm-workspace.yaml

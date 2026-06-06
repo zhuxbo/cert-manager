@@ -28,6 +28,7 @@ skills/ # 开发规范（详细文档）
 - **测试发现 bug 必须修复代码** - 测试的目的是发现 bug 并修复，绝不修改测试去迎合错误的代码
 - **Plan 文档必须含杀手场景 + 对端检查** - 写 `.superpowers/` 下 plan 前先填这两栏（见 `skills/review-checklist.md` 设计期清单）；回答不出来视为设计未完成，不开始写代码
 - **完成检查必跑 reviewer 循环** - `/finish-check` 阶段 8 强制委派 reviewer subagent，直到输出 `REVIEW_PASS: 未发现新 critical/high 问题` 这串可 grep 签字才算通过
+- **前端 pnpm 11** - 本地用 `corepack enable` 启用（需 Node ≥22.13；CI 的 `pnpm/action-setup` 自动按 `packageManager` 字段跟随）。pnpm 11 默认开启供应链安全：`minimumReleaseAge`（拒绝 24h 内新发布的包，批量升级遇阻时删 `pnpm-lock.yaml` 重解析即可选到合规版本）+ `allowBuilds`（build 脚本白名单，在 `pnpm-workspace.yaml` 显式列出，已弃用 `onlyBuiltDependencies`）。详见 `skills/frontend-dev.md`
 
 ## 开发规范
 

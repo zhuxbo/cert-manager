@@ -2,7 +2,7 @@
   "name": "manager",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@11.5.2",
   "scripts": {
     "dev": "pnpm --filter admin --filter user --parallel dev",
     "dev:admin": "pnpm --filter admin dev",
@@ -13,42 +13,15 @@
     "lint": "pnpm -r lint"
   },
   "engines": {
-    "node": ">=18.18.0",
-    "pnpm": ">=9"
-  },
-  "pnpm": {
-    "overrides": {
-      "vue": "^3.5.13"
-    },
-    "allowedDeprecatedVersions": {
-      "are-we-there-yet": "*",
-      "sourcemap-codec": "*",
-      "lodash.isequal": "*",
-      "domexception": "*",
-      "w3c-hr-time": "*",
-      "inflight": "*",
-      "npmlog": "*",
-      "rimraf": "*",
-      "stable": "*",
-      "gauge": "*",
-      "abab": "*",
-      "glob": "*"
-    },
-    "onlyBuiltDependencies": [
-      "@parcel/watcher",
-      "core-js",
-      "es5-ext",
-      "esbuild",
-      "typeit",
-      "vue-demi"
-    ]
+    "node": ">=22.13.0",
+    "pnpm": ">=11"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
-    "lodash-es": "^4.17.21",
+    "lodash-es": "^4.18.1",
     "tippy.js": "^6.3.7"
   },
   "devDependencies": {
-    "@commitlint/types": "^19.8.0"
+    "@commitlint/types": "^21.0.1"
   }
 }
