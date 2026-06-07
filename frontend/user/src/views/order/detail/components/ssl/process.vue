@@ -68,7 +68,7 @@
           <td class="label" />
           <td class="content"><Install /></td>
         </tr>
-        <template v-if="showAutoDeploy">
+        <template v-if="showAutoDeploy && !isGm">
           <tr>
             <td class="label">
               <el-icon :size="16" class="icon" :color="issuedColor">
@@ -104,6 +104,8 @@ import dayjs from "dayjs";
 
 const order = inject("order") as any;
 const cert = inject("cert") as any;
+// 国密(SM2)证书为双证书，不支持单证书自动部署，隐藏自动部署入口（后端 Deploy API 亦拒绝）
+const isGm = computed(() => /sm2/i.test(cert.value?.encryption_alg ?? ""));
 // 检查是否有文档
 const hasDocuments = computed(() => {
   const docs = cert.value?.documents;

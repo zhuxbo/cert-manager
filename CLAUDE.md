@@ -170,6 +170,7 @@ skills/ # 开发规范（详细文档）
 - **延时提交**：Command 创建续费/重签 + 支付后不立即 commit，通过 Task 表创建延时 commit 任务（随机 0~8 小时），分散上游压力，8 点后人工可检查状态
 - **产品条件**：续费要求 `product.status=1 && renew=1`；重签仅要求 `reissue=1`（产品禁用仍可重签）
 - **参数继承**：从原订单提取 period/contact/organization/domains；CSR 按 `product.reuse_csr` 决定重用或生成
+- **算法继承**（防静默降级）：续费/重签 `reuse_csr=0` 重新生成 CSR 时，`ActionTrait::initParams` 在 `encryption.alg` 缺失时从 `last_cert` 继承 alg/bits/digest（列存大写，`strtolower` 归一），覆盖自动路径（`AutoRenewCommand` 不传 encryption）与 API 省略；前端 `loadOrderInfo` 回填原算法为表单默认（用户仍可改）。**继承值在 `ValidatorUtil::validate` 之后才注入 `$params`**——不让当前产品 `encryption_alg` 菜单校验阻断存量证书续签（显式传入的 encryption 仍照常 validate）；但 SM2 业务 gate `guardSm2Enabled` 早触发，gmEnabled 关则报错（保持 SM2，绝不静默降级为 RSA）。`CsrUtil::getEncryptionParams` 归一返回小写 alg（修大写算法失配 bug）。前端 ECDSA 密钥长度选项 `512→521` 对齐后端 `secp521r1`。否则原 ECDSA/SM2 证书会在 reuse_csr=0 续签后静默降级为 RSA
 - **委托前置条件**：缺失委托记录时自动创建（`_dnsauth` 精确域名、回落前缀按根域）；DNS 验证采用宽松策略（所有 dnsTools + 本地全部尝试，任一匹配即有效），目的是尽可能发起续签
 
 ### 工商查询与企业-联系人绑定
@@ -215,6 +216,17 @@ skills/ # 开发规范（详细文档）
 - **MailChannel::shouldSend 内联逻辑**：检查 `notifiable->email` 非空 + 调 `allowsNotification($code)`；Admin 等无此方法的 notifiable 默认 true
 - **取消/重发等 Admin 操作**：测试通知 `/api/admin/notification/test-send` 和重发 `/api/admin/notification/{id}/resend` 不再传 `channels` 入参（已删 sanitizeChannels）；发送会广播到所有已注册可用 channel
 - **`DefaultNotificationBuilder` 兜底安全约定**：未配置 builder 的 code（Admin 测试通知 / 插件自定义 code）走 `DefaultNotificationBuilder`，**直通 `$intent->context` 入库**，不做敏感字段过滤。调用方需自律 — context 不传 password/token/secret/api_key/private_key 等字段，否则会明文存入 `notifications.data` 列并随通道转发外部。**例外**：`user_created`（携初始密码）已注册专用 `UserCreatedNotificationBuilder`，把密码走 `NotificationPayload.transient`（仅渲染入邮件、不入库），不回落 Default；新增携密 code 同样必须走专用 Builder + transient，不可依赖 Default。**`security`**（账号改密/重置提醒，`User\AuthController::updatePassword`/`resetPassword` 事务提交后触发）虽不携密，也用专用 `SecurityNotificationBuilder` 白名单 `username`/`event`/`email` 入库（纯文本 `is_html=false`），避免调用方误把敏感字段塞进 context 被 Default 直通；`event` 仅传安全事件可读描述，不含凭据
+
+### 国密 (SM2) 证书
+
+- **开关**：`site.gmEnabled`（默认关，未启用零影响）+ `site.gmOpensslPath`（国密 openssl 路径，留空自动探测 Tongsuo）。下单 `Order\ActionTrait::initParams` 在 gmEnabled 关时拒绝 SM2（后端兜底防绕过）
+- **国密 openssl**：PHP openssl 扩展不支持 SM2，CSR 生成走 `BinaryLocator::gmOpenssl()`（独立 Tongsuo/GmSSL 二进制，探测 `ecparam -name SM2 -genkey -noout` 验真支持 SM2、防普通 openssl 假阳性）；与系统 openssl 隔离，RSA/ECDSA 仍走系统 `openssl()`。dev 容器 `docker/php/Dockerfile` 多阶段编译 Tongsuo → `/usr/local/tongsuo`；生产须装（CI runner 系统 OpenSSL 3.0+ 亦支持 SM2，gmOpenssl 可回落系统 openssl）
+- **双证书 + 存储**：签名证书（用户密钥对，manager 本地 `CsrUtil::generateSM2` 生成 SM2 CSR，临时文件 finally 强清不留盘）+ 加密证书（CA/KGC 托管下发）。`enc_cert`/`enc_key`/`enc_key2` 存 `certs` 表真实列（**每张证书独立**，不入按 issuer 聚合的 `chains` 表，否则同 CA 多证书互相覆盖加密私钥），跟随 `private_key` 暴露策略
+- **多级代理透传**：manager 走 `default` source 调上游 `{ca.url}/get`（=对端 V2 get），CA 对接在 gateway（不在主系统）。上游 `get` 响应须带 `enc_cert`/`enc_key`/`enc_key2`（契约，键名=列名），sync 的 `$data=$result['data']` 透传 + `$cert->update($data)` 靠 fillable 自动写入（**sync 并发零改动**）。**manager 作上游时其 `V2 get` 也须透传 enc**（latestCertFields 加 enc + 非空透传/空 unset，同 `private_key` 策略；Deploy get 亦透传），否则多级 manager 链路下游写不进 enc。**sync 终态守卫**：本地终态时连同 status 一并 unset enc，拒上游滞后 enc 回写已终结证书
+- **证书解析**：`ActionTrait::parseCert` 对 SM2 用 PHP `openssl_x509_parse`（OpenSSL ≥1.1.1 原生识别 `signatureTypeSN=SM2-SM3`、公钥 256 位）+ `isSM2Cert` DER OID 兜底，固定 `encryption_alg=SM2`/`signature_digest_alg=SM3`/`encryption_bits=256`；`isSM2Cert` 对已明确解析出非 SM2 算法（signatureTypeSN 非 UNDEF/空）短路、不对每张 RSA/ECDSA 跑 DER
+- **下载**：国密只出 nginx 双证书包（`_sign.crt`/`_sign.key`/`_enc.crt`/`_enc.key`/`_enc_gmt0009.key`/`_enc_gmt0016.key`/`_sign_ca.crt` + 说明.txt），`ActionFileTrait::addCertToZip` 按 `encryption_alg='sm2'` 走 `addSm2CertToZip`（**与前端 isSM2/Deploy gate 同口径、不按 enc_cert**——enc 空的 SM2 也强制国密包，不掉进普通 PKCS12 逻辑丢签名私钥/iis 报错）；**加密文件需 enc_cert + enc_key 成对才出**（三列独立 nullable、无成对到达约束，缺任一即整组降级仅签名 + 提示，杜绝"有证书无私钥/有私钥无证书"残缺包）
+- **前端 gate**：`install.vue` 两端国密只显 Nginx + `enc_cert`/`enc_key` 任一空即置灰（`encMissing` 与后端成对守卫对齐）；`process.vue` 两端隐藏自动部署；算法字典 `dictionary.ts` 已含 sm2/sm3（无需改）
+- **Deploy API gate**：`query` 的 `field=certificate|private_key` 拉取拒绝国密（防 certimate 单证书残缺自动部署）；`getOrderData` 国密 active 附 `enc_certificate`/`enc_private_key`/`enc_private_key_gmt0009` + `encryption_alg=sm2` 标记
 
 ## 测试
 

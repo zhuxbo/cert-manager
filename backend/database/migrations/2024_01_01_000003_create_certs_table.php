@@ -37,6 +37,9 @@ return new class extends Migration
                 $table->mediumText('csr')->nullable()->comment('CSR');
                 $table->mediumText('private_key')->nullable()->comment('私钥');
                 $table->mediumText('cert')->nullable()->comment('证书');
+                $table->mediumText('enc_cert')->nullable()->comment('国密加密证书');
+                $table->mediumText('enc_key')->nullable()->comment('国密加密私钥(GMT-0016)');
+                $table->mediumText('enc_key2')->nullable()->comment('国密加密私钥(GMT-0009)');
                 $table->string('serial_number', 128)->nullable()->comment('序列号');
                 $table->string('fingerprint', 128)->nullable()->comment('指纹');
                 $table->string('encryption_alg', 20)->nullable()->comment('加密算法');

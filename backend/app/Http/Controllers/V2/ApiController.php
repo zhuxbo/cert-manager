@@ -405,6 +405,9 @@ class ApiController extends Controller
             'csr',
             'private_key',
             'cert',
+            'enc_cert',
+            'enc_key',
+            'enc_key2',
             'issuer',
             'issued_at',
             'expires_at',
@@ -480,6 +483,14 @@ class ApiController extends Controller
         // 避免返回空的 key
         if (empty($result['private_key'])) {
             unset($result['private_key']);
+        }
+
+        // 国密 enc 字段：仅 SM2 证书非空，非国密清理（与 private_key 同策略）。经 default source
+        // （{ca.url}/get）透传给下游 manager，下游 sync 以列名 fillable 写入自身 certs.enc_*，打通多级国密链路
+        foreach (['enc_cert', 'enc_key', 'enc_key2'] as $encField) {
+            if (empty($result[$encField])) {
+                unset($result[$encField]);
+            }
         }
 
         // 清理 dcv/validation 中不可跨级传递的内部字段

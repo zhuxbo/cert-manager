@@ -316,3 +316,99 @@ test('BinaryLocator 不再依赖 Symfony ExecutableFinder', function () {
     expect($source)->not->toContain('use Symfony\Component\Process\ExecutableFinder');
     expect($source)->not->toContain('new ExecutableFinder');
 });
+
+test('gmOpenssl 命中第一个支持 SM2 的候选', function () {
+    $locator = new class extends BinaryLocator
+    {
+        protected function gmOpensslCandidatePaths(): array
+        {
+            return ['/opt/tongsuo/bin/openssl'];
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            return $path === '/opt/tongsuo/bin/openssl';
+        }
+    };
+
+    expect($locator->gmOpenssl())->toBe('/opt/tongsuo/bin/openssl');
+});
+
+test('gmOpenssl 跳过不支持 SM2 的候选选下一个（防普通 openssl 假阳性）', function () {
+    $locator = new class extends BinaryLocator
+    {
+        protected function gmOpensslCandidatePaths(): array
+        {
+            return ['/usr/bin/openssl', '/opt/tongsuo/bin/openssl'];
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            // 模拟系统 openssl 不支持 SM2（LibreSSL/老版），只有 tongsuo 支持
+            return $path === '/opt/tongsuo/bin/openssl';
+        }
+    };
+
+    expect($locator->gmOpenssl())->toBe('/opt/tongsuo/bin/openssl');
+});
+
+test('gmOpenssl 全部候选不支持 SM2 时抛 BinaryNotFoundException', function () {
+    $locator = new class extends BinaryLocator
+    {
+        protected function gmOpensslCandidatePaths(): array
+        {
+            return ['/nonexistent/openssl'];
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            return false; // 候选 + shell 兜底全部不支持 SM2
+        }
+    };
+
+    expect(fn () => $locator->gmOpenssl())->toThrow(BinaryNotFoundException::class, 'gmopenssl');
+});
+
+test('gmOpenssl 第二次调用走 memoize，不重复探测', function () {
+    $locator = new class extends BinaryLocator
+    {
+        public int $probeCount = 0;
+
+        protected function gmOpensslCandidatePaths(): array
+        {
+            return ['/opt/tongsuo/bin/openssl'];
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            $this->probeCount++;
+
+            return true;
+        }
+    };
+
+    $first = $locator->gmOpenssl();
+    expect($locator->gmOpenssl())->toBe($first);
+    expect($locator->probeCount)->toBe(1);
+});
+
+test('probeSm2 对不存在的路径返回 false（探测命令不恒真）', function () {
+    // 回归：探测 SM2 必须真验曲线（ecparam -name SM2 -genkey），不能因命令拼写错而恒真，
+    // 否则 version 通过但签不了 SM2 的 LibreSSL/老版会假阳性被选中。
+    $locator = new BinaryLocator;
+    $reflect = new ReflectionMethod($locator, 'probeSm2');
+
+    expect($reflect->invoke($locator, '/nonexistent/openssl'))->toBeFalse();
+});
+
+test('gmOpenssl 在容器内真实探测到支持 SM2 的 openssl（不 mock、不 skip）', function () {
+    // 国密 CSR 生成是关键能力，必须真探到支持 SM2 的 openssl（gmOpenssl 的 probeSm2 已保证返回的二进制
+    // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器装 Tongsuo（/usr/local/tongsuo）；CI runner
+    // 系统 OpenSSL 3.0+ 亦支持 SM2，gmOpenssl 经 shell 兜底命中系统 openssl。两者都 SM2-capable。
+    // 遵反模式 15 不 markTestSkipped 兜底（否则关键能力探测在 CI 静默跳过、生产才炸）。
+    // 裸机无任何 SM2-capable openssl 会失败，提示按 docker/README 用容器或装 Tongsuo。
+    $path = (new BinaryLocator)->gmOpenssl();
+
+    expect($path)->toBeString()
+        ->and(file_exists($path))->toBeTrue();
+});

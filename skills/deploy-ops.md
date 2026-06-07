@@ -48,6 +48,27 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 
 宝塔默认 PHP 已包含大部分必需扩展。通常需要额外确认的是 `pdo_mysql`、`fileinfo`、`calendar`、`intl`，按需启用 `redis`。`bt-deps.sh` 会尽量自动安装缺失扩展；失败时提示到宝塔面板 → 软件商店 → PHP 8.x → 设置 → 安装扩展手工处理。
 
+### 国密 (SM2) 支持（可选，仅签发国密证书时需要）
+
+SM2 证书的 CSR 生成走独立国密 openssl（PHP openssl 扩展 / 系统老版 openssl 不支持 SM2），与系统 openssl 隔离、不影响 RSA/ECDSA：
+
+1. 编译 [Tongsuo（铜锁）](https://github.com/Tongsuo-Project/Tongsuo) 到独立前缀（与 dev 容器 `docker/php/Dockerfile` 一致）：
+
+   ```bash
+   wget -O tongsuo.tar.gz https://github.com/Tongsuo-Project/Tongsuo/archive/refs/tags/8.4.0.tar.gz
+   tar xf tongsuo.tar.gz && cd Tongsuo-8.4.0
+   ./config --prefix=/usr/local/tongsuo --libdir=lib --openssldir=/usr/local/tongsuo/ssl \
+       enable-ntls -Wl,-rpath,/usr/local/tongsuo/lib
+   make -j"$(nproc)" && make install_sw install_ssldirs
+   /usr/local/tongsuo/bin/openssl ecparam -name SM2 -genkey -noout   # 验证 SM2 可用
+   ```
+
+2. `BinaryLocator::gmOpenssl()` 默认探测 `/usr/local/tongsuo/bin/openssl` 等路径；非标准位置在「系统设置 → 站点 → 国密 openssl 路径」（`site.gmOpensslPath`）填绝对路径
+3. 「系统设置 → 站点」开启「启用国密(SM2)证书」（`site.gmEnabled`）
+4. 未装 Tongsuo 但系统 openssl ≥ 3.0（支持 SM2）时 `gmOpenssl()` 回落系统 openssl；都不支持则国密 fail-closed，不影响非国密证书
+
+> 国密证书部署到**业务服务器**需国密版 nginx（Tongsuo），与本管理系统部署无关。
+
 ### PHP 禁用函数
 
 宝塔默认禁用 `putenv`、`proc_open`、`exec`、`pcntl_*` 等函数。`bt-deps.sh` 会自动解除以下函数（同时处理 `php.ini` 和 `php-cli.ini`，自动备份）：

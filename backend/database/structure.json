@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-06-04 18:57:32",
+    "generated_at": "2026-06-06 18:28:03",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -1719,8 +1719,32 @@
                     "extra": "",
                     "comment": "证书"
                 },
-                "serial_number": {
+                "enc_cert": {
                     "position": 28,
+                    "type": "mediumtext",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "国密加密证书"
+                },
+                "enc_key": {
+                    "position": 29,
+                    "type": "mediumtext",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "国密加密私钥(GMT-0016)"
+                },
+                "enc_key2": {
+                    "position": 30,
+                    "type": "mediumtext",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "国密加密私钥(GMT-0009)"
+                },
+                "serial_number": {
+                    "position": 31,
                     "type": "varchar(128)",
                     "nullable": true,
                     "default": null,
@@ -1728,7 +1752,7 @@
                     "comment": "序列号"
                 },
                 "fingerprint": {
-                    "position": 29,
+                    "position": 32,
                     "type": "varchar(128)",
                     "nullable": true,
                     "default": null,
@@ -1736,7 +1760,7 @@
                     "comment": "指纹"
                 },
                 "encryption_alg": {
-                    "position": 30,
+                    "position": 33,
                     "type": "varchar(20)",
                     "nullable": true,
                     "default": null,
@@ -1744,7 +1768,7 @@
                     "comment": "加密算法"
                 },
                 "encryption_bits": {
-                    "position": 31,
+                    "position": 34,
                     "type": "smallint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1752,7 +1776,7 @@
                     "comment": "加密位数"
                 },
                 "signature_digest_alg": {
-                    "position": 32,
+                    "position": 35,
                     "type": "varchar(20)",
                     "nullable": true,
                     "default": null,
@@ -1760,7 +1784,7 @@
                     "comment": "签名摘要算法"
                 },
                 "cert_apply_status": {
-                    "position": 33,
+                    "position": 36,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1768,7 +1792,7 @@
                     "comment": "证书申请状态: 0=未提交CA, 2=已提交CA"
                 },
                 "domain_verify_status": {
-                    "position": 34,
+                    "position": 37,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1776,7 +1800,7 @@
                     "comment": "域名验证状态: 0=未开始, 1=进行中, 2=已完成"
                 },
                 "org_verify_status": {
-                    "position": 35,
+                    "position": 38,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1784,7 +1808,7 @@
                     "comment": "组织验证状态: 0=未开始, 1=进行中, 2=已完成"
                 },
                 "status": {
-                    "position": 36,
+                    "position": 39,
                     "type": "enum('unpaid','pending','processing','approving','active','failed','cancelling','cancelled','revoked','renewed','reissued','expired')",
                     "nullable": false,
                     "default": "unpaid",
@@ -1792,7 +1816,7 @@
                     "comment": "状态"
                 },
                 "created_at": {
-                    "position": 37,
+                    "position": 40,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -1800,7 +1824,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 38,
+                    "position": 41,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,

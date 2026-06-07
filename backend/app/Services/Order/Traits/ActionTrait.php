@@ -73,6 +73,12 @@ trait ActionTrait
 
         $params['params'] = $params;
 
+        // 国密未启用时拒绝 SM2 下单（fail-closed 后端兜底；前端国密产品/算法按开关过滤）
+        $this->guardSm2Enabled($params['encryption']['alg'] ?? null);
+
+        // 续费/重签从原证书继承的加密算法（在 validate 之后注入，见下方）
+        $inheritedEncryption = null;
+
         if ($params['action'] == 'new') {
             $params['user_id'] = (int) ($params['user_id'] ?? 0);
             FindUtil::User($params['user_id'], true);
@@ -131,6 +137,16 @@ trait ActionTrait
             $params['last_cert_id'] = $order->latestCert->id;
             $params['last_cert'] = $order->latestCert->toArray();
 
+            // 续费/重签未显式指定算法时，从原证书继承（防止 reuse_csr=0 重新生成 CSR 时
+            // getEncryptionParams 回落默认 RSA，导致原 ECDSA/SM2 证书静默降级为 RSA）。
+            // 仅记录、不立即写入 $params['encryption']：继承的是已签发证书的原算法，应在
+            // validate 之后再注入，避免被当前产品 encryption_alg 菜单校验阻断存量证书续签。
+            if (empty($params['encryption']['alg'])) {
+                $inheritedEncryption = $this->inheritEncryptionFromLastCert($order->latestCert);
+                // 继承出 SM2 且国密未启用 → 早报错（决策①：保持 SM2、关则报错，绝不静默降级）
+                $this->guardSm2Enabled($inheritedEncryption['alg'] ?? null);
+            }
+
             // 续费默认继承旧订单的自动续费/重签设置（除非显式传入）
             if ($params['action'] === 'renew') {
                 if (! array_key_exists('auto_renew', $params)) {
@@ -165,7 +181,38 @@ trait ActionTrait
 
         ValidatorUtil::validate($params);
 
+        // 继承的原算法在 validate 之后注入：仅供 getCert 生成 CSR 用，不受产品菜单校验
+        // （显式传入的 encryption 已在上方 validate 把关；此处仅注入"缺省时从原证书继承"的值）
+        if ($inheritedEncryption !== null) {
+            $params['encryption'] = $inheritedEncryption;
+        }
+
         return $params;
+    }
+
+    /**
+     * 国密(SM2)未启用时拒绝：fail-closed 后端兜底。
+     * 早 gate（拦显式 SM2 入参）与继承后（拦从原证书继承出的 SM2）共用此单点。
+     */
+    protected function guardSm2Enabled(?string $alg): void
+    {
+        if (strtolower((string) $alg) === 'sm2' && ! get_system_setting('site', 'gmEnabled', false)) {
+            $this->error('国密(SM2)证书功能未启用');
+        }
+    }
+
+    /**
+     * 续费/重签从原证书继承加密算法（alg/bits/digest）。
+     * 证书列存大写（SM2/RSA/SHA256），统一 strtolower 归一；
+     * bits/digest 的合法性与 SM2 强制（SM2/sm3/256）交给 CsrUtil::getEncryptionParams。
+     */
+    protected function inheritEncryptionFromLastCert(Cert $lastCert): array
+    {
+        return [
+            'alg' => strtolower((string) $lastCert->encryption_alg),
+            'bits' => (int) $lastCert->encryption_bits,
+            'digest_alg' => strtolower((string) $lastCert->signature_digest_alg),
+        ];
     }
 
     /**
@@ -940,13 +987,11 @@ trait ActionTrait
         $parsed = openssl_x509_parse($cert);
         $parsed || $this->error('证书解析失败');
 
-        $encryption = $parsed['signatureTypeSN'] ?? '';
-        $encryption = explode('-', $encryption);
+        $encryption = explode('-', $parsed['signatureTypeSN'] ?? '');
 
-        // 从证书内容中获取公钥
+        // 从证书内容中获取公钥（SM2 在部分老 openssl 上取不到，守护防 openssl_pkey_get_details(false) 报错）
         $pubKeyId = openssl_pkey_get_public($cert);
-        // 从公钥中获取详细信息
-        $keyDetails = openssl_pkey_get_details($pubKeyId);
+        $keyDetails = $pubKeyId ? openssl_pkey_get_details($pubKeyId) : [];
 
         $data['issuer'] = $parsed['issuer']['CN'] ?? '';
         $data['serial_number'] = $parsed['serialNumberHex'] ?? '';
@@ -957,7 +1002,44 @@ trait ActionTrait
         $data['issued_at'] = $parsed['validFrom_time_t'] ?? 0;
         $data['expires_at'] = $parsed['validTo_time_t'] ?? 0;
 
+        // SM2 国密证书：OpenSSL ≥1.1.1 正常解析即得 SM2-SM3/256；老版可能 signatureTypeSN=UNDEF、
+        // 公钥取不到 bits，故 DER OID 兜底确认后固定 SM2/SM3/256（SM2 公钥恒 256 位），避免降级出错值。
+        if ($this->isSM2Cert($cert, $data['encryption_alg'])) {
+            $data['encryption_alg'] = 'SM2';
+            $data['signature_digest_alg'] = 'SM3';
+            $data['encryption_bits'] = 256;
+        }
+
         return $data;
+    }
+
+    /**
+     * 检测 SM2 国密证书：signatureTypeSN 已含 SM2 直接判定；否则解码 DER 查 SM2 签名/公钥 OID 兜底。
+     */
+    protected function isSM2Cert(string $cert, string $detectedAlg): bool
+    {
+        if (stripos($detectedAlg, 'SM2') !== false) {
+            return true;
+        }
+
+        // 性能短路：signatureTypeSN 已明确解析出非 SM2 算法（RSA/ECDSA 等）时直接判否，无需解 DER；
+        // 仅 SM2 在老 openssl 上 signatureTypeSN 才会是 UNDEF/空，需走下方 OID 兜底
+        if ($detectedAlg !== '' && strcasecmp($detectedAlg, 'UNDEF') !== 0) {
+            return false;
+        }
+
+        if (! preg_match('/-----BEGIN[^-]+-----(.+?)-----END/s', $cert, $m)) {
+            return false;
+        }
+
+        $der = (string) base64_decode(preg_replace('/\s+/', '', $m[1]) ?? '', true);
+        if ($der === '') {
+            return false;
+        }
+
+        // SM2 签名 OID 1.2.156.10197.1.501 / SM2 公钥 OID 1.2.156.10197.1.301
+        return str_contains($der, hex2bin('06082A811CCF55018375'))
+            || str_contains($der, hex2bin('06082A811CCF5501822D'));
     }
 
     /**

@@ -560,6 +560,8 @@ class Action
             // 终态守卫（泛化到所有路径）：本地已是终态时拒绝上游 status 覆盖，防滞后 active 复活已退款/已重签订单
             if (in_array($lockedStatus, ['cancelled', 'revoked', 'renewed', 'reissued', 'failed'], true)) {
                 unset($data['status']);
+                // 终态订单拒绝 enc 回写：上游滞后返回的 enc 不落已终结证书（防御纵深，避免死敏感数据）
+                unset($data['enc_cert'], $data['enc_key'], $data['enc_key2']);
             }
 
             // 用锁内权威 status 重算状态变化，后续通知/回调/deleteTask 均以此为准

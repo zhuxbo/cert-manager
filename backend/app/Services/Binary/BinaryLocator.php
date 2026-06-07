@@ -320,6 +320,79 @@ class BinaryLocator
     }
 
     /**
+     * 国密 openssl（Tongsuo/GmSSL）——仅 SM2 相关命令用（生成 SM2 签名 CSR）。
+     *
+     * 与系统 openssl() 分离：系统 openssl 处理 RSA/ECDSA，国密走独立二进制。多数发行版自带 openssl
+     * （含 macOS LibreSSL）不支持 SM2，故不能复用 openssl()。探测不只验 version，还验 SM2 曲线真可用
+     * （`ecparam -name SM2 -genkey -noout` exit 0），防普通 openssl 假阳性（version 过但签不了 SM2）。
+     *
+     * 优先级：system_setting('site','gmOpensslPath') → 候选安装位 → shell PATH 兜底。全失败抛
+     * BinaryNotFoundException，调用方（CsrUtil）catch 后按开关 fail-closed（关国密入口，绝不静默签错）。
+     */
+    public function gmOpenssl(): string
+    {
+        if (isset($this->resolved['gmopenssl'])) {
+            return $this->resolved['gmopenssl'];
+        }
+
+        $tried = [];
+
+        foreach ($this->gmOpensslCandidatePaths() as $candidate) {
+            $tried[] = $candidate;
+            if ($this->probeSm2($candidate)) {
+                return $this->resolved['gmopenssl'] = $candidate;
+            }
+        }
+
+        // shell 兜底：command -v openssl 拿 PATH 上绝对路径，再验 SM2（部分国密发行版把 tongsuo 放进 PATH）
+        $tried[] = 'openssl (shell PATH, SM2)';
+        $env = array_replace(getenv() ?: [], ['PATH' => self::SHELL_FALLBACK_PATH]);
+        $proc = @proc_open('command -v openssl 2>/dev/null', [1 => ['pipe', 'w']], $pipes, null, $env);
+        if (is_resource($proc)) {
+            $path = trim((string) stream_get_contents($pipes[1]));
+            fclose($pipes[1]);
+            if (proc_close($proc) === 0 && $path !== '' && $this->probeSm2($path)) {
+                return $this->resolved['gmopenssl'] = $path;
+            }
+        }
+
+        throw new BinaryNotFoundException(
+            tool: 'gmopenssl',
+            triedPaths: $tried,
+            diagnose: $this->diagnose('openssl'),
+        );
+    }
+
+    /**
+     * 国密 openssl 候选路径：配置覆盖 + Tongsuo/GmSSL 常见安装位。空配置项过滤掉。
+     * 独立成 protected 便于测试覆盖（避免单测依赖 get_system_setting / 真实安装）。
+     *
+     * @return string[]
+     */
+    protected function gmOpensslCandidatePaths(): array
+    {
+        $configured = function_exists('get_system_setting')
+            ? (string) get_system_setting('site', 'gmOpensslPath', '')
+            : '';
+
+        return array_values(array_filter([
+            $configured,
+            '/usr/local/tongsuo/bin/openssl',
+            '/usr/local/gmssl/bin/openssl',
+            '/opt/tongsuo/bin/openssl',
+        ]));
+    }
+
+    /**
+     * 探测 openssl 是否真支持 SM2：能生成 SM2 密钥即认定（exit 0）。
+     * array proc_open（execve，防注入 + 避 open_basedir），不校验 stdout（genkey 静默成功）。
+     */
+    protected function probeSm2(string $path): bool
+    {
+        return $this->probeWith([$path, 'ecparam', '-name', 'SM2', '-genkey', '-noout'], '');
+    }
+
+    /**
      * SOFT 档候选路径，独立成方法便于子类覆盖供测试。
      *
      * @return string[]

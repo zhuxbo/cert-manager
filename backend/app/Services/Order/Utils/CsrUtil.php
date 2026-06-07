@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Services\Order\Utils;
 
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Traits\ApiResponseStatic;
+use Illuminate\Support\Facades\File;
 
 class CsrUtil
 {
@@ -60,6 +63,10 @@ class CsrUtil
         $encryption = self::getEncryptionParams($params);
         $info = self::getInfoParams($params);
 
+        if ($encryption['alg'] == 'sm2') {
+            return self::generateSM2($info);
+        }
+
         if ($encryption['alg'] == 'rsa') {
             $pkeyEncryption = [
                 'private_key_type' => OPENSSL_KEYTYPE_RSA,
@@ -86,6 +93,86 @@ class CsrUtil
         $data['private_key'] = str_replace("\r\n", "\n", trim($keyOut));
 
         return $data;
+    }
+
+    /**
+     * 生成 SM2 国密 CSR + 私钥。
+     *
+     * PHP openssl 扩展不支持 SM2，走 BinaryLocator::gmOpenssl()（Tongsuo/国密 openssl）命令行生成。
+     * 临时文件 + finally 强制清理：私钥含敏感数据，绝不留盘（参考实现漏清致私钥明文堆积）。
+     * gmOpenssl 不可用时 fail-closed 报错，绝不静默回落普通 openssl 签出非 SM2 证书。
+     */
+    protected static function generateSM2(array $info): array
+    {
+        try {
+            $openssl = app(BinaryLocator::class)->gmOpenssl();
+        } catch (BinaryNotFoundException $e) {
+            self::error('国密 openssl 不可用，无法生成 SM2 证书：'.$e->getMessage());
+        }
+
+        empty($info['commonName']) && self::error('SM2 CSR 缺少 Common Name');
+        $subject = self::buildSm2Subject($info);
+
+        $tempDir = storage_path('app/sm2/'.bin2hex(random_bytes(8)));
+        File::ensureDirectoryExists($tempDir, 0700);
+        $keyFile = $tempDir.'/sm2.key';
+        $csrFile = $tempDir.'/sm2.csr';
+
+        try {
+            // 1. 生成 SM2 私钥
+            $genCmd = escapeshellarg($openssl).' ecparam -genkey -name SM2 -out '.escapeshellarg($keyFile);
+            @exec($genCmd.' 2>&1', $genOut, $genCode);
+            ($genCode !== 0 || ! is_file($keyFile)) && self::error('SM2 私钥生成失败');
+
+            // 2. 生成 CSR：-sm3 摘要 + distid sigopt（GM/T 国密标准用户标识）
+            $csrCmd = escapeshellarg($openssl).' req -new'
+                .' -key '.escapeshellarg($keyFile)
+                .' -out '.escapeshellarg($csrFile)
+                .' -sm3 -sigopt distid:1234567812345678'
+                .' -subj '.escapeshellarg($subject);
+            @exec($csrCmd.' 2>&1', $csrOut, $csrCode);
+            ($csrCode !== 0 || ! is_file($csrFile)) && self::error('SM2 CSR 生成失败');
+
+            $csr = file_get_contents($csrFile);
+            $key = file_get_contents($keyFile);
+            (! $csr || ! $key) && self::error('SM2 CSR/私钥读取失败');
+
+            // 剥离 ecparam -genkey 附带的 EC PARAMETERS 块，只留纯 EC PRIVATE KEY（自含曲线 OID）；
+            // 部分国密 nginx 只认纯私钥块。CSR 已用含 params 的 key 生成，剥离不影响。
+            $key = preg_replace('/-----BEGIN EC PARAMETERS-----.*?-----END EC PARAMETERS-----\s*/s', '', $key) ?? $key;
+
+            return [
+                'csr' => str_replace("\r\n", "\n", trim($csr)),
+                'private_key' => str_replace("\r\n", "\n", trim($key)),
+            ];
+        } finally {
+            // 私钥敏感，无论成功/失败都清理临时目录
+            File::deleteDirectory($tempDir);
+        }
+    }
+
+    /**
+     * 构建 openssl -subj 主题串，转义 / 与 \ 分隔符。
+     */
+    protected static function buildSm2Subject(array $info): string
+    {
+        $fields = [
+            'CN' => $info['commonName'] ?? '',
+            'C' => $info['countryName'] ?? 'CN',
+            'ST' => $info['stateOrProvinceName'] ?? '',
+            'L' => $info['localityName'] ?? '',
+            'O' => $info['organizationName'] ?? '',
+        ];
+
+        $subject = '';
+        foreach ($fields as $key => $value) {
+            if ($value !== '') {
+                $value = str_replace(['\\', '/'], ['\\\\', '\\/'], $value);
+                $subject .= "/$key=$value";
+            }
+        }
+
+        return $subject !== '' ? $subject : '/CN=';
     }
 
     /**
@@ -125,8 +212,8 @@ class CsrUtil
         $digestAlg = strtolower($params['encryption']['digest_alg'] ?? '');
         $productType = $params['product']['product_type'] ?? 'ssl';
 
-        $encryption['alg'] = in_array($alg, ['rsa', 'ecdsa'])
-            ? $params['encryption']['alg']
+        $encryption['alg'] = in_array($alg, ['rsa', 'ecdsa', 'sm2'])
+            ? $alg
             : self::DEFAULT_ENCRYPTION_ALGORITHM;
 
         if ($encryption['alg'] == 'rsa') {
@@ -143,9 +230,19 @@ class CsrUtil
             $encryption['curve'] = $allowedCurves[$bits] ?? self::DEFAULT_CURVE;
         }
 
-        $encryption['digest_alg'] = in_array($digestAlg, ['sha256', 'sha384', 'sha512'])
+        // SM2 固定使用 SM2 曲线（国密标准）
+        if ($encryption['alg'] == 'sm2') {
+            $encryption['curve'] = 'SM2';
+        }
+
+        $encryption['digest_alg'] = in_array($digestAlg, ['sha256', 'sha384', 'sha512', 'sm3'])
             ? $digestAlg
             : self::DEFAULT_DIGEST_ALGORITHM;
+
+        // SM2 必须配 SM3 摘要
+        if ($encryption['alg'] == 'sm2') {
+            $encryption['digest_alg'] = 'sm3';
+        }
 
         return $encryption;
     }

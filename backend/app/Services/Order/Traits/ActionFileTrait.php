@@ -113,6 +113,16 @@ trait ActionFileTrait
         $random = sprintf('%04x%04x', mt_rand(0, 0xFFFF), mt_rand(0, 0xFFFF));
         $certPath = in_array($commonName, $domains) ? $certName.'-'.$random.'/' : $certName.'/';
 
+        // 国密双证书：按 encryption_alg 判定（与前端 isSM2 / Deploy gate 同口径），国密证书一律只出
+        // nginx 国密包，绝不走下方普通格式分支 —— 普通分支的 openssl_x509_check_private_key / PKCS12 不支持
+        // SM2，会丢签名私钥、且 iis/tomcat 还会硬报错。加密证书/私钥由上游 CA/KGC 经 get 透传，为空
+        // （gateway 未就绪）时 addSm2CertToZip 内部降级仅出签名部分 + 提示。
+        if (strtolower((string) ($order->latestCert->encryption_alg ?? '')) === 'sm2') {
+            $this->addSm2CertToZip($zip, $certPath, $certName, $commonName, $cert, $privateKey, $intermediateCert, $order->latestCert->enc_cert ?? '', $order->latestCert->enc_key ?? '', $order->latestCert->enc_key2 ?? '');
+
+            return;
+        }
+
         $password = '123456';
         $keyMatched = $privateKey && openssl_x509_check_private_key($cert, $privateKey);
 
@@ -252,6 +262,62 @@ trait ActionFileTrait
                 }
             }
         }
+    }
+
+    /**
+     * 生成 SM2 国密 nginx 双证书包（签名证书 + 加密证书）。
+     *
+     * 国密 SSL 双证书部署（Tongsuo/国密 nginx）：签名证书走用户密钥对，加密证书 + 加密私钥由 CA/KGC 托管下发。
+     * 纯 addFromString 无需 openssl。加密私钥为空（gateway 未就绪）时仅出签名部分。
+     */
+    protected function addSm2CertToZip(
+        ZipArchive $zip,
+        string $certPath,
+        string $certName,
+        string $commonName,
+        string $cert,
+        string $privateKey,
+        string $intermediateCert,
+        string $encCert,
+        string $encKey,
+        string $encKey2
+    ): void {
+        $dir = $certPath.'nginx/';
+
+        $zip->addFromString($dir.$certName.'_sign.crt', $cert);
+        $privateKey && $zip->addFromString($dir.$certName.'_sign.key', $privateKey);
+        $intermediateCert && $zip->addFromString($dir.$certName.'_sign_ca.crt', $intermediateCert);
+        // 加密部分需 enc_cert + enc_key 成对才有效（加密证书 + 对应私钥）；缺任一视为未就绪，降级仅出
+        // 签名，绝不写出"有证书无私钥"或"有私钥无证书"的残缺包（上游异步下发 enc、无成对到达约束）
+        $encReady = $encCert !== '' && $encKey !== '';
+        if ($encReady) {
+            $zip->addFromString($dir.$certName.'_enc.crt', $encCert);
+            $zip->addFromString($dir.$certName.'_enc.key', $encKey);
+            $zip->addFromString($dir.$certName.'_enc_gmt0016.key', $encKey);
+            $encKey2 && $zip->addFromString($dir.$certName.'_enc_gmt0009.key', $encKey2);
+        }
+
+        $lines = [
+            "{$certName}_sign.crt 签名证书",
+            "{$certName}_sign.key 签名私钥（与签名证书匹配）",
+        ];
+        if ($intermediateCert) {
+            $lines[] = "{$certName}_sign_ca.crt 证书链";
+        }
+        if ($encReady) {
+            $lines[] = "{$certName}_enc.crt 加密证书";
+            $lines[] = "{$certName}_enc.key 加密私钥（GMT-0016 格式，需解密后使用）";
+            if ($encKey2) {
+                $lines[] = "{$certName}_enc_gmt0009.key 加密私钥（GMT-0009 格式）";
+            }
+            $lines[] = '';
+            $lines[] = '部署需国密版 nginx（Tongsuo），ssl_certificate 配置签名 + 加密双证书。';
+        } else {
+            $lines[] = '';
+            $lines[] = '注意：加密证书尚未就绪（CA/KGC 下发中），当前仅含签名证书，暂不可用于国密双证书部署，请稍后重新下载完整包。';
+        }
+
+        $zip->addFromString($dir.'说明.txt', implode(PHP_EOL, $lines));
     }
 
     /**

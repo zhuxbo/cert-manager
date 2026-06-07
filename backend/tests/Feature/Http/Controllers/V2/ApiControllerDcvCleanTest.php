@@ -342,3 +342,55 @@ test('get 返回的 dcv/validation 不包含 delegation 内部字段', function 
         'delegation_valid', 'delegation_zone',
     ]);
 });
+
+// ── get 国密(SM2)enc 字段透传(多级 manager 链路契约) ──
+
+test('V2 get 国密订单透传 enc 字段，键名为 certs 列名供下游 sync fillable 写入', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, [
+        'common_name' => 'sm2.example.com',
+        'status' => 'active',
+        'encryption_alg' => 'SM2',
+        'cert' => "-----BEGIN CERTIFICATE-----\nSIGN\n-----END CERTIFICATE-----",
+        'enc_cert' => "-----BEGIN CERTIFICATE-----\nENC\n-----END CERTIFICATE-----",
+        'enc_key' => 'ENC-KEY-GMT0016',
+        'enc_key2' => 'ENC-KEY-GMT0009',
+    ]);
+
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('sync')->andReturnNull();
+
+    $controller = makeController(['order_id' => (string) $order->id], 'GET', $action, $user->id);
+    $response = captureResponse(fn () => $controller->get());
+
+    expect($response['code'])->toBe(1);
+    $data = $response['data'];
+    // 键名必须是 certs 列名(enc_cert/enc_key/enc_key2)，下游 manager 经 default source 拉取后 sync 直接 fillable 写入
+    expect($data['enc_cert'])->toBe("-----BEGIN CERTIFICATE-----\nENC\n-----END CERTIFICATE-----");
+    expect($data['enc_key'])->toBe('ENC-KEY-GMT0016');
+    expect($data['enc_key2'])->toBe('ENC-KEY-GMT0009');
+});
+
+test('V2 get 非国密订单不返回 enc 字段(空值清理，与 private_key 同策略)', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, [
+        'common_name' => 'rsa.example.com',
+        'status' => 'active',
+        'encryption_alg' => 'RSA',
+        'cert' => "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----",
+        // enc_cert / enc_key / enc_key2 全空(非国密)
+    ]);
+
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('sync')->andReturnNull();
+
+    $controller = makeController(['order_id' => (string) $order->id], 'GET', $action, $user->id);
+    $response = captureResponse(fn () => $controller->get());
+
+    expect($response['code'])->toBe(1);
+    expect($response['data'])->not->toHaveKeys(['enc_cert', 'enc_key', 'enc_key2']);
+});

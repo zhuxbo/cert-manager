@@ -416,7 +416,7 @@ const keyBitsOptions = computed(() => {
     : [
         { label: "256", value: 256 },
         { label: "384", value: 384 },
-        { label: "512", value: 512 }
+        { label: "521", value: 521 }
       ];
 });
 
@@ -809,6 +809,30 @@ const loadOrderInfo = (id: number) => {
     // 如果 alternative_name_types.length = 0，则 domains = data.latest_cert.common_name
     if (data.product?.alternative_name_types?.length === 0) {
       formData.domains = data.latest_cert.common_name;
+    }
+
+    // 续费/重签：回填原证书加密算法，避免默认 rsa 导致原 ECDSA/SM2 证书静默降级
+    // （后端 initParams 亦有兜底；此处让 UI 默认值与实际算法一致，用户仍可主动改）
+    const lastAlg = String(
+      data.latest_cert?.encryption_alg ?? ""
+    ).toLowerCase();
+    const lastDigest = String(
+      data.latest_cert?.signature_digest_alg ?? ""
+    ).toLowerCase();
+    if (lastAlg === "sm2") {
+      formData.encryption = { alg: "sm2", bits: 256, digest_alg: "sm3" };
+    } else if (lastAlg === "ecdsa") {
+      formData.encryption = {
+        alg: "ecdsa",
+        bits: Number(data.latest_cert?.encryption_bits) || 256,
+        digest_alg: lastDigest || "sha256"
+      };
+    } else if (lastAlg === "rsa") {
+      formData.encryption = {
+        alg: "rsa",
+        bits: Number(data.latest_cert?.encryption_bits) || 2048,
+        digest_alg: lastDigest || "sha256"
+      };
     }
 
     // 设置order_id (原订单ID)

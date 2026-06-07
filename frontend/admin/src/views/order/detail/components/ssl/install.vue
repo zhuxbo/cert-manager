@@ -3,6 +3,7 @@
     <table class="descriptions">
       <el-text style="margin: 10px 0">
         <el-button
+          v-if="!isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
@@ -12,11 +13,12 @@
         <el-button
           type="primary"
           link
-          :disabled="cert.status != 'active'"
+          :disabled="cert.status != 'active' || encMissing"
           @click="OrderApi.download(order.id, 'nginx')"
-          >Nginx</el-button
+          >Nginx{{ isSM2 ? "（国密）" : "" }}</el-button
         >
         <el-button
+          v-if="!isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
@@ -24,7 +26,7 @@
           >Apache</el-button
         >
         <el-button
-          v-if="cert.private_key"
+          v-if="cert.private_key && !isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
@@ -33,7 +35,7 @@
           IIS
         </el-button>
         <el-button
-          v-if="cert.private_key"
+          v-if="cert.private_key && !isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
@@ -42,6 +44,7 @@
           Tomcat
         </el-button>
         <el-button
+          v-if="!isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
@@ -49,6 +52,7 @@
           >Pem</el-button
         >
         <el-button
+          v-if="!isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
@@ -56,11 +60,19 @@
           >Txt</el-button
         >
         <el-button
+          v-if="!isSM2"
           type="primary"
           link
           :disabled="cert.status != 'active'"
           @click="OrderApi.download(order.id)"
           >全部</el-button
+        >
+        <el-text
+          v-if="encMissing"
+          type="info"
+          size="small"
+          style="margin-left: 8px"
+          >加密证书生成中，请稍后下载</el-text
         >
       </el-text>
     </table>
@@ -126,12 +138,20 @@
 </template>
 
 <script setup lang="ts">
-import { inject, ref, watchEffect } from "vue";
+import { computed, inject, ref, watchEffect } from "vue";
 import * as OrderApi from "@/api/order";
 import { message } from "@shared/utils";
 
 const order = inject("order") as any;
 const cert = inject("cert") as any;
+
+// 国密(SM2)证书：只提供 nginx 国密双证书包；加密证书未就绪（enc_cert 空）时下载置灰
+const isSM2 = computed(() => /sm2/i.test(cert.value?.encryption_alg ?? ""));
+// 加密证书与加密私钥须成对就绪（与后端 addSm2CertToZip 成对守卫对齐）：缺任一即置灰，
+// 避免下载到"有证书无私钥"或"有私钥无证书"的残缺国密包
+const encMissing = computed(
+  () => isSM2.value && (!cert.value?.enc_cert || !cert.value?.enc_key)
+);
 
 const install = ref("");
 
