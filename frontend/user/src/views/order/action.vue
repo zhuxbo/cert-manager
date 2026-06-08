@@ -373,16 +373,22 @@ const encryptionAlgOptions = computed(() => {
 
 // 密钥长度选项
 const keyBitsOptions = computed(() => {
-  return formData.encryption.alg === "rsa"
-    ? [
-        { label: "2048", value: 2048 },
-        { label: "4096", value: 4096 }
-      ]
-    : [
-        { label: "256", value: 256 },
-        { label: "384", value: 384 },
-        { label: "521", value: 521 }
-      ];
+  if (formData.encryption.alg === "rsa") {
+    return [
+      { label: "2048", value: 2048 },
+      { label: "4096", value: 4096 }
+    ];
+  }
+  // SM2 固定 256 位（与后端 CsrUtil 强制一致）
+  if (formData.encryption.alg === "sm2") {
+    return [{ label: "256", value: 256 }];
+  }
+  // ECDSA
+  return [
+    { label: "256", value: 256 },
+    { label: "384", value: 384 },
+    { label: "521", value: 521 }
+  ];
 });
 
 // 摘要算法选项
@@ -723,6 +729,32 @@ const productSelected = (productId: any) => {
     // 重签时，CSR可重用则关闭自动生成
     if (props.actionType === "reissue" && formData.product.reuse_csr) {
       formData.csr_generate = 0;
+    }
+
+    // 加密选项随产品校正（仅新建/批量申请；续费、重签由 loadOrderInfo 回填原算法，不在此覆盖以防静默降级）
+    if (["apply", "batchApply"].includes(props.actionType)) {
+      const algMenu = (data.encryption_alg ?? []).map((item: string) =>
+        item.toLowerCase()
+      );
+      // 不兼容才切：当前算法不在产品支持列表内时，切到产品首选并联动密钥长度
+      if (algMenu.length && !algMenu.includes(formData.encryption.alg)) {
+        formData.encryption.alg = algMenu[0];
+        handleAlgChange();
+      }
+      const digestMenu = (data.signature_digest_alg ?? []).map((item: string) =>
+        item.toLowerCase()
+      );
+      if (
+        digestMenu.length &&
+        !digestMenu.includes(formData.encryption.digest_alg)
+      ) {
+        formData.encryption.digest_alg = digestMenu[0];
+      }
+      // SM2 强制 256 位 + SM3 摘要（与后端 CsrUtil 对齐）
+      if (formData.encryption.alg === "sm2") {
+        formData.encryption.bits = 256;
+        formData.encryption.digest_alg = "sm3";
+      }
     }
 
     // 更新验证规则（根据产品类型）
