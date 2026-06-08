@@ -75,6 +75,7 @@ skills/ # 开发规范（详细文档）
 - **解耦原则**：主系统不硬引用插件代码/表，通过动态扫描（`_logs` 后缀表、`user_id` 字段）兼容插件数据
 - **插件打包**：`plugins/{name}/build.sh` + `release.json` 独立打包
 - **插件管理**：`PluginManager` 提供安装/更新/卸载/检查更新，管理端 `/plugin` 页面操作
+- **插件 vendor 运行时安装**：安装/更新带 `backend/composer.json` 的插件时，`PluginManager` 自动 `composer install --no-dev`（封装在 `App\Services\Plugin\PluginComposerRunner`，复用 `BinaryLocator::composer()` + `UpgradePreflight` + 阿里云镜像）——使重依赖插件（如 cloud-deploy 的云 SDK 80M）vendor **不入 git、不进发布包**。**无 composer.json 的插件跳过**（零影响）；install 必装、update 仅当 `composer.lock` 变化才装；失败给明确文案（install 清半装目录 / update 回滚备份）。要求目标机有 composer + CLI proc_open + packagist 可达
 - **更新地址优先级**：`plugin.json.release_url`（第三方）→ `{主系统 release_url}/plugins/{name}`（官方）
 - **插件 API**：`GET /api/admin/plugin/installed`、`GET /api/admin/plugin/check-updates`、`POST /api/admin/plugin/install`、`POST /api/admin/plugin/update`、`POST /api/admin/plugin/uninstall`
 - **数据库约定**：仅支持 MySQL/MariaDB；插件迁移和代码与主系统同等约束（禁用 `->json()` 列，用 `text` + `array` cast；禁用 raw 方言字面量，统一走 Eloquent / Query Builder）。CI 各插件独立 job（`backend-{name}-plugin-test`），无自带 tests 的插件也跑 migrate + schema 检查。详见 `skills/plugin-dev.md`
@@ -227,6 +228,14 @@ skills/ # 开发规范（详细文档）
 - **下载**：国密只出 nginx 双证书包（`_sign.crt`/`_sign.key`/`_enc.crt`/`_enc.key`/`_enc_gmt0009.key`/`_enc_gmt0016.key`/`_sign_ca.crt` + 说明.txt），`ActionFileTrait::addCertToZip` 按 `encryption_alg='sm2'` 走 `addSm2CertToZip`（**与前端 isSM2/Deploy gate 同口径、不按 enc_cert**——enc 空的 SM2 也强制国密包，不掉进普通 PKCS12 逻辑丢签名私钥/iis 报错）；**加密文件需 enc_cert + enc_key 成对才出**（三列独立 nullable、无成对到达约束，缺任一即整组降级仅签名 + 提示，杜绝"有证书无私钥/有私钥无证书"残缺包）
 - **前端 gate**：`install.vue` 两端国密只显 Nginx + `enc_cert`/`enc_key` 任一空即置灰（`encMissing` 与后端成对守卫对齐）；`process.vue` 两端隐藏自动部署；算法字典 `dictionary.ts` 已含 sm2/sm3（无需改）
 - **Deploy API gate**：`query` 的 `field=certificate|private_key` 拉取拒绝国密（防 certimate 单证书残缺自动部署）；`getOrderData` 国密 active 附 `enc_certificate`/`enc_private_key`/`enc_private_key_gmt0009` + `encryption_alg=sm2` 标记
+
+### cloud-deploy 插件（证书自动推送云平台）
+
+- **用途**：证书签发/续期 `latestCert.status=active` 后，自动把证书推送到各大云平台资源（CDN/负载均衡/WAF/对象存储/函数计算等）。`plugins/cloud-deploy`，独立 PHP 插件，命名空间 `Plugins\CloudDeploy`
+- **架构**：certimate 式封装（每个 `(provider, product)` 一个 deployer，`AbstractDeployer` + `makeClient` 注入缝 + schema 驱动前后端校验 + guardSdk 凭证脱敏 + 4 类 uploader/`RemoteCertStore` 去重）；依赖阿里/腾讯官方 SDK（约 80M，**不 scoping**，ClassLoader 挂 SPL 栈尾）。25 端点（阿里 14 + 腾讯 11）
+- **vendor 运行时安装（不入库/不打包）**：插件 `backend/vendor/` 约 80M **不入 git 也不进发布 zip**（仅打包 `backend/composer.json` + `backend/composer.lock`）。主系统 `PluginManager` 安装/更新带 `backend/composer.json` 的插件时自动 `composer install --no-dev`（**通用能力**，无 composer.json 的插件如 easy/invoice/notice/api-docs 跳过、零影响）：install 必装、update 仅当 `composer.lock` sha256 较旧版变化才装。复用 `BinaryLocator::composer()` + `UpgradePreflight`（composer/CLI proc_open 探测）+ 阿里云镜像自动切换，逻辑封装在 `App\Services\Plugin\PluginComposerRunner`。**对目标机要求**：composer 可执行 + CLI 未禁 `proc_open`/`exec` + 能访问 packagist（GitHub 不可达时自动切阿里云镜像）；不满足则安装失败并给明确文案（install 清理半装目录、update 回滚备份）。降级：缺 vendor 时 ServiceProvider `loadPluginVendor` is_file 守卫不 fatal、`CloudDeployJob::guardSdk` 把缺 SDK 转 per-target 失败日志，主系统其余零影响
+- **主系统足迹**：backend 仅 `PluginManager` 加通用 composer hook + 新增 `PluginComposerRunner`（其余插件不受影响）；插件功能侧复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`，order 详情 SSL 卡片注入「推送到云平台」按钮 + 目标状态）
+- **详细开发规范见 `plugins/cloud-deploy/skills/development.md`**（核心架构、「新增部署端点」操作模板、其余 provider 任务目录、已知陷阱清单）
 
 ## 测试
 

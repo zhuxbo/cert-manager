@@ -22,11 +22,20 @@ class PluginManager
 
     protected string $downloadPath;
 
+    protected PluginComposerRunner $composerRunner;
+
+    /**
+     * @param  PluginComposerRunner|null  $composerRunner  运行时 composer 安装器；为兼容存量单测
+     *                                                     （`new PluginManager($vm)` 单参构造）默认 null，
+     *                                                     首次使用时从容器解析
+     */
     public function __construct(
         protected VersionManager $versionManager,
+        ?PluginComposerRunner $composerRunner = null,
     ) {
         $this->pluginsPath = base_path('../plugins');
         $this->downloadPath = Config::get('upgrade.package.download_path', storage_path('upgrades'));
+        $this->composerRunner = $composerRunner ?? app(PluginComposerRunner::class);
 
         if (! File::isDirectory($this->downloadPath)) {
             File::makeDirectory($this->downloadPath, 0755, true);
@@ -165,6 +174,9 @@ class PluginManager
             // 移动到 plugins 目录
             $this->applyPlugin($pluginSourceDir, $pluginDir);
 
+            // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
+            $this->installPluginComposerDeps($name, $pluginDir);
+
             // 运行 migrate
             $this->runPluginMigrations($name);
             $this->runPluginSeeders($name);
@@ -221,6 +233,9 @@ class PluginManager
 
             // 移动到 plugins 目录
             $this->applyPlugin($pluginSourceDir, $pluginDir);
+
+            // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
+            $this->installPluginComposerDeps($name, $pluginDir);
 
             // 运行 migrate
             $this->runPluginMigrations($name);
@@ -292,6 +307,9 @@ class PluginManager
         // 备份当前插件
         $backupDir = $this->backupPlugin($name);
 
+        // 旧版本 composer.lock 哈希（删旧版前抓取），用于更新后对比决定是否重装依赖
+        $oldLockHash = $this->composerRunner->lockHash($pluginDir);
+
         // 下载新版本
         $downloadUrl = $this->resolveAssetUrl($release, $releaseUrl);
         $expectedSha256 = $this->findPluginAssetSha256($release);
@@ -317,6 +335,18 @@ class PluginManager
             $this->validatePluginPath($pluginDir);
             File::deleteDirectory($pluginDir);
             $this->applyPlugin($pluginSourceDir, $pluginDir);
+
+            // 安装 composer 依赖：仅当插件自带 composer.json 且 composer.lock 较旧版有变化时
+            // （lock 未变跳过，避免每次更新重拉大体量 vendor；新版新增 composer.json 也视为有变化）
+            if ($this->composerRunner->pluginHasComposer($pluginDir)) {
+                $newLockHash = $this->composerRunner->lockHash($pluginDir);
+                if ($newLockHash !== $oldLockHash) {
+                    Log::info("[Plugin] composer.lock 变化，更新依赖: $name");
+                    $this->composerRunner->install($pluginDir, $name);
+                } else {
+                    Log::info("[Plugin] composer.lock 未变化，跳过依赖安装: $name");
+                }
+            }
 
             // 运行 migrate（增量迁移）
             $this->runPluginMigrations($name);
@@ -703,6 +733,23 @@ class PluginManager
         }
 
         File::moveDirectory($from, $to);
+    }
+
+    /**
+     * 安装插件 composer 依赖（首次安装路径）。
+     *
+     * 仅当插件自带 `backend/composer.json` 时执行；无 composer.json 的插件（easy/invoice/
+     * notice/api-docs 等）整条 composer 路径跳过，完全不触碰 BinaryLocator——保证不破坏现有插件。
+     * 失败抛 RuntimeException：被 install/installFromZip 的 finally/catch 流程接住
+     * （install 已有 try/finally 清理半装目录；前端可见明确文案）。
+     */
+    protected function installPluginComposerDeps(string $name, string $pluginDir): void
+    {
+        if (! $this->composerRunner->pluginHasComposer($pluginDir)) {
+            return;
+        }
+
+        $this->composerRunner->install($pluginDir, $name);
     }
 
     /**

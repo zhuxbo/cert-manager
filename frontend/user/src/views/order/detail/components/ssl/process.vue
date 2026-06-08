@@ -84,6 +84,15 @@
         </template>
       </tbody>
     </table>
+    <div class="plugin-ssl-actions">
+      <component
+        :is="w.component"
+        v-for="w in sslActionWidgets"
+        :key="w.name"
+        :order="order"
+        :cert="cert"
+      />
+    </div>
   </el-card>
 </template>
 <script setup lang="ts">
@@ -96,6 +105,9 @@ import Install from "./install.vue";
 import Deploy from "./deploy.vue";
 import Documents from "../documents.vue";
 import DocumentUpload from "../documentUpload.vue";
+import { getPluginWidgets } from "@shared/utils/plugin-loader";
+
+const sslActionWidgets = getPluginWidgets("user-order-detail-ssl-actions");
 
 const showAutoDeploy = getConfig()?.AutoDeploy !== false;
 import { ElButton } from "element-plus";

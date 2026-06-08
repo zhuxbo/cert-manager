@@ -86,6 +86,15 @@
         </template>
       </tbody>
     </table>
+    <div class="plugin-ssl-actions">
+      <component
+        :is="w.component"
+        v-for="w in sslActionWidgets"
+        :key="w.name"
+        :order="order"
+        :cert="cert"
+      />
+    </div>
   </el-card>
 </template>
 <script setup lang="ts">
@@ -100,6 +109,9 @@ import DocumentUpload from "../documentUpload.vue";
 import { ElButton } from "element-plus";
 import { Select } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
+import { getPluginWidgets } from "@shared/utils/plugin-loader";
+
+const sslActionWidgets = getPluginWidgets("admin-order-detail-ssl-actions");
 
 const order = inject("order") as any;
 const cert = inject("cert") as any;
