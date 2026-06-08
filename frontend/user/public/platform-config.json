@@ -30,11 +30,11 @@
     "certum",
     "gogetssl",
     "positive",
+    "keeptrust",
     "ssltrus",
     "rapid",
     "geotrust",
-    "digicert",
-    "trustasia"
+    "digicert"
   ],
   "DnsTools": [
     "https://dns-tools-cn.cnssl.com",
