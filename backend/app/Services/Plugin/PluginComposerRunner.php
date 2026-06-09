@@ -132,7 +132,7 @@ class PluginComposerRunner
         $relevant = ['composer_missing', 'php_cli_missing', 'cli_proc_open_disabled', 'health_check_failed'];
 
         foreach ($report['blocking'] as $block) {
-            if (in_array($block['code'] ?? '', $relevant, true)) {
+            if (in_array($block['code'], $relevant, true)) {
                 throw new RuntimeException(
                     "插件 $name 依赖需要 composer，但环境检测未通过：{$block['reason']}。修复建议：{$block['fix']}。"
                 );

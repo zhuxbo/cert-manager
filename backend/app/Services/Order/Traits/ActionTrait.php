@@ -73,8 +73,8 @@ trait ActionTrait
 
         $params['params'] = $params;
 
-        // 国密未启用时拒绝 SM2 下单（fail-closed 后端兜底；前端国密产品/算法按开关过滤）
-        $this->guardSm2Enabled($params['encryption']['alg'] ?? null);
+        // SM2 下单前探测国密 openssl 能力（fail-closed 后端兜底；不可用即拒，绝不静默签错）
+        $this->guardSm2Capable($params['encryption']['alg'] ?? null);
 
         // 续费/重签从原证书继承的加密算法（在 validate 之后注入，见下方）
         $inheritedEncryption = null;
@@ -143,8 +143,8 @@ trait ActionTrait
             // validate 之后再注入，避免被当前产品 encryption_alg 菜单校验阻断存量证书续签。
             if (empty($params['encryption']['alg'])) {
                 $inheritedEncryption = $this->inheritEncryptionFromLastCert($order->latestCert);
-                // 继承出 SM2 且国密未启用 → 早报错（决策①：保持 SM2、关则报错，绝不静默降级）
-                $this->guardSm2Enabled($inheritedEncryption['alg'] ?? null);
+                // 继承出 SM2 但国密 openssl 不可用 → 早报错（决策①：保持 SM2，绝不静默降级 RSA）
+                $this->guardSm2Capable($inheritedEncryption['alg'] ?? null);
             }
 
             // 续费默认继承旧订单的自动续费/重签设置（除非显式传入）
@@ -191,13 +191,20 @@ trait ActionTrait
     }
 
     /**
-     * 国密(SM2)未启用时拒绝：fail-closed 后端兜底。
-     * 早 gate（拦显式 SM2 入参）与继承后（拦从原证书继承出的 SM2）共用此单点。
+     * 国密(SM2)能力探测 gate：alg=sm2 时探测国密 openssl 是否可用，不可用即 fail-closed 拒绝。
+     * 替代旧的 gmEnabled 业务开关——本机能否生成 SM2 CSR 由探测决定，不留人工开关、不留半残环境。
+     * 早 gate（拦显式 SM2 入参）与继承后（拦从原证书继承出的 SM2）共用此单点，均在事务前。
      */
-    protected function guardSm2Enabled(?string $alg): void
+    protected function guardSm2Capable(?string $alg): void
     {
-        if (strtolower((string) $alg) === 'sm2' && ! get_system_setting('site', 'gmEnabled', false)) {
-            $this->error('国密(SM2)证书功能未启用');
+        if (strtolower((string) $alg) !== 'sm2') {
+            return;
+        }
+
+        try {
+            app(BinaryLocator::class)->gmOpenssl();
+        } catch (BinaryNotFoundException $e) {
+            $this->error('国密(SM2)环境不可用：'.$e->getMessage());
         }
     }
 

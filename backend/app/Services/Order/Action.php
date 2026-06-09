@@ -219,6 +219,10 @@ class Action
 
         $domains = explode(',', $params['domains'] ?? '');
 
+        // SM2 能力探测前移到事务前（与 new/renew/reissue 对称）：批量同一 alg，探测一次即可
+        // （BinaryLocator singleton，与 initParams 内探测共享缓存、零重复 fork）
+        $this->guardSm2Capable($params['encryption']['alg'] ?? null);
+
         $orderIds = [];
         DB::beginTransaction();
         try {

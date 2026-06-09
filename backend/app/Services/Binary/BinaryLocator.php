@@ -326,8 +326,8 @@ class BinaryLocator
      * （含 macOS LibreSSL）不支持 SM2，故不能复用 openssl()。探测不只验 version，还验 SM2 曲线真可用
      * （`ecparam -name SM2 -genkey -noout` exit 0），防普通 openssl 假阳性（version 过但签不了 SM2）。
      *
-     * 优先级：system_setting('site','gmOpensslPath') → 候选安装位 → shell PATH 兜底。全失败抛
-     * BinaryNotFoundException，调用方（CsrUtil）catch 后按开关 fail-closed（关国密入口，绝不静默签错）。
+     * 优先级：候选安装位（Tongsuo/GmSSL）→ shell PATH 兜底（系统 openssl，OpenSSL 3.0+ 原生支持 SM2）。
+     * 全失败抛 BinaryNotFoundException，调用方（CsrUtil/guardSm2Capable）catch 后 fail-closed（拒国密入口，绝不静默签错）。
      */
     public function gmOpenssl(): string
     {
@@ -364,23 +364,18 @@ class BinaryLocator
     }
 
     /**
-     * 国密 openssl 候选路径：配置覆盖 + Tongsuo/GmSSL 常见安装位。空配置项过滤掉。
-     * 独立成 protected 便于测试覆盖（避免单测依赖 get_system_setting / 真实安装）。
+     * 国密 openssl 候选路径：Tongsuo/GmSSL 常见安装位（生产若装独立国密 openssl）。
+     * 独立成 protected 便于测试覆盖；系统 openssl 由 gmOpenssl() 的 shell PATH 兜底命中（OpenSSL 3.0+ 原生 SM2）。
      *
      * @return string[]
      */
     protected function gmOpensslCandidatePaths(): array
     {
-        $configured = function_exists('get_system_setting')
-            ? (string) get_system_setting('site', 'gmOpensslPath', '')
-            : '';
-
-        return array_values(array_filter([
-            $configured,
+        return [
             '/usr/local/tongsuo/bin/openssl',
             '/usr/local/gmssl/bin/openssl',
             '/opt/tongsuo/bin/openssl',
-        ]));
+        ];
     }
 
     /**

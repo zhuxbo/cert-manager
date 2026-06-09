@@ -5,6 +5,8 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Order\Action;
 use App\Services\Order\Utils\CsrUtil;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -49,9 +51,9 @@ test('inheritEncryptionFromLastCert 大写列值归一为小写 alg/bits/digest'
     expect($reflect->invoke($action, $rsa))->toBe(['alg' => 'rsa', 'bits' => 4096, 'digest_alg' => 'sha256']);
 });
 
-// ==================== T3: 续费 SM2 + gmEnabled 关 → 报错（决策①） ====================
+// ==================== T3: 续费 SM2 + gmOpenssl 探测失败 → 报错（决策①） ====================
 
-test('initParams 续费 SM2 原证书 + gmEnabled 关 → 报错国密未启用（继承后 gate）', function () {
+test('initParams 续费 SM2 原证书 + gmOpenssl 探测失败 → 报错国密环境不可用（继承后 gate）', function () {
     $user = User::factory()->create();
     $product = Product::factory()->create(); // gate 在 product.renew 校验前抛，默认产品即可
     $order = Order::factory()->create([
@@ -64,13 +66,18 @@ test('initParams 续费 SM2 原证书 + gmEnabled 关 → 报错国密未启用�
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
-    expect((bool) get_system_setting('site', 'gmEnabled', false))->toBeFalse();
+    // 继承出 SM2 后走探测 gate（行147）：mock 探测失败 → 报错，绝不静默降级 RSA。
+    // ->once() 确保走了探测（旧的读开关实现不调 gmOpenssl，此处会红）。
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('gmOpenssl')->once()
+        ->andThrow(new BinaryNotFoundException(tool: 'gmopenssl', triedPaths: ['/nonexistent']));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $action = app(Action::class);
     $reflect = new ReflectionMethod($action, 'initParams');
     try {
         $reflect->invoke($action, ['action' => 'renew', 'order_id' => $order->id, 'channel' => 'admin', 'period' => 12]);
-        test()->fail('应抛 ApiResponseException（国密未启用）');
+        test()->fail('应抛 ApiResponseException（国密环境不可用）');
     } catch (ApiResponseException $e) {
         expect($e->getApiResponse()['msg'])->toContain('国密');
     }

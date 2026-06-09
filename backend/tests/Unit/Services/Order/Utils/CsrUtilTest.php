@@ -53,7 +53,7 @@ test('generate ecdsa csr', function () {
     expect($result['private_key'])->toContain('BEGIN PRIVATE KEY');
 });
 
-test('generate sm2 csr（真实走 gmOpenssl，CI/容器须装国密 openssl）', function () {
+test('generate sm2 csr（真实走 gmOpenssl，靠系统 OpenSSL 3.0+ 原生 SM2）', function () {
     $params = [
         'domains' => 'sm2.example.com',
         'encryption' => ['alg' => 'sm2'],

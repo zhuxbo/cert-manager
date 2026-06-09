@@ -171,7 +171,7 @@ skills/ # 开发规范（详细文档）
 - **延时提交**：Command 创建续费/重签 + 支付后不立即 commit，通过 Task 表创建延时 commit 任务（随机 0~8 小时），分散上游压力，8 点后人工可检查状态
 - **产品条件**：续费要求 `product.status=1 && renew=1`；重签仅要求 `reissue=1`（产品禁用仍可重签）
 - **参数继承**：从原订单提取 period/contact/organization/domains；CSR 按 `product.reuse_csr` 决定重用或生成
-- **算法继承**（防静默降级）：续费/重签 `reuse_csr=0` 重新生成 CSR 时，`ActionTrait::initParams` 在 `encryption.alg` 缺失时从 `last_cert` 继承 alg/bits/digest（列存大写，`strtolower` 归一），覆盖自动路径（`AutoRenewCommand` 不传 encryption）与 API 省略；前端 `loadOrderInfo` 回填原算法为表单默认（用户仍可改）。**继承值在 `ValidatorUtil::validate` 之后才注入 `$params`**——不让当前产品 `encryption_alg` 菜单校验阻断存量证书续签（显式传入的 encryption 仍照常 validate）；但 SM2 业务 gate `guardSm2Enabled` 早触发，gmEnabled 关则报错（保持 SM2，绝不静默降级为 RSA）。`CsrUtil::getEncryptionParams` 归一返回小写 alg（修大写算法失配 bug）。前端 ECDSA 密钥长度选项 `512→521` 对齐后端 `secp521r1`。否则原 ECDSA/SM2 证书会在 reuse_csr=0 续签后静默降级为 RSA
+- **算法继承**（防静默降级）：续费/重签 `reuse_csr=0` 重新生成 CSR 时，`ActionTrait::initParams` 在 `encryption.alg` 缺失时从 `last_cert` 继承 alg/bits/digest（列存大写，`strtolower` 归一），覆盖自动路径（`AutoRenewCommand` 不传 encryption）与 API 省略；前端 `loadOrderInfo` 回填原算法为表单默认（用户仍可改）。**继承值在 `ValidatorUtil::validate` 之后才注入 `$params`**——不让当前产品 `encryption_alg` 菜单校验阻断存量证书续签（显式传入的 encryption 仍照常 validate）；但 SM2 能力 gate `guardSm2Capable` 早触发，国密 openssl 不可用则报错（保持 SM2，绝不静默降级为 RSA）。`CsrUtil::getEncryptionParams` 归一返回小写 alg（修大写算法失配 bug）。前端 ECDSA 密钥长度选项 `512→521` 对齐后端 `secp521r1`。否则原 ECDSA/SM2 证书会在 reuse_csr=0 续签后静默降级为 RSA
 - **委托前置条件**：缺失委托记录时自动创建（`_dnsauth` 精确域名、回落前缀按根域）；DNS 验证采用宽松策略（所有 dnsTools + 本地全部尝试，任一匹配即有效），目的是尽可能发起续签
 
 ### 工商查询与企业-联系人绑定
@@ -220,8 +220,8 @@ skills/ # 开发规范（详细文档）
 
 ### 国密 (SM2) 证书
 
-- **开关**：`site.gmEnabled`（默认关，未启用零影响）+ `site.gmOpensslPath`（国密 openssl 路径，留空自动探测 Tongsuo）。下单 `Order\ActionTrait::initParams` 在 gmEnabled 关时拒绝 SM2（后端兜底防绕过）
-- **国密 openssl**：PHP openssl 扩展不支持 SM2，CSR 生成走 `BinaryLocator::gmOpenssl()`（独立 Tongsuo/GmSSL 二进制，探测 `ecparam -name SM2 -genkey -noout` 验真支持 SM2、防普通 openssl 假阳性）；与系统 openssl 隔离，RSA/ECDSA 仍走系统 `openssl()`。dev 容器 `docker/php/Dockerfile` 多阶段编译 Tongsuo → `/usr/local/tongsuo`；生产须装（CI runner 系统 OpenSSL 3.0+ 亦支持 SM2，gmOpenssl 可回落系统 openssl）
+- **能力 gate（探测，非开关）**：下单 `Order\ActionTrait::initParams` 的 `guardSm2Capable` 对 `alg=sm2` 探测 `BinaryLocator::gmOpenssl()`，不可用即事务前拒绝（后端兜底防绕过、统一拦所有 SM2 含 reuse_csr=1、不留半残环境）。已移除 `site.gmEnabled` 业务开关与 `site.gmOpensslPath` 设置项——能否签 SM2 由本机 openssl 能力决定，不靠人工开关
+- **国密 openssl**：PHP openssl 扩展不支持 SM2，CSR 生成走 `BinaryLocator::gmOpenssl()`（探测 `ecparam -name SM2 -genkey -noout` 验真支持 SM2、防普通 openssl 假阳性）；与系统 openssl 隔离，RSA/ECDSA 仍走系统 `openssl()`。**OpenSSL 3.0+ default provider 原生支持 SM2**（LibreSSL/no-sm2/FIPS-only 例外，功能探测会正确拒绝、不签错证书），候选 miss 后 shell 兜底命中系统 openssl；dev 容器与 CI（ubuntu-latest）一致靠系统 OpenSSL 3.0，`docker/php/Dockerfile` 不再编译 Tongsuo（避免铜锁掩盖系统 openssl 的 SM2 支持）。`BinaryLocator` 保留 `/usr/local/tongsuo` 等硬编码候选（生产若装独立国密 openssl 仍优先命中）
 - **双证书 + 存储**：签名证书（用户密钥对，manager 本地 `CsrUtil::generateSM2` 生成 SM2 CSR，临时文件 finally 强清不留盘）+ 加密证书（CA/KGC 托管下发）。`enc_cert`/`enc_key`/`enc_key2` 存 `certs` 表真实列（**每张证书独立**，不入按 issuer 聚合的 `chains` 表，否则同 CA 多证书互相覆盖加密私钥），跟随 `private_key` 暴露策略
 - **多级代理透传**：manager 走 `default` source 调上游 `{ca.url}/get`（=对端 V2 get），CA 对接在 gateway（不在主系统）。上游 `get` 响应须带 `enc_cert`/`enc_key`/`enc_key2`（契约，键名=列名），sync 的 `$data=$result['data']` 透传 + `$cert->update($data)` 靠 fillable 自动写入（**sync 并发零改动**）。**manager 作上游时其 `V2 get` 也须透传 enc**（latestCertFields 加 enc + 非空透传/空 unset，同 `private_key` 策略；Deploy get 亦透传），否则多级 manager 链路下游写不进 enc。**sync 终态守卫**：本地终态时连同 status 一并 unset enc，拒上游滞后 enc 回写已终结证书
 - **证书解析**：`ActionTrait::parseCert` 对 SM2 用 PHP `openssl_x509_parse`（OpenSSL ≥1.1.1 原生识别 `signatureTypeSN=SM2-SM3`、公钥 256 位）+ `isSM2Cert` DER OID 兜底，固定 `encryption_alg=SM2`/`signature_digest_alg=SM3`/`encryption_bits=256`；`isSM2Cert` 对已明确解析出非 SM2 算法（signatureTypeSN 非 UNDEF/空）短路、不对每张 RSA/ECDSA 跑 DER

@@ -1,6 +1,8 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Services\Binary\BinaryLocator;
+use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Order\Action;
 use Tests\TestCase;
 
@@ -52,18 +54,49 @@ test('isSM2Cert 走 DER OID 兜底（signatureTypeSN 不含 SM2 时也能识别�
     expect($reflect->invoke($action, $rsaCert, ''))->toBeFalse();
 });
 
-test('gmEnabled 关闭时 SM2 下单被后端拒绝（initParams 兜底防绕过）', function () {
-    // 测试环境未配置 gmEnabled → 默认 false
-    expect((bool) get_system_setting('site', 'gmEnabled', false))->toBeFalse();
+test('SM2 下单 + gmOpenssl 探测失败 → 后端拒绝（探测 gate 替代旧开关）', function () {
+    // gate 改为探测国密 openssl 能力：mock 探测失败 → initParams 在事务前拒绝。
+    // ->once() 确保 gate 真的走了探测（旧的读开关实现不会调 gmOpenssl，此处会红）。
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('gmOpenssl')->once()
+        ->andThrow(new BinaryNotFoundException(tool: 'gmopenssl', triedPaths: ['/nonexistent']));
+    $this->app->instance(BinaryLocator::class, $mock);
 
     $action = app(Action::class);
     $reflect = new ReflectionMethod($action, 'initParams');
 
     try {
         $reflect->invoke($action, ['action' => 'new', 'encryption' => ['alg' => 'sm2']]);
-        $this->fail('应抛 ApiResponseException（国密未启用）');
+        $this->fail('应抛 ApiResponseException（国密环境不可用）');
     } catch (ApiResponseException $e) {
         // ApiResponseException 消息在 getApiResponse()['msg']，getMessage() 恒空（反模式 16）
         expect($e->getApiResponse()['msg'])->toContain('国密');
     }
+});
+
+test('guardSm2Capable: SM2 + gmOpenssl 探测成功 → 放行不抛', function () {
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('gmOpenssl')->andReturn('/usr/bin/openssl');
+    $this->app->instance(BinaryLocator::class, $mock);
+
+    $action = app(Action::class);
+    $reflect = new ReflectionMethod($action, 'guardSm2Capable');
+    $reflect->invoke($action, 'sm2'); // 探测成功 → 不抛
+    $reflect->invoke($action, 'SM2'); // 大写归一同样放行
+
+    expect(true)->toBeTrue();
+});
+
+test('guardSm2Capable: 非 SM2（rsa/ecdsa/null）不触发 gmOpenssl 探测', function () {
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldNotReceive('gmOpenssl');
+    $this->app->instance(BinaryLocator::class, $mock);
+
+    $action = app(Action::class);
+    $reflect = new ReflectionMethod($action, 'guardSm2Capable');
+    $reflect->invoke($action, 'rsa');
+    $reflect->invoke($action, 'ecdsa');
+    $reflect->invoke($action, null);
+
+    expect(true)->toBeTrue();
 });

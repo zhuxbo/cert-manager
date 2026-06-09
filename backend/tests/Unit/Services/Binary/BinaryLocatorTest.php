@@ -403,10 +403,10 @@ test('probeSm2 对不存在的路径返回 false（探测命令不恒真）', fu
 
 test('gmOpenssl 在容器内真实探测到支持 SM2 的 openssl（不 mock、不 skip）', function () {
     // 国密 CSR 生成是关键能力，必须真探到支持 SM2 的 openssl（gmOpenssl 的 probeSm2 已保证返回的二进制
-    // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器装 Tongsuo（/usr/local/tongsuo）；CI runner
-    // 系统 OpenSSL 3.0+ 亦支持 SM2，gmOpenssl 经 shell 兜底命中系统 openssl。两者都 SM2-capable。
+    // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器与 CI runner 一致，靠系统 OpenSSL 3.0+ 原生 SM2，
+    // gmOpenssl 经 shell 兜底命中系统 openssl（不再编译 Tongsuo，避免铜锁掩盖系统 openssl 的 SM2 支持）。
     // 遵反模式 15 不 markTestSkipped 兜底（否则关键能力探测在 CI 静默跳过、生产才炸）。
-    // 裸机无任何 SM2-capable openssl 会失败，提示按 docker/README 用容器或装 Tongsuo。
+    // 裸机（如 macOS LibreSSL）无 SM2-capable openssl 会失败，提示按 docker/README 用容器。
     $path = (new BinaryLocator)->gmOpenssl();
 
     expect($path)->toBeString()

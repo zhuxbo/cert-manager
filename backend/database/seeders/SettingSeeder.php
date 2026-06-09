@@ -44,8 +44,6 @@ class SettingSeeder extends Seeder
                 ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
                 ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
                 ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
-                ['key' => 'gmEnabled', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '启用国密(SM2)证书', 'weight' => 9],
-                ['key' => 'gmOpensslPath', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '国密openssl路径(留空自动探测Tongsuo)', 'weight' => 10],
             ],
             'ca' => [
                 ['key' => 'sources', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['default' => 'Default'], 'description' => '来源', 'weight' => 1],
