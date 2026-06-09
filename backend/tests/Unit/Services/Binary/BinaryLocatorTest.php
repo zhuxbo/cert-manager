@@ -401,6 +401,38 @@ test('probeSm2 对不存在的路径返回 false（探测命令不恒真）', fu
     expect($reflect->invoke($locator, '/nonexistent/openssl'))->toBeFalse();
 });
 
+test('csrUsesStandardEcPublicKey 区分 id-ecPublicKey 标准编码与 dual-sm2（拒 OpenSSL 3.0~3.2.0/GmSSL）', function () {
+    $locator = new BinaryLocator;
+    $method = new ReflectionMethod($locator, 'csrUsesStandardEcPublicKey');
+
+    // 标准 id-ecPublicKey 编码（系统 OpenSSL 3.2.1+ / Debian backport 3.0.20 产出）→ true
+    $standard = <<<'PEM'
+        -----BEGIN CERTIFICATE REQUEST-----
+        MIIBAzCBqwIBADBJMRQwEgYDVQQDDAt0ZXN0LjhraS5jbjELMAkGA1UEBhMCQ04x
+        ETAPBgNVBAgMCFNoYW5naGFpMREwDwYDVQQHDAhTaGFuZ2hhaTBZMBMGByqGSM49
+        AgEGCCqBHM9VAYItA0IABJIFxhnYYJluRd6iXY0aMMmAyMCY1TSJ0ZX/UfyJ314b
+        WJ+y/2MI5LjmYH4LEQcpEySJfFaxa57ZD9rsUdO89X+gADAKBggqgRzPVQGDdQNH
+        ADBEAiBFKOlNXa0g8SXyC83aSNXNXWUOGltiQ0SlTZ277P4xlQIgKHx7RUmpB58G
+        +gA987jeMbtRSeQ9Eq+z5pjwJFKeLMY=
+        -----END CERTIFICATE REQUEST-----
+        PEM;
+
+    // dual-sm2 编码（OpenSSL 3.0.0~3.2.0 / GmSSL，algorithm 填 sm2 曲线 OID）→ false
+    $dualSm2 = <<<'PEM'
+        -----BEGIN CERTIFICATE REQUEST-----
+        MIIBBTCBrAIBADBJMRQwEgYDVQQDDAt0ZXN0LjhraS5jbjELMAkGA1UEBhMCQ04x
+        ETAPBgNVBAgMCFNoYW5naGFpMREwDwYDVQQHDAhTaGFuZ2hhaTBaMBQGCCqBHM9V
+        AYItBggqgRzPVQGCLQNCAAQ5HDNZmmPj7ZPVR1MVSY25DIA4r1GPnn2Fgd4TTstD
+        R/ziR6hS3Nx2a5Bc3u7qXKup7y8pRJX7VwNY/Yl/gE/XoAAwCgYIKoEcz1UBg3UD
+        SAAwRQIhAOsIdAdGBt383N1PMtzLiFIL7JZCH2O6KAtEDs6i5HPFAiA5UpZmqUML
+        XqNAPA4a7LstKb6nXIPSLIS1o/gMeAKJ+A==
+        -----END CERTIFICATE REQUEST-----
+        PEM;
+
+    expect($method->invoke($locator, $standard))->toBeTrue();
+    expect($method->invoke($locator, $dualSm2))->toBeFalse();
+});
+
 test('gmOpenssl 在容器内真实探测到支持 SM2 的 openssl（不 mock、不 skip）', function () {
     // 国密 CSR 生成是关键能力，必须真探到支持 SM2 的 openssl（gmOpenssl 的 probeSm2 已保证返回的二进制
     // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器与 CI runner 一致，统一靠系统 OpenSSL 3.0+ 原生 SM2，

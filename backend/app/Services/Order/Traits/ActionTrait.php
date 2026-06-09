@@ -204,7 +204,7 @@ trait ActionTrait
         try {
             app(BinaryLocator::class)->gmOpenssl();
         } catch (BinaryNotFoundException $e) {
-            $this->error('国密(SM2)环境不可用：'.$e->getMessage());
+            $this->error('国密(SM2)环境不可用（需 openssl 能签 id-ecPublicKey 标准编码，OpenSSL ≥3.0.13 实测可用）：'.$e->getMessage());
         }
     }
 

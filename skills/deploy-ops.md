@@ -50,18 +50,22 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 
 ### 国密 (SM2) 支持（可选，仅签发国密证书时需要）
 
-SM2 证书的 CSR 生成走命令行系统 openssl（PHP openssl 扩展不支持 SM2），不影响 RSA/ECDSA。**OpenSSL 3.0+ 的 default provider 原生支持 SM2**，主流发行版（Debian/Ubuntu/RHEL 系）系统 openssl 即满足，**无需任何额外安装或配置**——系统已统一依赖系统 OpenSSL 3，不接独立国密二进制：
+SM2 证书的 CSR 生成走命令行系统 openssl（PHP openssl 扩展不支持 SM2），不影响 RSA/ECDSA。**需 OpenSSL ≥3.0.13**：OpenSSL 3.0.0~3.0.12 能签 SM2 但公钥 SubjectPublicKeyInfo 编码非标准（dual-sm2，algorithm 填 SM2 曲线 OID），会被国密 CA（如 Keeptrust）拒为「csr 解析失败」；官方 3.0.13（Ubuntu 24.04 自带；22.04 可升 3.0.14）/ 3.2.1 起 restore 回 id-ecPublicKey 标准编码。`gmOpenssl()` 用**功能探测**（实签一张 CSR 验 SPKI 是 id-ecPublicKey）自动判定，**不靠版本号比较**（3.1.0~3.2.0 版本号高但仍 dual-sm2），不达标即 fail-closed 拒单：
 
-1. 确认系统 openssl 支持 SM2（绝大多数 OpenSSL 3.0+ 满足；LibreSSL / 编译 `no-sm2` / FIPS-only 除外）：
+1. 确认系统 openssl 能签 id-ecPublicKey 标准编码（不是只看版本号）：
 
    ```bash
-   openssl version                          # ≥ 3.0
-   openssl ecparam -name SM2 -genkey -noout # exit 0 即支持
+   openssl version  # 参考下限 ≥ 3.0.13（或 3.2.1+）
+   openssl ecparam -genkey -name SM2 -out /tmp/k.pem 2>/dev/null \
+     && openssl req -new -key /tmp/k.pem -sm3 -subj /CN=t -out /tmp/c.csr 2>/dev/null \
+     && (openssl asn1parse -in /tmp/c.csr | grep -q id-ecPublicKey \
+         && echo '✓ id-ecPublicKey 标准编码（可用）' || echo '✗ dual-sm2（需升级 openssl）')
+   rm -f /tmp/k.pem /tmp/c.csr
    ```
 
-2. 无需配置：`BinaryLocator::gmOpenssl()` 自动探测系统 openssl 是否真支持 SM2（与系统 `openssl()` 共用候选 + shell PATH 兜底，功能探测真验 SM2，不支持的会被正确跳过、不签错证书）。
+2. 系统 openssl 过低（如 Ubuntu 22.04 自带 3.0.2）→ `apt install --only-upgrade openssl libssl3` 升到 3.0.13+，或编译新版装独立目录后让 `gmOpenssl()` 候选指向它。
 
-3. 能否签 SM2 由 `gmOpenssl()` 探测决定，无业务开关 —— 探测到支持即可下单 SM2，都不支持则国密 fail-closed（下单前拒绝），不影响非国密证书。
+3. 能否签 SM2 由 `gmOpenssl()` 功能探测决定，无业务开关 —— 探测到能签标准编码即可下单，否则 fail-closed（下单前拒绝），不影响非国密证书。
 
 ### PHP 禁用函数
 

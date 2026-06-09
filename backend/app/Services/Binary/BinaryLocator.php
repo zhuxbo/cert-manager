@@ -366,12 +366,54 @@ class BinaryLocator
     }
 
     /**
-     * 探测 openssl 是否真支持 SM2：能生成 SM2 密钥即认定（exit 0）。
-     * array proc_open（execve，防注入 + 避 open_basedir），不校验 stdout（genkey 静默成功）。
+     * 探测 openssl 是否真支持 SM2 **且签出 id-ecPublicKey 标准编码**。
+     *
+     * 不能只验「能生成 SM2 key」——OpenSSL 3.0.0~3.0.12 / 3.1.x~3.2.0 能签 SM2，却把公钥
+     * SubjectPublicKeyInfo 的 algorithm 写成 SM2 曲线 OID（dual-sm2），被国密 CA（如 Keeptrust）拒为
+     * 「csr 解析失败」；官方 3.0.13（3.0 LTS backport）与 3.2.1 起 restore 回 id-ecPublicKey。故必须实际
+     * 签一张 SM2 CSR、校验 SPKI 是 id-ecPublicKey，才能 fail-closed 拒掉这类「能签但编码错」的 openssl，绝不签出 CA 不收的 CSR。
+     *
+     * array proc_open（execve，防注入 + 避 open_basedir）；临时私钥写项目内 storage、finally 强清不留盘。
      */
     protected function probeSm2(string $path): bool
     {
-        return $this->probeWith([$path, 'ecparam', '-name', 'SM2', '-genkey', '-noout'], '');
+        $dir = storage_path('app/sm2-probe-'.bin2hex(random_bytes(8)));
+        if (! @mkdir($dir, 0700, true) && ! is_dir($dir)) {
+            return false;
+        }
+        $keyFile = $dir.'/k.pem';
+        $csrFile = $dir.'/c.csr';
+
+        try {
+            // 1. 生成 SM2 key + 2. 签一张 SM2 CSR（distid 不影响 SPKI 编码，从略；-subj 免交互）
+            if (! $this->probeWith([$path, 'ecparam', '-name', 'SM2', '-genkey', '-out', $keyFile], '')
+                || ! $this->probeWith([$path, 'req', '-new', '-key', $keyFile, '-sm3', '-subj', '/CN=probe', '-out', $csrFile], '')) {
+                return false;
+            }
+
+            // 3. 校验 CSR 的 SPKI 是 id-ecPublicKey 标准编码（拒 dual-sm2）
+            $csr = @file_get_contents($csrFile);
+
+            return $csr !== false && $this->csrUsesStandardEcPublicKey($csr);
+        } finally {
+            @unlink($keyFile);
+            @unlink($csrFile);
+            @rmdir($dir);
+        }
+    }
+
+    /**
+     * 校验 CSR 的 SubjectPublicKeyInfo 是否用标准 id-ecPublicKey 编码（RFC 5480）。
+     *
+     * id-ecPublicKey OID 1.2.840.10045.2.1 的 DER 内容字节为 2a8648ce3d0201；OpenSSL 3.0.0~3.0.12 /
+     * 3.1.x~3.2.0 与 GmSSL 的 dual-sm2 编码把 algorithm 填成 sm2 曲线 OID（2a811ccf5501822d）、不含此串，以此区分。
+     * 独立成 protected 便于单测覆盖（dual-sm2 fixture → false / 标准 fixture → true）。
+     */
+    protected function csrUsesStandardEcPublicKey(string $csrPem): bool
+    {
+        $der = base64_decode((string) preg_replace('/-----[^-]+-----|\s/', '', $csrPem));
+
+        return $der !== '' && str_contains($der, hex2bin('2a8648ce3d0201'));
     }
 
     /**

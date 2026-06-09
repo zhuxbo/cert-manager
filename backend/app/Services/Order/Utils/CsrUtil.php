@@ -107,7 +107,7 @@ class CsrUtil
         try {
             $openssl = app(BinaryLocator::class)->gmOpenssl();
         } catch (BinaryNotFoundException $e) {
-            self::error('国密 openssl 不可用，无法生成 SM2 证书（请确认系统 openssl≥3.0 且支持 SM2）：'.$e->getMessage());
+            self::error('国密 openssl 不可用，无法生成 SM2 证书（需 openssl 能签 id-ecPublicKey 标准编码，OpenSSL ≥3.0.13 实测可用；3.0.0~3.0.12 等早期版本编码非标准会被 CA 拒）：'.$e->getMessage());
         }
 
         empty($info['commonName']) && self::error('SM2 CSR 缺少 Common Name');
