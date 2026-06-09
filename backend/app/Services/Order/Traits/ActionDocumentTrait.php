@@ -187,18 +187,28 @@ trait ActionDocumentTrait
         $mime = $mimeTypes[$ext] ?? 'application/octet-stream';
         $safeName = rawurlencode(basename($document->file_name));
 
-        // 仅图片走 inline 直接预览；其余（pdf / xades-xml / 未知）一律 attachment 下载，
+        // 图片与 PDF 走 inline 直接预览；xades-xml / 未知类型一律 attachment 下载，
         // 避免浏览器把上传者可控字节当作可渲染内容（钓鱼 / 边缘 XSS）。
-        // 配合 X-Content-Type-Options: nosniff 关闭 MIME 嗅探。
+        // 安全前提：显式 Content-Type + X-Content-Type-Options: nosniff 关闭 MIME 嗅探，
+        // 浏览器只按声明类型交给图片解码器 / PDF 查看器，不会把内容当 HTML 执行脚本。
         $isImage = in_array($ext, ['jpg', 'jpeg', 'png'], true);
-        $disposition = $isImage ? 'inline' : 'attachment';
+        $isPdf = $ext === 'pdf';
+        $disposition = ($isImage || $isPdf) ? 'inline' : 'attachment';
 
-        return response()->file($fullPath, [
+        $headers = [
             'Content-Type' => $mime,
             'Content-Disposition' => "$disposition; filename*=UTF-8''$safeName",
             'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'private, max-age=3600',
-        ]);
+        ];
+
+        // PDF 内联预览额外上 CSP sandbox：禁掉 PDF 内嵌脚本 / 表单 / 顶层跳转，
+        // 浏览器内置 PDF 查看器仍正常渲染（viewer 是特权组件，不受页面 CSP 脚本约束）。
+        if ($isPdf) {
+            $headers['Content-Security-Policy'] = 'sandbox';
+        }
+
+        return response()->file($fullPath, $headers);
     }
 
     /**

@@ -289,12 +289,17 @@ test('previewDocument 图片走 inline 预览 + 带 nosniff', function () {
     @unlink($full);
 });
 
-test('previewDocument 非图片（pdf / xades）强制 attachment 下载 + 带 nosniff', function () {
+test('previewDocument：pdf 走 inline + CSP sandbox，xades 强制 attachment（均带 nosniff）', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
     $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
 
-    foreach (['report.pdf' => 'application/pdf', 'sig.xades' => 'application/xml'] as $name => $expectedMime) {
+    // [mime, disposition, 是否挂 CSP sandbox] —— pdf 内联预览且禁内嵌脚本；xades 仍强制下载
+    $cases = [
+        'report.pdf' => ['application/pdf', 'inline', true],
+        'sig.xades' => ['application/xml', 'attachment', false],
+    ];
+    foreach ($cases as $name => [$expectedMime, $expectedDisposition, $expectCsp]) {
         $ext = pathinfo($name, PATHINFO_EXTENSION);
         $rel = 'verification/test/'.Str::uuid().".$ext";
         $full = storage_path("app/$rel");
@@ -310,7 +315,10 @@ test('previewDocument 非图片（pdf / xades）强制 attachment 下载 + 带 n
 
         expect($response->headers->get('Content-Type'))->toBe($expectedMime)
             ->and($response->headers->get('X-Content-Type-Options'))->toBe('nosniff')
-            ->and($response->headers->get('Content-Disposition'))->toStartWith('attachment');
+            ->and($response->headers->get('Content-Disposition'))->toStartWith($expectedDisposition);
+
+        $csp = $response->headers->get('Content-Security-Policy');
+        $expectCsp ? expect($csp)->toContain('sandbox') : expect($csp)->toBeNull();
 
         @unlink($full);
     }
