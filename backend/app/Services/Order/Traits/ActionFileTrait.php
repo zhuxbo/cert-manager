@@ -185,9 +185,12 @@ trait ActionFileTrait
                 file_put_contents($keyFile, $privateKey);
                 file_put_contents($chainFile, $intermediateCert);
 
-                // 用 PBE-SHA1-3DES + HMAC-SHA1 生成 PFX，兼容 Windows Server 2008+ 全系列
-                // PHP openssl_pkcs12_export 在 OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，老 Windows 报"密码错误"无法导入
-                $baseCmd = escapeshellarg($openssl).' pkcs12 -export'
+                // 显式 PBE-SHA1-3DES + HMAC-SHA1 生成 PFX，兼容 Windows Server 2008+ 全系列。
+                // PHP openssl_pkcs12_export 在 OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，老 Windows 报"密码错误"无法导入。
+                // 3DES 在 OpenSSL 3.x default provider / 1.x 原生可用，无需 -legacy：-legacy 是 3.0 新增选项，在
+                // 1.x、LibreSSL 上会报 Unrecognized flag 反需回落兜底，且 3.x 上显式指定 3DES 时它是空操作——故去掉，
+                // 单条命令全版本一次成功（RC2-40 才需 legacy provider，本系统不用）。
+                $cmd = escapeshellarg($openssl).' pkcs12 -export'
                     .' -inkey '.escapeshellarg($keyFile)
                     .' -in '.escapeshellarg($certFile)
                     .' -certfile '.escapeshellarg($chainFile)
@@ -196,11 +199,7 @@ trait ActionFileTrait
                     .' -password '.escapeshellarg("pass:$password")
                     .' -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1';
 
-                // OpenSSL 3.x 需 -legacy 启用 3DES/RC2 老算法；1.x 默认即老算法，无此参数
-                @exec("$baseCmd -legacy > /dev/null 2>&1", $output, $returnCode);
-                if ($returnCode !== 0) {
-                    @exec("$baseCmd > /dev/null 2>&1", $output, $returnCode);
-                }
+                @exec("$cmd > /dev/null 2>&1", $output, $returnCode);
 
                 if ($returnCode === 0 && file_exists($pfx)) {
                     if ($type == 'all' || $type == 'iis') {

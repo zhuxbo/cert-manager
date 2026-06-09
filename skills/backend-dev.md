@@ -190,6 +190,12 @@ php artisan db:structure --export       # 导出标准结构
 - **`UpgradeController::execute` 入口**（`isRunning` 短路后）先跑 preflight，任一 blocking → 503 + 完整诊断到 errors 字段
 - **`GET /api/admin/upgrade/binary-health` 端点**：纯展示 8 个工具状态（php/composer/openssl/java/keytool/mysqldump/mysql/curl）+ FPM/CLI ini，不阻塞，供前端升级页面参考
 
+### PFX / IIS 包算法（防回归）
+
+- **`ActionFileTrait::addCertToZip` 生成 IIS `.pfx` 走 openssl CLI** `pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1`，不用 PHP `openssl_pkcs12_export`（OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，Windows Server 2008/2012/2016 报"密码错误"无法导入）
+- **单条命令、不加 `-legacy`**：3DES 在 OpenSSL 3.x default provider、1.x 原生可用；`-legacy` 是 3.0 新增选项，1.x/LibreSSL 报 `Unrecognized flag` 反需回落兜底，3.x 上显式指定 3DES 时它是空操作（实测带不带产物字节相同）。只有 **RC2-40 加密证书**才需 legacy provider，本系统不用（40 位弱加密、新系统在弃用）。`tests/Unit/Services/Order/PfxDownloadTest.php` 用 **DER 字节级 OID 断言**锁定算法（含 3DES OID `1.2.840.113549.1.12.1.3`、不含 AES-256 OID）——**别改回 AES、别加回 `-legacy`**
+- `-certfile` 需有效中间证书；`download()` 入口已过滤空 `intermediate_cert`（`Cert::intermediate_cert` 是依赖 `issuer` + `cert.chainMap` 的 computed accessor，非真实列；测试构造需注入 chainMap + 设 issuer 还原此前提）
+
 ---
 
 ## 代码规范
