@@ -437,7 +437,8 @@ class ApiController extends Controller
         if (Cache::add($cacheKey, time(), 10)) {
             // 待验证、待审批、已签发的订单同步
             if (in_array($order->latestCert->status, ['processing', 'approving', 'active'])) {
-                $this->action->sync($order_id, true);
+                // suppressCallback=true：下游主动 pull，get 末尾已重新查询并同步返回新状态，无需再异步回调（避免冗余触发）
+                $this->action->sync($order_id, true, true);
             }
 
             // 未支付订单支付

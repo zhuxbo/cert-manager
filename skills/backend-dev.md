@@ -418,6 +418,11 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - `Order\Action::sync`/`Acme\Action::sync` 锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，防上游旧状态把已取消/已吊销订单复活回 active（与 commitCancel 串行化配合）
 
+### sync 回调抑制（下游 pull 不冗余回调）
+
+- `Order\Action::sync(int $orderId, bool $force = false, bool $suppressCallback = false)` 第三参 `suppressCallback=true` 时跳过状态变终态后对下游的主动回调（`createTask($orderId, 'callback')`），**仅抑制回调创建**，`deleteTask` 与退款 `Transaction` 照常。该参数透传给 `refundForSyncedCancel($order, $data, $suppressCallback)`，覆盖 sync 的两条回调路径（主路径 + 同步退款取消路径），两处 `DB::transaction` 闭包 `use` 均捕获它
+- **按"触发来源"gate，不按订单 channel**：仅 V1/V2 `ApiController::get`（下游主动 pull）两个入口传 `true` —— get 内 sync 后已重新查询并把新状态同步返回给下游，再异步回调即多一次冗余触发。后台 `TaskJob`（动态单参调用）、手动 `sync`、`PurgeCommand`/`ValidateCommand`、Action 内部 sync 均不传 → 默认 `false` → 回调照常。**反例（已规避）**：按 `channel='api'` 一刀切会误杀"后台 sync 把订单推进到 active"时对不轮询客户的必要回调，故必须按入口而非订单来源判定
+
 ### tasks 死锁防护与并发错误处理
 
 **线上现象（2026-06）**：同一订单被 V2 `get`（内联 sync）+ `POST /api/order/sync` + queue worker 多入口高频并发，都抢 `tasks` 表 `WHERE order_id=X AND action IN (commit,sync,revalidate) AND status IN (executing,stopped) FOR UPDATE`，触发 InnoDB 死锁（1213）；TaskJob 的 `catch (Throwable)` 又把死锁异常当普通业务异常吞掉后继续 `$task->update()`，外层 `DB::transaction` 提交时抛 `PDOException: There is no active transaction`，job 失败被 queue 无脑重试 → 雪崩刷屏。
@@ -622,7 +627,7 @@ Schema::table('products', function (Blueprint $table) {
 
 ### sync 集成
 
-`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用。
+`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data, $suppressCallback)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用（callback 受 `$suppressCallback` 透传 gate，下游 pull 入口抑制，见"sync 回调抑制"小节）。
 
 ### 设计决策
 

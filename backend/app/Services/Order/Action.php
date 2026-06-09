@@ -437,7 +437,7 @@ class Action
     /**
      * 同步证书信息
      */
-    public function sync(int $orderId, bool $force = false): void
+    public function sync(int $orderId, bool $force = false, bool $suppressCallback = false): void
     {
         // 10秒内仅请求一次 API 避免重复请求
         if ($this->checkDuplicate('sync', [$orderId], 10)) {
@@ -531,7 +531,7 @@ class Action
             && get_system_setting('site', 'autoRefundOnSync')
         ) {
             // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
-            $this->refundForSyncedCancel($order, $data);
+            $this->refundForSyncedCancel($order, $data, $suppressCallback);
             // force 模式（V1/V2 ApiController::get 无 try-catch 直调 sync）必须沿用"不抛 success"契约，
             // 否则 success() 抛 ApiResponseException 会打断 get 使其返回空 {code:1}，而非订单数据；
             // 且无论是否 force 都要 return，避免 fall through 到下方第二个事务重复加锁处理已 cancelled 订单。
@@ -546,7 +546,7 @@ class Action
         // 否则与 commitCancel(锁 sync,revalidate→order)/refundForSyncedCancel 反序，task 集合相交触发 InnoDB 死锁。
         // 经 TaskJob 调用时 TaskJob 已先持本 task 行锁（同事务 lockForUpdate 可重入），叠加后整体仍是 task→order，不反序。
         // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订单复活。
-        DB::transaction(function () use ($orderId, $order, $cert, $user, $data) {
+        DB::transaction(function () use ($orderId, $order, $cert, $user, $data, $suppressCallback) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
             Task::where('order_id', $orderId)
                 ->whereIn('action', ['commit', 'sync', 'revalidate'])
@@ -584,10 +584,13 @@ class Action
                 ));
             }
 
-            // 签发 取消 吊销 发起回调
+            // 签发 取消 吊销 发起回调（suppressCallback=true 跳过：下游经 V1/V2 get 主动 pull 触发同步，
+            // get 已把新状态同步返回，无需再异步回调下游；deleteTask 不受影响，照常清理）
             if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'], true)) {
-                $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
-                $callback && $this->createTask($orderId, 'callback');
+                if (! $suppressCallback) {
+                    $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+                    $callback && $this->createTask($orderId, 'callback');
+                }
                 // 删除相关任务
                 $this->deleteTask($orderId, 'commit,sync,revalidate');
             }
@@ -992,9 +995,9 @@ class Action
      *
      * @throws Throwable
      */
-    private function refundForSyncedCancel(Order $order, array $certData): void
+    private function refundForSyncedCancel(Order $order, array $certData, bool $suppressCallback = false): void
     {
-        DB::transaction(function () use ($order, $certData) {
+        DB::transaction(function () use ($order, $certData, $suppressCallback) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
             Task::where('order_id', $order->id)
                 ->whereIn('action', ['commit', 'sync', 'revalidate'])
@@ -1054,9 +1057,12 @@ class Action
 
             // 副作用：发起回调 + 清理相关 task
             // TaskJob::dispatch 内部已加 ->afterCommit()，事务安全
-            $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
-            if ($callback) {
-                $this->createTask($order->id, 'callback');
+            // suppressCallback=true（下游 pull 触发）跳过回调：get 已同步返回 cancelled 状态，无需再异步回调
+            if (! $suppressCallback) {
+                $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+                if ($callback) {
+                    $this->createTask($order->id, 'callback');
+                }
             }
             $this->deleteTask($order->id, 'commit,sync,revalidate');
         }, 3); // attempts=3：与 sync 主事务一致；本事务无上游 HTTP，退款由 transactions 唯一索引保证幂等，重试不双退
