@@ -98,7 +98,7 @@ class CsrUtil
     /**
      * 生成 SM2 国密 CSR + 私钥。
      *
-     * PHP openssl 扩展不支持 SM2，走 BinaryLocator::gmOpenssl()（Tongsuo/国密 openssl）命令行生成。
+     * PHP openssl 扩展不支持 SM2，走 BinaryLocator::gmOpenssl()（系统 OpenSSL 3，default provider 原生支持 SM2）命令行生成。
      * 临时文件 + finally 强制清理：私钥含敏感数据，绝不留盘（参考实现漏清致私钥明文堆积）。
      * gmOpenssl 不可用时 fail-closed 报错，绝不静默回落普通 openssl 签出非 SM2 证书。
      */
@@ -107,7 +107,7 @@ class CsrUtil
         try {
             $openssl = app(BinaryLocator::class)->gmOpenssl();
         } catch (BinaryNotFoundException $e) {
-            self::error('国密 openssl 不可用，无法生成 SM2 证书（请确认系统 openssl≥3.0 支持 SM2，或安装国密 openssl/Tongsuo）：'.$e->getMessage());
+            self::error('国密 openssl 不可用，无法生成 SM2 证书（请确认系统 openssl≥3.0 且支持 SM2）：'.$e->getMessage());
         }
 
         empty($info['commonName']) && self::error('SM2 CSR 缺少 Common Name');

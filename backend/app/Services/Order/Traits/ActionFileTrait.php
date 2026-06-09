@@ -267,7 +267,7 @@ trait ActionFileTrait
     /**
      * 生成 SM2 国密 nginx 双证书包（签名证书 + 加密证书）。
      *
-     * 国密 SSL 双证书部署（Tongsuo/国密 nginx）：签名证书走用户密钥对，加密证书 + 加密私钥由 CA/KGC 托管下发。
+     * 国密 SSL 双证书：签名证书走用户密钥对，加密证书 + 加密私钥由 CA/KGC 托管下发。
      * 纯 addFromString 无需 openssl。加密私钥为空（gateway 未就绪）时仅出签名部分。
      */
     protected function addSm2CertToZip(
@@ -310,8 +310,6 @@ trait ActionFileTrait
             if ($encKey2) {
                 $lines[] = "{$certName}_enc_gmt0009.key 加密私钥（GMT-0009 格式）";
             }
-            $lines[] = '';
-            $lines[] = '部署需国密版 nginx（Tongsuo），ssl_certificate 配置签名 + 加密双证书。';
         } else {
             $lines[] = '';
             $lines[] = '注意：加密证书尚未就绪（CA/KGC 下发中），当前仅含签名证书，暂不可用于国密双证书部署，请稍后重新下载完整包。';

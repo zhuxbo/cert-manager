@@ -50,7 +50,7 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 
 ### 国密 (SM2) 支持（可选，仅签发国密证书时需要）
 
-SM2 证书的 CSR 生成走命令行国密 openssl（PHP openssl 扩展不支持 SM2），与系统 openssl 隔离、不影响 RSA/ECDSA。**OpenSSL 3.0+ 的 default provider 原生支持 SM2**，主流发行版（Debian/Ubuntu/RHEL 系）系统 openssl 即满足，通常无需额外安装：
+SM2 证书的 CSR 生成走命令行系统 openssl（PHP openssl 扩展不支持 SM2），不影响 RSA/ECDSA。**OpenSSL 3.0+ 的 default provider 原生支持 SM2**，主流发行版（Debian/Ubuntu/RHEL 系）系统 openssl 即满足，**无需任何额外安装或配置**——系统已统一依赖系统 OpenSSL 3，不接独立国密二进制：
 
 1. 确认系统 openssl 支持 SM2（绝大多数 OpenSSL 3.0+ 满足；LibreSSL / 编译 `no-sm2` / FIPS-only 除外）：
 
@@ -59,22 +59,9 @@ SM2 证书的 CSR 生成走命令行国密 openssl（PHP openssl 扩展不支持
    openssl ecparam -name SM2 -genkey -noout # exit 0 即支持
    ```
 
-2. 无需任何配置：`BinaryLocator::gmOpenssl()` 自动探测 —— 先试 `/usr/local/tongsuo/bin/openssl` 等硬编码候选，再 shell PATH 兜底命中系统 openssl（功能探测真验 SM2，不支持的会被正确跳过、不签错证书）。
+2. 无需配置：`BinaryLocator::gmOpenssl()` 自动探测系统 openssl 是否真支持 SM2（与系统 `openssl()` 共用候选 + shell PATH 兜底，功能探测真验 SM2，不支持的会被正确跳过、不签错证书）。
 
-3. 仅当系统 openssl 不支持 SM2（老旧发行版）时，才装独立国密 openssl（Tongsuo/铜锁），且必须放到硬编码候选位（`/usr/local/tongsuo/bin/openssl` / `/opt/tongsuo/bin/openssl` / `/usr/local/gmssl/bin/openssl`）或加入系统 PATH（已无 `site.gmOpensslPath` 设置项指自定义路径）：
-
-   ```bash
-   wget -O tongsuo.tar.gz https://github.com/Tongsuo-Project/Tongsuo/archive/refs/tags/8.4.0.tar.gz
-   tar xf tongsuo.tar.gz && cd Tongsuo-8.4.0
-   ./config --prefix=/usr/local/tongsuo --libdir=lib --openssldir=/usr/local/tongsuo/ssl \
-       enable-ntls -Wl,-rpath,/usr/local/tongsuo/lib
-   make -j"$(nproc)" && make install_sw install_ssldirs
-   /usr/local/tongsuo/bin/openssl ecparam -name SM2 -genkey -noout   # 验证 SM2 可用
-   ```
-
-4. 能否签 SM2 由 `gmOpenssl()` 探测决定，无业务开关 —— 探测到支持即可下单 SM2，都不支持则国密 fail-closed（下单前拒绝），不影响非国密证书。
-
-> 国密证书部署到**业务服务器**需国密版 nginx（Tongsuo），与本管理系统部署无关。
+3. 能否签 SM2 由 `gmOpenssl()` 探测决定，无业务开关 —— 探测到支持即可下单 SM2，都不支持则国密 fail-closed（下单前拒绝），不影响非国密证书。
 
 ### PHP 禁用函数
 

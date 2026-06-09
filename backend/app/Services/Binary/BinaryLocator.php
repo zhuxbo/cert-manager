@@ -320,14 +320,15 @@ class BinaryLocator
     }
 
     /**
-     * 国密 openssl（Tongsuo/GmSSL）——仅 SM2 相关命令用（生成 SM2 签名 CSR）。
+     * 支持 SM2 的 openssl —— 仅国密（SM2）相关命令用（生成 SM2 签名 CSR）。
      *
-     * 与系统 openssl() 分离：系统 openssl 处理 RSA/ECDSA，国密走独立二进制。多数发行版自带 openssl
-     * （含 macOS LibreSSL）不支持 SM2，故不能复用 openssl()。探测不只验 version，还验 SM2 曲线真可用
-     * （`ecparam -name SM2 -genkey -noout` exit 0），防普通 openssl 假阳性（version 过但签不了 SM2）。
+     * 与系统 openssl() 同源（共用同一批系统 openssl 候选路径），但探测条件更严：不只验 version，
+     * 还验 SM2 曲线真可用（`ecparam -name SM2 -genkey -noout` exit 0），防 LibreSSL / 编译 no-sm2 /
+     * FIPS-only 等假阳性（version 过但签不了 SM2）。OpenSSL 3.0+ 的 default provider 原生支持 SM2，
+     * 本系统统一依赖系统 OpenSSL 3 签发、不接独立国密二进制；PHP openssl 扩展不支持 SM2，故仍走命令行。
      *
-     * 优先级：候选安装位（Tongsuo/GmSSL）→ shell PATH 兜底（系统 openssl，OpenSSL 3.0+ 原生支持 SM2）。
-     * 全失败抛 BinaryNotFoundException，调用方（CsrUtil/guardSm2Capable）catch 后 fail-closed（拒国密入口，绝不静默签错）。
+     * 候选路径 miss 后 shell PATH 兜底，全失败抛 BinaryNotFoundException，调用方
+     * （CsrUtil/guardSm2Capable）catch 后 fail-closed（拒国密入口，绝不静默降级签 RSA）。
      */
     public function gmOpenssl(): string
     {
@@ -337,14 +338,15 @@ class BinaryLocator
 
         $tried = [];
 
-        foreach ($this->gmOpensslCandidatePaths() as $candidate) {
+        // 与 openssl() 共用系统 openssl 候选，但要求「真支持 SM2」（probeSm2）而非仅 version 通过
+        foreach ($this->candidatePathsFor('openssl') as $candidate) {
             $tried[] = $candidate;
             if ($this->probeSm2($candidate)) {
                 return $this->resolved['gmopenssl'] = $candidate;
             }
         }
 
-        // shell 兜底：command -v openssl 拿 PATH 上绝对路径，再验 SM2（部分国密发行版把 tongsuo 放进 PATH）
+        // shell PATH 兜底：command -v openssl 拿绝对路径，再验 SM2
         $tried[] = 'openssl (shell PATH, SM2)';
         $env = array_replace(getenv() ?: [], ['PATH' => self::SHELL_FALLBACK_PATH]);
         $proc = @proc_open('command -v openssl 2>/dev/null', [1 => ['pipe', 'w']], $pipes, null, $env);
@@ -361,21 +363,6 @@ class BinaryLocator
             triedPaths: $tried,
             diagnose: $this->diagnose('openssl'),
         );
-    }
-
-    /**
-     * 国密 openssl 候选路径：Tongsuo/GmSSL 常见安装位（生产若装独立国密 openssl）。
-     * 独立成 protected 便于测试覆盖；系统 openssl 由 gmOpenssl() 的 shell PATH 兜底命中（OpenSSL 3.0+ 原生 SM2）。
-     *
-     * @return string[]
-     */
-    protected function gmOpensslCandidatePaths(): array
-    {
-        return [
-            '/usr/local/tongsuo/bin/openssl',
-            '/usr/local/gmssl/bin/openssl',
-            '/opt/tongsuo/bin/openssl',
-        ];
     }
 
     /**

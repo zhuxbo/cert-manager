@@ -317,47 +317,47 @@ test('BinaryLocator 不再依赖 Symfony ExecutableFinder', function () {
     expect($source)->not->toContain('new ExecutableFinder');
 });
 
-test('gmOpenssl 命中第一个支持 SM2 的候选', function () {
+test('gmOpenssl 命中第一个支持 SM2 的系统 openssl 候选', function () {
     $locator = new class extends BinaryLocator
     {
-        protected function gmOpensslCandidatePaths(): array
+        protected function candidatePathsFor(string $tool): array
         {
-            return ['/opt/tongsuo/bin/openssl'];
+            return $tool === 'openssl' ? ['/fake/openssl-sm2'] : parent::candidatePathsFor($tool);
         }
 
         protected function probeSm2(string $path): bool
         {
-            return $path === '/opt/tongsuo/bin/openssl';
+            return $path === '/fake/openssl-sm2';
         }
     };
 
-    expect($locator->gmOpenssl())->toBe('/opt/tongsuo/bin/openssl');
+    expect($locator->gmOpenssl())->toBe('/fake/openssl-sm2');
 });
 
 test('gmOpenssl 跳过不支持 SM2 的候选选下一个（防普通 openssl 假阳性）', function () {
     $locator = new class extends BinaryLocator
     {
-        protected function gmOpensslCandidatePaths(): array
+        protected function candidatePathsFor(string $tool): array
         {
-            return ['/usr/bin/openssl', '/opt/tongsuo/bin/openssl'];
+            return $tool === 'openssl' ? ['/fake/openssl-libre', '/fake/openssl-sm2'] : parent::candidatePathsFor($tool);
         }
 
         protected function probeSm2(string $path): bool
         {
-            // 模拟系统 openssl 不支持 SM2（LibreSSL/老版），只有 tongsuo 支持
-            return $path === '/opt/tongsuo/bin/openssl';
+            // 模拟第一个系统 openssl 不支持 SM2（LibreSSL/编译 no-sm2），第二个才支持
+            return $path === '/fake/openssl-sm2';
         }
     };
 
-    expect($locator->gmOpenssl())->toBe('/opt/tongsuo/bin/openssl');
+    expect($locator->gmOpenssl())->toBe('/fake/openssl-sm2');
 });
 
 test('gmOpenssl 全部候选不支持 SM2 时抛 BinaryNotFoundException', function () {
     $locator = new class extends BinaryLocator
     {
-        protected function gmOpensslCandidatePaths(): array
+        protected function candidatePathsFor(string $tool): array
         {
-            return ['/nonexistent/openssl'];
+            return $tool === 'openssl' ? ['/nonexistent/openssl'] : parent::candidatePathsFor($tool);
         }
 
         protected function probeSm2(string $path): bool
@@ -374,9 +374,9 @@ test('gmOpenssl 第二次调用走 memoize，不重复探测', function () {
     {
         public int $probeCount = 0;
 
-        protected function gmOpensslCandidatePaths(): array
+        protected function candidatePathsFor(string $tool): array
         {
-            return ['/opt/tongsuo/bin/openssl'];
+            return $tool === 'openssl' ? ['/fake/openssl-sm2'] : parent::candidatePathsFor($tool);
         }
 
         protected function probeSm2(string $path): bool
@@ -403,8 +403,8 @@ test('probeSm2 对不存在的路径返回 false（探测命令不恒真）', fu
 
 test('gmOpenssl 在容器内真实探测到支持 SM2 的 openssl（不 mock、不 skip）', function () {
     // 国密 CSR 生成是关键能力，必须真探到支持 SM2 的 openssl（gmOpenssl 的 probeSm2 已保证返回的二进制
-    // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器与 CI runner 一致，靠系统 OpenSSL 3.0+ 原生 SM2，
-    // gmOpenssl 经 shell 兜底命中系统 openssl（不再编译 Tongsuo，避免铜锁掩盖系统 openssl 的 SM2 支持）。
+    // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器与 CI runner 一致，统一靠系统 OpenSSL 3.0+ 原生 SM2，
+    // gmOpenssl 复用系统 openssl 候选 + shell 兜底命中。
     // 遵反模式 15 不 markTestSkipped 兜底（否则关键能力探测在 CI 静默跳过、生产才炸）。
     // 裸机（如 macOS LibreSSL）无 SM2-capable openssl 会失败，提示按 docker/README 用容器。
     $path = (new BinaryLocator)->gmOpenssl();

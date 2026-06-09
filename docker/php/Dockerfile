@@ -5,8 +5,7 @@
 # PHP 版本可切换：默认 8.4（贴合生产），测 8.3 兼容用 `PHP_VERSION=8.3 make rebuild`
 ARG PHP_VERSION=8.4
 
-# 开发后端镜像（系统 OpenSSL 3.0+ 原生支持 SM2，国密 CSR 生成走系统 openssl，不再编译 Tongsuo，
-# 与 CI ubuntu-latest 环境一致，避免铜锁掩盖系统 openssl 的 SM2 支持问题）
+# 开发后端镜像（系统 OpenSSL 3.0+ 原生支持 SM2，国密 CSR 生成统一走系统 openssl，与 CI ubuntu-latest 一致）
 FROM php:${PHP_VERSION}-cli-bookworm
 
 LABEL description="ssl-manager dev backend"
