@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\ApiLog;
 use App\Models\Cert;
 use App\Models\DeployToken;
 use App\Models\Order;
@@ -490,6 +491,26 @@ test('query field=private_key 返回私钥 PEM 纯文本', function () {
 
     expect($response->headers->get('Content-Type'))->toContain('text/plain');
     expect($response->getContent())->toBe($cert->private_key);
+});
+
+test('field 拉取的纯 PEM 文本响应在 api_logs 记为成功 status=1', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [
+        'cert' => "-----BEGIN CERTIFICATE-----\nCERT_BODY\n-----END CERTIFICATE-----",
+        'intermediate_cert' => '',
+    ]);
+
+    deployGetRaw($token, "order=$order->id&field=certificate")->assertOk();
+
+    // 纯 PEM 文本响应无 code 字段、非 'success'：旧逻辑误记 status=0（失败），
+    // 修复后回落 HTTP 2xx 判成功，避免 deploy 证书/私钥拉取在日志里全部显示失败
+    $log = ApiLog::query()
+        ->where('url', 'like', '%field=certificate%')
+        ->latest('id')
+        ->first();
+
+    expect($log)->not->toBeNull()
+        ->and($log->status)->toBe(1);
 });
 
 test('query field 非法取值返回验证错误', function () {

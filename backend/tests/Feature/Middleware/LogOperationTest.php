@@ -249,3 +249,37 @@ test('日志数据包含必要字段', function () {
     // 验证缓冲区有日志记录
     expect(LogBuffer::count())->toBeGreaterThan(0);
 });
+
+test('纯文本 2xx 响应回落 HTTP 状态码判成功 status=1', function () {
+    // deploy field=certificate|private_key 返回纯 PEM 文本（无 code 字段、非 'success'）。
+    // 用 callback 路由作载体验证 status 计算（status 在路由分流前算好、与日志类型无关）。
+    $middleware = new LogOperation;
+    $request = Request::create('/callback/deploy-cert', 'POST');
+    $request->setRouteResolver(fn () => null);
+
+    $middleware->handle($request, fn () => response(
+        "-----BEGIN CERTIFICATE-----\nBODY\n-----END CERTIFICATE-----",
+        200,
+        ['Content-Type' => 'text/plain; charset=utf-8'],
+    ));
+
+    LogBuffer::flush();
+
+    expect(CallbackLog::query()->first()?->status)->toBe(1);
+});
+
+test('纯文本非 2xx 响应仍判失败 status=0', function () {
+    $middleware = new LogOperation;
+    $request = Request::create('/callback/deploy-cert', 'POST');
+    $request->setRouteResolver(fn () => null);
+
+    $middleware->handle($request, fn () => response(
+        'plain error body',
+        400,
+        ['Content-Type' => 'text/plain; charset=utf-8'],
+    ));
+
+    LogBuffer::flush();
+
+    expect(CallbackLog::query()->first()?->status)->toBe(0);
+});
