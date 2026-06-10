@@ -11,6 +11,7 @@ uses(TestCase::class, RefreshDatabase::class, ActsAsAdmin::class);
 
 beforeEach(function () {
     Storage::fake('local');
+    InvoiceConfig::resetCache();
     $this->admin = Admin::factory()->create();
 });
 

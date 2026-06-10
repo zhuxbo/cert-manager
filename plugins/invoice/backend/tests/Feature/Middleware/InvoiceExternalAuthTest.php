@@ -9,6 +9,7 @@ uses(TestCase::class, RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
+    InvoiceConfig::resetCache();
 });
 
 it('rejects when token not configured', function () {
@@ -54,12 +55,14 @@ it('passes with token via Authorization header', function () {
         ->assertJson(['code' => 1]);
 });
 
-it('passes with token via query string', function () {
+it('rejects token via query string（凭据不进 URL 基线）', function () {
     InvoiceConfig::set('external_token', 'tok');
 
+    // URL query 传长效 token 会落入 nginx/代理/对接方 access log，违反"凭据不进 URL"基线，
+    // 必须被拒——仅接受 Authorization: Bearer 头
     $this->getJson('/api/invoice/external/pending?token=tok')
         ->assertOk()
-        ->assertJson(['code' => 1]);
+        ->assertJson(['code' => 0]);
 });
 
 it('passes when allowed_ips empty', function () {

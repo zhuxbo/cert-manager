@@ -4,6 +4,8 @@ namespace Plugins\Invoice\Controllers\User;
 
 use App\Http\Controllers\User\BaseController;
 use App\Models\Scopes\UserScope;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use Plugins\Invoice\Models\Invoice;
 use Plugins\Invoice\Requests\GetIdsRequest;
 use Plugins\Invoice\Requests\IndexRequest;
@@ -88,20 +90,29 @@ class InvoiceController extends BaseController
     public function store(UserStoreRequest $request): void
     {
         $validated = $request->validated();
-
         $userId = $this->guard->id();
-        $quota = InvoiceQuotaService::getQuota($userId);
-        if (bccomp($quota['quota'], (string) $validated['amount'], 2) < 0) {
-            $this->error("超过发票额度，当前可开票额度为 {$quota['quota']} 元");
-        }
 
-        $validated['user_id'] = $userId;
-        $validated['status'] = 0;
-        $invoice = Invoice::create($validated);
+        // 额度校验 + 创建必须原子：锁住用户行序列化同一用户的并发开票，
+        // 把额度校验放进锁内，关闭"两请求都读到未超额 -> 双双创建 -> 超额"的并发窗口
+        DB::transaction(function () use ($validated, $userId) {
+            $user = User::where('id', $userId)->lockForUpdate()->first();
+            if (! $user) {
+                $this->error('用户不存在');
+            }
 
-        if (! $invoice->exists) {
-            $this->error('添加失败');
-        }
+            $quota = InvoiceQuotaService::getQuota($userId);
+            if (bccomp($quota['quota'], (string) $validated['amount'], 2) < 0) {
+                $this->error("超过发票额度，当前可开票额度为 {$quota['quota']} 元");
+            }
+
+            $validated['user_id'] = $userId;
+            $validated['status'] = 0;
+            $invoice = Invoice::create($validated);
+
+            if (! $invoice->exists) {
+                $this->error('添加失败');
+            }
+        });
 
         $this->success();
     }

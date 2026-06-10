@@ -47,13 +47,21 @@
       return { regex: new RegExp(regexStr), keys };
     }
 
+    function safeDecode(value) {
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+
     function match(pattern, path) {
       const { regex, keys } = compilePattern(pattern);
       const m = path.match(regex);
       if (!m) return null;
       const params = {};
       keys.forEach((k, i) => {
-        const v = m[i + 1] ? decodeURIComponent(m[i + 1]) : undefined;
+        const v = m[i + 1] ? safeDecode(m[i + 1]) : undefined;
         params[k.name] = v;
       });
       return params;
@@ -84,10 +92,10 @@
       const baseSegs = BASE_PATH.split("/").filter(Boolean);
       if (parts.length > baseSegs.length) {
         const relParts = parts.slice(baseSegs.length);
-        const last = decodeURIComponent(relParts[relParts.length - 1]);
+        const last = safeDecode(relParts[relParts.length - 1]);
         if (last !== "index.html" && last !== "index.htm") {
           if (last.includes("@") && relParts.length >= 2) {
-            const maybeTid = decodeURIComponent(relParts[relParts.length - 2]);
+            const maybeTid = safeDecode(relParts[relParts.length - 2]);
             if (maybeTid) return { tid: maybeTid, email: last };
           } else if (last) {
             return { tid: last, email: "" };

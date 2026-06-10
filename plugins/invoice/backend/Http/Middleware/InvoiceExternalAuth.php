@@ -20,7 +20,9 @@ class InvoiceExternalAuth
             $this->error('外部接入未启用');
         }
 
-        $provided = $request->bearerToken() ?: (string) $request->query('token', '');
+        // 仅接受 Authorization: Bearer 头：长效 token 绝不走 URL query
+        // （否则会落入 nginx/代理/对接方 access log，违反"凭据不进 URL"基线）
+        $provided = (string) $request->bearerToken();
         if ($provided === '' || ! hash_equals($expected, $provided)) {
             $this->error('Invalid token');
         }
