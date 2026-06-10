@@ -94,3 +94,113 @@ test('legacy sms+mail dual rows: cleanup drops pure-sms row before dedup, mail H
     expect($rows->first()->id)->toBe($mailId);
     expect($rows->first()->content)->toContain('<html>');
 });
+
+test('legacy finance_audit_alert is renamed to finance_audit, admin config preserved, no orphan', function () {
+    // 模拟 main 存量：旧 code = finance_audit_alert 行（管理员做过自定义内容），
+    // 且当前 seeder 已不会再插它。迁移须先把它改名为 finance_audit 保留配置，无孤儿。
+    DB::statement('ALTER TABLE notification_templates DROP INDEX notification_templates_code_index');
+    DB::statement('ALTER TABLE notification_templates ADD INDEX notification_templates_code_index (code)');
+
+    // 清掉 seeder 默认的 finance_audit，制造"仅有旧 code 行"的场景
+    DB::table('notification_templates')->whereIn('code', ['finance_audit', 'finance_audit_alert'])->delete();
+
+    $legacyId = DB::table('notification_templates')->insertGetId([
+        'name' => '资金审计告警',
+        'code' => 'finance_audit_alert',
+        'content' => '管理员自定义资金审计内容 {{ $violation_count }}',
+        'status' => 1,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $migration = require database_path('migrations/2026_05_26_094239_simplify_notification_system.php');
+    $migration->up();
+
+    // 旧 code 不再存在（无孤儿死数据）
+    expect(DB::table('notification_templates')->where('code', 'finance_audit_alert')->exists())->toBeFalse();
+
+    // 同一行被改名为 finance_audit，管理员自定义内容保留
+    $renamed = DB::table('notification_templates')->where('code', 'finance_audit')->get();
+    expect($renamed)->toHaveCount(1);
+    expect($renamed->first()->id)->toBe($legacyId);
+    expect($renamed->first()->content)->toContain('管理员自定义资金审计内容');
+});
+
+test('dedup keeps the enabled (status=1) row even when a disabled row has the smaller id', function () {
+    // #23/#24: 去重不能无条件保留 MIN(id)。若某 code 最小 id 行是禁用(status=0)、
+    // 启用(status=1)行 id 更大，应保留启用行（旧语义=保留最小 id 的启用行）。
+    DB::statement('ALTER TABLE notification_templates DROP INDEX notification_templates_code_index');
+    DB::statement('ALTER TABLE notification_templates ADD INDEX notification_templates_code_index (code)');
+
+    DB::table('notification_templates')->where('code', 'cert_expire')->delete();
+
+    $disabledLowId = DB::table('notification_templates')->insertGetId([
+        'name' => '证书到期提醒(禁用)',
+        'code' => 'cert_expire',
+        'content' => '禁用旧行',
+        'status' => 0,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    $enabledHighId = DB::table('notification_templates')->insertGetId([
+        'name' => '证书到期提醒(启用)',
+        'code' => 'cert_expire',
+        'content' => '启用生效行',
+        'status' => 1,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    expect($disabledLowId)->toBeLessThan($enabledHighId);
+
+    $migration = require database_path('migrations/2026_05_26_094239_simplify_notification_system.php');
+    $migration->up();
+
+    $rows = DB::table('notification_templates')->where('code', 'cert_expire')->get();
+    expect($rows)->toHaveCount(1);
+    expect($rows->first()->id)->toBe($enabledHighId, '应保留启用行而非最小 id 的禁用行');
+    expect($rows->first()->content)->toBe('启用生效行');
+});
+
+test('rename then dedup converges when both finance_audit_alert and finance_audit exist; rerun is idempotent', function () {
+    // 改名后可能与既有 finance_audit 行重复，必须由去重步骤收敛；且重复跑 up() 幂等。
+    DB::statement('ALTER TABLE notification_templates DROP INDEX notification_templates_code_index');
+    DB::statement('ALTER TABLE notification_templates ADD INDEX notification_templates_code_index (code)');
+
+    DB::table('notification_templates')->whereIn('code', ['finance_audit', 'finance_audit_alert'])->delete();
+
+    // 旧 code 启用行（改名后将与下面的 finance_audit 同 code）
+    $legacyEnabledId = DB::table('notification_templates')->insertGetId([
+        'name' => '资金审计(旧启用)',
+        'code' => 'finance_audit_alert',
+        'content' => '旧启用行',
+        'status' => 1,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    // 已存在的 finance_audit 禁用行（id 更大）
+    $newDisabledId = DB::table('notification_templates')->insertGetId([
+        'name' => '资金审计(新禁用)',
+        'code' => 'finance_audit',
+        'content' => '新禁用行',
+        'status' => 0,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    expect($legacyEnabledId)->toBeLessThan($newDisabledId);
+
+    $migration = require database_path('migrations/2026_05_26_094239_simplify_notification_system.php');
+    $migration->up();
+
+    $rows = DB::table('notification_templates')->where('code', 'finance_audit')->get();
+    expect($rows)->toHaveCount(1);
+    // 保留启用行（旧启用行改名而来），无 finance_audit_alert 残留
+    expect($rows->first()->id)->toBe($legacyEnabledId);
+    expect($rows->first()->content)->toBe('旧启用行');
+    expect(DB::table('notification_templates')->where('code', 'finance_audit_alert')->exists())->toBeFalse();
+
+    // 幂等：再跑一次不报错、不改变结果
+    $migration->up();
+    $again = DB::table('notification_templates')->where('code', 'finance_audit')->get();
+    expect($again)->toHaveCount(1);
+    expect($again->first()->id)->toBe($legacyEnabledId);
+});

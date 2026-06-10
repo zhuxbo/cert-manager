@@ -7,10 +7,14 @@ use App\Models\User;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
 use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 use App\Services\Notification\ChannelManager;
+use App\Services\Notification\Channels\ChannelInterface;
 use App\Services\Notification\Channels\MailChannel;
 use App\Services\Notification\NotificationRepository;
 use Database\Seeders\DatabaseSeeder;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 
 uses(RefreshDatabase::class)->group('database');
 
@@ -241,6 +245,141 @@ test('user_created delivers password to mail render but never persists it to not
 
     // 入库 JSON 整体不出现明文密码（兜底防止藏在 _meta/result 等子结构）
     expect(json_encode($notification->data))->not->toContain('PlainSecret123');
+});
+
+test('NotificationJob 实现 ShouldBeEncrypted，序列化入队的 payload 不暴露明文', function () {
+    expect(new NotificationJob('user', 1, 1, 'mail', [], DefaultNotificationBuilder::class))
+        ->toBeInstanceOf(ShouldBeEncrypted::class);
+});
+
+test('携密 user_created Job 推入 database 队列后 jobs 表 payload 不含明文密码', function () {
+    $user = createJobUser();
+
+    $template = NotificationTemplate::firstOrCreate(
+        ['code' => 'user_created'],
+        [
+            'name' => '用户创建通知',
+            'content' => '密码 {{ $password }}',
+            'variables' => ['username', 'password'],
+            'status' => 1,
+        ]
+    );
+
+    // 临时切到 database 队列连接，强制真实序列化入 jobs 表（测试默认 sync 不入队）
+    config(['queue.default' => 'database']);
+
+    NotificationJob::dispatch(
+        'user',
+        $user->id,
+        $template->id,
+        'mail',
+        [
+            'username' => $user->username,
+            'password' => 'PlainSecret123',
+            'email' => $user->email,
+        ],
+        UserCreatedNotificationBuilder::class
+    );
+
+    $payload = DB::table('jobs')->value('payload');
+    expect($payload)->not->toBeNull();
+
+    // RED（未加密时）：payload 是明文 JSON，明文密码可见
+    // GREEN（ShouldBeEncrypted）：Laravel 用 APP_KEY 加密 command，明文不出现
+    expect($payload)->not->toContain('PlainSecret123');
+});
+
+test('非 mail 通道处理后临时 ZIP（cleanup_paths）被清理，不泄漏临时文件', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // 模拟 CertIssuedNotificationBuilder 在 build 时为某通道生成的临时目录
+    $tempDir = storage_path('temp-certs/test_'.uniqid());
+    mkdir($tempDir, 0755, true);
+    file_put_contents($tempDir.'/cert.zip', 'fake-zip-with-private-key');
+    expect(is_dir($tempDir))->toBeTrue();
+
+    // 注册一个「不消费附件、不清理」的非 mail 假通道（模拟插件注入的 IM 通道）
+    app(ChannelManager::class)->register('feishu', new class implements ChannelInterface
+    {
+        public function send(Notification $notification): array
+        {
+            return ['code' => 1];
+        }
+
+        public function isAvailable(): bool
+        {
+            return true;
+        }
+
+        public function shouldSend(Model $notifiable, string $code): bool
+        {
+            return true;
+        }
+    });
+
+    // 通过 DefaultNotificationBuilder 直通 context，把 cleanup_paths 注入 payload._meta
+    $job = new NotificationJob(
+        'user',
+        $user->id,
+        $template->id,
+        'feishu',
+        [
+            'username' => $user->username,
+            '_meta' => ['cleanup_paths' => [$tempDir]],
+        ],
+        DefaultNotificationBuilder::class
+    );
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    // RED（修复前）：非 mail 通道不清理 cleanup_paths，临时目录残留
+    // GREEN（修复后）：NotificationJob::handle 兜底清理，目录被删除
+    expect(is_dir($tempDir))->toBeFalse();
+});
+
+test('发送失败时 cleanup_paths 仍被清理', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $tempDir = storage_path('temp-certs/test_'.uniqid());
+    mkdir($tempDir, 0755, true);
+    file_put_contents($tempDir.'/cert.zip', 'fake');
+
+    app(ChannelManager::class)->register('feishu', new class implements ChannelInterface
+    {
+        public function send(Notification $notification): array
+        {
+            // 通道发送失败
+            return ['code' => 0, 'msg' => 'IM 推送失败'];
+        }
+
+        public function isAvailable(): bool
+        {
+            return true;
+        }
+
+        public function shouldSend(Model $notifiable, string $code): bool
+        {
+            return true;
+        }
+    });
+
+    $job = new NotificationJob(
+        'user',
+        $user->id,
+        $template->id,
+        'feishu',
+        [
+            'username' => $user->username,
+            '_meta' => ['cleanup_paths' => [$tempDir]],
+        ],
+        DefaultNotificationBuilder::class
+    );
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    expect(is_dir($tempDir))->toBeFalse();
 });
 
 test('handles channel exception gracefully', function () {

@@ -68,6 +68,27 @@ class NotificationTemplateSeeder extends Seeder
         ];
 
         foreach ($templates as $template) {
+            // finance_audit：旧版本 code 为 finance_audit_alert，已由迁移改名为 finance_audit。
+            // 用 updateOrCreate 按 code 匹配，避免重复 seed 产生重复行；
+            // 仅更新结构性字段（name/variables/example），保留管理员可能自定义的 content 与 status。
+            if ($template['code'] === 'finance_audit') {
+                $existing = NotificationTemplate::query()->where('code', 'finance_audit')->first();
+
+                NotificationTemplate::updateOrCreate(
+                    ['code' => 'finance_audit'],
+                    [
+                        'name' => $template['name'],
+                        'variables' => $template['variables'],
+                        'example' => $template['example'] ?? null,
+                        // 新建时填默认内容/启用；已存在则保留管理员现有配置
+                        'content' => $existing->content ?? $template['content'],
+                        'status' => $existing->status ?? 1,
+                    ]
+                );
+
+                continue;
+            }
+
             NotificationTemplate::firstOrCreate(
                 ['code' => $template['code']],
                 [
