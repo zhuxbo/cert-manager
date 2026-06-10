@@ -433,6 +433,26 @@ test('csrUsesStandardEcPublicKey 区分 id-ecPublicKey 标准编码与 dual-sm2�
     expect($method->invoke($locator, $dualSm2))->toBeFalse();
 });
 
+test('probeSm2 临时目录取自 sys_get_temp_dir，不写 storage_path（storage 不可写时不假阴性）', function () {
+    // 回归：探测临时 CSR 写 storage_path 时，storage 不可写（权限/只读挂载）会让 mkdir 失败、
+    // 被误判为"不支持 SM2"。改用系统临时目录，让探测只反映 openssl 能力本身。
+    $locator = new BinaryLocator;
+    $reflect = new ReflectionMethod($locator, 'sm2ProbeDir');
+    $dir = $reflect->invoke($locator);
+
+    expect($dir)->toStartWith(sys_get_temp_dir());
+    expect($dir)->not->toStartWith(storage_path());
+    // 唯一随机后缀防多进程争抢
+    expect($dir)->toMatch('#/sm2-probe-[0-9a-f]{16}$#');
+});
+
+test('sm2ProbeDir 每次返回不同随机目录（避免并发探测争抢同一目录）', function () {
+    $locator = new BinaryLocator;
+    $reflect = new ReflectionMethod($locator, 'sm2ProbeDir');
+
+    expect($reflect->invoke($locator))->not->toBe($reflect->invoke($locator));
+});
+
 test('gmOpenssl 在容器内真实探测到支持 SM2 的 openssl（不 mock、不 skip）', function () {
     // 国密 CSR 生成是关键能力，必须真探到支持 SM2 的 openssl（gmOpenssl 的 probeSm2 已保证返回的二进制
     // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器与 CI runner 一致，统一靠系统 OpenSSL 3.0+ 原生 SM2，

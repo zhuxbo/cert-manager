@@ -6,9 +6,26 @@ use App\Models\Order;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Order\Action;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+/**
+ * 返回一个保证 exec 退出码非 0 的"伪 openssl"路径，用于模拟 FIPS/no-des 环境下
+ * `openssl pkcs12 -export ... -keypbe PBE-SHA1-3DES` 失败。优先用系统 false（忽略参数恒返回 1），
+ * 缺失则回落不存在路径（exec shell 返回 127，同样非 0）。
+ */
+function failingOpensslPath(): string
+{
+    foreach (['/usr/bin/false', '/bin/false'] as $p) {
+        if (is_file($p)) {
+            return $p;
+        }
+    }
+
+    return '/nonexistent/openssl-that-fails';
+}
 
 /**
  * 内存生成一对匹配的 RSA 证书 + 私钥（PEM）。不走 BinaryLocator CLI，靠 PHP openssl 扩展，
@@ -220,6 +237,50 @@ test('IIS 模式 openssl 不可用时硬报错', function () {
     @unlink($zipPath);
 });
 
+test('IIS 模式 PFX 生成命令失败时硬报错 + Log::error（含 returnCode/stderr，不静默残缺包）', function () {
+    // FIPS / no-des 环境下 PBE-SHA1-3DES 必失败：显式请求 iis 不能静默跳过得到残缺 zip + 零日志
+    $fakeOpenssl = failingOpensslPath();
+    $this->mock(BinaryLocator::class, function ($mock) use ($fakeOpenssl) {
+        $mock->shouldReceive('openssl')->andReturn($fakeOpenssl);
+    });
+
+    Log::shouldReceive('error')->once()->withArgs(function ($message, $context = []) {
+        return str_contains((string) $message, 'PFX')
+            && array_key_exists('returnCode', $context);
+    });
+    // 其它级别日志放行（避免 Mockery 对未预期调用报错）
+    Log::shouldReceive('warning')->andReturnNull();
+    Log::shouldReceive('info')->andReturnNull();
+
+    $order = makeMatchedOrder('pfxfail.example.com');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+    expectPfxApiError(fn () => buildCertZip($order, $tempDir, $zipPath, 'iis'), 'PFX');
+    cleanupDir($tempDir);
+    @unlink($zipPath);
+});
+
+test('all 模式 PFX 生成命令失败时静默降级（不抛错，其它格式照出）', function () {
+    // type=all 里 PFX 是可选格式，命令失败应降级跳过、不影响 nginx/apache 等照常输出
+    $fakeOpenssl = failingOpensslPath();
+    $this->mock(BinaryLocator::class, function ($mock) use ($fakeOpenssl) {
+        $mock->shouldReceive('openssl')->andReturn($fakeOpenssl);
+        $mock->shouldReceive('keytool')->andThrow(new BinaryNotFoundException('keytool'));
+    });
+
+    $order = makeMatchedOrder('pfxall.example.com');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+    buildCertZip($order, $tempDir, $zipPath, 'all'); // 不抛
+    $names = zipEntryNames($zipPath);
+    cleanupDir($tempDir);
+    @unlink($zipPath);
+
+    expect($names)->toContain('pfxall.example.com/nginx/pfxall.example.com.crt');
+    // PFX 失败 → 无 iis 条目，但其它格式不受影响
+    expect(collect($names)->contains(fn ($n) => str_contains($n, 'iis/')))->toBeFalse();
+});
+
 test('all 模式输出 RSA 传统格式私钥', function () {
     skipIfNoRealOpenssl($this);
 
@@ -232,4 +293,77 @@ test('all 模式输出 RSA 传统格式私钥', function () {
     @unlink($zipPath);
 
     expect($names)->toContain('p3.example.com/rsa_key/p3.example.com-rsa.key');
+});
+
+// ==================== JKS/keytool 失败处理（与 PFX 同款，#17 相邻段）====================
+
+test('tomcat 模式 keytool 命令失败时硬报错 + Log::error（含 output，不静默空 jks）', function () {
+    // keytool 缺失/环境问题时，显式请求 tomcat 不能静默产出空 jks + 零日志（与 PFX 失败路径对称）。
+    // 前提：PFX 先成功（需真 openssl），keytool 解析成功但 exec 返回非 0。
+    skipIfNoRealOpenssl($this);
+
+    $realOpenssl = app(BinaryLocator::class)->openssl();
+    $fakeKeytool = failingOpensslPath(); // 复用 false：忽略参数恒返回非 0
+
+    $this->mock(BinaryLocator::class, function ($mock) use ($realOpenssl, $fakeKeytool) {
+        $mock->shouldReceive('openssl')->andReturn($realOpenssl);
+        $mock->shouldReceive('keytool')->andReturn($fakeKeytool);
+    });
+
+    Log::shouldReceive('error')->once()->withArgs(function ($message, $context = []) {
+        return str_contains((string) $message, 'JKS')
+            && array_key_exists('output', $context);
+    });
+    Log::shouldReceive('warning')->andReturnNull();
+    Log::shouldReceive('info')->andReturnNull();
+
+    $order = makeMatchedOrder('jksfail.example.com');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+    expectPfxApiError(fn () => buildCertZip($order, $tempDir, $zipPath, 'tomcat'), 'JKS');
+    cleanupDir($tempDir);
+    @unlink($zipPath);
+});
+
+test('tomcat 模式 keytool 不可用时硬报错（既有降级保持，不破坏）', function () {
+    skipIfNoRealOpenssl($this);
+
+    $realOpenssl = app(BinaryLocator::class)->openssl();
+    $this->mock(BinaryLocator::class, function ($mock) use ($realOpenssl) {
+        $mock->shouldReceive('openssl')->andReturn($realOpenssl);
+        $mock->shouldReceive('keytool')->andThrow(new BinaryNotFoundException('keytool'));
+    });
+
+    $order = makeMatchedOrder('jksmissing.example.com');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+    expectPfxApiError(fn () => buildCertZip($order, $tempDir, $zipPath, 'tomcat'), 'JDK 未安装');
+    cleanupDir($tempDir);
+    @unlink($zipPath);
+});
+
+test('all 模式 keytool 命令失败时静默降级（不抛错，其它格式照出）', function () {
+    // type=all 里 jks 是可选格式，keytool exec 失败应降级跳过、不影响 nginx/iis 等输出。
+    skipIfNoRealOpenssl($this);
+
+    $realOpenssl = app(BinaryLocator::class)->openssl();
+    $fakeKeytool = failingOpensslPath();
+
+    $this->mock(BinaryLocator::class, function ($mock) use ($realOpenssl, $fakeKeytool) {
+        $mock->shouldReceive('openssl')->andReturn($realOpenssl);
+        $mock->shouldReceive('keytool')->andReturn($fakeKeytool);
+    });
+
+    $order = makeMatchedOrder('jksall.example.com');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+    buildCertZip($order, $tempDir, $zipPath, 'all'); // 不抛
+    $names = zipEntryNames($zipPath);
+    cleanupDir($tempDir);
+    @unlink($zipPath);
+
+    // PFX 成功 → iis 条目在；keytool 失败 → 无 tomcat 条目，但其它格式不受影响
+    expect($names)->toContain('jksall.example.com/nginx/jksall.example.com.crt');
+    expect(collect($names)->contains(fn ($n) => str_contains($n, 'iis/')))->toBeTrue();
+    expect(collect($names)->contains(fn ($n) => str_contains($n, 'tomcat/')))->toBeFalse();
 });

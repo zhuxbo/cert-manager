@@ -199,7 +199,24 @@ trait ActionFileTrait
                     .' -password '.escapeshellarg("pass:$password")
                     .' -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1';
 
-                @exec("$cmd > /dev/null 2>&1", $output, $returnCode);
+                // 捕获 stderr（不再 > /dev/null 丢弃）：FIPS / no-des 环境下 PBE-SHA1-3DES 必失败，
+                // 显式请求 iis/tomcat 时必须报错 + 记日志（与 binary 缺失路径对称），不能静默给残缺包。
+                $output = [];
+                @exec("$cmd 2>&1", $output, $returnCode);
+
+                if ($returnCode !== 0 || ! file_exists($pfx)) {
+                    // 显式单格式（iis/tomcat）失败必须硬报错 + Log::error；all 模式 PFX 可选，静默降级跳过
+                    if ($type == 'iis' || $type == 'tomcat') {
+                        Log::error('PFX 生成失败', [
+                            'returnCode' => $returnCode,
+                            'output' => implode("\n", $output),
+                            'common_name' => $commonName,
+                        ]);
+                        $this->error('PFX 生成失败，请联系管理员检查 OpenSSL 是否支持 PBE-SHA1-3DES（FIPS / no-des 环境会失败）');
+                    } else {
+                        Log::info('PFX 生成失败，跳过 IIS/JKS 输出', ['returnCode' => $returnCode]);
+                    }
+                }
 
                 if ($returnCode === 0 && file_exists($pfx)) {
                     if ($type == 'all' || $type == 'iis') {
@@ -210,9 +227,28 @@ trait ActionFileTrait
                     if (($type == 'all' || $type == 'tomcat') && $keytool !== null) {
                         $jks = $tempDir.'/temp.jks';
                         $cmd = escapeshellarg($keytool).' -importkeystore -srckeystore '.escapeshellarg($pfx)." -srcstoretype PKCS12 -srcstorepass $password -deststoretype jks -deststorepass $password -destkeystore ".escapeshellarg($jks);
-                        @exec("$cmd > /dev/null 2>&1");
-                        $zip->addFile($jks, $certPath.'tomcat/'.$certName.'.jks');
-                        $zip->addFromString($certPath.'tomcat/password.txt', $password);
+
+                        // 捕获 stderr（不再 > /dev/null 丢弃）+ 检查返回码/文件：keytool 环境异常时
+                        // 显式请求 tomcat 必须报错 + 记日志（与 PFX 失败路径对称），不能静默给空 jks。
+                        $jksOutput = [];
+                        @exec("$cmd 2>&1", $jksOutput, $jksReturnCode);
+
+                        if ($jksReturnCode !== 0 || ! file_exists($jks)) {
+                            // 显式 tomcat 失败硬报错 + Log::error；all 模式 jks 可选，静默降级跳过
+                            if ($type == 'tomcat') {
+                                Log::error('JKS 生成失败', [
+                                    'returnCode' => $jksReturnCode,
+                                    'output' => implode("\n", $jksOutput),
+                                    'common_name' => $commonName,
+                                ]);
+                                $this->error('JKS 生成失败，请联系管理员检查 keytool（JDK）是否可用');
+                            } else {
+                                Log::info('JKS 生成失败，跳过 tomcat 输出', ['returnCode' => $jksReturnCode]);
+                            }
+                        } else {
+                            $zip->addFile($jks, $certPath.'tomcat/'.$certName.'.jks');
+                            $zip->addFromString($certPath.'tomcat/password.txt', $password);
+                        }
                     }
                 }
             }

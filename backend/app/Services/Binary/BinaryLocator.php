@@ -373,11 +373,14 @@ class BinaryLocator
      * 「csr 解析失败」；官方 3.0.13（3.0 LTS backport）与 3.2.1 起 restore 回 id-ecPublicKey。故必须实际
      * 签一张 SM2 CSR、校验 SPKI 是 id-ecPublicKey，才能 fail-closed 拒掉这类「能签但编码错」的 openssl，绝不签出 CA 不收的 CSR。
      *
-     * array proc_open（execve，防注入 + 避 open_basedir）；临时私钥写项目内 storage、finally 强清不留盘。
+     * array proc_open（execve，防注入 + 避 open_basedir）；临时私钥写系统临时目录、finally 强清不留盘。
      */
     protected function probeSm2(string $path): bool
     {
-        $dir = storage_path('app/sm2-probe-'.bin2hex(random_bytes(8)));
+        // 临时目录用 sys_get_temp_dir() 而非 storage_path：storage 不可写（权限/只读挂载）时
+        // 写 storage 会让 mkdir 失败被误判为"不支持 SM2"，文案误导排障。系统临时目录始终可写，
+        // 让探测只反映「openssl 是否真支持 SM2 标准编码」这一能力判定本身。
+        $dir = $this->sm2ProbeDir();
         if (! @mkdir($dir, 0700, true) && ! is_dir($dir)) {
             return false;
         }
@@ -400,6 +403,17 @@ class BinaryLocator
             @unlink($csrFile);
             @rmdir($dir);
         }
+    }
+
+    /**
+     * SM2 探测的临时目录（唯一随机名，独立成方法便于单测断言基路径）。
+     *
+     * 用 sys_get_temp_dir() 而非 storage_path：避免 storage 不可写时 mkdir 失败被误判为
+     * "openssl 不支持 SM2"。返回随机子目录名防多进程争抢。
+     */
+    protected function sm2ProbeDir(): string
+    {
+        return sys_get_temp_dir().'/sm2-probe-'.bin2hex(random_bytes(8));
     }
 
     /**

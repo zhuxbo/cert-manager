@@ -258,9 +258,9 @@ class Api implements OrderSourceApiInterface
     /**
      * 上传文档到上游
      */
-    public function uploadDocument(array $data): array
+    public function uploadDocument(string|int $apiId, array $data): array
     {
-        return $this->sdk->uploadDocument($data);
+        return $this->sdk->uploadDocument($apiId, $data);
     }
 
     /**

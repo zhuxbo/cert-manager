@@ -5,11 +5,13 @@ use App\Jobs\SubmitDocumentJob;
 use App\Models\OrderDocument;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\Traits\CreatesTestData;
 
@@ -240,6 +242,27 @@ test('uploadDocument 文件上传：设置 content_hash + 按内容去重 + 自�
     Queue::assertPushed(SubmitDocumentJob::class, 2);
 
     @unlink(storage_path("app/{$docs->first()->file_path}"));
+});
+
+test('uploadDocument storeAs 落盘失败时硬报错且不写 DB 行（filesystems.throw=false 返回 false）', function () {
+    Queue::fake();
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
+
+    // 模拟磁盘满 / 权限不足：local disk throw=false 时 putFileAs 返回 false，不抛异常
+    $disk = Mockery::mock(Filesystem::class);
+    $disk->shouldReceive('putFileAs')->andReturn(false);
+    Storage::shouldReceive('disk')->with('local')->andReturn($disk);
+
+    $file = UploadedFile::fake()->createWithContent('a.pdf', 'BYTES');
+    $res = captureDocResponse(fn () => app(Action::class)->uploadDocument($order->id, $file, 'APPLICANT', 'user'));
+
+    // 必须报错（不能静默成功），且绝不落 DB 行（否则 content_hash 占位、文件不在盘上、无法自愈/提交上游）
+    expect($res['code'])->toBe(0)
+        ->and($res['msg'])->toContain('保存失败');
+    expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
+    Queue::assertNotPushed(SubmitDocumentJob::class);
 });
 
 test('uploadDocument 在证书已签发（active）后拒绝上传', function () {

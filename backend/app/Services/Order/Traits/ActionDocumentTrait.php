@@ -55,7 +55,11 @@ trait ActionDocumentTrait
         $storageName = Str::uuid().".$ext";
         $relativePath = "verification/$orderId/$storageName";
 
-        $file->storeAs("verification/$orderId", $storageName, 'local');
+        // local disk 配置 throw=false，storeAs 落盘失败（磁盘满/权限不足）返回 false 而非抛异常；
+        // 必须在写 DB 行之前检查：否则文件没落盘但行照常入库 + content_hash dedup 命中，
+        // 文档永远拿不到字节、无法自愈、无法提交上游。失败即报错、绝不落库。
+        $file->storeAs("verification/$orderId", $storageName, 'local')
+            || $this->error('文档保存失败，请稍后重试');
 
         $document = null;
         try {
@@ -322,8 +326,9 @@ trait ActionDocumentTrait
         }
 
         try {
+            // 首参传本地 order_id（工厂据此 findOrder + 解析 source 并取上游 api_id），
+            // 文档数据不再埋 order_id（api_id 由工厂作为独立参数下传，线协议 body 仍含 order_id）
             $result = $this->api->uploadDocument($document->order_id, [
-                'order_id' => $apiId,
                 'type' => $document->type,
                 'fileName' => $document->file_name,
                 'document_content' => base64_encode((string) file_get_contents($fullPath)),
