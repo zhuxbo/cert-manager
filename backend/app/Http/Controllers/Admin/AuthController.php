@@ -8,6 +8,7 @@ use App\Http\Requests\Auth\UpdateProfileRequest;
 use App\Models\Admin;
 use App\Models\AdminRefreshToken;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 class AuthController extends BaseController
@@ -63,10 +64,12 @@ class AuthController extends BaseController
             $this->error('旧密码错误');
         }
 
-        $admin->password = $request->input('newPassword');
-        $admin->save();
-
-        AdminRefreshToken::deleteTokenByAdminId($admin->id);
+        // 改密 + 吊销全部现存会话（三件套：bump token_version + logout_at + 清 refresh token）同事务原子：
+        // 避免"密码已改但会话未吊销"窄窗；密码随 revokeAllSessions 的 save 一并落库（同 $admin 实例），与 User 侧对称。
+        DB::transaction(function () use ($admin, $request) {
+            $admin->password = $request->input('newPassword');
+            $admin->revokeAllSessions();
+        });
 
         $this->success();
     }
@@ -139,14 +142,11 @@ class AuthController extends BaseController
         if ($refreshToken && $refreshToken->admin_id === $this->guard->id()) {
             $refreshToken->delete();
         } else {
-            AdminRefreshToken::deleteTokenByAdminId($this->guard->id());
-
             /** @var Admin $admin */
             $admin = $this->guard->user();
 
-            $admin->token_version++;
-            $admin->logout_at = now();
-            $admin->save();
+            // 全设备登出：三件套统一走 revokeAllSessions（bump token_version + logout_at + 清 refresh token）
+            $admin->revokeAllSessions();
         }
 
         $this->guard->logout();

@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\AdminRefreshToken;
 use App\Models\Notification;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
@@ -82,4 +83,47 @@ test('可通过 fillable 设置基本属性', function () {
     expect($admin->username)->toBe('testadmin');
     expect($admin->email)->toBe('admin@example.com');
     expect($admin->mobile)->toBe('13800138000');
+});
+
+// ==================== revokeAllSessions（与 User 侧对称的三件套单点）====================
+
+test('revokeAllSessions 自增 token_version 并落地 logout_at', function () {
+    $admin = Admin::factory()->create([
+        'token_version' => 3,
+        'logout_at' => null,
+    ]);
+
+    $admin->revokeAllSessions();
+    $admin->refresh();
+
+    // token_version 自增 1（旧 access token 进入黑名单宽限期）
+    expect($admin->token_version)->toBe(4);
+    // logout_at 落地（中间件 checkTokenVersionGraceful 据此起算宽限期，不能漏）
+    expect($admin->logout_at)->not->toBeNull();
+});
+
+test('revokeAllSessions 从 token_version 为 0 起步自增到 1', function () {
+    $admin = Admin::factory()->create(['token_version' => 0]);
+
+    $admin->revokeAllSessions();
+    $admin->refresh();
+
+    expect($admin->token_version)->toBe(1);
+});
+
+test('revokeAllSessions 清除该管理员所有 refresh token', function () {
+    $admin = Admin::factory()->create(['token_version' => 0]);
+    AdminRefreshToken::createToken($admin->id);
+    AdminRefreshToken::createToken($admin->id);
+
+    // 另一个管理员的 refresh token 不应被波及
+    $other = Admin::factory()->create();
+    AdminRefreshToken::createToken($other->id);
+
+    expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(2);
+
+    $admin->revokeAllSessions();
+
+    expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(0);
+    expect(AdminRefreshToken::where('admin_id', $other->id)->count())->toBe(1);
 });

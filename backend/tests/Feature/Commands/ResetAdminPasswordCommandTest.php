@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\AdminRefreshToken;
 use Illuminate\Support\Facades\Hash;
 
 test('签名为 admin:reset-password', function () {
@@ -71,4 +72,40 @@ test('重置密码后 token_version 递增', function () {
 
     $admin->refresh();
     expect($admin->token_version)->toBe(4);
+});
+
+test('重置密码后 logout_at 落地（中间件宽限期起算所需）', function () {
+    $admin = Admin::factory()->create([
+        'username' => 'admin_logout_at',
+        'logout_at' => null,
+    ]);
+
+    $this->artisan('admin:reset-password', [
+        'username' => 'admin_logout_at',
+        'password' => 'newpassword123',
+    ])
+        ->expectsConfirmation("确定要重置管理员 'admin_logout_at' 的密码吗？", 'yes')
+        ->assertSuccessful();
+
+    $admin->refresh();
+    // 仅 bump token_version 不写 logout_at，旧令牌从 1970 起算宽限期，行为异常 → 必须落地
+    expect($admin->logout_at)->not->toBeNull();
+});
+
+test('重置密码后清空该管理员全部 refresh token', function () {
+    $admin = Admin::factory()->create(['username' => 'admin_refresh_clear']);
+    AdminRefreshToken::createToken($admin->id);
+    AdminRefreshToken::createToken($admin->id);
+
+    expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(2);
+
+    $this->artisan('admin:reset-password', [
+        'username' => 'admin_refresh_clear',
+        'password' => 'newpassword123',
+    ])
+        ->expectsConfirmation("确定要重置管理员 'admin_refresh_clear' 的密码吗？", 'yes')
+        ->assertSuccessful();
+
+    // 重置后旧会话无法再续期，refresh token 必须清空
+    expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(0);
 });

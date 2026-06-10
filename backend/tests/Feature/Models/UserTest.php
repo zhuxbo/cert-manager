@@ -9,6 +9,7 @@ use App\Models\Organization;
 use App\Models\Product;
 use App\Models\User;
 use App\Models\UserLevel;
+use App\Models\UserRefreshToken;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 
@@ -168,6 +169,47 @@ test('JWT 自定义声明包含 token_version', function () {
     $claims = $user->getJWTCustomClaims();
     expect($claims)->toHaveKey('token_version');
     expect($claims['token_version'])->toBe(5);
+});
+
+test('revokeAllSessions 自增 token_version 并落地 logout_at', function () {
+    $user = User::factory()->create([
+        'token_version' => 3,
+        'logout_at' => null,
+    ]);
+
+    $user->revokeAllSessions();
+    $user->refresh();
+
+    // token_version 自增 1（旧 access token 进入黑名单宽限期）
+    expect($user->token_version)->toBe(4);
+    // logout_at 落地（中间件 checkTokenVersionGraceful 据此起算宽限期，不能漏）
+    expect($user->logout_at)->not->toBeNull();
+});
+
+test('revokeAllSessions 清除该用户所有 refresh token', function () {
+    $user = User::factory()->create(['token_version' => 0]);
+    UserRefreshToken::createToken($user->id);
+    UserRefreshToken::createToken($user->id);
+
+    // 另一个用户的 refresh token 不应被波及
+    $other = User::factory()->create();
+    UserRefreshToken::createToken($other->id);
+
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(2);
+
+    $user->revokeAllSessions();
+
+    expect(UserRefreshToken::where('user_id', $user->id)->count())->toBe(0);
+    expect(UserRefreshToken::where('user_id', $other->id)->count())->toBe(1);
+});
+
+test('revokeAllSessions 从 token_version 为 0 起步自增到 1', function () {
+    $user = User::factory()->create(['token_version' => 0]);
+
+    $user->revokeAllSessions();
+    $user->refresh();
+
+    expect($user->token_version)->toBe(1);
 });
 
 test('日期字段正确转换', function () {

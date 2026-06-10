@@ -312,12 +312,8 @@ class AuthController extends BaseController
 
         DB::transaction(function () use ($user, $newPassword) {
             $user->password = $newPassword;
-            // 改密后吊销所有旧会话：bump token_version 使旧 access token 失效，并清除全部 refresh token（与 logout 全设备登出一致）
-            $user->token_version = ($user->token_version ?? 0) + 1;
-            $user->logout_at = now();
-            $user->save();
-
-            UserRefreshToken::deleteTokenByUserId($user->id);
+            // 改密后吊销所有旧会话（单点）：bump token_version + 写 logout_at + 清全部 refresh token
+            $user->revokeAllSessions();
         });
 
         // 改密成功后发安全提醒邮件（用户关闭 security 偏好 / 无邮箱则由通道 shouldSend 自动跳过）
@@ -440,13 +436,9 @@ class AuthController extends BaseController
         if ($user) {
             DB::transaction(function () use ($user, $password) {
                 $user->password = $password;
-                // 忘记密码重置后吊销所有旧会话（账号可能已失陷）：bump token_version 使旧 access token
-                // 失效 + 写 logout_at + 清除全部 refresh token（与登录态改密 updatePassword 一致）
-                $user->token_version = ($user->token_version ?? 0) + 1;
-                $user->logout_at = now();
-                $user->save();
-
-                UserRefreshToken::deleteTokenByUserId($user->id);
+                // 忘记密码重置后吊销所有旧会话（账号可能已失陷，单点）：
+                // bump token_version + 写 logout_at + 清全部 refresh token（与登录态改密一致）
+                $user->revokeAllSessions();
             });
 
             // 重置成功后发安全提醒邮件（已过邮箱验证码必有邮箱）；dispatch 异步入队、响应仍统一 success，不放大账号枚举
@@ -500,13 +492,8 @@ class AuthController extends BaseController
             /** @var User $user */
             $user = $this->guard->user();
 
-            // 更新token版本使所有token都失效
-            $user->token_version = ($user->token_version ?? 0) + 1;
-            $user->logout_at = now();
-            $user->save();
-
-            // 清除该用户所有刷新token
-            UserRefreshToken::deleteTokenByUserId($user->id);
+            // 全设备登出：吊销该用户全部现存会话（单点，与改密/重置一致）
+            $user->revokeAllSessions();
         }
 
         $this->guard->logout();
