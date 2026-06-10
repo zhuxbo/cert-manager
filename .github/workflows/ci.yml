@@ -497,3 +497,23 @@ jobs:
 
       - name: Run ESLint
         run: pnpm lint
+
+  deploy-shell-tests:
+    name: Deploy Shell Tests
+    runs-on: ubuntu-latest
+    # 强制执行 deploy 脚本的跨实现/对称副本等价测试（反模式 4 配套）：
+    # 此前 test-version-gt.sh 已存在却未接入 CI，对称副本无任何自动校验。
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: version_gt bash↔PHP 等价
+        run: bash deploy/test/test-version-gt.sh
+
+      - name: 对称副本字节等价 + redis 解析 bash↔PHP 等价
+        run: bash deploy/test/test-symmetric-copies.sh

@@ -162,6 +162,23 @@ echo is_array($d) && isset($d[getenv("FIELD")]) ? $d[getenv("FIELD")] : "";
 ' 2>/dev/null
 }
 
+# cron/supervisor 的 body/command 可能含多行或含 | 字符，
+# 直接塞进 | 分隔的数组 entry 会被 IFS='|' read + here-string 截断
+# （here-string 只取首行 + 多余 | 段并入末字段）。
+# 故拼 entry 前对 body/command 单行 base64 编码（tr -d '\n' 去掉 base64 自带换行，
+# 保证编码结果是无 | 无换行的单行 token），解析出 entry 后立即 _entry_decode 还原。
+# base64 -d 在 GNU coreutils 与 FreeBSD/macOS 均可用，跨平台一致。
+_entry_encode() {
+    printf '%s' "$1" | base64 | tr -d '\n'
+}
+
+_entry_decode() {
+    if [ -z "$1" ]; then
+        return 0
+    fi
+    printf '%s' "$1" | base64 -d 2>/dev/null
+}
+
 # 从 php-requirements.json 读取顶层标量字段。
 # 用法：_read_req_field <req_file> <field> [fallback]
 # 与 common.sh::_read_req_field 对称，修改时请同步。
@@ -873,7 +890,7 @@ _php_env_print_manual() {
         log_error "  - 扩展：宝塔 → 软件商店 → PHP 管理 → 安装扩展（$PHP_ENV_MISSING_EXT）"
     fi
     if [ -n "$PHP_ENV_DISABLED_FN" ]; then
-        log_error "  - 函数：编辑对应 PHP 版本的 php.ini，从 disable_functions 删除（$PHP_ENV_DISABLED_FN），保存后重启 PHP-FPM"
+        log_error "  - 函数：编辑对应 PHP 版本的 php.ini / php-cli.ini / php-fpm.ini（凡含该函数的文件都要改），从 disable_functions 删除（$PHP_ENV_DISABLED_FN），保存后重启 PHP-FPM"
     fi
 }
 
@@ -936,7 +953,7 @@ _php_env_try_bt_fix() {
     fi
 
     # 启用函数（含装扩展副作用后新出现的禁用项）
-    # 复用 bt-deps.sh::enable_functions 子命令：直接 sed 改 php.ini + php-cli.ini
+    # 复用 bt-deps.sh::enable_functions 子命令：直接 sed 改 php.ini + php-cli.ini + php-fpm.ini
     # 不走 BT API GetPHPConfig（在 CLI ini 单独配置时返回不准；曾遇 "已为空" 但实际禁用的场景）
     if [ -n "$PHP_ENV_DISABLED_FN" ]; then
         # shellcheck disable=SC2086
@@ -1124,18 +1141,21 @@ update_jobs_php_path() {
         id=$(echo "$line" | _json_field "id")
         name=$(echo "$line" | _json_field "name")
         local display_paths="${found_paths:-裸 php（走 PATH，版本不确定）}"
+        # body 可能多行/含 |，编码后入 entry 末字段（解析后 _entry_decode 还原）
+        local body_enc
+        body_enc=$(_entry_encode "$body")
 
         if [ "$is_installer" = true ]; then
             local ctype cwhere1
             ctype=$(echo "$line" | _json_field "type")
             cwhere1=$(echo "$line" | _json_field "where1")
             if [ "$ctype" = "minute-n" ] && [ -n "$cwhere1" ]; then
-                installer_cron_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body")
+                installer_cron_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
             else
-                other_cron_entries+=("$id|$name|$display_paths|$body")
+                other_cron_entries+=("$id|$name|$display_paths|$body_enc")
             fi
         else
-            other_cron_entries+=("$id|$name|$display_paths|$body")
+            other_cron_entries+=("$id|$name|$display_paths|$body_enc")
         fi
     done < <(bt_list_crontab_all 2>/dev/null)
 
@@ -1189,13 +1209,16 @@ update_jobs_php_path() {
         # 兼容旧 list 函数仅返回 name 的场景
         [ -z "$program" ] && program=$(echo "$line" | _json_field "name")
         local display_paths="${found_paths:-裸 php（走 PATH，版本不确定）}"
+        # command 可能多行/含 |，编码后入 entry 末字段（解析后 _entry_decode 还原）
+        local command_enc
+        command_enc=$(_entry_encode "$command")
 
         if [ "$is_installer" = true ]; then
             user=$(echo "$line" | _json_field "user")
             numprocs=$(echo "$line" | _json_field "numprocs")
-            installer_supervisor_entries+=("$program|${user:-www}|$path|$numprocs|$display_paths|$command")
+            installer_supervisor_entries+=("$program|${user:-www}|$path|$numprocs|$display_paths|$command_enc")
         else
-            other_supervisor_entries+=("$program|$display_paths|$command")
+            other_supervisor_entries+=("$program|$display_paths|$command_enc")
         fi
     done < <(bt_list_supervisor_all 2>/dev/null)
 
@@ -1211,8 +1234,9 @@ update_jobs_php_path() {
 
     if [ ${#installer_cron_entries[@]} -eq 1 ]; then
         local entry=${installer_cron_entries[0]}
-        local cid cname paths ctype cwhere1 cbody new_body
-        IFS='|' read -r cid cname paths ctype cwhere1 cbody <<<"$entry"
+        local cid cname paths ctype cwhere1 cbody_enc cbody new_body
+        IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
+        cbody=$(_entry_decode "$cbody_enc")
         # 两步替换：① 已是绝对路径但版本不对 → sed 整体替换 ② 裸 php token → 替换为 target_php
         # 裸 php 模式：命令开头 / 空格 / ; & | 后紧跟 `php ` 才认（避开 php-cli / php-fpm / php8.X）
         new_body=$(echo "$cbody" | sed -E "s#/www/server/php/[0-9]+/bin/php#$target_php#g")
@@ -1228,7 +1252,7 @@ update_jobs_php_path() {
                 log_warning "  cron [$cname] 添加新版失败，尝试用原命令回滚..."
                 if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$cbody"; then
                     log_info "  原 cron 已恢复（PHP 路径仍是旧版本，需手工修改）"
-                    other_cron_entries+=("$cid|$cname|$paths|$cbody")
+                    other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
                 else
                     log_error "  ⚠️  cron [$cname] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
                     log_error "  原命令: $cbody"
@@ -1237,21 +1261,22 @@ update_jobs_php_path() {
             fi
         else
             log_warning "  cron [$cname] DelCrontab 失败，跳过自动修复"
-            other_cron_entries+=("$cid|$cname|$paths|$cbody")
+            other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
         fi
     elif [ ${#installer_cron_entries[@]} -gt 1 ]; then
         log_info "  检测到 ${#installer_cron_entries[@]} 个 install.sh 风格 cron 任务，非唯一，保留手工提示"
         for entry in "${installer_cron_entries[@]}"; do
-            local cid cname paths ctype cwhere1 cbody
-            IFS='|' read -r cid cname paths ctype cwhere1 cbody <<<"$entry"
-            other_cron_entries+=("$cid|$cname|$paths|$cbody")
+            local cid cname paths ctype cwhere1 cbody_enc
+            IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
+            other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
         done
     fi
 
     if [ ${#installer_supervisor_entries[@]} -eq 1 ]; then
         local entry=${installer_supervisor_entries[0]}
-        local sprogram suser spath snumprocs paths scommand new_cmd
-        IFS='|' read -r sprogram suser spath snumprocs paths scommand <<<"$entry"
+        local sprogram suser spath snumprocs paths scommand_enc scommand new_cmd
+        IFS='|' read -r sprogram suser spath snumprocs paths scommand_enc <<<"$entry"
+        scommand=$(_entry_decode "$scommand_enc")
         # 与 cron 对称：先替换绝对路径，再替换裸 php token
         new_cmd=$(echo "$scommand" | sed -E "s#/www/server/php/[0-9]+/bin/php#$target_php#g")
         new_cmd=$(echo "$new_cmd" | sed -E "s#(^|[[:space:];&|])php([[:space:]]+)#\1${target_php}\2#g")
@@ -1264,7 +1289,7 @@ update_jobs_php_path() {
             log_warning "  supervisor [$sprogram] 添加新版失败，尝试用原命令回滚..."
             if bt_add_supervisor_process "$sprogram" "$suser" "$spath" "$scommand" "${snumprocs:-1}"; then
                 log_info "  原 supervisor 已恢复（PHP 路径仍是旧版本，需手工修改）"
-                other_supervisor_entries+=("$sprogram|$paths|$scommand")
+                other_supervisor_entries+=("$sprogram|$paths|$scommand_enc")
             else
                 log_error "  ⚠️  supervisor [$sprogram] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
                 log_error "  运行用户: $suser  工作目录: $spath  进程数: ${snumprocs:-1}"
@@ -1275,9 +1300,9 @@ update_jobs_php_path() {
     elif [ ${#installer_supervisor_entries[@]} -gt 1 ]; then
         log_info "  检测到 ${#installer_supervisor_entries[@]} 个 install.sh 风格 supervisor 进程，非唯一，保留手工提示"
         for entry in "${installer_supervisor_entries[@]}"; do
-            local sprogram suser spath snumprocs paths scommand
-            IFS='|' read -r sprogram suser spath snumprocs paths scommand <<<"$entry"
-            other_supervisor_entries+=("$sprogram|$paths|$scommand")
+            local sprogram suser spath snumprocs paths scommand_enc
+            IFS='|' read -r sprogram suser spath snumprocs paths scommand_enc <<<"$entry"
+            other_supervisor_entries+=("$sprogram|$paths|$scommand_enc")
         done
     fi
 
@@ -1298,8 +1323,9 @@ update_jobs_php_path() {
     if [ ${#other_cron_entries[@]} -gt 0 ]; then
         log_warning "Cron 任务 (${#other_cron_entries[@]} 个) — 宝塔面板 → 计划任务 → 编辑命令："
         for entry in "${other_cron_entries[@]}"; do
-            local id name paths body
-            IFS='|' read -r id name paths body <<<"$entry"
+            local id name paths body_enc body
+            IFS='|' read -r id name paths body_enc <<<"$entry"
+            body=$(_entry_decode "$body_enc")
             log_warning "  [id=$id] $name"
             log_warning "    旧路径: $paths"
             log_warning "    命令:  $body"
@@ -1310,8 +1336,9 @@ update_jobs_php_path() {
     if [ ${#other_supervisor_entries[@]} -gt 0 ]; then
         log_warning "Supervisor 守护进程 (${#other_supervisor_entries[@]} 个) — 宝塔 → 软件商店 → Supervisor → 编辑："
         for entry in "${other_supervisor_entries[@]}"; do
-            local name paths command
-            IFS='|' read -r name paths command <<<"$entry"
+            local name paths command_enc command
+            IFS='|' read -r name paths command_enc <<<"$entry"
+            command=$(_entry_decode "$command_enc")
             log_warning "  $name"
             log_warning "    旧路径: $paths"
             log_warning "    命令:  $command"

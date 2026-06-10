@@ -347,13 +347,15 @@ bt_get_site_path() {
 --data-urlencode 'search=$domain'") || return 1
 
     # 提取与 domain 精确匹配的项的 path（python3 兜底，BT 自带）
+    # domain 经 env 传入、python 从 os.environ 读，不插值到源码（防 python 注入）——与 bt_list_crontab_all 范式一致
     local path
-    path=$(printf '%s' "$resp" | python3 -c "
-import sys, json
+    path=$(printf '%s' "$resp" | MATCH_NAME="$domain" python3 -c "
+import sys, json, os
+match = os.environ.get('MATCH_NAME', '')
 try:
     d = json.load(sys.stdin)
     for s in d.get('data', []) if isinstance(d, dict) else []:
-        if s.get('name') == '$domain':
+        if s.get('name') == match:
             print(s.get('path', ''))
             sys.exit(0)
 except Exception:
@@ -570,10 +572,12 @@ bt_add_supervisor_process() {
     # 1. 检测同名进程是否存在；存在则先删（覆盖重装语义）
     # 用 python3 解析 JSON：BT 后端 PHP json_encode 默认无空格，
     # 早期 grep -F '"program": "<name>"' 因带空格永远不命中，导致同名进程无法被覆盖
+    # pjname 经 env 传入、python 从 os.environ 读，不插值到源码（防 python 注入）——与 bt_list_crontab_all 范式一致
     local list_resp existing
     list_resp=$(_bt_api_post "/plugin?action=a&name=supervisor&s=GetProcessList" "") || true
-    existing=$(echo "$list_resp" | python3 -c "
-import json, sys
+    existing=$(echo "$list_resp" | MATCH_NAME="$pjname" python3 -c "
+import json, sys, os
+match = os.environ.get('MATCH_NAME', '')
 try:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -582,7 +586,7 @@ try:
     if not isinstance(items, list):
         items = []
     for it in items:
-        if isinstance(it, dict) and it.get('program') == '$pjname':
+        if isinstance(it, dict) and it.get('program') == match:
             print(it.get('program'))
             break
 except Exception:
@@ -691,16 +695,18 @@ bt_add_crontab() {
     list_resp=$(_bt_api_post "/crontab?action=GetCrontab" \
         "--data-urlencode 'p=1' --data-urlencode 'limit=100'") || true
     # 找出同名任务的 id（命中第一个；理论上 BT cron 同名不应允许，但用户可能在面板手工建多个）
+    # name 经 env 传入、python 从 os.environ 读，不插值到源码（防 python 注入）——与 bt_list_crontab_all 范式一致
     local existing_id
-    existing_id=$(echo "$list_resp" | python3 -c "
-import json, sys, re
+    existing_id=$(echo "$list_resp" | MATCH_NAME="$name" python3 -c "
+import json, sys, os
+match = os.environ.get('MATCH_NAME', '')
 try:
     raw = sys.stdin.read()
     # BT 11.x GetCrontab 响应：{'data': [{'id':N,'name':'...',...}]} 或直接 list
     data = json.loads(raw)
     items = data.get('data', []) if isinstance(data, dict) else data
     for it in items:
-        if it.get('name') == '$name':
+        if it.get('name') == match:
             print(it.get('id'))
             break
 except Exception:

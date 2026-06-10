@@ -97,9 +97,11 @@ enable_functions_in_ini() {
 check_disabled_functions() {
     log_step "检测 PHP 禁用函数"
 
-    # 宝塔有两个配置文件：php.ini (FPM) 和 php-cli.ini (CLI)
+    # 宝塔有 php.ini (FPM) 和 php-cli.ini (CLI)；部分用户自建 php-fpm.ini 也会写 disable_functions
+    # 检测/修复须三者对齐（与 upgrade.sh::_php_env_run_checks 同），否则漏改某文件会永久阻断
     local php_ini="$PHP_INI"
     local php_cli_ini="/www/server/php/$PHP_VERSION/etc/php-cli.ini"
+    local php_fpm_ini="/www/server/php/$PHP_VERSION/etc/php-fpm.ini"
 
     # 必需函数从 php-requirements.json 的 functions.required[] 读取（与版本绑定）
     # fallback 到内置兜底列表：putenv/proc_* 是 Composer/Laravel 运行所需；pcntl_* 是队列管理
@@ -115,13 +117,16 @@ check_disabled_functions() {
         required_functions=("putenv" "proc_open" "proc_close" "proc_get_status" "proc_terminate" "exec" "shell_exec" "pcntl_signal" "pcntl_alarm" "pcntl_async_signals")
     fi
 
-    # 检查两个配置文件中的禁用函数
+    # 检查三个配置文件中的禁用函数（合并集）
     local all_disabled=""
     if [ -f "$php_ini" ]; then
         all_disabled="$all_disabled,$(_ini_disabled_functions "$php_ini")"
     fi
     if [ -f "$php_cli_ini" ]; then
         all_disabled="$all_disabled,$(_ini_disabled_functions "$php_cli_ini")"
+    fi
+    if [ -f "$php_fpm_ini" ]; then
+        all_disabled="$all_disabled,$(_ini_disabled_functions "$php_fpm_ini")"
     fi
 
     if [ -z "$all_disabled" ] || [ "$all_disabled" = "," ]; then
@@ -145,7 +150,7 @@ check_disabled_functions() {
     log_warning "检测到禁用函数: ${functions_to_enable[*]}"
     log_info "正在自动解除禁用..."
 
-    # 同时更新 php.ini 和 php-cli.ini
+    # 同时更新 php.ini、php-cli.ini、php-fpm.ini（与检测范围对齐）
     local functions_str="${functions_to_enable[*]}"
 
     if [ -f "$php_ini" ]; then
@@ -156,6 +161,11 @@ check_disabled_functions() {
     if [ -f "$php_cli_ini" ]; then
         enable_functions_in_ini "$php_cli_ini" "$functions_str"
         log_info "已更新: php-cli.ini"
+    fi
+
+    if [ -f "$php_fpm_ini" ]; then
+        enable_functions_in_ini "$php_fpm_ini" "$functions_str"
+        log_info "已更新: php-fpm.ini"
     fi
 
     log_success "已解除禁用: ${functions_to_enable[*]}"
@@ -612,9 +622,11 @@ case "${1:-}" in
         exit $?
         ;;
     enable_functions)
-        # 子命令：从 disable_functions 移除指定函数（同时改 php.ini + php-cli.ini）
+        # 子命令：从 disable_functions 移除指定函数（同时改 php.ini + php-cli.ini + php-fpm.ini）
         # 用法：PHP_VERSION=84 PHP_CMD=... bash bt-deps.sh enable_functions fn1 fn2 ...
         # 直接 sed ini 文件，绕过 BT API GetPHPConfig（在 CLI ini 单独配置时返回不准）
+        # 修复范围须与 upgrade.sh::_php_env_run_checks 的检测范围（3 个 ini）对齐：
+        # 用户自建 php-fpm.ini 禁用了函数时，漏改 php-fpm.ini 会导致检测到禁用但修复不覆盖 → 永久阻断
         shift
         if [ $# -eq 0 ]; then
             log_error "enable_functions 至少需要一个函数名"
@@ -627,7 +639,7 @@ case "${1:-}" in
         functions_str="$*"
         log_step "解除 PHP 函数禁用: $functions_str"
         updated_any=false
-        for ini_file in "/www/server/php/$PHP_VERSION/etc/php.ini" "/www/server/php/$PHP_VERSION/etc/php-cli.ini"; do
+        for ini_file in "/www/server/php/$PHP_VERSION/etc/php.ini" "/www/server/php/$PHP_VERSION/etc/php-cli.ini" "/www/server/php/$PHP_VERSION/etc/php-fpm.ini"; do
             [ -f "$ini_file" ] || continue
             enable_functions_in_ini "$ini_file" "$functions_str"
             log_info "  已更新: $(basename "$ini_file")"

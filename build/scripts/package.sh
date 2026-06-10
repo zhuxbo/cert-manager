@@ -349,10 +349,14 @@ cat >"$FULL_DIR/manifest.json" <<EOF
 EOF
 
 # 复制 PHP 环境需求清单（后台升级 EnvironmentChecker 和 upgrade.sh check_php_environment 必读）
+# fail-closed：源缺失或拷贝失败即报错中止——缺此清单会让升级流程静默跳过 PHP 环境检测，
+# 故必须保证打进包（同 deploy/scripts 关键脚本校验）
 PHP_REQ_FILE="$PROJECT_ROOT/build/php-requirements.json"
-if [ -f "$PHP_REQ_FILE" ]; then
-    cp "$PHP_REQ_FILE" "$FULL_DIR/php-requirements.json"
+if [ ! -f "$PHP_REQ_FILE" ]; then
+    log_error "缺少 PHP 环境需求清单: $PHP_REQ_FILE（升级流程 EnvironmentChecker / upgrade.sh 必读，缺失会静默跳过 PHP 环境检测）"
+    exit 1
 fi
+cp "$PHP_REQ_FILE" "$FULL_DIR/php-requirements.json"
 
 # 复制 deploy/scripts/*.sh（upgrade.sh 解压后重定向 SCRIPT_DIR 到这里使用 bt-automate.sh 等）
 # 升级流程结束后会清理 TEMP_DIR，不持久化到 INSTALL_DIR
@@ -446,9 +450,12 @@ EOF
 
 # 复制 PHP 环境需求清单（后台升级 EnvironmentChecker 和 upgrade.sh check_php_environment 必读）
 # upgrade.sh 解压后从 src_dir/php-requirements.json 读；UpgradeService 从 extractedPath/php-requirements.json 读
-if [ -f "$PHP_REQ_FILE" ]; then
-    cp "$PHP_REQ_FILE" "$UPGRADE_DIR/php-requirements.json"
+# fail-closed：升级包是该清单的主要消费者，缺失会让升级静默跳过 PHP 环境检测
+if [ ! -f "$PHP_REQ_FILE" ]; then
+    log_error "缺少 PHP 环境需求清单: $PHP_REQ_FILE（升级包必须包含，否则升级流程静默跳过 PHP 环境检测）"
+    exit 1
 fi
+cp "$PHP_REQ_FILE" "$UPGRADE_DIR/php-requirements.json"
 
 # 复制 deploy/scripts/*.sh（与完整包同源校验）
 mkdir -p "$UPGRADE_DIR/scripts"
@@ -515,10 +522,13 @@ if [ -d "$SCRIPT_DIR_SRC" ]; then
     cp "$SCRIPT_DIR_SRC/upgrade.sh" "$SCRIPT_PKG_DIR/" 2>/dev/null || true
 
     # 复制 PHP 需求清单（install.sh/bt-install.sh 在下载 release 前需要它来决定支持的 PHP 版本/扩展）
+    # fail-closed：缺失会让安装脚本无从判定 PHP 版本/扩展，必须打进包
     PHP_REQ_FILE="$PROJECT_ROOT/build/php-requirements.json"
-    if [ -f "$PHP_REQ_FILE" ]; then
-        cp "$PHP_REQ_FILE" "$SCRIPT_PKG_DIR/php-requirements.json"
+    if [ ! -f "$PHP_REQ_FILE" ]; then
+        log_error "缺少 PHP 环境需求清单: $PHP_REQ_FILE（脚本部署包必须包含，install.sh/bt-install.sh 需据此判定 PHP 版本/扩展）"
+        exit 1
     fi
+    cp "$PHP_REQ_FILE" "$SCRIPT_PKG_DIR/php-requirements.json"
 
     # 注：原本生成的 script-deploy/README.md 已弃用（部署脚本不需自带说明文档；
     # 用户文档由 release 站 / repo 的 docs 目录提供）

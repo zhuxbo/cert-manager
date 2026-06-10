@@ -91,19 +91,43 @@ test('installFromZip 有 composer.json 的插件触发 composer install', functi
     expect(is_file("$pluginsPath/has-composer-plugin/backend/composer.json"))->toBeTrue();
 });
 
-test('installFromZip composer install 失败时整体失败（异常冒泡）', function () {
+test('installFromZip composer install 失败时清理半装目录 + 异常冒泡', function () {
     $runner = Mockery::mock(PluginComposerRunner::class);
     $runner->shouldReceive('pluginHasComposer')->andReturn(true);
     $runner->shouldReceive('install')
         ->once()
         ->andThrow(new RuntimeException('插件 broken-plugin 依赖安装失败（composer install 退出码 1）'));
 
-    [$manager] = makeManagerWithRunner($runner);
+    [$manager, , $pluginsPath] = makeManagerWithRunner($runner);
 
     $zip = makePluginZip('broken-plugin', withComposer: true);
 
     expect(fn () => $manager->installFromZip($zip))
         ->toThrow(RuntimeException::class, '依赖安装失败');
+
+    // 半装目录必须被清理，否则重装命中"已安装"、更新命中"已是最新"陷入死锁
+    expect(is_dir("$pluginsPath/broken-plugin"))->toBeFalse();
+});
+
+test('installFromZip 命中"已安装"时不误删既有插件目录', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldNotReceive('install');
+
+    [$manager, , $pluginsPath] = makeManagerWithRunner($runner);
+
+    // 预置一个已安装的同名插件（含 plugin.json + 标记文件）
+    $existing = "$pluginsPath/dup-plugin";
+    mkdir($existing, 0755, true);
+    file_put_contents("$existing/plugin.json", json_encode(['name' => 'dup-plugin', 'version' => '1.0.0']));
+    file_put_contents("$existing/keep.txt", 'must-not-be-deleted');
+
+    $zip = makePluginZip('dup-plugin', withComposer: false);
+
+    expect(fn () => $manager->installFromZip($zip))
+        ->toThrow(RuntimeException::class, '已安装');
+
+    // 既有目录及其内容不能被清理（$applied 守卫：本次未落地，不删他人目录）
+    expect(is_file("$existing/keep.txt"))->toBeTrue();
 });
 
 // ==================== installPluginComposerDeps（install 路径共用）跳过 / 触发 ====================
@@ -202,7 +226,7 @@ function makeUpdateManager(string $newLockContent): array
 /**
  * 在 pluginsPath 下预置「已安装」的 lock-plugin v1.0.0（带指定 composer.lock）。
  */
-function seedInstalledPlugin(string $pluginsPath, string $lockContent): void
+function seedInstalledPlugin(string $pluginsPath, string $lockContent, bool $withVendor = true): void
 {
     $dir = "$pluginsPath/lock-plugin";
     mkdir("$dir/backend", 0755, true);
@@ -213,17 +237,35 @@ function seedInstalledPlugin(string $pluginsPath, string $lockContent): void
     ]));
     file_put_contents("$dir/backend/composer.json", json_encode(['require' => ['php' => '^8.3']]));
     file_put_contents("$dir/backend/composer.lock", $lockContent);
+    // 模拟运行时装好的 vendor（带标记文件，便于断言"复用"而非"重装"）
+    if ($withVendor) {
+        mkdir("$dir/backend/vendor", 0755, true);
+        file_put_contents("$dir/backend/vendor/.runtime-installed", 'old-vendor-marker');
+    }
 }
 
-test('update composer.lock 未变化时跳过 composer install', function () {
+test('update composer.lock 未变化时跳过 composer install（复用原 vendor）', function () {
     [$manager, $pluginsPath, $installCalls] = makeUpdateManager(newLockContent: 'SAME-LOCK');
-    seedInstalledPlugin($pluginsPath, lockContent: 'SAME-LOCK');
+    seedInstalledPlugin($pluginsPath, lockContent: 'SAME-LOCK'); // 默认带 vendor
 
     $result = $manager->update('lock-plugin');
 
     expect($result['version'])->toBe('2.0.0');
-    // lock 内容相同 → 哈希相同 → install 不被调用
+    // lock 内容相同 + 有可复用 vendor → install 不被调用
     expect($installCalls->count)->toBe(0);
+    // 原 vendor 被移回复用（标记文件还在），不会因删旧目录而丢失
+    expect(is_file("$pluginsPath/lock-plugin/backend/vendor/.runtime-installed"))->toBeTrue();
+});
+
+test('update composer.lock 未变化但 vendor 缺失时仍触发 install（防 vendor 永久丢失）', function () {
+    [$manager, $pluginsPath, $installCalls] = makeUpdateManager(newLockContent: 'SAME-LOCK');
+    seedInstalledPlugin($pluginsPath, lockContent: 'SAME-LOCK', withVendor: false);
+
+    $result = $manager->update('lock-plugin');
+
+    expect($result['version'])->toBe('2.0.0');
+    // lock 未变但无 vendor 可复用 → 必须安装，否则补丁更新后 vendor 永久缺失
+    expect($installCalls->count)->toBe(1);
 });
 
 test('update composer.lock 变化时触发 composer install', function () {

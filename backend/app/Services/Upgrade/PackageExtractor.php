@@ -765,6 +765,20 @@ class PackageExtractor
     {
         $targetDir = base_path();
 
+        // base_path 自身可写性 —— applyBackendUpgrade 会往根目录写 artisan/composer.json/
+        // composer.lock/php-requirements.json（含首次升级时新增的文件），根不可写则这些写入
+        // 必败。旧预检只查子目录会漏判，导致预检通过但 apply 时报错、且文案误导用户去查子目录。
+        if (! is_writable($targetDir)) {
+            $webUser = $this->detectWebUser();
+
+            throw new RuntimeException(
+                "安装根目录不可写: {$targetDir}。".
+                '升级需在此目录写入 artisan / composer.json / php-requirements.json 等文件。'.
+                "请确保 Web 服务用户 ($webUser) 对该目录有写权限。".
+                "可以尝试运行: chown -R $webUser:$webUser $targetDir"
+            );
+        }
+
         $notWritable = [];
 
         // 动态发现 base_path 顶层目录检查可写性，与 applyBackendUpgrade 的动态同步范围对齐

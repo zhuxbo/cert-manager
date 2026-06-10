@@ -310,6 +310,55 @@ test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态�
     }
 });
 
+// ==================== 升级前可写性预检（base_path 自身 + 子目录 + storage）====================
+
+test('checkWritableBeforeApply 当 base_path 自身不可写时报错（即便所有子目录可写）', function () {
+    // root 绕过文件权限位，is_writable 恒真，无法构造不可写场景 → 跳过
+    if (function_exists('posix_getuid') && posix_getuid() === 0) {
+        expect(true)->toBeTrue(); // 占位避免 risky
+
+        return;
+    }
+
+    // 安装目录：自身置为只读 0555，但其下子目录与 storage 全部可写
+    // —— applyBackendUpgrade 会往 base_path() 根写 artisan/composer.json/php-requirements.json，
+    //    根不可写则写入必败；旧预检只查子目录会漏判，故障延后到 apply 且文案误导
+    $installDir = "$this->testDir/ro_install";
+    File::makeDirectory("$installDir/app", 0755, true);
+    File::makeDirectory("$installDir/storage", 0755, true);
+
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+    chmod($installDir, 0555); // 根只读：不能在其中创建/覆盖文件
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('checkWritableBeforeApply');
+        expect(fn () => $method->invoke($this->extractor))
+            ->toThrow(RuntimeException::class);
+    } finally {
+        chmod($installDir, 0755); // 恢复以便 afterEach 能删除
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('checkWritableBeforeApply 全部可写时通过', function () {
+    $installDir = "$this->testDir/rw_install";
+    File::makeDirectory("$installDir/app", 0755, true);
+    File::makeDirectory("$installDir/storage", 0755, true);
+
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('checkWritableBeforeApply');
+        // 不抛异常即通过
+        $method->invoke($this->extractor);
+        expect(true)->toBeTrue();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
 // ==================== zip-slip / 符号链接 安全校验（ArchiveGuard 接入） ====================
 
 test('extract 拒绝含 .. 路径遍历条目的升级包', function () {

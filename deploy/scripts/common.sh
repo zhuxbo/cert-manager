@@ -274,7 +274,7 @@ _php_pretty_version() {
             return 0
         }
     fi
-    # 仅当 ver 为 2 位（83/84）时拼成 8.X；3 位（810）直接打目录名
+    # 仅当 ver 为 2 位（83/84）时拼成 X.Y；3 位（810）直接打目录名
     if [ "${#ver}" -eq 2 ]; then
         echo "${ver:0:1}.${ver:1}"
     else
