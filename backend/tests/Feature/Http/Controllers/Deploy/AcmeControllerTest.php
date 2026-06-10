@@ -137,6 +137,56 @@ test('new 支持自选 contact_email 并透传给 Gateway', function () {
     expect($acme->contact_email)->toBe('acme-deploy@example.com');
 });
 
+test('new 显式 plus=null 时默认 1（不被解析成 0）', function () {
+    // #20：(int) input('plus', 1) 在显式传 plus=null 时默认值不生效，(int) null = 0。
+    // 修复用 (int) (input('plus') ?? 1)，显式 null 回落文档默认 1。
+    $user = User::factory()->create(['balance' => '1000.00']);
+    $deployToken = DeployToken::factory()->create(['user_id' => $user->id]);
+
+    $product = Product::factory()->create([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+        'periods' => [12],
+    ]);
+    ProductPrice::create([
+        'product_id' => $product->id,
+        'level_code' => $user->level_code ?? 'standard',
+        'period' => 12,
+        'price' => '100.00',
+        'alternative_standard_price' => '10.00',
+        'alternative_wildcard_price' => '20.00',
+    ]);
+
+    setupDeployGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => ['order_id' => 'gw-deploy-plus-null', 'eab_kid' => 'k', 'eab_hmac' => 'h'],
+        ]),
+    ]);
+
+    $response = test()->withHeaders(['Authorization' => "Bearer $deployToken->token"])
+        ->postJson('/api/deploy/acme/new', [
+            'product_code' => $product->code,
+            'contact_email' => 'deploy-plus-null@example.com',
+            'plus' => null,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    Http::assertSent(function ($request) {
+        if (! str_contains($request->url(), '/acme/new')) {
+            return false;
+        }
+        $body = json_decode($request->body(), true);
+
+        return ($body['plus'] ?? null) === 1;
+    });
+
+    $acme = Acme::withoutGlobalScopes()->find($response->json('data.order_id'));
+    expect($acme->plus)->toBe(1);
+});
+
 test('new 产品不存在报错', function () {
     $user = User::factory()->create(['balance' => '1000.00']);
     $deployToken = DeployToken::factory()->create(['user_id' => $user->id]);

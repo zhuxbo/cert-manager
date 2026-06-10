@@ -12,6 +12,7 @@ use App\Models\Transaction;
 use App\Services\Acme\Action;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -177,6 +178,22 @@ test('new rejects invalid period', function () {
             'purchased_wildcard_count' => 0,
         ]),
         '无效的购买时长'
+    );
+});
+
+test('new period 缺省且产品 periods 为空数组时报错（不再硬编码回落 12）', function () {
+    // #25：period 未传时回落 product.periods[0]，但 periods=[] 时不得硬编码 12 绕过产品校验
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'periods' => []]);
+
+    expectApiError(
+        fn () => $this->service->new([
+            'user_id' => $user->id,
+            'product_id' => $product->id,
+            'purchased_standard_count' => 1,
+            'purchased_wildcard_count' => 0,
+        ]),
+        '产品未配置周期'
     );
 });
 
@@ -806,6 +823,44 @@ test('sync 终态守卫：本地 cancelled 不被上游滞后 active 复活', fu
     expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
 });
 
+test('sync 上游失败回滚防抖占位，重试能再次调用上游', function () {
+    // #19：占位 Cache::add 在上游调用之前；上游失败时占位若不回滚，10s 内重试会命中占位
+    // 直接返回 success（把失败伪装成成功）。修复后失败应回滚占位，下次重试真正重调上游。
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-sync-fail',
+    ]);
+
+    setupGatewaySettings();
+
+    // 用 fakeSequence 按调用顺序返回：第一次失败、第二次成功。
+    // 不能用两次 Http::fake 同 pattern——Laravel 会累加 stub 且先注册者先匹配，
+    // 第二次请求仍命中第一次的失败响应。
+    Http::fakeSequence('fake-gateway.test/*')
+        ->push(['code' => 0, 'msg' => '上游同步失败'], 500)
+        ->push(['code' => 1, 'data' => ['status' => 'expired', 'vendor_id' => 'v-after-retry']], 200);
+
+    // 第一次：上游失败 → sync 应抛错（不能伪装成功），且占位被回滚
+    expectApiError(fn () => $this->service->sync($acme->id), '上游同步失败');
+
+    // 占位已被回滚：缓存键不应存在
+    expect(Cache::has("acme_sync_$acme->id"))->toBeFalse();
+
+    // 第二次：占位已清，上游恢复后重试应真正重调上游并写回状态
+    expectApiSuccess(fn () => $this->service->sync($acme->id));
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_EXPIRED);
+    expect($acme->vendor_id)->toBe('v-after-retry');
+
+    // 共发起两次上游请求（首次失败 + 重试成功），证明占位未把第二次拦在 success 短路
+    Http::assertSentCount(2);
+});
+
 // ==================== remark ====================
 
 test('remark 更新 remark 字段', function () {
@@ -1148,6 +1203,39 @@ test('createTasks 逐条幂等：跳过已存在 executing 的 id，仅为其余
     expect(Task::where('order_id', $fresh->id)->where('action', 'commit_acme')->where('status', 'executing')->count())->toBe(1);
     // 仅为 fresh dispatch 了 1 个 TaskJob
     Queue::assertPushed(TaskJob::class, 1);
+});
+
+test('createTasks 延时任务 dispatch delay 比 started_at 多 3 秒缓冲（对齐 Order createTask）', function () {
+    // #39：从 Order createTask 复制时丢了 ->delay(now()->addSeconds($later + 3)) 的 +3s 缓冲，
+    // 导致 dispatch 的 delay 恰好等于 started_at，worker 可能在事务提交/行可见前消费 job。
+    Queue::fake();
+    $user = $this->createTestUser();
+    $acme = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
+
+    $delaySeconds = 300;
+    $before = now();
+
+    $method = new ReflectionMethod(Action::class, 'createTasks');
+    $method->setAccessible(true);
+    $method->invoke($this->service, [$acme->id], 'commit_acme', $delaySeconds);
+
+    // task.started_at = now + delaySeconds
+    $task = Task::where('order_id', $acme->id)->where('action', 'commit_acme')->first();
+    expect($task)->not->toBeNull();
+
+    Queue::assertPushed(TaskJob::class, function (TaskJob $job) use ($before, $delaySeconds) {
+        // dispatch delay 必须比 started_at（now+delaySeconds）再多 3 秒缓冲
+        $delay = $job->delay;
+        expect($delay)->toBeInstanceOf(Carbon::class);
+        if (! $delay instanceof Carbon) {
+            return false;
+        }
+        $expected = $before->copy()->addSeconds($delaySeconds + 3);
+        // 容忍执行耗时的 ±2 秒抖动；关键是 delay ≈ delaySeconds+3 而非 delaySeconds
+        expect(abs($delay->diffInSeconds($expected)))->toBeLessThanOrEqual(2);
+
+        return true;
+    });
 });
 
 // ==================== batchSync ====================

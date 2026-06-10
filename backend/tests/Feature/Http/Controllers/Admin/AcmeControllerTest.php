@@ -12,6 +12,7 @@ use App\Models\Task;
 use App\Models\User;
 use App\Services\Acme\Action;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Traits\ActsAsAdmin;
@@ -537,4 +538,92 @@ test('admin batch-copy-eab 跨用户拒绝', function () {
     $res = $this->actingAsAdmin($this->admin)->postJson('/api/admin/acme/batch-copy-eab', ['ids' => [$a1->id, $a2->id]]);
     $res->assertJsonPath('code', 0);
     $res->assertJsonPath('msg', '仅能复制同一用户的 EAB');
+});
+
+test('admin batch-copy-eab 首个空 directory_url 不污染同 ca 后续 active', function () {
+    // #27 同款（Admin 端遗漏）：directory_url 按 ca 去重缓存时未 normalizeCa 且把空串也存进 map，
+    // 钉死同 ca 后续 active 的 directory_url。修复后仅缓存非 null 且 key 归一。
+    Cache::flush();
+    Queue::fake();
+
+    $user = User::factory()->create();
+    $product = createAcmeProduct(['source' => 'default', 'ca' => 'Google']);
+    setupAdminGatewaySettings();
+
+    // pending 先创建（id 更小）→ batchCopyEab 按 whereIn 主键 asc 序先枚举它（无 api_id → directory_url 为 null）
+    $pending = Acme::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => null,
+        'eab_kid' => 'KID_PENDING',
+        'eab_hmac' => 'HMAC_PENDING',
+    ]);
+    // active 后创建（id 更大）→ 后枚举；旧版若被 pending 的空缓存钉死则 directory_url 丢失
+    $active = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-active',
+        'eab_kid' => 'KID_ACTIVE',
+        'eab_hmac' => 'HMAC_ACTIVE',
+    ]);
+
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'status' => 'active',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
+
+    // pending 放首位先被 map（cache 空 → null），不能钉死后续 active
+    $res = $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/acme/batch-copy-eab', ['ids' => [$pending->id, $active->id]]);
+
+    $res->assertOk()->assertJson(['code' => 1]);
+    $text = $res->json('data.text');
+    expect($text)->toContain('eab_kid=KID_ACTIVE')
+        ->and($text)->toContain('directory_url=https://acme.example.test/directory/');
+});
+
+test('admin batchShow 首个 unpaid(null) 不污染同 ca 后续 active 的 directory_url', function () {
+    // #27 同款（Admin 端遗漏）：旧 array_key_exists 把 null 也当已缓存命中，钉死同 ca 后续 active。
+    Cache::flush();
+    Queue::fake();
+
+    $user = User::factory()->create();
+    $product = createAcmeProduct(['source' => 'default', 'ca' => 'Google']);
+    setupAdminGatewaySettings();
+
+    $active = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-active',
+    ]);
+    // unpaid 后建 id 更大，batchShow orderByDesc('id') → 先被枚举（cache 空 → null）
+    $unpaid = Acme::factory()->unpaid()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => null,
+    ]);
+
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'status' => 'active',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/acme/batch?ids=$active->id,$unpaid->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $items = collect($response->json('data.items'))->keyBy('id');
+    expect($items[$unpaid->id]['directory_url'])->toBeNull();
+    expect($items[$active->id]['directory_url'])->toBe('https://acme.example.test/directory/');
 });

@@ -505,51 +505,58 @@ class Action
             $this->success();
         }
 
-        // 慢 IO（上游 Guzzle）放在行锁之外，避免长时间持锁
-        $result = (new Api)->get($acme->id);
-        $data = $result['data'] ?? [];
+        // 慢 IO（上游 Guzzle）放在行锁之外，避免长时间持锁。
+        // 占位回滚：上游调用/写回失败时必须 Cache::forget 占位，否则 10s 内重试命中占位直接返回 success，
+        // 把"实际未同步"的失败伪装成成功。成功路径不回滚（占位正是为了 10s 内防重复上游请求）。
+        try {
+            $result = (new Api)->get($acme->id);
+            $data = $result['data'] ?? [];
 
-        // 锁内重取 + 终态守卫 + 写回：锁序 task→acme（sync_acme 经 TaskJob 已持 task 锁）。
-        // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订阅复活。
-        $directoryUrl = (string) ($data['directory_url'] ?? '');
-        $ca = DB::transaction(function () use ($acmeId, $data) {
-            $acme = Acme::where('id', $acmeId)->lock()->first();
-            if (! $acme) {
-                return '';
-            }
-
-            $updateData = [];
-            $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
-            // 终态守卫：本地已是终态（cancelled/revoked/expired）时拒绝上游 status 覆盖，防滞后 active 复活已退款订阅
-            $localTerminal = in_array($acme->status, [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED], true);
-            if (! $localTerminal && isset($data['status']) && in_array($data['status'], $syncableStatuses, true)) {
-                $updateData['status'] = $data['status'];
-                // 上游已取消/吊销且本地尚未记录取消时间 → 用当前时间补记（正式取消时间）
-                if (in_array($data['status'], [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED], true) && ! $acme->cancelled_at) {
-                    $updateData['cancelled_at'] = now();
+            // 锁内重取 + 终态守卫 + 写回：锁序 task→acme（sync_acme 经 TaskJob 已持 task 锁）。
+            // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订阅复活。
+            $directoryUrl = (string) ($data['directory_url'] ?? '');
+            $ca = DB::transaction(function () use ($acmeId, $data) {
+                $acme = Acme::where('id', $acmeId)->lock()->first();
+                if (! $acme) {
+                    return '';
                 }
-            }
-            // 非状态字段不受终态守卫限制，仍按上游合并
-            if (isset($data['vendor_id'])) {
-                $updateData['vendor_id'] = $data['vendor_id'];
-            }
-            // 历史订单 contact_email 可能为空，从上游 sync 回填；已有值也以上游为准保持一致
-            if (isset($data['contact_email']) && $data['contact_email'] !== '') {
-                $updateData['contact_email'] = $data['contact_email'];
-            }
-            // ACME 本地仅记录占位周期（commit 时的 now），上游是权威数据源，sync 时以上游为准覆盖
-            if (isset($data['period_from'])) {
-                $updateData['period_from'] = $data['period_from'];
-            }
-            if (isset($data['period_till'])) {
-                $updateData['period_till'] = $data['period_till'];
-            }
-            if (! empty($updateData)) {
-                $acme->update($updateData);
-            }
 
-            return (string) ($acme->product->ca ?? '');
-        }, 3); // attempts=3：与 Order sync 对齐；上游 get 在事务外（line 508），重试只重跑锁+写回，不重复调上游
+                $updateData = [];
+                $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
+                // 终态守卫：本地已是终态（cancelled/revoked/expired）时拒绝上游 status 覆盖，防滞后 active 复活已退款订阅
+                $localTerminal = in_array($acme->status, [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED], true);
+                if (! $localTerminal && isset($data['status']) && in_array($data['status'], $syncableStatuses, true)) {
+                    $updateData['status'] = $data['status'];
+                    // 上游已取消/吊销且本地尚未记录取消时间 → 用当前时间补记（正式取消时间）
+                    if (in_array($data['status'], [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED], true) && ! $acme->cancelled_at) {
+                        $updateData['cancelled_at'] = now();
+                    }
+                }
+                // 非状态字段不受终态守卫限制，仍按上游合并
+                if (isset($data['vendor_id'])) {
+                    $updateData['vendor_id'] = $data['vendor_id'];
+                }
+                // 历史订单 contact_email 可能为空，从上游 sync 回填；已有值也以上游为准保持一致
+                if (isset($data['contact_email']) && $data['contact_email'] !== '') {
+                    $updateData['contact_email'] = $data['contact_email'];
+                }
+                // ACME 本地仅记录占位周期（commit 时的 now），上游是权威数据源，sync 时以上游为准覆盖
+                if (isset($data['period_from'])) {
+                    $updateData['period_from'] = $data['period_from'];
+                }
+                if (isset($data['period_till'])) {
+                    $updateData['period_till'] = $data['period_till'];
+                }
+                if (! empty($updateData)) {
+                    $acme->update($updateData);
+                }
+
+                return (string) ($acme->product->ca ?? '');
+            }, 3); // attempts=3：与 Order sync 对齐；上游 get 在事务外，重试只重跑锁+写回，不重复调上游
+        } catch (\Throwable $e) {
+            Cache::forget($cacheKey);
+            throw $e;
+        }
 
         if ($directoryUrl !== '') {
             $this->cacheDirectoryUrl($ca, $directoryUrl);
@@ -593,7 +600,11 @@ class Action
                 $this->error('无效的购买时长');
             }
         } else {
-            $period = (int) ($product->periods[0] ?? 12);
+            // period 未传时回落产品首个周期；periods 为空表示产品未配置周期，报错而非硬编码 12 绕过校验
+            if (empty($product->periods)) {
+                $this->error('产品未配置周期');
+            }
+            $period = (int) $product->periods[0];
         }
 
         [$standardCount, $wildcardCount] = $this->resolveDomainCounts($product);
@@ -702,7 +713,12 @@ class Action
         return "acme_directory_url:$ca";
     }
 
-    private function normalizeCa(string $ca): string
+    /**
+     * CA 标识归一（小写 + trim）— 与 directory_url 缓存 key 口径一致
+     *
+     * public 供 batchShow 等调用方按 CA 去重时复用同款归一，避免去重 map key 与 service 层缓存 key 不一致
+     */
+    public function normalizeCa(string $ca): string
     {
         return strtolower(trim($ca));
     }
@@ -876,7 +892,8 @@ class Action
                 ->onQueue(config('queue.names.tasks'));
 
             if ($delaySeconds > 0) {
-                $job->delay($startedAt);
+                // 队列定时比可执行时间（started_at）多 3 秒缓冲，避免 job 在事务提交/行可见前被消费（对齐 Order createTask）
+                $job->delay(now()->addSeconds($delaySeconds + 3));
             }
         }
     }

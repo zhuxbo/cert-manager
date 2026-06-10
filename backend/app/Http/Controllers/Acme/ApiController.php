@@ -62,7 +62,8 @@ class ApiController extends Controller
         $params = [
             'user_id' => $this->user_id,
             'product_id' => $product->id,
-            'plus' => (int) $this->request->input('plus', 1),
+            // 显式传 plus=null 时 input 第二参默认值不生效（key 已存在），用 ?? 兜底文档默认 1
+            'plus' => (int) ($this->request->input('plus') ?? 1),
             'contact_email' => $this->request->input('contact_email'),
             'refer_id' => $this->request->filled('refer_id') ? $this->request->input('refer_id') : null,
             'channel' => 'api',

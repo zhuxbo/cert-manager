@@ -50,7 +50,8 @@ class AcmeController extends Controller
         $params = [
             'user_id' => $userId,
             'product_id' => $product->id,
-            'plus' => (int) $request->input('plus', 1),
+            // 显式传 plus=null 时 input 第二参默认值不生效（key 已存在），用 ?? 兜底文档默认 1
+            'plus' => (int) ($request->input('plus') ?? 1),
             'contact_email' => $request->input('contact_email'),
             'refer_id' => $request->filled('refer_id') ? $request->input('refer_id') : null,
             'channel' => 'deploy',
