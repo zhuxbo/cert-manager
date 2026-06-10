@@ -97,6 +97,23 @@ test('regionname 仅 city 无公司名兜底 → 返回该地级市代表邮编'
         ->and($r['district'])->toBe('');
 });
 
+test('去县级市后缀按字符而非字节：哈尔滨市区公司不被误判为五常市', function () {
+    // rtrim($name,'市') 按字节集 {E5,B8,82} 贪婪剥离会把 '五常市' 吃成 '五'，
+    // 致含"五"字的哈尔滨市区公司被误判为县级市五常市并回填错误邮编 150200。
+    $r = app(ZipcodeLookup::class)->find('黑龙江省哈尔滨市', '哈尔滨五金厂有限公司');
+    expect($r)->not->toBeNull()
+        ->and($r['city'])->not->toBe('五常市');
+});
+
+test('县级市去后缀仍按真实"市"后缀命中：五常XX公司命中五常市', function () {
+    // 正向：公司名确含县级市前缀"五常"时，仍应命中五常市（修复不能破坏正常匹配）
+    $r = app(ZipcodeLookup::class)->find('黑龙江省哈尔滨市', '五常天来米业有限公司');
+    expect($r)->not->toBeNull()
+        ->and($r['city'])->toBe('五常市')
+        ->and($r['zipcode'])->toBe('150200')
+        ->and($r['district'])->toBe('');
+});
+
 test('static cache returns same data after multiple lookups', function () {
     $a = app(ZipcodeLookup::class)->find('河南省南阳市卧龙区');
     $b = app(ZipcodeLookup::class)->find('河南省南阳市卧龙区');

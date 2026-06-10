@@ -4,7 +4,15 @@ namespace App\Services\ZipcodeLookup;
 
 class ZipcodeLookup
 {
-    /** 进程内缓存(同一 FPM worker 复用),结构:['list'=>array, 'cityRep'=>array] */
+    /**
+     * 单次脚本执行内的缓存,结构:['list'=>array, 'cityRep'=>array]。
+     *
+     * userland static 的生命周期 = 一次脚本执行:FPM 单请求内复用(每个新请求重新解析,
+     * static 随请求结束销毁,不跨 FPM 请求)、CLI/queue worker 单进程内整段复用。
+     * 邮编是全国静态数据,即便 worker 常驻跨多 job 复用也无陈旧问题(无需像 Cert::chainMap
+     * 那样按 job 边界清),故用 static 而非 app()->scoped。
+     * 单进程内多次 find() 只解析一次 JSON(loaded() 首查命中即返回)。
+     */
     private static ?array $cache = null;
 
     /**
@@ -148,8 +156,10 @@ class ZipcodeLookup
         if (str_contains($companyName, $subCityName)) {
             return true;
         }
-        // 去掉"市"后缀再匹配("义乌"在"义乌XX有限公司"里)
-        $stripped = rtrim($subCityName, '市');
+        // 去掉"市"后缀再匹配("义乌"在"义乌XX有限公司"里)。
+        // 必须按字符剥离尾部"市"：rtrim 的 charlist 是字节集 {E5,B8,82}，会贪婪吃掉
+        // 相邻汉字的字节（如 '五常市'→'五'），导致单字误匹配污染县级市识别。
+        $stripped = (string) preg_replace('/市$/u', '', $subCityName);
         if ($stripped !== '' && $stripped !== $subCityName) {
             return str_contains($companyName, $stripped);
         }

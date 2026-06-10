@@ -59,6 +59,8 @@ const startPolling = () => {
     () => {
       // 页面被切到后台标签页时跳过本次刷新，回到前台再恢复
       if (document.hidden) return;
+      // 用户已勾选批量操作目标行时跳过本次自动刷新，避免清空选择
+      if (selectedIds.value.length > 0) return;
       onSearch();
     },
     3 * 60 * 1000
@@ -72,9 +74,11 @@ const stopPolling = () => {
   }
 };
 
-// 标签页重新可见时立即刷新一次，避免等待整个轮询周期
+// 标签页重新可见时立即刷新一次（勾选中则跳过），避免等待整个轮询周期
 const handleVisibilityChange = () => {
-  if (!document.hidden) onSearch();
+  if (document.hidden) return;
+  if (selectedIds.value.length > 0) return;
+  onSearch();
 };
 
 onMounted(() => {

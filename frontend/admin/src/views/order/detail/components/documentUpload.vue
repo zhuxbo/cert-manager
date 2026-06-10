@@ -420,25 +420,39 @@ const handleDelete = async (docId: number) => {
 };
 
 // 异步入队后轮询刷新状态（上传自动转发 / 手动兜底提交 共用）
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
 const stopPolling = () => {
   if (pollTimer) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     pollTimer = null;
   }
 };
+// 轮询间隔（秒）：前密后疏，总窗口 ~365s。SubmitDocumentJob 退避 [60,300]、tries=3，
+// 最坏末次重试约在入队后 360s 才执行，固定 2.5s×8=20s 窗口根本看不到最终状态，
+// 故拉长到覆盖最大退避；前期密集捕捉快速成功，后期 30s 间隔避免空转打后端。
+const POLL_DELAYS = [
+  2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 5, 5, 5, 5, 10, 10, 10, 15, 15, 30, 30, 30, 30,
+  30, 30, 30, 30, 30
+];
 // 轮询刷新，直到没有"待提交且未失败"的文档或达到上限
 const startPolling = () => {
   stopPolling();
-  let ticks = 0;
-  pollTimer = setInterval(async () => {
-    ticks += 1;
-    await loadDocuments();
-    const pending = documents.value.filter(
-      d => !d.submitted && !d.submit_error
-    ).length;
-    if (pending === 0 || ticks >= 8) stopPolling();
-  }, 2500);
+  let tick = 0;
+  const schedule = () => {
+    pollTimer = setTimeout(async () => {
+      await loadDocuments();
+      const pending = documents.value.filter(
+        d => !d.submitted && !d.submit_error
+      ).length;
+      tick += 1;
+      if (pending === 0 || tick >= POLL_DELAYS.length) {
+        stopPolling();
+        return;
+      }
+      schedule();
+    }, POLL_DELAYS[tick] * 1000);
+  };
+  schedule();
 };
 
 // 兜底：自动转发失败 / 漏提交时手动重试未提交的文档

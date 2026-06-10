@@ -57,7 +57,6 @@
             placeholder="请选择用户"
             :disabled="disabledFields.includes('user_id')"
             :queryParams="{ status: 1 }"
-            @change="handleUserChange"
           />
         </el-form-item>
 
@@ -672,11 +671,6 @@ const updateValidationRules = () => {
 const handleAlgChange = () => {
   // 根据加密算法设置默认密钥长度
   formData.encryption.bits = formData.encryption.alg === "rsa" ? 2048 : 256;
-};
-
-// 用户变更处理
-const handleUserChange = () => {
-  formData.organization = undefined;
 };
 
 // 切换用户时清空 organization 与已选联系人（避免残留旧用户的联系人随新用户订单一起提交，导致"联系人不存在"报错）
