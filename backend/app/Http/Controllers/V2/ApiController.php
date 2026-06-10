@@ -6,6 +6,7 @@ use App\Exceptions\ApiResponseException;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\OrderIdCompatTrait;
 use App\Models\ApiToken;
+use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Services\Order\Action;
@@ -405,9 +406,7 @@ class ApiController extends Controller
             'csr',
             'private_key',
             'cert',
-            'enc_cert',
-            'enc_key',
-            'enc_key2',
+            ...Cert::ENC_FIELDS,
             'issuer',
             'issued_at',
             'expires_at',
@@ -488,7 +487,7 @@ class ApiController extends Controller
 
         // 国密 enc 字段：仅 SM2 证书非空，非国密清理（与 private_key 同策略）。经 default source
         // （{ca.url}/get）透传给下游 manager，下游 sync 以列名 fillable 写入自身 certs.enc_*，打通多级国密链路
-        foreach (['enc_cert', 'enc_key', 'enc_key2'] as $encField) {
+        foreach (Cert::ENC_FIELDS as $encField) {
             if (empty($result[$encField])) {
                 unset($result[$encField]);
             }

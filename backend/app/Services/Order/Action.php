@@ -554,18 +554,28 @@ class Action
                 ->lockForUpdate()
                 ->get();
 
-            // 锁顺序 2：再锁 order。锁内重读权威 status（重取 order 带 latestCert 重新加载），重取失败回落到外层陈旧值
+            // 锁顺序 2：再锁 order。
             $lockedOrder = Order::with(['latestCert'])
                 ->whereHas('latestCert')
                 ->lock()
                 ->find($orderId);
-            $lockedStatus = $lockedOrder?->latestCert->status ?? $cert->status;
+
+            // 终态守卫必须按【写回目标 cert（外层 $cert，即本次 sync 的写回对象）自身】的权威 status 判定，
+            // 而非 order 当前 latestCert：上游 get 是事务外慢 IO，期间并发重签会把 order.latest_cert_id
+            // 切到新 cert B(pending)，若用 lockedOrder->latestCert(=B) 判定，旧 cert A 已 reissued 却被漏判，
+            // 导致上游滞后 status 复活 A、并误删 B 的延时 commit task（重签静默失败）。
+            // 故：order 当前 latestCert 仍是 A → 复用其锁内重载状态；已被切走 → 按 $cert->id 重读 A 自身权威状态。
+            $lockedStatus = ($lockedOrder && (int) $lockedOrder->latest_cert_id === (int) $cert->id)
+                ? $lockedOrder->latestCert->status
+                : (Cert::where('id', $cert->id)->value('status') ?? $cert->status);
 
             // 终态守卫（泛化到所有路径）：本地已是终态时拒绝上游 status 覆盖，防滞后 active 复活已退款/已重签订单
             if (in_array($lockedStatus, ['cancelled', 'revoked', 'renewed', 'reissued', 'failed'], true)) {
                 unset($data['status']);
                 // 终态订单拒绝 enc 回写：上游滞后返回的 enc 不落已终结证书（防御纵深，避免死敏感数据）
-                unset($data['enc_cert'], $data['enc_key'], $data['enc_key2']);
+                foreach (Cert::ENC_FIELDS as $encField) {
+                    unset($data[$encField]);
+                }
             }
 
             // 用锁内权威 status 重算状态变化，后续通知/回调/deleteTask 均以此为准
@@ -596,6 +606,14 @@ class Action
             }
 
             $order->save();
+            // 先把 issuer 落到模型，确保随后 update 触发 setIntermediateCertAttribute 时 issuer 已就位，
+            // 非空 intermediate_cert 在本轮即写入 chains。fill 顺序不保证 issuer 早于 intermediate_cert；
+            // 且国密（enc_cert 非空）已短路 retrieved 钩子，不能再靠"降级→次轮补写"兜底，故须签发轮确定性入 chains。
+            // 放在终态守卫之后安全：chains 是 CA 公共数据，setIntermediateCertAttribute 仅在该 issuer 无行时 create，
+            // 不复活订单状态、不影响终态守卫语义。
+            ! empty($data['issuer']) && $cert->issuer = $data['issuer'];
+            // 写回目标 cert A（外层 $cert 即 A 同一行）：终态时上面已 unset $data['status']，
+            // 故并发重签下不会复活 A；$cert 在 sync 内未被改动，update 仅写 $data 键，无 stale 回写风险。
             $cert->update($data);
         }, 3); // attempts=3：controller 直调时本事务为最外层，死锁/锁超时自动重试（上游 get 在事务外，重试只重跑锁+写回，安全）；
         // 经 TaskJob 调用时为嵌套事务，Laravel 直接抛 DeadlockException 到外层，由 TaskJob job 级重试兜底
