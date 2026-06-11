@@ -1,0 +1,39 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_国密_active_订单返回加密双证书字段___算法标记",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "order"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "total": "integer",
+                    "page": "integer",
+                    "page_size": "integer",
+                    "data": {
+                        "__list_of__": {
+                            "order_id": "integer",
+                            "domains": "string",
+                            "status": "string",
+                            "certificate": "null",
+                            "private_key": "null",
+                            "ca_certificate": "null",
+                            "issued_at": "string",
+                            "expires_at": "string",
+                            "encryption_alg": "string",
+                            "enc_certificate": "string",
+                            "enc_private_key": "string",
+                            "enc_private_key_gmt0009": "string"
+                        }
+                    },
+                    "renew_before_days": "integer"
+                }
+            }
+        }
+    ]
+}
