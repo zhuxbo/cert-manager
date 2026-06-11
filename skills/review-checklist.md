@@ -275,7 +275,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **解压走 ArchiveGuard**:zip-slip / 符号链接统一防护,备份恢复与插件 / 升级包解压共用。
 
 **真实案例**:`39cd024`(升级包 sha256 fail-closed + 强制 HTTPS,但 169.254 半修)/ `dc97990`(插件 sha256 + SSRF 双重收敛 + ArchiveGuard)/ `76a2f58`(补 link-local 拒绝 + 重定向限 https)。
-**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单 `isPrivateOrLoopbackIp`);grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugin-dev.md` `## 安全机制` + `skills/backend-dev.md` `### 归档解压统一防护`。
+**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单——**两种语义勿混用**:下载"明文 http 仅放行私网"场景用 `isPrivateOrLoopbackIp`(PluginManager/ReleaseClient);出站回调"私网必须拒绝"场景用 `IpUtil::isPrivateOrReserved`(ActionCallbackTrait,拒私网+loopback+link-local+CGNAT+多播+benchmark 等全部保留段,直接复用 isPrivateOrLoopbackIp 会放行 169.254 云元数据));grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugin-dev.md` `## 安全机制` + `skills/backend-dev.md` `### 归档解压统一防护`。
 
 ---
 

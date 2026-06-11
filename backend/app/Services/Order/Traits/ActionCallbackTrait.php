@@ -6,12 +6,16 @@ namespace App\Services\Order\Traits;
 
 use App\Models\Callback;
 use App\Models\Order;
+use App\Utils\IpUtil;
 use Illuminate\Support\Facades\Http;
 
 trait ActionCallbackTrait
 {
     /**
-     * 检查 URL 是否指向私有/内网地址（SSRF 防护）
+     * 检查 URL 是否指向私有/内网地址（SSRF 防护，白名单制）
+     *
+     * 仅公网 IP 放行；私网/loopback/link-local/CGNAT/多播等保留段
+     * 与解析失败一律拒绝（fail-closed），段清单见 IpUtil。
      */
     private function isPrivateUrl(string $url): bool
     {
@@ -20,13 +24,19 @@ trait ActionCallbackTrait
             return true;
         }
 
+        // IPv6 字面量 host 形如 [::1]
+        $host = trim($host, '[]');
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return IpUtil::isPrivateOrReserved($host);
+        }
+
         $ip = gethostbyname($host);
         // gethostbyname 解析失败时返回原始主机名
-        if ($ip === $host && ! filter_var($host, FILTER_VALIDATE_IP)) {
+        if ($ip === $host || ! filter_var($ip, FILTER_VALIDATE_IP)) {
             return true;
         }
 
-        return ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+        return IpUtil::isPrivateOrReserved($ip);
     }
 
     public function callback(int $orderId): void

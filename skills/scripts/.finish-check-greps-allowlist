@@ -1,8 +1,3 @@
 # finish-check-greps.sh 豁免清单
 # 格式：每行若干空白分隔的子串（建议"文件路径 模式片段"），命中行需同时包含所有子串才豁免；
 # 不用行号防漂移。'#' 后为注释。新增豁免必须附理由。
-#
-# 反模式 18 存量违例：回调地址 SSRF 校验仍用 FILTER_FLAG_NO_RES_RANGE 黑名单制，
-# 应改白名单 isPrivateOrLoopbackIp（同 PluginManager/ReleaseClient 范式）。
-# 改动涉及回调放行语义变化，已立独立任务跟进，暂豁免防恒红。
-backend/app/Services/Order/Traits/ActionCallbackTrait.php FILTER_FLAG_NO_RES_RANGE
