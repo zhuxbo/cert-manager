@@ -8,9 +8,6 @@ class GetIdsRequest extends BaseRequest
 {
     public function rules(): array
     {
-        return [
-            'ids' => 'required|array|max:'.config('batch.max_ids'),
-            'ids.*' => 'integer|exists:notification_templates,id',
-        ];
+        return $this->idsRules('integer|exists:notification_templates,id');
     }
 }

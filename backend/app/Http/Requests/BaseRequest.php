@@ -24,6 +24,21 @@ abstract class BaseRequest extends FormRequest
     }
 
     /**
+     * 批量 ids 校验规则
+     *
+     * $idRule 决定每个元素的规则：
+     * - exists 族传 'integer|exists:xxx,id'（任一 id 不存在则整体校验失败）；
+     * - filter 族传 'integer'（仅校验整数，由子类 passedValidation 静默剔除不存在的 id）。
+     */
+    protected function idsRules(string $idRule = 'integer'): array
+    {
+        return [
+            'ids' => 'required|array|max:'.config('batch.max_ids'),
+            'ids.*' => $idRule,
+        ];
+    }
+
+    /**
      * 通用校验文案
      *
      * 集中提供 ids 批量参数的报错文案，供所有 GetIdsRequest 共享；

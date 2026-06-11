@@ -8,9 +8,6 @@ class GetIdsRequest extends BaseRequest
 {
     public function rules(): array
     {
-        return [
-            'ids' => 'required|array|max:'.config('batch.max_ids'),
-            'ids.*' => 'integer|exists:product_prices,id',
-        ];
+        return $this->idsRules('integer|exists:product_prices,id');
     }
 }
