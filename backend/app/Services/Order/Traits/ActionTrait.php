@@ -520,7 +520,15 @@ trait ActionTrait
         try {
             $openssl = app(BinaryLocator::class)->openssl();
             $cmd = escapeshellarg($openssl).' req -in '.escapeshellarg($csrPemFile).' -outform der -out '.escapeshellarg($csrDerFile);
-            @exec($cmd.' > /dev/null 2>&1');
+            // 捕获 stderr（不再 > /dev/null 丢弃）：best-effort 语义不变，失败记日志留排障痕迹
+            $output = [];
+            @exec("$cmd 2>&1", $output, $returnCode);
+            if ($returnCode !== 0) {
+                Log::warning('CSR 转 DER 失败，Sectigo DCV 降级为仅 method', [
+                    'returnCode' => $returnCode,
+                    'output' => implode("\n", $output),
+                ]);
+            }
             $der = file_exists($csrDerFile) ? file_get_contents($csrDerFile) : null;
         } catch (BinaryNotFoundException $e) {
             Log::warning('openssl 不可用，无法生成 Sectigo DCV', ['diagnose' => $e->diagnose()]);

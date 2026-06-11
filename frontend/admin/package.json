@@ -20,6 +20,10 @@
     "lint:prettier": "prettier --write  \"src/**/*.{js,ts,json,tsx,css,scss,vue,html,md}\"",
     "lint:stylelint": "stylelint --cache --fix \"**/*.{html,vue,css,scss}\" --cache-location node_modules/.cache/stylelint/",
     "lint": "pnpm lint:eslint && pnpm lint:prettier && pnpm lint:stylelint",
+    "lint:check:eslint": "eslint --cache --max-warnings 0  \"{src,mock,build}/**/*.{vue,js,ts,tsx}\"",
+    "lint:check:prettier": "prettier --check  \"src/**/*.{js,ts,json,tsx,css,scss,vue,html,md}\"",
+    "lint:check:stylelint": "stylelint --cache \"**/*.{html,vue,css,scss}\" --cache-location node_modules/.cache/stylelint/",
+    "lint:check": "pnpm lint:check:eslint && pnpm lint:check:prettier && pnpm lint:check:stylelint",
     "preinstall": "npx only-allow pnpm"
   },
   "keywords": [

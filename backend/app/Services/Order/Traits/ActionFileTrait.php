@@ -284,15 +284,21 @@ trait ActionFileTrait
                     $cmd = escapeshellarg($openssl).' pkcs8 -in '.escapeshellarg($key).' -out '.escapeshellarg($rsaKey).' -nocrypt -traditional';
                     @exec("$cmd 2>&1", $output, $returnCode);
 
-                    // 如果 -traditional 参数失败，使用 RSA 命令转换
+                    // 如果 -traditional 参数失败，使用 RSA 命令转换（捕获 stderr，不再 > /dev/null 丢弃）
                     if ($returnCode !== 0) {
                         $cmd = escapeshellarg($openssl).' rsa -in '.escapeshellarg($key).' -out '.escapeshellarg($rsaKey).' -traditional';
-                        @exec("$cmd > /dev/null 2>&1", $output, $returnCode);
+                        $output = [];
+                        @exec("$cmd 2>&1", $output, $returnCode);
                     }
 
-                    // 只有转换成功才添加到zip
+                    // 只有转换成功才添加到zip；失败属 best-effort（仅 all 模式附加输出），记日志跳过、留排障痕迹
                     if ($returnCode === 0 && file_exists($rsaKey)) {
                         $zip->addFile($rsaKey, $certPath.'rsa_key/'.$certName.'-rsa.key');
+                    } else {
+                        Log::info('RSA 传统格式私钥转换失败，跳过 rsa_key 输出', [
+                            'returnCode' => $returnCode,
+                            'output' => implode("\n", $output),
+                        ]);
                     }
                 }
             }

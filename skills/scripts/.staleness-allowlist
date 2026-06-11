@@ -1,4 +1,7 @@
 # 反模式案例锚定豁免列表
-# 格式：每行一个 item（类/方法/文件名），# 后写理由
+# 格式：每行一个 item（类/方法/文件名/commit SHA），# 后写理由
 # 示例：
 # PackageExtractor::findRequirementsJson # 已重命名为 X，反模式描述仍成立
+
+# === commit SHA 占位符（reviewer 模板示例，非真实提交） ===
+abc1234 # review-checklist.md Reviewer 模板占位符

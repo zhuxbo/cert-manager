@@ -178,6 +178,43 @@ find_config() {
 }
 
 # ========================================
+# zip 不变量守卫
+# ========================================
+# ① backend/vendor/ 不进发布包（硬不变量：插件 vendor 由主系统 PluginComposerRunner 运行时安装）
+# ② 含 backend/composer.json 时必须同含 backend/composer.lock
+#    （缺 lock 会使 PluginComposerRunner::lockHash 恒返回 '' 破坏更新检测，composer install 退化为非锁定解析）
+verify_zip_invariants() {
+    local zip="$1"
+
+    if [ ! -f "$zip" ]; then
+        log_error "zip 不存在，无法校验不变量: $zip"
+        exit 1
+    fi
+
+    local listing
+    listing=$(unzip -l "$zip") || {
+        log_error "unzip -l 失败，zip 可能已损坏: $zip"
+        exit 1
+    }
+
+    if echo "$listing" | grep -q 'backend/vendor/'; then
+        log_error "发布包含 backend/vendor/，违反不变量（vendor 不入发布包）: $zip"
+        log_info "请在 build.json 的 exclude 中排除 backend/vendor/"
+        exit 1
+    fi
+
+    if echo "$listing" | grep -qE 'backend/composer\.json$'; then
+        if ! echo "$listing" | grep -qE 'backend/composer\.lock$'; then
+            log_error "发布包含 backend/composer.json 但缺 backend/composer.lock: $zip"
+            log_info "缺 lock 会破坏 PluginComposerRunner 更新检测，请将 backend/composer.lock 加入 build.json 的 include"
+            exit 1
+        fi
+    fi
+
+    log_success "zip 不变量校验通过（无 backend/vendor/，composer.json/lock 配对）"
+}
+
+# ========================================
 # 构建阶段
 # ========================================
 build_plugin() {
@@ -252,6 +289,8 @@ build_plugin() {
     cd "$WORK_DIR"
     zip -rq "$OUTPUT" "$NAME"
     rm -rf "$WORK_DIR"
+
+    verify_zip_invariants "$OUTPUT"
 
     local package_size=$(du -h "$OUTPUT" | cut -f1)
     log_success "打包完成: $OUTPUT ($package_size)"
@@ -489,6 +528,9 @@ if [ "$BUILD_ONLY" = false ]; then
         log_error "插件包不存在: $OUTPUT，请先构建"
         exit 1
     fi
+
+    # 发布前再校验（--publish-only 直接发布既有 zip，会绕过 build 期校验）
+    verify_zip_invariants "$OUTPUT"
 
     # 发布
     publish_remote

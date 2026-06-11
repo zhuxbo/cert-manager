@@ -1,0 +1,36 @@
+# REVIEW_PASS 门禁：finish-check §8 reviewer 签字必须留下可机器验证的审计痕迹。
+# 双通道任一命中即过：① PR body 含 "REVIEW_PASS:"；② PR commit message 含 REVIEW_PASS。
+# 该门禁防无声遗忘而非伪造；dev→main 聚合 PR 单条签字只证至少跑过一次，
+# 按批粒度的强证明不在此门禁范围。
+name: REVIEW_PASS Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  review-pass-gate:
+    name: REVIEW_PASS Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # 通道 ② 需要 base..HEAD 完整 commit 历史
+
+      - name: 校验 REVIEW_PASS 签字
+        env:
+          # body 可能为 null（GitHub 置空），经 env 注入为空串，且避免 ${{ }} 内插的脚本注入
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if printf '%s' "$PR_BODY" | grep -qF 'REVIEW_PASS:'; then
+            echo "通道 ① 命中：PR body 含 REVIEW_PASS 签字"
+            exit 0
+          fi
+          if git log "origin/$BASE_REF..HEAD" --grep='REVIEW_PASS' --oneline | grep -q .; then
+            echo "通道 ② 命中：commit message 含 REVIEW_PASS 签字"
+            exit 0
+          fi
+          echo "::error::未找到 REVIEW_PASS 签字。将 finish-check 最终报告的 REVIEW_PASS 签字行写入 commit body 要点或 PR body。该门禁防无声遗忘而非伪造；dev→main 聚合 PR 单条签字只证至少跑过一次。"
+          exit 1

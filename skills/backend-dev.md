@@ -156,7 +156,7 @@ php artisan db:structure --export       # 导出标准结构
 ### 异常处理约定
 
 - **升级流程**（`UpgradeService` / `UpgradeController`）—— PHP / composer 找不到由 preflight 阻塞，业务路径不需 catch
-- **证书下载**（`Services/Order/Traits/ActionFileTrait`）—— openssl/keytool 失败跳过对应格式（IIS PFX / Tomcat JKS），try-catch `BinaryNotFoundException` 后 `return` 跳过该段，不影响其它格式输出
+- **证书下载**（`Services/Order/Traits/ActionFileTrait`）—— 失败处理分两档（`71db6d7b`）：**用户显式请求单格式**（type=iis/tomcat）时 openssl/keytool 失败必须硬报错 + `Log::error`，绝不静默给残缺包；仅 **type=all 聚合路径**可 try-catch `BinaryNotFoundException` 后 `return` 跳过该段（best-effort），且须 returnCode + file_exists 双判 + Log 留痕、不 `> /dev/null` 丢 stderr。同族先例：SM2 绝不静默降级 RSA（`21b5ab45`）、fail-closed 拒 dual-sm2（`06e40f74`）
 - **备份/恢复**（`Services/Backup/BackupService` 链路 / `Jobs/RestoreBackupJob` / `Http/Controllers/Admin/DatabaseBackupController`）—— mysqldump/mysql 失败由 `ApiResponse` 错误返回，传 `diagnose` 到 errors 字段
 - **插件/Release 下载**（`Services/Plugin/PluginManager` / `Services/Upgrade/ReleaseClient`）—— curl 找不到回落到 `file_get_contents` 等（保持原 `ResolvesExecutablePath` null 语义）
 

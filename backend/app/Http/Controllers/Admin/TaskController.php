@@ -177,7 +177,7 @@ class TaskController extends Controller
                 $data['started_at'] = now();
             }
             $task->update($data);
-            TaskJob::dispatch(['id' => $task->id])->onQueue(config('queue.names.tasks'));
+            TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
         }
 
         $this->success();

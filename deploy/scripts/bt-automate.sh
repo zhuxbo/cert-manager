@@ -40,6 +40,8 @@ fi
 # BT 面板 API 端点动态探测（端口存在 /www/server/panel/data/port.pl）
 # 协议：BT 11.x 默认 http，启用面板 SSL 后改 https；先试 https 再 fallback http
 # 优先级：env BT_API_BASE > 探测 port.pl + 协议 > 兜底 https://127.0.0.1:8888
+# 惰性解析：不在 source 阶段执行，由 _bt_api_post 首次调用时解析
+# （source 即 curl 会让无宝塔环境下 set -e -o pipefail 的调用方直接退出；与 bt-deps.sh 调用处解析对齐）
 _resolve_bt_api_base() {
     if [ -n "${BT_API_BASE:-}" ]; then return 0; fi
     local port=""
@@ -49,9 +51,10 @@ _resolve_bt_api_base() {
     port="${port:-8888}"
 
     # 用 HEAD 探活，必须返回 HTTP 状态行才认（SSL 握手失败 / TCP 连不上都会拿不到状态行）
+    # || true：探活失败是预期分支，不让调用方的 set -e / pipefail 中断
     local proto status_line
     for proto in https http; do
-        status_line=$(curl -ksI --connect-timeout 3 --max-time 3 "$proto://127.0.0.1:$port/" 2>/dev/null | head -1)
+        status_line=$(curl -ksI --connect-timeout 3 --max-time 3 "$proto://127.0.0.1:$port/" 2>/dev/null | head -1) || true
         if echo "$status_line" | grep -qE "^HTTP/"; then
             BT_API_BASE="$proto://127.0.0.1:$port"
             return 0
@@ -60,7 +63,6 @@ _resolve_bt_api_base() {
     # 两种协议都不通 → 兜底 https（让后续 _bt_api_post 调用时的 curl 错误暴露具体问题）
     BT_API_BASE="https://127.0.0.1:$port"
 }
-_resolve_bt_api_base
 
 # 探测到的 BT_KEY（bt_resolve_key 成功后填充）
 BT_KEY="${BT_KEY:-}"
@@ -109,6 +111,9 @@ _bt_sign() {
 _bt_api_post() {
     local action_path="$1"
     local form_data="$2"
+
+    # 惰性解析 API 端点（首次调用时探测；BT_API_BASE 已设置则直接复用）
+    _resolve_bt_api_base
 
     _bt_sign || return 1
 

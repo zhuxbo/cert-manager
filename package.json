@@ -10,7 +10,8 @@
     "build:admin": "pnpm --filter admin build",
     "build:user": "pnpm --filter user build",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "lint:check": "pnpm -r lint:check"
   },
   "engines": {
     "node": ">=22.13.0",
