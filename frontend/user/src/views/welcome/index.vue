@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { getProfile } from "@/api/auth";
 import {
@@ -12,6 +12,7 @@ import PieChart from "@shared/components/Charts/PieChart.vue";
 import LineChart from "@shared/components/Charts/LineChart.vue";
 import BarChart from "@shared/components/Charts/BarChart.vue";
 import { getPluginWidgets } from "@shared/utils/plugin-loader";
+import { useLazyVisible } from "@shared/hooks";
 import type {
   AssetsData,
   OrdersData,
@@ -42,11 +43,8 @@ const monthlyComparison = ref<MonthlyComparisonData>();
 // 次批（图表）加载状态：与首批卡片解耦，进入视口后才触发
 const chartsLoading = ref(true);
 
-// 图表区域哨兵元素 + IntersectionObserver，用于延迟加载二屏图表
+// 图表区域哨兵元素：进入视口才加载二屏图表（懒加载由 useLazyVisible 统一处理）
 const chartsSentinel = ref<HTMLElement>();
-let chartsObserver: IntersectionObserver | null = null;
-// 防止 observer 多次触发或与刷新重复发起请求
-const chartsRequested = ref(false);
 
 // 二维码放大模态框
 const showQRModal = ref(false);
@@ -284,8 +282,6 @@ const fetchOverviewData = async () => {
 // 次批：图表（趋势 / 月度对比），二屏内容延后加载
 // 注：订单状态分布饼图复用首批 ordersData，无需在此重复请求
 const fetchChartsData = async () => {
-  // 标记已发起，避免 observer 重复触发；刷新时由调用方先复位
-  chartsRequested.value = true;
   try {
     chartsLoading.value = true;
 
@@ -309,48 +305,6 @@ const fetchChartsData = async () => {
   }
 };
 
-// 触发次批加载（仅首次有效）：observer 命中或兜底调用
-const triggerChartsLoad = () => {
-  if (chartsRequested.value) return;
-  disconnectChartsObserver();
-  fetchChartsData();
-};
-
-const disconnectChartsObserver = () => {
-  if (chartsObserver) {
-    chartsObserver.disconnect();
-    chartsObserver = null;
-  }
-};
-
-// 建立 IntersectionObserver，图表区域进入视口即加载次批
-const setupChartsObserver = () => {
-  if (chartsRequested.value) return;
-
-  // 环境不支持 IntersectionObserver 时直接加载，保证降级可用
-  if (typeof IntersectionObserver === "undefined") {
-    triggerChartsLoad();
-    return;
-  }
-
-  const el = chartsSentinel.value;
-  if (!el) {
-    triggerChartsLoad();
-    return;
-  }
-
-  chartsObserver = new IntersectionObserver(
-    entries => {
-      if (entries.some(entry => entry.isIntersecting)) {
-        triggerChartsLoad();
-      }
-    },
-    // 提前 200px 预加载
-    { rootMargin: "200px 0px" }
-  );
-  chartsObserver.observe(el);
-};
-
 onMounted(async () => {
   loading.value = true;
   // 首屏仅等待用户信息 + 首批关键卡片数据
@@ -359,18 +313,15 @@ onMounted(async () => {
 
   // 添加键盘事件监听
   document.addEventListener("keydown", handleKeydown);
-
-  // 等待 v-else 分支 DOM 渲染后再观察图表哨兵元素
-  await nextTick();
-  setupChartsObserver();
 });
 
 onUnmounted(() => {
   // 移除键盘事件监听
   document.removeEventListener("keydown", handleKeydown);
-  // 断开图表 observer
-  disconnectChartsObserver();
 });
+
+// 图表区域哨兵（v-else 分支挂载后）进入视口（提前 200px 预加载）即触发次批加载，仅首次有效
+useLazyVisible(chartsSentinel, fetchChartsData);
 </script>
 
 <template>

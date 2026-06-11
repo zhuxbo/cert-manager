@@ -46,6 +46,9 @@ import * as directives from "@shared/directives";
 | `@shared/components` | ReIcon, ReDialog, Auth, Perms, PureTableBar 等           |
 | `@shared/utils`      | http, auth, message, fetchMeta, renderChannelDisabled 等 |
 | `@shared/directives` | auth, perms, copy 等                                     |
+| `@shared/hooks`      | `usePolling`, `useLazyVisible` 等                        |
+
+> **列表/详情页轮询统一走 `usePolling`**（`@shared/hooks`），勿再手写 `setInterval + visibilitychange + 卸载清理` 样板。options：`interval`(默认 3min)、`shouldSkip`（列表页传 `() => selectedIds.value.length > 0`，"已勾选则跳过自动刷新"）、`immediate`（详情页 mount 立即取一次）、`keepAlive`（keep-alive 列表页，额外在 `onActivated`/`onDeactivated` 装载/暂停）。**视口懒加载**（图表区进视口才加载次批数据）走 `useLazyVisible(sentinelRef, onVisible, { rootMargin })`，含 IntersectionObserver 不支持时降级直接加载、once 守卫、卸载 disconnect。回调由调用方注入，composable 不耦合任何 admin/user 专属 API。
 
 ### 启动期 Channel 检测
 

@@ -8,7 +8,8 @@
   </div>
 </template>
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from "vue";
+import { ref } from "vue";
+import { usePolling } from "@shared/hooks/usePolling";
 import { batchShow } from "@/api/order";
 import Detail from "./detail/index.vue";
 import router from "@/router";
@@ -41,31 +42,8 @@ const getDetails = () => {
 
 // 定时刷新上提到父级：单个 batchShow 批量刷新所有卡片，替代每卡片各自 setInterval 的 N 并发，
 // 消除多卡片 / 切回前台时的请求风暴。轮询走纯读 show（batchShow），不触发上游 sync。
-// 切到后台标签页跳过本次；切回前台立即刷新一次。
-let refreshTimer: ReturnType<typeof setInterval> | null = null;
-const handleVisibilityChange = () => {
-  if (!document.hidden) getDetails();
-};
-
-onMounted(() => {
-  getDetails();
-  refreshTimer = setInterval(
-    () => {
-      if (document.hidden) return;
-      getDetails();
-    },
-    3 * 60 * 1000
-  );
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
-  if (refreshTimer !== null) {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
-});
+// 切到后台标签页跳过本次；切回前台立即刷新一次。mount 时先立即取一次。
+usePolling(getDetails, { immediate: true });
 </script>
 <style scoped lang="scss">
 .layout-main {
