@@ -6,13 +6,11 @@ use App\Models\NotificationTemplate;
 
 class TemplateSelector
 {
-    public function select(string $code): TemplateSelection
+    public function select(string $code): ?NotificationTemplate
     {
-        $template = NotificationTemplate::query()
+        return NotificationTemplate::query()
             ->where('code', $code)
             ->where('status', 1)
             ->first();
-
-        return new TemplateSelection($template);
     }
 }

@@ -459,6 +459,11 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - `max_ids=100`：所有 `GetIdsRequest` 的 ids 数量上限（`BaseRequest::messages` 统一错误文案）
 - `max_upstream=20`：batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游
+- **`GetIdsRequest` 规则单点**：共享的 `ids` 数组+max 规则收敛进 `BaseRequest::idsRules(string $idRule)`，子类 `rules()` 调它即可。**两个行为族不可混淆**：exists 族传 `'integer|exists:表名,id'`（任一 id 不存在则整体校验失败拒绝），filter 族传 `'integer'` + 各自 `passedValidation()` 用 `Model::whereIn` **静默剔除**未知 id（如 Order/Acme，UserScope 已自动限当前用户范围）。新增子类按语义选族，勿把 exists 退化为 filter 或反之。
+
+### Controllers/Concerns 共享 trait（DRY 收口）
+
+`App\Http\Controllers\Concerns` 是控制器层去重的统一去处：`ResolvesContactId`（企业-联系人 contact_id 解析）、`HandlesEnterpriseLookup`/`HandlesZipcodeLookup`（工商/邮编查询 admin·user 端逐字相同的方法体）。Admin/User 两端逐字相同的控制器方法优先抽 trait 而非复制（类名/方法名/可路由性不变，路由按类名引用）。阿里云 composer 镜像命令收敛进 `App\Services\Composer\ComposerMirror`（仅命令字符串+网络探测，执行器/`FORCE_CHINA_MIRROR`/日志保留各调用方）。
 
 ## MySQL 兼容性
 
