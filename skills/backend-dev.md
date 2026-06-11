@@ -606,6 +606,27 @@ Schema::table('products', function (Blueprint $table) {
 
 ---
 
+## 用户数据导出/清理（user:data）
+
+`php artisan user:data {export|import|purge}`，服务在 `app/Services/UserData/`：`UserDataExporter`（导出 SQL dump，仅核心表，供跨系统迁移）/ `UserDataImporter`（导入 + 冲突检测）/ `UserDataPurger`（彻底清理用户全部数据）/ `UserDataTableRegistry`（表清单与删除顺序的单一来源）。
+
+### tasks.order_id 双归属（删除/统计必须覆盖 orders + acmes）
+
+`tasks` 表**没有 `user_id` 列**，仅靠 `order_id` 间接归属，且 `order_id` 同时承载两类：
+
+- 普通订单任务 → `orders.id`
+- ACME 任务（`commit_acme`/`sync_acme`/`cancel_acme`）→ `acmes.id`（`Acme\Action` 多处 `'order_id' => $acme->id`）
+
+`orders`/`acmes` 均为全局唯一雪花 ID，二者 id 集合天然不相交，所以"这个 task 归谁"**完全由 order_id 命中哪张归属表决定，与 action 字符串无关**。`UserDataPurger::deleteTasks` 因此分两遍删：`orders` 子查询 + `acmes` 子查询（各自 `where('user_id', ...)` 限定，不会误删他人任务），不靠 `action LIKE '%_acme'` 过滤——避免 action 命名与真实归属漂移时重新制造孤儿。`getStatistics` 对 `tasks` 同样合并两张子查询计数。
+
+- **删除顺序**：`purgeOrder()` 里 `tasks`（type=`tasks`）必须排在 `orders`/`acmes` 之前，否则归属表行先删、子查询查不到 → 漏删。
+- **certs / domain_validation_records 是 Order 独有**（ACME 不产生），所以唯一需要双归属处理的间接表就是 `tasks`。
+- **exporter 不导出 tasks**（瞬时队列态，不属迁移范畴；有测试断言 `not->toContain('INSERT INTO \`tasks\`')`），故 `cleanupOrphans` 对 tasks 自然跳过，无需特殊处理。
+- 漏删后果：孤儿 task 被 `TaskJob` 唤醒后查不到对应 acme → 报错 / 失败任务噪音。
+- 测试：`tests/Feature/Commands/UserDataCommandTest.php` 覆盖"order+acme 任务都删""不误删他人任务""统计含 ACME 任务"。
+
+---
+
 ## 同步取消退款开关（site.autoRefundOnSync）
 
 多级代理场景下，上级 Manager 可能先取消订单（如其自身的 PurgeCommand 触发）；下级 Manager 的 `Order\Action::sync` 同步上游状态时，默认仅更新本地 `cert.status='cancelled'`，**不退款**。是否退款给末端用户由各级 Manager 管理员自决。

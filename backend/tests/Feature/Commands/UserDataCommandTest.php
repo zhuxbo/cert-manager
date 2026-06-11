@@ -473,6 +473,64 @@ test('purge 清理孤立的 certs（orders 缺失时）', function () {
     expect(User::find($user->id))->toBeNull();
 });
 
+// ===================== purge：tasks 表 order/acme 双归属 =====================
+
+test('purge 同时删除 order 任务和 acme 任务', function () {
+    $user = User::factory()->create(['status' => 0]);
+    $order = Order::factory()->create(['user_id' => $user->id]);
+    $acme = Acme::factory()->create(['user_id' => $user->id]);
+
+    // order 任务：order_id 指向 orders.id
+    $orderTask = Task::factory()->create(['order_id' => $order->id, 'action' => 'sync']);
+    // acme 任务：order_id 指向 acmes.id（ACME 任务复用 tasks 表）
+    $acmeTask = Task::factory()->create(['order_id' => $acme->id, 'action' => 'sync_acme']);
+
+    $this->artisan("user:data export {$user->id} --force")->assertSuccessful();
+    $this->artisan("user:data purge {$user->id} --force")->assertSuccessful();
+
+    expect(User::find($user->id))->toBeNull();
+    expect(Task::find($orderTask->id))->toBeNull();
+    expect(Task::find($acmeTask->id))->toBeNull();
+});
+
+test('purge 不误删其他用户的 order/acme 任务', function () {
+    $victim = User::factory()->create(['status' => 0]);
+    $victimOrder = Order::factory()->create(['user_id' => $victim->id]);
+    $victimAcme = Acme::factory()->create(['user_id' => $victim->id]);
+    $victimOrderTask = Task::factory()->create(['order_id' => $victimOrder->id, 'action' => 'sync']);
+    $victimAcmeTask = Task::factory()->create(['order_id' => $victimAcme->id, 'action' => 'sync_acme']);
+
+    $other = User::factory()->create(['status' => 0]);
+    $otherOrder = Order::factory()->create(['user_id' => $other->id]);
+    $otherAcme = Acme::factory()->create(['user_id' => $other->id]);
+    $otherOrderTask = Task::factory()->create(['order_id' => $otherOrder->id, 'action' => 'sync']);
+    $otherAcmeTask = Task::factory()->create(['order_id' => $otherAcme->id, 'action' => 'sync_acme']);
+
+    $this->artisan("user:data export {$victim->id} --force")->assertSuccessful();
+    $this->artisan("user:data purge {$victim->id} --force")->assertSuccessful();
+
+    // victim 两类任务都删
+    expect(Task::find($victimOrderTask->id))->toBeNull();
+    expect(Task::find($victimAcmeTask->id))->toBeNull();
+    // other 两类任务都保留
+    expect(Task::find($otherOrderTask->id))->not->toBeNull();
+    expect(Task::find($otherAcmeTask->id))->not->toBeNull();
+});
+
+test('getStatistics 统计 tasks 含 ACME 任务', function () {
+    $user = User::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id]);
+    $acme = Acme::factory()->create(['user_id' => $user->id]);
+    Task::factory()->create(['order_id' => $order->id, 'action' => 'sync']);
+    Task::factory()->create(['order_id' => $acme->id, 'action' => 'sync_acme']);
+
+    $stats = UserDataTableRegistry::getStatistics($user);
+    $taskRow = collect($stats)->first(fn ($r) => $r[0] === '任务');
+
+    expect($taskRow)->not->toBeNull();
+    expect($taskRow[1])->toBe(2);
+});
+
 // ===================== dryRun：自增表显示修复 =====================
 
 test('dry-run 雪花表显示正确的记录数和冲突检测', function () {
