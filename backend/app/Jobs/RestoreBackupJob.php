@@ -39,7 +39,13 @@ class RestoreBackupJob implements ShouldQueue
 
     public int $timeout = 3600;
 
-    public int $tries = 1;
+    // tries=5 吸收升级冻结期 SkipWhenUpgradeFrozen 的 release（每次 release 计入 attempts，
+    // tries=1 会在第二次 pop 被 MaxAttemptsExceeded 杀在 handle 之前）。handle 自身 catch 全部
+    // Throwable 写 failed 进度、不向 worker 抛，恢复失败本就不触发框架重试；maxExceptions=1 作
+    // 防御性封顶。互斥锁 3600s 串行化，同一备份恢复终态幂等，freeze 重入安全。
+    public int $tries = 5;
+
+    public int $maxExceptions = 1;
 
     public function __construct(
         public string $token,
