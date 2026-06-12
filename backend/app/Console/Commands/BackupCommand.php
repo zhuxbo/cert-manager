@@ -12,7 +12,7 @@ use Throwable;
 class BackupCommand extends Command
 {
     protected $signature = 'schedule:backup
- {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")；仅清理 backup_ 前缀文件，pre_restore_ 永不自动清理}
+ {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")；仅按天清理 backup_ 前缀，pre_restore_ 不参与（改按 config("database.backup.pre_restore_keep") 数量上限清理）}
  {--path= : 输出目录，默认 storage/databak}
  {--prefix=backup : 文件名前缀，内部调用可传 pre_restore}';
 
@@ -99,6 +99,17 @@ class BackupCommand extends Command
             $this->info("清理 $purged 个过期备份（保留 $keep 天，兜底最少保留 $minKeep 份）");
         }
 
+        // pre_restore_ 不参与上面的天数清理（恢复前保险快照，随时可能要回退），
+        // 改用数量上限兜底：防止恢复重试（tries>1）或多次恢复导致其无限累积占盘。
+        // keep<1（不限制）的语义由 purgePreRestoreSnapshots 自身处理（no-op），此处无条件调用。
+        if ($prefix === 'pre_restore') {
+            $preKeep = (int) config('database.backup.pre_restore_keep', 5);
+            $purged = $this->purgePreRestoreSnapshots($path, $preKeep);
+            if ($preKeep > 0) {
+                $this->info("清理 $purged 个旧的 pre_restore 快照（保留最近 $preKeep 份）");
+            }
+        }
+
         return CommandAlias::SUCCESS;
     }
 
@@ -122,7 +133,7 @@ class BackupCommand extends Command
     }
 
     /**
-     * 清理过期的 backup_ 前缀备份（pre_restore_ 前缀永不自动清理）。
+     * 清理过期的 backup_ 前缀备份（pre_restore_ 不参与天数清理，由 purgePreRestoreSnapshots 按数量上限清理）。
      *
      * 策略：按 mtime 倒序排序，前 $minKeep 份无论多老都保留；其余按 $keepDays 判断。
      * 这样既能"保留 30 天内"，又能防止长期不创建被清到 0 份。
@@ -142,6 +153,43 @@ class BackupCommand extends Command
                 continue;
             }
             if (filemtime($file) < $cutoff && @unlink($file)) {
+                $deleted++;
+                $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
+                if ($schema && is_file($schema)) {
+                    @unlink($schema);
+                }
+            }
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * 按数量上限清理 pre_restore_ 快照：按 mtime 倒序保留最近 $keep 份，其余成对删除（含 schema.json）。
+     *
+     * 与 purgeOldBackups（backup_ 前缀、按天清理 + min_keep 兜底）互补 —— pre_restore_ 是恢复前
+     * 保险快照，不按天清理，但需防恢复重试/多次恢复无限累积占盘，故用数量上限封顶。
+     */
+    private function purgePreRestoreSnapshots(string $dir, int $keep): int
+    {
+        // keep<1：不限制（永久保留），no-op —— 与 config 注释 "0 表示不限制" 契约自洽，
+        // 且防调用方误传 0/负数当"无限"却把快照全删的 footgun（$idx < keep 恒假会删光）。
+        if ($keep < 1) {
+            return 0;
+        }
+
+        $files = glob("$dir/pre_restore_*.sql.gz") ?: [];
+
+        // 按 mtime 降序（新在前）
+        usort($files, fn ($a, $b) => filemtime($b) <=> filemtime($a));
+
+        $deleted = 0;
+        foreach ($files as $idx => $file) {
+            // 前 keep 份（最新）无条件保留
+            if ($idx < $keep) {
+                continue;
+            }
+            if (@unlink($file)) {
                 $deleted++;
                 $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
                 if ($schema && is_file($schema)) {

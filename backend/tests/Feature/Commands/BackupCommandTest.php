@@ -24,6 +24,22 @@ function makeBackup(string $dir, string $stamp, int $daysAgo): array
 }
 
 /**
+ * 构造一个 pre_restore_ 文件及 schema.json，mtime 指定为 N 天前。
+ */
+function makePreRestore(string $dir, string $stamp, int $daysAgo): array
+{
+    $sql = $dir.'/pre_restore_'.$stamp.'.sql.gz';
+    $schema = $dir.'/pre_restore_'.$stamp.'.schema.json';
+    file_put_contents($sql, 'fake');
+    file_put_contents($schema, '{"tables":[]}');
+    $time = time() - $daysAgo * 86400;
+    touch($sql, $time);
+    touch($schema, $time);
+
+    return ['sql' => $sql, 'schema' => $schema];
+}
+
+/**
  * 用 fake handler 替换 BackupService::makeHandler，让 ensureClient 跳过 mysqldump
  * 探测、backup 写一个 fake gz 文件即返回 —— 用于让命令在测试环境跑通到真正想验证的
  * 路径（清理逻辑、prefix 校验等），不依赖本地 mysqldump 是否在标准 PATH 上。
@@ -117,7 +133,9 @@ test('min_keep 兜底：即使全部过期也至少保留 N 份最新的', funct
         ->and(is_file($oldest['sql']))->toBeFalse();
 });
 
-test('pre_restore_ 前缀永不自动清理', function () {
+test('backup_ 天数清理不波及 pre_restore_（仅 backup_ 前缀参与天数清理）', function () {
+    // 跑 backup 默认前缀的天数清理（--keep 30），pre_restore_ 不应被 purgeOldBackups 触及；
+    // pre_restore_ 自身的数量上限清理只在 --prefix pre_restore 时触发，见下方独立用例。
     $preRestore = makeBackup($this->testDir, '20260101_000001', 365); // 1 年前
     // pre_restore_ 不是 makeBackup 造的，手动搞一个
     $sqlPre = $this->testDir.'/pre_restore_20260101_000001.sql.gz';
@@ -137,6 +155,66 @@ test('pre_restore_ 前缀永不自动清理', function () {
     ]);
 
     expect(is_file($sqlPre))->toBeTrue();
+});
+
+test('pre_restore_ 超出 pre_restore_keep 时清理最旧、保留最近 N 份（成对删 schema.json）', function () {
+    // 造 4 份 pre_restore（mtime 由旧到新错开）；命令再生成第 5 份（mtime=now，最新）。
+    // pre_restore_keep=3 → 应只保留最近 3 份（新建 + 最近 2 份既有），删最旧 2 份。
+    $f40 = makePreRestore($this->testDir, '20260101_000001', 40);
+    $f30 = makePreRestore($this->testDir, '20260101_000002', 30);
+    $f20 = makePreRestore($this->testDir, '20260101_000003', 20);
+    $f10 = makePreRestore($this->testDir, '20260101_000004', 10);
+
+    config(['database.backup.pre_restore_keep' => 3]);
+
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
+        ->shouldReceive('exportCurrentStructure')
+        ->andReturn(['tables' => []]);
+
+    $exit = Artisan::call('schedule:backup', [
+        '--path' => $this->testDir,
+        '--prefix' => 'pre_restore',
+        '--keep' => 0,
+    ]);
+
+    $remaining = glob($this->testDir.'/pre_restore_*.sql.gz') ?: [];
+
+    expect($exit)->toBe(0)
+        ->and(count($remaining))->toBe(3)
+        // 最旧两份成对删除（含 schema.json）
+        ->and(is_file($f40['sql']))->toBeFalse()
+        ->and(is_file($f40['schema']))->toBeFalse()
+        ->and(is_file($f30['sql']))->toBeFalse()
+        ->and(is_file($f30['schema']))->toBeFalse()
+        // 最近两份既有保留（连同新建共 3 份）
+        ->and(is_file($f20['sql']))->toBeTrue()
+        ->and(is_file($f10['sql']))->toBeTrue();
+});
+
+test('pre_restore_keep=0 时不限制 pre_restore 数量（保留全部）', function () {
+    $a = makePreRestore($this->testDir, '20260101_000001', 40);
+    $b = makePreRestore($this->testDir, '20260101_000002', 30);
+
+    config(['database.backup.pre_restore_keep' => 0]);
+
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
+        ->shouldReceive('exportCurrentStructure')
+        ->andReturn(['tables' => []]);
+
+    $exit = Artisan::call('schedule:backup', [
+        '--path' => $this->testDir,
+        '--prefix' => 'pre_restore',
+        '--keep' => 0,
+    ]);
+
+    // 2 份既有 + 1 份新建 = 3 份全部保留
+    $remaining = glob($this->testDir.'/pre_restore_*.sql.gz') ?: [];
+    expect($exit)->toBe(0)
+        ->and(count($remaining))->toBe(3)
+        ->and(is_file($a['sql']))->toBeTrue()
+        ->and(is_file($b['sql']))->toBeTrue();
 });
 
 test('--prefix 含非法字符（大写/数字/横线）时报错并中止', function () {

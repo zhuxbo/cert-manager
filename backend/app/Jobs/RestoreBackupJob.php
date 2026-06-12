@@ -26,7 +26,7 @@ use Throwable;
  *
  * 流程：
  * 1. 获取全局互斥锁
- * 2. 先拍一个 pre_restore 保险备份（永不自动清理）
+ * 2. 先拍一个 pre_restore 保险备份（不按天清理，按 pre_restore_keep 保留最近 N 份，防重试/多次恢复累积）
  * 3. artisan down 进入维护模式
  * 4. 按模式执行恢复：
  * - full — mysql 直接吞 .sql.gz（包含 DROP/CREATE/INSERT）
