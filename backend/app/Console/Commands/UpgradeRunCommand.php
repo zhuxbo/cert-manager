@@ -17,7 +17,7 @@ class UpgradeRunCommand extends Command
     {
         $version = $this->argument('version');
 
-        // 升级流程已迁移到 upgrade.sh / 后台覆盖式（freeze + smoke + opcache 链路），
+        // 升级流程已迁移到 upgrade.sh / 后台覆盖式，
         // upgrade:run 仅作兼容入口保留；不推荐使用，改用：
         //  - 宝塔模式：管理后台 → 系统设置 → 在线升级
         //  - 命令行：./upgrade.sh --version <ver>

@@ -4,7 +4,7 @@
 
 - 升级前准备（**重要**：备份数据库）
 - 升级模式（宝塔后台 / `deploy/upgrade.sh`）
-- 升级流程（freeze / smoke test / 自动回滚）
+- 升级流程（自动覆盖升级步骤）+ 人工 freeze 加固 + smoke 检查 + 手工回滚
 - 失败处理 + 手工回滚演练
 
 > **宝塔环境手工运维注意**：本文档命令示例中的 `php` 在宝塔多版本系统下需替换为绝对路径（避免 root PATH 找到错误 PHP 版本）：
@@ -31,7 +31,7 @@ sudo -u www php artisan schedule:backup
 
 ### 检查 freeze 锁
 
-如果上一次升级失败，可能留下 freeze lock：
+如果上一次**人工 freeze 加固**未解除（升级自动流程不创建此锁），可能留下 freeze lock：
 
 ```bash
 ls /www/wwwroot/ssl-manager/backend/storage/framework/upgrade.lock
@@ -44,50 +44,52 @@ rm /www/wwwroot/ssl-manager/backend/storage/framework/upgrade.lock
 
 ## 升级模式对比
 
-| 模式                | 触发方式                   | sha256 校验      | 自动回滚               |
-| ------------------- | -------------------------- | ---------------- | ---------------------- |
-| 宝塔后台一键升级    | 后台 → 系统设置 → 在线升级 | ✅ releases.json | ✅ smoke test 失败回滚 |
-| `deploy/upgrade.sh` | SSH 直接运行               | ✅ releases.json | ✅                     |
+| 模式                | 触发方式                   | sha256 校验      | 失败回滚                                         |
+| ------------------- | -------------------------- | ---------------- | ------------------------------------------------ |
+| 宝塔后台一键升级    | 后台 → 系统设置 → 在线升级 | ✅ releases.json | ❌ 不自动；手工「备份还原」/ `/upgrade/rollback` |
+| `deploy/upgrade.sh` | SSH 直接运行               | ✅ releases.json | ❌ 不自动；`./upgrade.sh rollback`（交互确认）   |
 
 ---
 
 ## 宝塔：后台一键升级
 
-后台 → 系统设置 → 在线升级 → 选择目标版本 → 确认。流程：
+后台 → 系统设置 → 在线升级 → 选择目标版本 → 确认。前端只调 `POST /upgrade/execute`（后台据此 spawn 一个 `artisan upgrade:run` 后台进程）+ 轮询 `/upgrade/status`。`UpgradeService::performUpgradeWithStatus()` 实际流程：
 
 ```
-1.  releases.json 检查 + 下载升级包 + sha256 强校验
-2.  /api/admin/upgrade/freeze + 等排空 + supervisorctl stop manager-queue
-3.  备份代码 (zip) → storage/backup/<version>/（plugins 不动）
-4.  解压临时 → rsync 覆盖（保留 storage / .env / plugins / backups）
-5.  composer install --no-dev（升级包不含 vendor，如依赖变更则补装）
-6.  php artisan migrate --force
-7.  optimize:clear && optimize
-8.  清 bootstrap/cache/*.php
-9.  opcache 重置（POST /api/admin/upgrade/opcache-reset）
-10. 宝塔 API php_reload（如已配 BT_KEY）
-11. freeze 状态下 smoke test
-12. unfreeze
-13. supervisorctl start manager-queue
-14. 外部健康检查
+1.  releases.json 检查 + 下载升级包 + sha256 强校验（fail-closed，不匹配即删包中断）
+2.  进入维护模式 artisan down --retry 60（仅挡 HTTP；**不冻结队列、不停 worker**）
+3.  备份代码 (zip) → storage/backup/<version>/（plugins / storage / .env 保留不动）
+4.  解压临时 + 校验包 + PHP 环境检测（不达标抛 PhpEnvironmentException 中断，引导用 upgrade.sh）
+5.  rsync 覆盖（保留 storage / .env / plugins / backups）
+6.  composer install --no-dev（仅 composer.* 变更时）+ 无条件 dump-autoload
+7.  opcache_reset（进程内）
+8.  php artisan migrate --force
+9.  数据库结构校验 + 自动修复
+10. db:seed --force
+11. 清缓存（子进程 optimize:clear + config:cache + route:cache）
+12. 写版本号 + 清理临时文件 / 旧包
+13. 退出维护模式 artisan up
+14. queue:restart（常驻 worker 跑完当前 job 后退出、supervisor 自动拉起新代码——**滚动重启，非停 worker**）
 ```
+
+> **升级冻结（freeze）+ 停 worker 为人工 / 外部编排步骤，一键流程不自动执行。** 冻结锁（`POST /api/admin/upgrade/freeze` 或 `php artisan upgrade:freeze`）让 HTTP 返回 503、且队列 Job 在 `SkipWhenUpgradeFrozen` 中被 `release(60)` 暂存回队列——但它**不停止 worker 进程**；worker 不停则每 60s 逐次 release、累加 attempts，最终可能把 Job 误杀为 `MaxAttemptsExceeded`（详见 `CLAUDE.md` 升级冻结约定）。要形成"冻结 + 停 worker"双保险，须运维在宝塔面板（软件商店 → Supervisor）手工停掉队列守护进程——**程序名为站点域名**（`bt-install.sh` 按 `$SITE_DOMAIN` 创建以保多站点唯一，**不是** `manager-queue` / `ssl-manager-queue`）——升级完成后 `php artisan upgrade:unfreeze` 再重启该进程。`UpgradeService::performUpgradeWithStatus()` 与 `deploy/upgrade.sh` 当前**均不调用 freeze、也不停 worker**。
 
 ---
 
 ## smoke test 失败处理
 
-步骤 11（freeze 内部）或 14（unfreeze 后外部）失败时：
+升级后 smoke test（`POST /api/admin/upgrade/smoke` / `php artisan upgrade:smoke`）或外部健康检查未通过时（若采用了上文人工冻结加固流程）：
 
 ```
 1. **不 unfreeze**（保持 lock + HTTP 503，避免半坏新版本对外服务）
 2. 还原代码（解压 pre-upgrade-{date}.tar.gz / backup zip）
 3. 重启 HTTP 进程到旧版本
 4. 旧版本就绪后再跑一次 smoke test（确认旧版本可用）
-5. 旧版本通过 → 删 upgrade.lock → 启 worker → 报告"升级失败已自动回滚"
+5. 旧版本通过 → 删 upgrade.lock → 启 worker（程序名为站点域名）→ 报告"升级失败已回滚"
 6. 旧版本也失败 → 保持 freeze + 紧急通知 admin（邮件 / 站内信）
 ```
 
-宝塔后台 PHP 版本由 UpgradeService 控制；smoke test 失败时 UpgradeService 自动执行 1-5 步回滚。
+以上 1-6 步是**人工回滚 playbook**——升级失败**不会自动回滚**：后台一键升级失败时 `performUpgradeWithStatus()` 仅 `artisan up` 退出维护 + 标 `status=failed`，新代码留在原地；回滚须运维手工触发——后台「备份列表 → 还原」/ `POST /api/admin/upgrade/rollback` / `php artisan upgrade:rollback`（SSH 则 `./upgrade.sh rollback`，均显式/交互确认）。宝塔后台 PHP 版本由 UpgradeService 控制。
 
 ---
 
@@ -139,7 +141,7 @@ curl -H "Authorization: Bearer <admin_token>" http://your-host/api/admin/metrics
 部署前建议在测试环境完成以下演练：
 
 - [ ] 完整升级 1 次（A → B）确认所有 14 步通过
-- [ ] 故意触发 smoke test 失败（修改 backend 中某个关键路由让其 500），确认自动回滚
+- [ ] 故意制造升级失败（如让某步迁移报错），确认升级仅标 `status=failed` + 退出维护、**不自动回滚**（新代码留存，需走下一条手工 rollback）
 - [ ] 手工 rollback 1 次（A → B → rollback 回 A）
 - [ ] 数据库备份 + 还原 1 次（确认 mysqldump / gzip / mysql 链路畅通）
 - [ ] freeze 期间访问 `/api/health` 仍返回 200 但 `freeze: true`

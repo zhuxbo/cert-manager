@@ -217,7 +217,7 @@ php artisan upgrade:rollback  # 回滚
 
 - 自动创建网站
 - 写 nginx 自定义配置
-- 添加 supervisor 守护进程（manager-queue）
+- 添加 supervisor 守护进程（程序名为站点域名 `$SITE_DOMAIN`，保多站点唯一）
 - 添加 cron（schedule:run）
 
 降级路径（用户拒绝 / 未提供 `BT_KEY`）：打印手工配置步骤，体验等同现状（用户面板手工配）。

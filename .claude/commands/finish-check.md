@@ -377,7 +377,7 @@ git status --short | grep "^??"
 - 是否需要跑迁移
 - 是否需要 `php artisan config:clear` / `cache:clear`
 - 是否需要 `php artisan db:seed --class=NotificationTemplateSeeder`（新增通知模板）
-- 是否需要重启队列 worker（宝塔 Supervisor 重启 `ssl-manager-queue`）
+- 是否需要重启队列 worker（宝塔 Supervisor 重启队列进程，程序名为站点域名）
 - 前端构建产物是否需要清除 CDN 缓存
 - 插件是否需要重新发布（`plugins/release-plugin.sh`）
 
