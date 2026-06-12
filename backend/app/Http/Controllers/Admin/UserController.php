@@ -15,7 +15,7 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Utils\Random;
 use Throwable;
-use Tymon\JWTAuth\Facades\JWTAuth;
+use Tymon\JWTAuth\JWTAuth;
 
 class UserController extends BaseController
 {
@@ -228,8 +228,8 @@ class UserController extends BaseController
             $this->error('用户已被禁用');
         }
 
-        // 使用 JWTAuth 生成令牌
-        $accessToken = JWTAuth::fromUser($user);
+        // 使用 JWTAuth 生成令牌（解析底层服务类，避免 facade 静态分析失败）
+        $accessToken = app(JWTAuth::class)->fromUser($user);
 
         if (empty($accessToken)) {
             $this->error('登录令牌生成失败');
