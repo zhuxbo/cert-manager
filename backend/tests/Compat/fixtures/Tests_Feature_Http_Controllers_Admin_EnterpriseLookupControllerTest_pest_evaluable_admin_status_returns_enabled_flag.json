@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\EnterpriseLookupControllerTest::__pest_evaluable_admin_status_returns_enabled_flag",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/enterprise-lookup/status",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "enabled": "boolean"
+                }
+            }
+        }
+    ]
+}

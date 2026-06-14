@@ -56,16 +56,9 @@
                                 "email_verified_at": "string",
                                 "mobile_verified_at": "null",
                                 "notification_settings": {
-                                    "mail": {
-                                        "cert_issued": "boolean",
-                                        "cert_expire": "boolean",
-                                        "security": "boolean"
-                                    },
-                                    "sms": {
-                                        "cert_issued": "boolean",
-                                        "cert_expire": "boolean",
-                                        "security": "boolean"
-                                    }
+                                    "cert_issued": "boolean",
+                                    "cert_expire": "boolean",
+                                    "security": "boolean"
                                 },
                                 "auto_settings": {
                                     "auto_renew": "boolean",

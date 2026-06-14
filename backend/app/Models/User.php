@@ -83,6 +83,28 @@ class User extends BaseModel implements AuthenticatableContract, JWTSubject
     }
 
     /**
+     * 吊销该用户的全部现存会话（单点）。
+     *
+     * 完整动作三件套，缺一不可：
+     *  1. bump token_version —— 旧 access token 凭 JWT claim 的旧版本进入永久黑名单；
+     *  2. 写 logout_at = now() —— 中间件 checkTokenVersionGraceful 据此起算宽限期，
+     *     漏写会让旧令牌从陈旧时间起算导致行为异常；
+     *  3. 清除该用户全部 refresh token —— 旧会话无法再续期。
+     *
+     * 改密/重置/全设备登出等入口统一调用本方法，杜绝“漏改一个入口”的回归。
+     * 资金/状态语义无关，但调用方若在事务内（如改密事务）应保持，
+     * 以保证密码写入与会话吊销的原子性。
+     */
+    public function revokeAllSessions(): void
+    {
+        $this->token_version = ($this->token_version ?? 0) + 1;
+        $this->logout_at = now();
+        $this->save();
+
+        UserRefreshToken::deleteTokenByUserId($this->id);
+    }
+
+    /**
      * 获取实体的通知
      */
     public function notifications(): MorphMany

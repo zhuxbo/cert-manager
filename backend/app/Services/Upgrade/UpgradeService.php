@@ -5,6 +5,7 @@ namespace App\Services\Upgrade;
 use App\Exceptions\PhpEnvironmentException;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
+use App\Services\Composer\ComposerMirror;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +20,7 @@ class UpgradeService
         protected PackageExtractor $packageExtractor,
         protected DatabaseStructureService $databaseStructureService,
         protected EnvironmentChecker $environmentChecker,
+        protected ComposerMirror $mirror = new ComposerMirror,
     ) {}
 
     /**
@@ -653,11 +655,7 @@ class UpgradeService
      */
     protected function setAliyunMirror(string $basePath, string $composerCmd): bool
     {
-        $configCmd = sprintf(
-            'cd %s && %s config repo.packagist composer https://mirrors.aliyun.com/composer/ 2>&1',
-            escapeshellarg($basePath),
-            $composerCmd
-        );
+        $configCmd = $this->mirror->setAliyunCommand($basePath, $composerCmd);
 
         exec($configCmd, $output, $returnCode);
 
@@ -677,11 +675,7 @@ class UpgradeService
      */
     protected function resetComposerMirror(string $basePath, string $composerCmd): void
     {
-        $resetCmd = sprintf(
-            'cd %s && %s config --unset repo.packagist 2>&1',
-            escapeshellarg($basePath),
-            $composerCmd
-        );
+        $resetCmd = $this->mirror->resetCommand($basePath, $composerCmd);
 
         exec($resetCmd, $output, $returnCode);
 
@@ -695,20 +689,7 @@ class UpgradeService
      */
     protected function checkNetworkAccess(string $url, int $timeout = 3): bool
     {
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => $timeout,
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_NOBODY => true,
-        ]);
-
-        curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        unset($ch);
-
-        return $httpCode >= 200 && $httpCode < 400;
+        return $this->mirror->networkReachable($url, $timeout);
     }
 
     /**

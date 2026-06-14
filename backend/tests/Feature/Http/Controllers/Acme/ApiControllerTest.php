@@ -191,6 +191,112 @@ test('POST /api/acme/new 未传 refer_id 时 manager 兜底生成 + 未传 plus 
     expect($acme->refer_id)->toMatch('/^[0-9a-f]{32}$/');
 });
 
+test('POST /api/acme/new 显式 plus=null 时默认 1（不被解析成 0）', function () {
+    // #20：(int) input('plus', 1) 在显式传 plus=null 时默认值不生效（key 已存在），
+    // (int) null = 0，与文档默认 1 不符。修复用 (int) (input('plus') ?? 1)。
+    reloadRoutesWithoutUserChannel();
+
+    $user = User::factory()->create(['balance' => '1000.00']);
+    $rawToken = Str::random(64);
+    ApiToken::factory()->create(['user_id' => $user->id, 'token' => $rawToken, 'status' => 1]);
+
+    $product = Product::factory()->create([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+        'periods' => [12],
+    ]);
+    ProductPrice::create([
+        'product_id' => $product->id,
+        'level_code' => $user->level_code ?? 'standard',
+        'period' => 12,
+        'price' => '100.00',
+        'alternative_standard_price' => '10.00',
+        'alternative_wildcard_price' => '20.00',
+    ]);
+
+    setupAcmeApiGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => ['order_id' => 'gw-plus-null', 'eab_kid' => 'k', 'eab_hmac' => 'h'],
+        ]),
+    ]);
+
+    $response = $this->withHeaders(['Authorization' => "Bearer $rawToken"])
+        ->postJson('/api/acme/new', [
+            'product_code' => $product->code,
+            'contact_email' => 'plus-null@example.com',
+            'plus' => null,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // 外发上游 body 的 plus 必须是 1（int），而非被 (int) null 解析成 0
+    Http::assertSent(function ($request) {
+        if (! str_contains($request->url(), '/acme/new')) {
+            return false;
+        }
+        $body = json_decode($request->body(), true);
+
+        return ($body['plus'] ?? null) === 1;
+    });
+
+    $acme = Acme::withoutGlobalScopes()->find($response->json('data.order_id'));
+    expect($acme->plus)->toBe(1);
+});
+
+test('POST /api/acme/new 显式 plus=0 时仍为 0（取消赠送）', function () {
+    // 回归：plus=0 是合法显式取消赠送，修复 #20 不得把 0 也变 1
+    reloadRoutesWithoutUserChannel();
+
+    $user = User::factory()->create(['balance' => '1000.00']);
+    $rawToken = Str::random(64);
+    ApiToken::factory()->create(['user_id' => $user->id, 'token' => $rawToken, 'status' => 1]);
+
+    $product = Product::factory()->create([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+        'periods' => [12],
+    ]);
+    ProductPrice::create([
+        'product_id' => $product->id,
+        'level_code' => $user->level_code ?? 'standard',
+        'period' => 12,
+        'price' => '100.00',
+        'alternative_standard_price' => '10.00',
+        'alternative_wildcard_price' => '20.00',
+    ]);
+
+    setupAcmeApiGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => ['order_id' => 'gw-plus-zero', 'eab_kid' => 'k', 'eab_hmac' => 'h'],
+        ]),
+    ]);
+
+    $response = $this->withHeaders(['Authorization' => "Bearer $rawToken"])
+        ->postJson('/api/acme/new', [
+            'product_code' => $product->code,
+            'contact_email' => 'plus-zero@example.com',
+            'plus' => 0,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    Http::assertSent(function ($request) {
+        if (! str_contains($request->url(), '/acme/new')) {
+            return false;
+        }
+        $body = json_decode($request->body(), true);
+
+        return ($body['plus'] ?? null) === 0;
+    });
+
+    $acme = Acme::withoutGlobalScopes()->find($response->json('data.order_id'));
+    expect($acme->plus)->toBe(0);
+});
+
 test('POST /api/acme/new period 入参透传：多年期产品支持显式传 period 落库', function () {
     reloadRoutesWithoutUserChannel();
 

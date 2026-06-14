@@ -1,0 +1,48 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AcmeControllerTest::__pest_evaluable_batchShow_首个_unpaid_null__不污染同_ca_后续_active_的_directory__url",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/acme/batch",
+            "request_keys": [
+                "ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "product_id": "integer",
+                            "brand": "string",
+                            "period": "integer",
+                            "purchased_standard_count": "integer",
+                            "purchased_wildcard_count": "integer",
+                            "vendor_id": "null",
+                            "contact_email": "string",
+                            "eab_kid": "string",
+                            "eab_hmac": "string",
+                            "period_from": "string",
+                            "period_till": "string",
+                            "cancelled_at": "null",
+                            "status": "string",
+                            "remark": "null",
+                            "amount": "string",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "product": {
+                                "id": "integer",
+                                "name": "string",
+                                "product_type": "string",
+                                "ca": "string"
+                            },
+                            "directory_url": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

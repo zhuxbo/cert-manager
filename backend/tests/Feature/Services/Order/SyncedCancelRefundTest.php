@@ -511,3 +511,31 @@ test('#12 上游 revoked + action=new + 开关开：走 sync 默认路径，不�
     // revoked 无退款：余额仍为 0
     expect($user->refresh()->balance)->toBe('0.00');
 });
+
+test('#15 force=true 退款分支静默返回：V1/V2 get 直调 sync(force) 不被 success 异常打断', function () {
+    // Bug 回归：refundForSyncedCancel 分支原先无条件 $this->success()，未用 $force 守卫。
+    // force=true（V1/V2 ApiController::get 无 try-catch 直调 sync）会被 ApiResponseException(code=1) 打断，
+    // 使 get 返回空 {code:1} 而非订单数据。本用例直接调 sync(force=true) 且【不捕获异常】，
+    // 修复前抛异常致测试失败、修复后静默返回；同时退款仍须正确完成。
+    Setting::setValue('site', 'autoRefundOnSync', true);
+
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = $this->createTestProduct(['refund_period' => 30]);
+    $order = $this->createTestOrder($user, $product, [
+        'amount' => '100.00',
+        'purchased_standard_count' => 1,
+        'purchased_wildcard_count' => 0,
+    ]);
+    $this->createTestCert($order, ['status' => 'processing', 'action' => 'new', 'api_id' => 'test-api-id-15']);
+
+    createOrderTransaction($user->id, $order->id, '-100.00');
+    mockOrderApiGet('cancelled');
+
+    // 关键：模拟 get 的真实调用方式，不包 try-catch。修复前此处会抛 ApiResponseException(code=1)。
+    app(Action::class)->sync($order->id, true);
+
+    // 退款仍正确：cert 置 cancelled、生成 cancel Transaction、余额退回
+    expect($order->latestCert()->first()->status)->toBe('cancelled');
+    expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
+    expect($user->refresh()->balance)->toBe('100.00');
+});

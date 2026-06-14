@@ -11,6 +11,13 @@ use Plugins\Invoice\Models\Invoice;
 
 class InvoiceExternalController extends Controller
 {
+    /**
+     * 单次 pending 拉取返回的最大条数。
+     * 防止待开票记录堆积时全量返回拖垮内存/响应；
+     * 对接方通过 since 游标分批增量拉取。
+     */
+    public const MAX_PENDING_ITEMS = 500;
+
     public function pending(Request $request): void
     {
         $since = (int) $request->query('since', 0);
@@ -25,7 +32,7 @@ class InvoiceExternalController extends Controller
 
         $items = $query->select([
             'id', 'amount', 'organization', 'taxation', 'email', 'remark', 'created_at',
-        ])->get();
+        ])->limit(self::MAX_PENDING_ITEMS)->get();
 
         $this->success(['items' => $items]);
     }

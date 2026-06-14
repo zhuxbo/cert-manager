@@ -30,7 +30,8 @@ import {
   ElTooltip,
   ElSelect,
   ElOption,
-  ElDialog
+  ElDialog,
+  ElMessageBox
 } from "element-plus";
 import { useRouter } from "vue-router";
 
@@ -389,9 +390,47 @@ const handleUpgrade = async (version: string = "latest") => {
       upgrading.value = false;
       message("启动升级任务失败", { type: "error" });
     }
-  } catch {
+  } catch (err: any) {
     upgrading.value = false;
-    message("升级请求失败", { type: "error" });
+    // preflight 阻塞返回 HTTP 503 + data.blocking[{code,reason,fix}]，逐条展示可执行修复指引
+    const blocking = err?.response?.data?.data?.blocking;
+    if (
+      err?.response?.status === 503 &&
+      Array.isArray(blocking) &&
+      blocking.length
+    ) {
+      // 后端 blocking 文案目前为硬编码，但 dangerouslyUseHTMLString 下仍转义字段，防未来引入动态内容造成 HTML 注入
+      const esc = (s?: string) =>
+        String(s ?? "").replace(
+          /[&<>"']/g,
+          c =>
+            (
+              ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;"
+              }) as Record<string, string>
+            )[c]
+        );
+      const html = blocking
+        .map(
+          (b: { reason?: string; code?: string; fix?: string }) =>
+            `<p style="margin:0 0 10px"><strong>${esc(b.reason || b.code || "前置检查未通过")}</strong>` +
+            (b.fix
+              ? `<br/><span style="color:#909399">${esc(b.fix)}</span>`
+              : "") +
+            "</p>"
+        )
+        .join("");
+      ElMessageBox.alert(html, "升级前置检查未通过", {
+        dangerouslyUseHTMLString: true,
+        confirmButtonText: "我知道了"
+      });
+    } else {
+      message("升级请求失败", { type: "error" });
+    }
   }
 };
 

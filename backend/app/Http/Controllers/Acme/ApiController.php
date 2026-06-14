@@ -33,7 +33,7 @@ class ApiController extends Controller
      * 创建 ACME 订单（一步到位：创建 + 支付 + 提交）
      *
      * 入参与上游 /api/acme/new 字段对齐：product_code / contact_email / plus / refer_id
-     * + period（manager 提前增加，预留 Certum 多年期产品；未传默认 12）
+     * + period（manager 提前增加，预留 Certum 多年期产品；未传则取产品默认周期 product.periods[0]）
      * 域名额度由 product.standard_max / wildcard_max 自动推断
      */
     public function new(): void
@@ -62,9 +62,10 @@ class ApiController extends Controller
         $params = [
             'user_id' => $this->user_id,
             'product_id' => $product->id,
-            'plus' => (int) $this->request->input('plus', 1),
+            // 显式传 plus=null 时 input 第二参默认值不生效（key 已存在），用 ?? 兜底文档默认 1
+            'plus' => (int) ($this->request->input('plus') ?? 1),
             'contact_email' => $this->request->input('contact_email'),
-            'refer_id' => $this->request->input('refer_id') ?: null,
+            'refer_id' => $this->request->filled('refer_id') ? $this->request->input('refer_id') : null,
             'channel' => 'api',
         ];
         if ($this->request->filled('period')) {

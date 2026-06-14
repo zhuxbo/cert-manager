@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Exceptions\ApiResponseException;
 use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Models\OrderDocument;
 use App\Services\Order\Action;
@@ -53,14 +54,24 @@ class SubmitDocumentJob implements ShouldQueue
      */
     public function failed(Throwable $e): void
     {
+        // ApiResponseException 的 getMessage() 恒为空（可读消息在 getApiResponse()['msg']），
+        // 直接用 getMessage() 会把 submitDocument 已写入的可读错误抹成空串。
+        $message = $e instanceof ApiResponseException
+            ? (string) ($e->getApiResponse()['msg'] ?? '')
+            : $e->getMessage();
+        if ($message === '') {
+            $message = $e::class;
+        }
+
         $doc = OrderDocument::find($this->documentId);
-        if ($doc && ! $doc->submitted) {
-            $doc->update(['submit_error' => mb_substr($e->getMessage(), 0, 255)]);
+        // 仅在尚无可读错误时回填：submitDocument 每次失败都已记录更具体的原因，不应被兜底覆盖
+        if ($doc && ! $doc->submitted && ! $doc->submit_error) {
+            $doc->update(['submit_error' => mb_substr($message, 0, 255)]);
         }
 
         Log::error('[document.submit.failed] 文档提交上游重试耗尽', [
             'document_id' => $this->documentId,
-            'message' => $e->getMessage(),
+            'message' => $message,
         ]);
     }
 }

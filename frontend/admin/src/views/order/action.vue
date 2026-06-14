@@ -57,7 +57,6 @@
             placeholder="请选择用户"
             :disabled="disabledFields.includes('user_id')"
             :queryParams="{ status: 1 }"
-            @change="handleUserChange"
           />
         </el-form-item>
 
@@ -408,16 +407,22 @@ const encryptionAlgOptions = computed(() => {
 
 // 密钥长度选项
 const keyBitsOptions = computed(() => {
-  return formData.encryption.alg === "rsa"
-    ? [
-        { label: "2048", value: 2048 },
-        { label: "4096", value: 4096 }
-      ]
-    : [
-        { label: "256", value: 256 },
-        { label: "384", value: 384 },
-        { label: "512", value: 512 }
-      ];
+  if (formData.encryption.alg === "rsa") {
+    return [
+      { label: "2048", value: 2048 },
+      { label: "4096", value: 4096 }
+    ];
+  }
+  // SM2 固定 256 位（与后端 CsrUtil 强制一致）
+  if (formData.encryption.alg === "sm2") {
+    return [{ label: "256", value: 256 }];
+  }
+  // ECDSA
+  return [
+    { label: "256", value: 256 },
+    { label: "384", value: 384 },
+    { label: "521", value: 521 }
+  ];
 });
 
 // 摘要算法选项
@@ -668,16 +673,12 @@ const handleAlgChange = () => {
   formData.encryption.bits = formData.encryption.alg === "rsa" ? 2048 : 256;
 };
 
-// 用户变更处理
-const handleUserChange = () => {
-  formData.organization = undefined;
-};
-
-// 切换用户时清空 organization select
+// 切换用户时清空 organization 与已选联系人（避免残留旧用户的联系人随新用户订单一起提交，导致"联系人不存在"报错）
 watch(
   () => formData.user_id,
   () => {
     formData.organization = null;
+    formData.contact = null;
     orgSelectRefreshKey.value = Date.now();
   }
 );
@@ -753,6 +754,32 @@ const productSelected = (productId: any) => {
       formData.csr_generate = 0;
     }
 
+    // 加密选项随产品校正（仅新建/批量申请；续费、重签由 loadOrderInfo 回填原算法，不在此覆盖以防静默降级）
+    if (["apply", "batchApply"].includes(props.actionType)) {
+      const algMenu = (data.encryption_alg ?? []).map((item: string) =>
+        item.toLowerCase()
+      );
+      // 不兼容才切：当前算法不在产品支持列表内时，切到产品首选并联动密钥长度
+      if (algMenu.length && !algMenu.includes(formData.encryption.alg)) {
+        formData.encryption.alg = algMenu[0];
+        handleAlgChange();
+      }
+      const digestMenu = (data.signature_digest_alg ?? []).map((item: string) =>
+        item.toLowerCase()
+      );
+      if (
+        digestMenu.length &&
+        !digestMenu.includes(formData.encryption.digest_alg)
+      ) {
+        formData.encryption.digest_alg = digestMenu[0];
+      }
+      // SM2 强制 256 位 + SM3 摘要（与后端 CsrUtil 对齐）
+      if (formData.encryption.alg === "sm2") {
+        formData.encryption.bits = 256;
+        formData.encryption.digest_alg = "sm3";
+      }
+    }
+
     // 更新验证规则（根据产品类型）
     updateValidationRules();
 
@@ -808,6 +835,30 @@ const loadOrderInfo = (id: number) => {
     // 如果 alternative_name_types.length = 0，则 domains = data.latest_cert.common_name
     if (data.product?.alternative_name_types?.length === 0) {
       formData.domains = data.latest_cert.common_name;
+    }
+
+    // 续费/重签：回填原证书加密算法，避免默认 rsa 导致原 ECDSA/SM2 证书静默降级
+    // （后端 initParams 亦有兜底；此处让 UI 默认值与实际算法一致，用户仍可主动改）
+    const lastAlg = String(
+      data.latest_cert?.encryption_alg ?? ""
+    ).toLowerCase();
+    const lastDigest = String(
+      data.latest_cert?.signature_digest_alg ?? ""
+    ).toLowerCase();
+    if (lastAlg === "sm2") {
+      formData.encryption = { alg: "sm2", bits: 256, digest_alg: "sm3" };
+    } else if (lastAlg === "ecdsa") {
+      formData.encryption = {
+        alg: "ecdsa",
+        bits: Number(data.latest_cert?.encryption_bits) || 256,
+        digest_alg: lastDigest || "sha256"
+      };
+    } else if (lastAlg === "rsa") {
+      formData.encryption = {
+        alg: "rsa",
+        bits: Number(data.latest_cert?.encryption_bits) || 2048,
+        digest_alg: lastDigest || "sha256"
+      };
     }
 
     // 设置order_id (原订单ID)

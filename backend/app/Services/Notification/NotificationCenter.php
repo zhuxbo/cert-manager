@@ -27,14 +27,12 @@ class NotificationCenter
             return;
         }
 
-        $selection = $this->templateSelector->select($intent->code);
-        if ($selection->isEmpty()) {
+        $template = $this->templateSelector->select($intent->code);
+        if ($template === null) {
             $this->logSkip($intent, '通知模板不存在或未启用');
 
             return;
         }
-
-        $template = $selection->template();
 
         foreach ($this->channelManager->channels() as $name => $channel) {
             try {

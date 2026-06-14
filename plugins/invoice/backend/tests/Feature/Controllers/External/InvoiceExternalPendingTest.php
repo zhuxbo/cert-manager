@@ -2,7 +2,9 @@
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Plugins\Invoice\Controllers\External\InvoiceExternalController;
 use Plugins\Invoice\Models\Invoice;
 use Plugins\Invoice\Services\InvoiceConfig;
 use Tests\TestCase;
@@ -11,6 +13,7 @@ uses(TestCase::class, RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
+    InvoiceConfig::resetCache();
     InvoiceConfig::set('external_token', 'tok');
 });
 
@@ -68,4 +71,39 @@ it('excludes status=1 and status=2', function () {
     $items = $response->json('data.items');
     expect(count($items))->toBe(1);
     expect($items[0]['id'])->toBe($pending->id);
+});
+
+it('caps the number of pending invoices returned at the upstream limit', function () {
+    $limit = InvoiceExternalController::MAX_PENDING_ITEMS;
+    $user = User::factory()->create();
+
+    // 批量直插（绕过模型事件）造 limit + 50 条待开票记录，验证封顶
+    $now = now()->toDateTimeString();
+    $rows = [];
+    for ($i = 1; $i <= $limit + 50; $i++) {
+        $rows[] = [
+            'id' => $i,
+            'user_id' => $user->id,
+            'amount' => 1.00,
+            'organization' => 'ACME',
+            'taxation' => '111',
+            'email' => 'a@example.com',
+            'remark' => '',
+            'status' => 0,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
+    }
+    foreach (array_chunk($rows, 200) as $chunk) {
+        DB::table('invoices')->insert($chunk);
+    }
+
+    $response = $this->withHeaders(['Authorization' => 'Bearer tok'])
+        ->getJson('/api/invoice/external/pending');
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    $items = $response->json('data.items');
+    expect(count($items))->toBe($limit);
+    // 封顶取最小 id（asc），首条应为 id=1
+    expect($items[0]['id'])->toBe(1);
 });

@@ -39,6 +39,7 @@ class UserDataPurger
         foreach (UserDataTableRegistry::purgeOrder() as $item) {
             match ($item['type']) {
                 'notification' => $this->deleteNotifications($user),
+                'tasks' => $this->deleteTasks($user),
                 'indirect' => $this->deleteIndirectTable($item['table'], $item['name'], $user),
                 'direct' => $this->deleteDirectTable($item['table'], $item['name'], $user->id),
             };
@@ -109,6 +110,50 @@ class UserDataPurger
             $count,
             $name
         );
+    }
+
+    /**
+     * 删除任务表（tasks.order_id 既可能指向 orders.id，也可能指向 acmes.id）
+     *
+     * tasks 没有 user_id 列，仅靠 order_id 间接归属。ACME 任务（commit_acme/sync_acme/
+     * cancel_acme）把 acmes.id 写入 order_id，普通订单任务写入 orders.id。orders/acmes
+     * 均为全局唯一雪花 ID，二者 id 集合天然不相交，所以按「order_id 落在哪张归属表」路由
+     * 即可——分别用 orders、acmes 子查询删除，覆盖两类任务且不会误删其他用户的任务。
+     * 必须在 orders/acmes 行被删除之前执行（purgeOrder 已保证顺序）。
+     *
+     * @throws Throwable
+     */
+    private function deleteTasks(User $user): void
+    {
+        if (! DB::getSchemaBuilder()->hasTable('tasks')) {
+            return;
+        }
+
+        $owners = [
+            'orders' => '订单任务',
+            'acmes' => 'ACME任务',
+        ];
+
+        foreach ($owners as $ownerTable => $label) {
+            if (! DB::getSchemaBuilder()->hasTable($ownerTable)) {
+                continue;
+            }
+
+            $subQuery = fn ($q) => $q->select('id')->from($ownerTable)->where('user_id', $user->id);
+
+            $count = DB::table('tasks')->whereIn('order_id', $subQuery)->count();
+            if ($count === 0) {
+                continue;
+            }
+
+            $this->output->writeln("删除$label ($count 条)...");
+            $this->deleteInChunks(
+                fn () => DB::table('tasks')->whereIn('order_id', $subQuery)->limit($this->chunkSize)->delete(),
+                fn () => DB::table('tasks')->whereIn('order_id', $subQuery)->count(),
+                $count,
+                $label
+            );
+        }
     }
 
     /**

@@ -70,6 +70,12 @@ class ApiController extends Controller
                 }
             }
 
+            // 国密(SM2)双证书不支持单证书字段拉取（certimate 等自动部署会拿到残缺的签名证书）。
+            // 前端已隐藏自动部署入口，此处后端兜底防 deploy token 直调绕过（反模式 2/17 防绕过）。
+            if (strtolower((string) $cert->encryption_alg) === 'sm2') {
+                abort(400, '国密证书为签名+加密双证书，不支持自动部署字段拉取，请下载完整国密包手动部署');
+            }
+
             $pem = $field === 'certificate'
                 ? rtrim((string) $cert->cert)."\n".(string) $cert->intermediate_cert
                 : (string) $cert->private_key;
@@ -475,6 +481,21 @@ class ApiController extends Controller
             $data['ca_certificate'] = $cert->intermediate_cert;
             $data['issued_at'] = $cert->issued_at?->toDateString();
             $data['expires_at'] = $cert->expires_at?->toDateString();
+
+            // 国密(SM2)：附加密证书 + 加密私钥（双证书）并标记算法，供国密客户端/下游代理拿完整数据；
+            // certimate 等单证书自动部署不支持国密，已在 query field 拉取处拒绝。
+            if (strtolower((string) $cert->encryption_alg) === 'sm2') {
+                $data['encryption_alg'] = 'sm2';
+                // 加密证书 + 加密私钥成对才下发（与下载包 addSm2CertToZip 成对守卫同口径）：
+                // 缺任一（gateway 未就绪）则不附 enc，避免下游拿到"有证书无私钥"的残缺数据
+                if ($cert->enc_cert && $cert->enc_key) {
+                    $data['enc_certificate'] = $cert->enc_cert;
+                    $data['enc_private_key'] = $cert->enc_key;
+                    if ($cert->enc_key2) {
+                        $data['enc_private_key_gmt0009'] = $cert->enc_key2;
+                    }
+                }
+            }
         }
 
         // 文件验证信息：processing 状态且 DCV 方式为文件类

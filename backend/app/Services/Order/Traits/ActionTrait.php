@@ -40,28 +40,27 @@ trait ActionTrait
      */
     protected function checkDuplicate(string $action, array $params, int $expire = 60): int
     {
-        $paramsMd5 = md5(json_encode($params));
-        $cacheKey = $action.'_'.$paramsMd5;
+        $cacheKey = $action.'_'.md5(json_encode($params));
 
-        // 获取上次缓存的时间戳
-        $lastTime = Cache::get($cacheKey);
-
-        // 提示在缓存剩余时间内不能重复提交
-        if ($lastTime) {
-            $remainingTime = $lastTime + $expire - time();
-
-            // 确保返回值在 0-$expire 之间
-            return max(0, min($remainingTime, $expire));
-        }
-
-        // 更新缓存时间
+        // 原子占位：Cache::add 仅在 key 不存在时写入（SETNX 语义），并发下只有一个请求抢占成功，
+        // 避免 get 判断 + set 写入之间的 check-then-act 窗口被并发击穿
         try {
-            Cache::set($cacheKey, time(), $expire);
+            if (Cache::add($cacheKey, time(), $expire)) {
+                return 0; // 抢占成功 → 放行
+            }
         } catch (Throwable $e) {
             app(ApiExceptions::class)->logException($e);
+
+            return 0; // 缓存故障降级放行，不阻塞业务
         }
 
-        return 0;
+        // 未抢到（add 返回 false = key 已存在、有占位、疑似重复）：读剩余秒数仅为友好提示。
+        // 此处 Cache::get 故意不 try-catch：add 已证明有占位，get 若失败应让异常抛出走 fail-closed（拒绝），
+        // 绝不可 catch 后 return 0 放行——那会放行已知重复。与上方 add 抛异常的 fail-open 方向相反
+        // （add 挂 = 是否重复未知 → 放行不阻塞业务，资金安全由 DB 唯一索引/CAS/锁兜底）。
+        $lastTime = Cache::get($cacheKey);
+
+        return $lastTime ? max(0, min($lastTime + $expire - time(), $expire)) : 0;
     }
 
     /**
@@ -73,6 +72,12 @@ trait ActionTrait
         $params = FilterUtil::filterParamsField($params);
 
         $params['params'] = $params;
+
+        // SM2 下单前探测国密 openssl 能力（fail-closed 后端兜底；不可用即拒，绝不静默签错）
+        $this->guardSm2Capable($params['encryption']['alg'] ?? null);
+
+        // 续费/重签从原证书继承的加密算法（在 validate 之后注入，见下方）
+        $inheritedEncryption = null;
 
         if ($params['action'] == 'new') {
             $params['user_id'] = (int) ($params['user_id'] ?? 0);
@@ -132,6 +137,16 @@ trait ActionTrait
             $params['last_cert_id'] = $order->latestCert->id;
             $params['last_cert'] = $order->latestCert->toArray();
 
+            // 续费/重签未显式指定算法时，从原证书继承（防止 reuse_csr=0 重新生成 CSR 时
+            // getEncryptionParams 回落默认 RSA，导致原 ECDSA/SM2 证书静默降级为 RSA）。
+            // 仅记录、不立即写入 $params['encryption']：继承的是已签发证书的原算法，应在
+            // validate 之后再注入，避免被当前产品 encryption_alg 菜单校验阻断存量证书续签。
+            if (empty($params['encryption']['alg'])) {
+                $inheritedEncryption = $this->inheritEncryptionFromLastCert($order->latestCert);
+                // 继承出 SM2 但国密 openssl 不可用 → 早报错（决策①：保持 SM2，绝不静默降级 RSA）
+                $this->guardSm2Capable($inheritedEncryption['alg'] ?? null);
+            }
+
             // 续费默认继承旧订单的自动续费/重签设置（除非显式传入）
             if ($params['action'] === 'renew') {
                 if (! array_key_exists('auto_renew', $params)) {
@@ -166,7 +181,45 @@ trait ActionTrait
 
         ValidatorUtil::validate($params);
 
+        // 继承的原算法在 validate 之后注入：仅供 getCert 生成 CSR 用，不受产品菜单校验
+        // （显式传入的 encryption 已在上方 validate 把关；此处仅注入"缺省时从原证书继承"的值）
+        if ($inheritedEncryption !== null) {
+            $params['encryption'] = $inheritedEncryption;
+        }
+
         return $params;
+    }
+
+    /**
+     * 国密(SM2)能力探测 gate：alg=sm2 时探测国密 openssl 是否可用，不可用即 fail-closed 拒绝。
+     * 替代旧的 gmEnabled 业务开关——本机能否生成 SM2 CSR 由探测决定，不留人工开关、不留半残环境。
+     * 早 gate（拦显式 SM2 入参）与继承后（拦从原证书继承出的 SM2）共用此单点，均在事务前。
+     */
+    protected function guardSm2Capable(?string $alg): void
+    {
+        if (strtolower((string) $alg) !== 'sm2') {
+            return;
+        }
+
+        try {
+            app(BinaryLocator::class)->gmOpenssl();
+        } catch (BinaryNotFoundException $e) {
+            $this->error('国密(SM2)环境不可用（需 openssl 能签 id-ecPublicKey 标准编码，OpenSSL ≥3.0.13 实测可用）：'.$e->getMessage());
+        }
+    }
+
+    /**
+     * 续费/重签从原证书继承加密算法（alg/bits/digest）。
+     * 证书列存大写（SM2/RSA/SHA256），统一 strtolower 归一；
+     * bits/digest 的合法性与 SM2 强制（SM2/sm3/256）交给 CsrUtil::getEncryptionParams。
+     */
+    protected function inheritEncryptionFromLastCert(Cert $lastCert): array
+    {
+        return [
+            'alg' => strtolower((string) $lastCert->encryption_alg),
+            'bits' => (int) $lastCert->encryption_bits,
+            'digest_alg' => strtolower((string) $lastCert->signature_digest_alg),
+        ];
     }
 
     /**
@@ -467,7 +520,15 @@ trait ActionTrait
         try {
             $openssl = app(BinaryLocator::class)->openssl();
             $cmd = escapeshellarg($openssl).' req -in '.escapeshellarg($csrPemFile).' -outform der -out '.escapeshellarg($csrDerFile);
-            @exec($cmd.' > /dev/null 2>&1');
+            // 捕获 stderr（不再 > /dev/null 丢弃）：best-effort 语义不变，失败记日志留排障痕迹
+            $output = [];
+            @exec("$cmd 2>&1", $output, $returnCode);
+            if ($returnCode !== 0) {
+                Log::warning('CSR 转 DER 失败，Sectigo DCV 降级为仅 method', [
+                    'returnCode' => $returnCode,
+                    'output' => implode("\n", $output),
+                ]);
+            }
             $der = file_exists($csrDerFile) ? file_get_contents($csrDerFile) : null;
         } catch (BinaryNotFoundException $e) {
             Log::warning('openssl 不可用，无法生成 Sectigo DCV', ['diagnose' => $e->diagnose()]);
@@ -941,13 +1002,11 @@ trait ActionTrait
         $parsed = openssl_x509_parse($cert);
         $parsed || $this->error('证书解析失败');
 
-        $encryption = $parsed['signatureTypeSN'] ?? '';
-        $encryption = explode('-', $encryption);
+        $encryption = explode('-', $parsed['signatureTypeSN'] ?? '');
 
-        // 从证书内容中获取公钥
+        // 从证书内容中获取公钥（SM2 在部分老 openssl 上取不到，守护防 openssl_pkey_get_details(false) 报错）
         $pubKeyId = openssl_pkey_get_public($cert);
-        // 从公钥中获取详细信息
-        $keyDetails = openssl_pkey_get_details($pubKeyId);
+        $keyDetails = $pubKeyId ? openssl_pkey_get_details($pubKeyId) : [];
 
         $data['issuer'] = $parsed['issuer']['CN'] ?? '';
         $data['serial_number'] = $parsed['serialNumberHex'] ?? '';
@@ -958,7 +1017,44 @@ trait ActionTrait
         $data['issued_at'] = $parsed['validFrom_time_t'] ?? 0;
         $data['expires_at'] = $parsed['validTo_time_t'] ?? 0;
 
+        // SM2 国密证书：OpenSSL ≥1.1.1 正常解析即得 SM2-SM3/256；老版可能 signatureTypeSN=UNDEF、
+        // 公钥取不到 bits，故 DER OID 兜底确认后固定 SM2/SM3/256（SM2 公钥恒 256 位），避免降级出错值。
+        if ($this->isSM2Cert($cert, $data['encryption_alg'])) {
+            $data['encryption_alg'] = 'SM2';
+            $data['signature_digest_alg'] = 'SM3';
+            $data['encryption_bits'] = 256;
+        }
+
         return $data;
+    }
+
+    /**
+     * 检测 SM2 国密证书：signatureTypeSN 已含 SM2 直接判定；否则解码 DER 查 SM2 签名/公钥 OID 兜底。
+     */
+    protected function isSM2Cert(string $cert, string $detectedAlg): bool
+    {
+        if (stripos($detectedAlg, 'SM2') !== false) {
+            return true;
+        }
+
+        // 性能短路：signatureTypeSN 已明确解析出非 SM2 算法（RSA/ECDSA 等）时直接判否，无需解 DER；
+        // 仅 SM2 在老 openssl 上 signatureTypeSN 才会是 UNDEF/空，需走下方 OID 兜底
+        if ($detectedAlg !== '' && strcasecmp($detectedAlg, 'UNDEF') !== 0) {
+            return false;
+        }
+
+        if (! preg_match('/-----BEGIN[^-]+-----(.+?)-----END/s', $cert, $m)) {
+            return false;
+        }
+
+        $der = (string) base64_decode(preg_replace('/\s+/', '', $m[1]) ?? '', true);
+        if ($der === '') {
+            return false;
+        }
+
+        // SM2 签名 OID 1.2.156.10197.1.501 / SM2 公钥 OID 1.2.156.10197.1.301
+        return str_contains($der, hex2bin('06082A811CCF55018375'))
+            || str_contains($der, hex2bin('06082A811CCF5501822D'));
     }
 
     /**

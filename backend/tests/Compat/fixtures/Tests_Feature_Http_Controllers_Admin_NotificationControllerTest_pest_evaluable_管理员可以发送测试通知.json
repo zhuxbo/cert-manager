@@ -6,7 +6,6 @@
             "method": "POST",
             "uri_pattern": "/api/admin/notification/test-send",
             "request_keys": [
-                "channels",
                 "notifiable_id",
                 "notifiable_type",
                 "template_type"

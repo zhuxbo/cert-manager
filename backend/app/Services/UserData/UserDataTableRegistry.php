@@ -114,7 +114,8 @@ class UserDataTableRegistry
             // 2. 间接关联（必须在 orders 之前删除）
             ['table' => 'domain_validation_records', 'name' => '域名验证记录', 'type' => 'indirect'],
             ['table' => 'certs', 'name' => '证书', 'type' => 'indirect'],
-            ['table' => 'tasks', 'name' => '任务', 'type' => 'indirect'],
+            // tasks.order_id 同时承载 orders.id 与 acmes.id（ACME 任务），单独路径删除（在 orders/acmes 之前）
+            ['table' => 'tasks', 'name' => '任务', 'type' => 'tasks'],
             // 3. 有 order_id 的直接表（在 orders 之前）
             ['table' => 'order_documents', 'name' => '订单验证文档', 'type' => 'direct'],
             // 4. 订单和其他直接表
@@ -202,6 +203,14 @@ class UserDataTableRegistry
                 $count = DB::table($item['table'])
                     ->whereIn('order_id', fn ($q) => $q->select('id')->from('orders')->where('user_id', $user->id))
                     ->count();
+
+                // tasks.order_id 也可能指向 acmes.id（ACME 任务），需合并统计才不漏算
+                if ($item['table'] === 'tasks' && $schema->hasTable('acmes')) {
+                    $count += DB::table($item['table'])
+                        ->whereIn('order_id', fn ($q) => $q->select('id')->from('acmes')->where('user_id', $user->id))
+                        ->count();
+                }
+
                 $stats[] = [$item['name'], $count];
             }
         }

@@ -5,6 +5,7 @@ use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Models\User;
 use App\Services\Notification\ChannelManager;
+use App\Services\Notification\Channels\ChannelInterface;
 use App\Services\Notification\Channels\MailChannel;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
@@ -97,6 +98,34 @@ function mockNotifMailChannel(): void
     });
     app()->forgetInstance(ChannelManager::class);
 }
+
+test('ChannelManager 绑为单例：插件经容器注册的通道对 NotificationCenter 可见', function () {
+    $pluginChannel = new class implements ChannelInterface
+    {
+        public function send(Notification $notification): array
+        {
+            return ['code' => 1];
+        }
+
+        public function isAvailable(): bool
+        {
+            return true;
+        }
+
+        public function shouldSend(Model $notifiable, string $code): bool
+        {
+            return true;
+        }
+    };
+
+    // 模拟插件 ServiceProvider 在容器上注册新通道
+    app(ChannelManager::class)->register('feishu', $pluginChannel);
+
+    // NotificationCenter 构造注入的 ChannelManager 必须是同一单例，能看到插件通道
+    $center = app(NotificationCenter::class);
+    $channelManager = getPrivateProperty($center, 'channelManager');
+    expect($channelManager->channels())->toHaveKey('feishu');
+});
 
 test('模板存在 + 通道可用 + 偏好允许 → 派 Job', function () {
     Queue::fake();

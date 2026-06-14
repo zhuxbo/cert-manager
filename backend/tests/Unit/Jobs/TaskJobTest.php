@@ -10,6 +10,8 @@ use App\Models\Task;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Api\Api;
+use Illuminate\Database\DeadlockException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -251,6 +253,102 @@ test('内层 Throwable 不向 handle() 外冒泡（不触发 Laravel 自动 roll
     expect($task->fresh()->status)->toBe('failed');
 });
 
+// ==================== 并发错误（死锁）分流：冒泡而非吞掉 ====================
+
+test('内层并发错误（死锁）冒出 handle() 不被吞，task 保持 executing 等待重试', function () {
+    // P0-1 杀手场景：死锁回滚整个 InnoDB 事务后，若 catch(Throwable) 像普通异常一样吞掉并继续
+    // $task->update()，外层 commit 会抛 PDOException "There is no active transaction" + queue 无脑
+    // 重试雪崩（线上 2026-06-03 现象）。修复后：并发错误必须冒出 handle()，交 queue --tries --delay
+    // 错峰重试；task 保持 executing，重试耗尽由 failed() 兜底标记。与上面「普通 Throwable 不冒泡」对照。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'processing']);
+
+    // sync(force=false) 在事务外调 Api::get（Action.php:462/473）；让它抛死锁，
+    // 等效于事务内 FOR UPDATE 死锁后异常向 TaskJob 闭包冒泡的情形
+    $stub = new class extends Api
+    {
+        public function get(int $orderId): array
+        {
+            throw new DeadlockException(
+                'SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction'
+            );
+        }
+    };
+    app()->instance(Api::class, $stub);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'sync',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $threw = false;
+    try {
+        (new TaskJob(['id' => $task->id]))->handle();
+    } catch (DeadlockException $e) {
+        $threw = true;
+    }
+
+    // 不被吞：并发错误冒出 handle()
+    expect($threw)->toBeTrue();
+    // 未在死事务内被标 failed：保持 executing
+    expect($task->fresh()->status)->toBe('executing');
+});
+
+test('commit 嵌套事务内并发错误干净抛 DeadlockException 不污染连接（回归：禁手写事务）', function () {
+    // CRITICAL 回归保护：commit 曾用手写 DB::beginTransaction，经 TaskJob 嵌套调用时 1213 死锁会让
+    // catch 内 DB::rollback() 抛 1305「SAVEPOINT does not exist」淹没死锁异常 + 连接事务计数漂移 →
+    // 下一个 job「There is (no) active transaction」雪崩。改 DB::transaction(fn,1) 闭包后：嵌套并发错误
+    // 由 Laravel 统一抛成 DeadlockException、task 留 executing、连接事务计数复位可复用。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'pending']);
+
+    // commit 事务内的上游下单抛底层并发错误（QueryException 含 Deadlock），模拟事务内 FOR UPDATE 死锁
+    $stub = new class extends Api
+    {
+        public function new(array $data): array
+        {
+            $pdo = new PDOException('SQLSTATE[40001]: 1213 Deadlock found when trying to get lock; try restarting transaction');
+            $pdo->errorInfo = ['40001', 1213, 'Deadlock found when trying to get lock; try restarting transaction'];
+
+            throw new QueryException('mysql', 'select * from `tasks` ... for update', [], $pdo);
+        }
+    };
+    app()->instance(Api::class, $stub);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'commit',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $levelBefore = DB::transactionLevel();
+
+    $threw = false;
+    try {
+        (new TaskJob(['id' => $task->id]))->handle();
+    } catch (DeadlockException $e) {
+        $threw = true;
+    }
+
+    expect($threw)->toBeTrue();                          // 干净抛 DeadlockException（非 1305 / no active transaction）
+    expect($task->fresh()->status)->toBe('executing');   // 未在死事务里标 failed
+    expect(DB::transactionLevel())->toBe($levelBefore);  // 连接事务计数复位，无漂移
+
+    // 连接干净可复用：能再开事务不报错（改造前计数漂移会让这里炸）
+    $reusable = false;
+    DB::transaction(function () use (&$reusable) {
+        $reusable = true;
+    });
+    expect($reusable)->toBeTrue();
+});
+
 // ==================== 事务包裹不变量（lockForUpdate 真锁） ====================
 
 test('handle 整体在事务内执行：action 运行时 transactionLevel > 0（lockForUpdate 真锁）', function () {
@@ -293,7 +391,46 @@ test('handle 整体在事务内执行：action 运行时 transactionLevel > 0（
     expect($fresh->result['code'])->toBe(1);
 });
 
-// ==================== failed() 告警钩子 ====================
+// ==================== failed() 兜底标记 + 告警钩子 ====================
+
+test('failed() 把仍 executing 的 task 兜底标记为 failed（并发错误抛出后防永久卡死）', function () {
+    // P0-1：handle() 对并发错误改为抛出（不在死事务内 update），重试耗尽进入本钩子时 task 仍 executing。
+    // 必须兜底标 failed，否则被 checkRepeat 当"处理中"永久阻塞该订单后续 commit/sync。
+    // 无 admin 配置 → 兜底 update 在通知早返回之前执行，不派发通知。
+    $task = Task::factory()->create([
+        'action' => 'sync',
+        'status' => 'executing',
+        'attempts' => 2,
+    ]);
+
+    (new TaskJob(['id' => $task->id]))->failed(
+        new DeadlockException('1213 Deadlock found')
+    );
+
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->attempts)->toBe(3);
+    expect($fresh->result['code'])->toBe(0);
+    expect($fresh->result['msg'])->toContain('Deadlock');
+});
+
+test('failed() 对已落库 failed 的 task 不重复 update（普通异常路径守卫）', function () {
+    // 普通业务异常已在 handle() 内标 failed；failed() 钩子守卫 status==='executing'，
+    // 跳过重复 update，不覆盖原始失败原因、不重复自增 attempts。
+    $task = Task::factory()->create([
+        'action' => 'commit_acme',
+        'status' => 'failed',
+        'attempts' => 1,
+        'result' => ['code' => 0, 'msg' => '原始失败原因'],
+    ]);
+
+    (new TaskJob(['id' => $task->id]))->failed(new RuntimeException('new error'));
+
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->attempts)->toBe(1);                   // 守卫跳过，未再自增
+    expect($fresh->result['msg'])->toBe('原始失败原因');  // 未被覆盖
+});
 
 test('failed() 构造 task_failed NotificationIntent 派发到 NotificationCenter', function () {
     // 配置 site.adminEmail + 对应 Admin

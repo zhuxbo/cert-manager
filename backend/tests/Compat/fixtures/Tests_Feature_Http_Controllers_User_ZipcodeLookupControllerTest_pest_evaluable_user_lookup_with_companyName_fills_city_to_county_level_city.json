@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\ZipcodeLookupControllerTest::__pest_evaluable_user_lookup_with_companyName_fills_city_to_county_level_city",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/zipcode-lookup",
+            "request_keys": [
+                "name",
+                "regionname"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "zipcode": "string",
+                    "province": "string",
+                    "city": "string",
+                    "district": "string"
+                }
+            }
+        }
+    ]
+}

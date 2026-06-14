@@ -48,6 +48,25 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 
 宝塔默认 PHP 已包含大部分必需扩展。通常需要额外确认的是 `pdo_mysql`、`fileinfo`、`calendar`、`intl`，按需启用 `redis`。`bt-deps.sh` 会尽量自动安装缺失扩展；失败时提示到宝塔面板 → 软件商店 → PHP 8.x → 设置 → 安装扩展手工处理。
 
+### 国密 (SM2) 支持（可选，仅签发国密证书时需要）
+
+SM2 证书的 CSR 生成走命令行系统 openssl（PHP openssl 扩展不支持 SM2），不影响 RSA/ECDSA。**需 OpenSSL ≥3.0.13**：OpenSSL 3.0.0~3.0.12 能签 SM2 但公钥 SubjectPublicKeyInfo 编码非标准（dual-sm2，algorithm 填 SM2 曲线 OID），会被国密 CA（如 Keeptrust）拒为「csr 解析失败」；官方 3.0.13（Ubuntu 24.04 自带；22.04 可升 3.0.14）/ 3.2.1 起 restore 回 id-ecPublicKey 标准编码。`gmOpenssl()` 用**功能探测**（实签一张 CSR 验 SPKI 是 id-ecPublicKey）自动判定，**不靠版本号比较**（3.1.0~3.2.0 版本号高但仍 dual-sm2），不达标即 fail-closed 拒单：
+
+1. 确认系统 openssl 能签 id-ecPublicKey 标准编码（不是只看版本号）：
+
+   ```bash
+   openssl version  # 参考下限 ≥ 3.0.13（或 3.2.1+）
+   openssl ecparam -genkey -name SM2 -out /tmp/k.pem 2>/dev/null \
+     && openssl req -new -key /tmp/k.pem -sm3 -subj /CN=t -out /tmp/c.csr 2>/dev/null \
+     && (openssl asn1parse -in /tmp/c.csr | grep -q id-ecPublicKey \
+         && echo '✓ id-ecPublicKey 标准编码（可用）' || echo '✗ dual-sm2（需升级 openssl）')
+   rm -f /tmp/k.pem /tmp/c.csr
+   ```
+
+2. 系统 openssl 过低（如 Ubuntu 22.04 自带 3.0.2）→ `apt install --only-upgrade openssl libssl3` 升到 3.0.13+，或编译新版装独立目录后让 `gmOpenssl()` 候选指向它。
+
+3. 能否签 SM2 由 `gmOpenssl()` 功能探测决定，无业务开关 —— 探测到能签标准编码即可下单，否则 fail-closed（下单前拒绝），不影响非国密证书。
+
 ### PHP 禁用函数
 
 宝塔默认禁用 `putenv`、`proc_open`、`exec`、`pcntl_*` 等函数。`bt-deps.sh` 会自动解除以下函数（同时处理 `php.ini` 和 `php-cli.ini`，自动备份）：
@@ -198,7 +217,7 @@ php artisan upgrade:rollback  # 回滚
 
 - 自动创建网站
 - 写 nginx 自定义配置
-- 添加 supervisor 守护进程（manager-queue）
+- 添加 supervisor 守护进程（程序名为站点域名 `$SITE_DOMAIN`，保多站点唯一）
 - 添加 cron（schedule:run）
 
 降级路径（用户拒绝 / 未提供 `BT_KEY`）：打印手工配置步骤，体验等同现状（用户面板手工配）。

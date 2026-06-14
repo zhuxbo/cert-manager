@@ -66,6 +66,9 @@ class VerifyCodeHelper
                 'data' => null,
             ];
         } else {
+            // 发送失败：释放已抢占的冷却位，允许立即重试
+            self::releaseSendCooldown($mobile);
+
             return [
                 'code' => 0,
                 'msg' => $result['msg'] ?? '短信发送失败',
@@ -101,6 +104,9 @@ class VerifyCodeHelper
             $mail->isSMTP();
 
             if (! $mail->configured) {
+                // 释放已抢占的冷却位：配置问题不应消耗用户冷却额度
+                self::releaseSendCooldown($email);
+
                 return [
                     'code' => 0,
                     'msg' => '邮件服务未配置',
@@ -136,8 +142,9 @@ class VerifyCodeHelper
                 'data' => null,
             ];
         } catch (Throwable $e) {
-            // 发送失败，回滚验证码缓存
+            // 发送失败，回滚验证码缓存 + 释放冷却占位（允许立即重试）
             Cache::forget($codeKey);
+            self::releaseSendCooldown($email);
 
             // 记录异常
             app(ApiExceptions::class)->logException($e);
@@ -226,14 +233,20 @@ class VerifyCodeHelper
         $cooldownKey = self::COOLDOWN_PREFIX.$target;
         $dailyKey = self::DAILY_PREFIX.$target.'_'.date('Ymd');
 
-        if (Cache::has($cooldownKey)) {
+        // 原子占位冷却：Cache::add（SETNX）失败 = 冷却期内已有请求占位，
+        // 防并发同一 target 在 has 判断 + put 写入之间的窗口击穿冷却重复发送
+        if (! Cache::add($cooldownKey, 1, self::SEND_COOLDOWN_SECONDS)) {
             return [
                 'code' => 0,
                 'msg' => '验证码发送过于频繁，请稍后再试',
             ];
         }
 
+        // 每日上限（冷却已串行化同一 target，此处计数无并发竞争）
         if ((int) Cache::get($dailyKey, 0) >= self::DAILY_SEND_LIMIT) {
+            // 释放刚抢占的冷却位：今日额度用尽不应再额外卡 60s
+            self::releaseSendCooldown($target);
+
             return [
                 'code' => 0,
                 'msg' => '今日验证码发送次数已达上限',
@@ -258,6 +271,16 @@ class VerifyCodeHelper
         // 当日计数：TTL 到当日 23:59:59，跨天自动重置
         Cache::add($dailyKey, 0, now()->endOfDay());
         Cache::increment($dailyKey);
+    }
+
+    /**
+     * 释放发送冷却占位：发送失败时回滚 checkSendCooldown 抢占的冷却，允许立即重试。
+     *
+     * @param  string  $target  邮箱或手机号
+     */
+    protected static function releaseSendCooldown(string $target): void
+    {
+        Cache::forget(self::COOLDOWN_PREFIX.$target);
     }
 
     /**

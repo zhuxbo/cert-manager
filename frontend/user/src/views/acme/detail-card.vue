@@ -186,14 +186,7 @@
 </template>
 
 <script setup lang="ts">
-import {
-  nextTick,
-  onMounted,
-  onBeforeUnmount,
-  provide,
-  reactive,
-  ref
-} from "vue";
+import { nextTick, onMounted, provide, reactive, ref } from "vue";
 import { getAcmeDetail, remarkAcme } from "@/api/acme";
 import type { Acme } from "@/api/acme";
 import { status, statusType } from "./dictionary";
@@ -270,34 +263,11 @@ const getDetails = (showMessage = false) => {
 };
 provide("get", getDetails);
 
-// 每个 DetailCard 自治 3 分钟刷新
-type TimerRef = ReturnType<typeof setInterval>;
-let autoRefreshIntervalId: TimerRef | null = null;
-
-// 标签页重新可见时立即刷新一次，避免等待整个轮询周期
-const handleVisibilityChange = () => {
-  if (!document.hidden) getDetails();
-};
-
+// 定时刷新已上提到父组件 details.vue：父级用单个 batchShowAcmes 批量刷新所有卡片，
+// 避免每卡片各自 setInterval 在多卡片 / 切标签页时产生并发请求风暴。
+// 本组件仅保留 getDetails 供卡内操作后的单卡刷新（AcmeOperate @refresh / provide('get')）。
 onMounted(() => {
   lockStatusButtonColors();
-  autoRefreshIntervalId = setInterval(
-    () => {
-      // 页面被切到后台标签页时跳过本次刷新，回到前台再恢复
-      if (document.hidden) return;
-      getDetails();
-    },
-    3 * 60 * 1000
-  );
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
-  if (autoRefreshIntervalId !== null) {
-    clearInterval(autoRefreshIntervalId);
-    autoRefreshIntervalId = null;
-  }
 });
 </script>
 

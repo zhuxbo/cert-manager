@@ -1,0 +1,53 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrganizationControllerTest::__pest_evaluable_store_reuses_existing_contact_when_contact__id_provided_and_no_contact_diff",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/organization",
+            "request_keys": [
+                "address",
+                "city",
+                "contact_id",
+                "country",
+                "name",
+                "phone",
+                "postcode",
+                "registration_number",
+                "state"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "name": "string",
+                    "registration_number": "string",
+                    "country": "string",
+                    "state": "string",
+                    "city": "string",
+                    "address": "string",
+                    "postcode": "string",
+                    "phone": "string",
+                    "user_id": "integer",
+                    "contact_id": "integer",
+                    "id": "integer",
+                    "updated_at": "string",
+                    "created_at": "string",
+                    "contact": {
+                        "id": "integer",
+                        "user_id": "integer",
+                        "last_name": "string",
+                        "first_name": "string",
+                        "identification_number": "string",
+                        "title": "string",
+                        "email": "string",
+                        "phone": "string",
+                        "created_at": "string",
+                        "updated_at": "string",
+                        "full_name": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

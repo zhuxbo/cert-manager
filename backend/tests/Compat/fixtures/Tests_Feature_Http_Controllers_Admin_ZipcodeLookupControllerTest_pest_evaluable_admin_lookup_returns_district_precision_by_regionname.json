@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ZipcodeLookupControllerTest::__pest_evaluable_admin_lookup_returns_district_precision_by_regionname",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/zipcode-lookup",
+            "request_keys": [
+                "regionname"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "zipcode": "string",
+                    "province": "string",
+                    "city": "string",
+                    "district": "string"
+                }
+            }
+        }
+    ]
+}

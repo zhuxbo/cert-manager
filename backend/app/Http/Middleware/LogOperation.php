@@ -88,6 +88,7 @@ class LogOperation
                 $content = json_decode($responseContent, true);
             }
 
+            $statusCode = $response->getStatusCode();
             $status = 0;
             // 用于支付宝回调 放前面 先检查
             if (isset($responseContent)) {
@@ -101,6 +102,10 @@ class LogOperation
                 if (is_int($content['code'])) {
                     $status = intval(boolval($content['code']));
                 }
+            } elseif (isset($responseContent) && $status === 0) {
+                // 非标准 JSON 响应（无 code 字段、非 'success'），如 deploy 证书/私钥拉取返回的纯 PEM 文本：
+                // 回落用 HTTP 状态码判断，2xx 视为成功，避免成功的纯文本响应被误记为失败
+                $status = intval($statusCode >= 200 && $statusCode < 300);
             }
 
             // 基础日志数据

@@ -316,3 +316,151 @@ test('BinaryLocator 不再依赖 Symfony ExecutableFinder', function () {
     expect($source)->not->toContain('use Symfony\Component\Process\ExecutableFinder');
     expect($source)->not->toContain('new ExecutableFinder');
 });
+
+test('gmOpenssl 命中第一个支持 SM2 的系统 openssl 候选', function () {
+    $locator = new class extends BinaryLocator
+    {
+        protected function candidatePathsFor(string $tool): array
+        {
+            return $tool === 'openssl' ? ['/fake/openssl-sm2'] : parent::candidatePathsFor($tool);
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            return $path === '/fake/openssl-sm2';
+        }
+    };
+
+    expect($locator->gmOpenssl())->toBe('/fake/openssl-sm2');
+});
+
+test('gmOpenssl 跳过不支持 SM2 的候选选下一个（防普通 openssl 假阳性）', function () {
+    $locator = new class extends BinaryLocator
+    {
+        protected function candidatePathsFor(string $tool): array
+        {
+            return $tool === 'openssl' ? ['/fake/openssl-libre', '/fake/openssl-sm2'] : parent::candidatePathsFor($tool);
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            // 模拟第一个系统 openssl 不支持 SM2（LibreSSL/编译 no-sm2），第二个才支持
+            return $path === '/fake/openssl-sm2';
+        }
+    };
+
+    expect($locator->gmOpenssl())->toBe('/fake/openssl-sm2');
+});
+
+test('gmOpenssl 全部候选不支持 SM2 时抛 BinaryNotFoundException', function () {
+    $locator = new class extends BinaryLocator
+    {
+        protected function candidatePathsFor(string $tool): array
+        {
+            return $tool === 'openssl' ? ['/nonexistent/openssl'] : parent::candidatePathsFor($tool);
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            return false; // 候选 + shell 兜底全部不支持 SM2
+        }
+    };
+
+    expect(fn () => $locator->gmOpenssl())->toThrow(BinaryNotFoundException::class, 'gmopenssl');
+});
+
+test('gmOpenssl 第二次调用走 memoize，不重复探测', function () {
+    $locator = new class extends BinaryLocator
+    {
+        public int $probeCount = 0;
+
+        protected function candidatePathsFor(string $tool): array
+        {
+            return $tool === 'openssl' ? ['/fake/openssl-sm2'] : parent::candidatePathsFor($tool);
+        }
+
+        protected function probeSm2(string $path): bool
+        {
+            $this->probeCount++;
+
+            return true;
+        }
+    };
+
+    $first = $locator->gmOpenssl();
+    expect($locator->gmOpenssl())->toBe($first);
+    expect($locator->probeCount)->toBe(1);
+});
+
+test('probeSm2 对不存在的路径返回 false（探测命令不恒真）', function () {
+    // 回归：探测 SM2 必须真验曲线（ecparam -name SM2 -genkey），不能因命令拼写错而恒真，
+    // 否则 version 通过但签不了 SM2 的 LibreSSL/老版会假阳性被选中。
+    $locator = new BinaryLocator;
+    $reflect = new ReflectionMethod($locator, 'probeSm2');
+
+    expect($reflect->invoke($locator, '/nonexistent/openssl'))->toBeFalse();
+});
+
+test('csrUsesStandardEcPublicKey 区分 id-ecPublicKey 标准编码与 dual-sm2（拒 OpenSSL 3.0~3.2.0/GmSSL）', function () {
+    $locator = new BinaryLocator;
+    $method = new ReflectionMethod($locator, 'csrUsesStandardEcPublicKey');
+
+    // 标准 id-ecPublicKey 编码（系统 OpenSSL 3.2.1+ / Debian backport 3.0.20 产出）→ true
+    $standard = <<<'PEM'
+        -----BEGIN CERTIFICATE REQUEST-----
+        MIIBAzCBqwIBADBJMRQwEgYDVQQDDAt0ZXN0LjhraS5jbjELMAkGA1UEBhMCQ04x
+        ETAPBgNVBAgMCFNoYW5naGFpMREwDwYDVQQHDAhTaGFuZ2hhaTBZMBMGByqGSM49
+        AgEGCCqBHM9VAYItA0IABJIFxhnYYJluRd6iXY0aMMmAyMCY1TSJ0ZX/UfyJ314b
+        WJ+y/2MI5LjmYH4LEQcpEySJfFaxa57ZD9rsUdO89X+gADAKBggqgRzPVQGDdQNH
+        ADBEAiBFKOlNXa0g8SXyC83aSNXNXWUOGltiQ0SlTZ277P4xlQIgKHx7RUmpB58G
+        +gA987jeMbtRSeQ9Eq+z5pjwJFKeLMY=
+        -----END CERTIFICATE REQUEST-----
+        PEM;
+
+    // dual-sm2 编码（OpenSSL 3.0.0~3.2.0 / GmSSL，algorithm 填 sm2 曲线 OID）→ false
+    $dualSm2 = <<<'PEM'
+        -----BEGIN CERTIFICATE REQUEST-----
+        MIIBBTCBrAIBADBJMRQwEgYDVQQDDAt0ZXN0LjhraS5jbjELMAkGA1UEBhMCQ04x
+        ETAPBgNVBAgMCFNoYW5naGFpMREwDwYDVQQHDAhTaGFuZ2hhaTBaMBQGCCqBHM9V
+        AYItBggqgRzPVQGCLQNCAAQ5HDNZmmPj7ZPVR1MVSY25DIA4r1GPnn2Fgd4TTstD
+        R/ziR6hS3Nx2a5Bc3u7qXKup7y8pRJX7VwNY/Yl/gE/XoAAwCgYIKoEcz1UBg3UD
+        SAAwRQIhAOsIdAdGBt383N1PMtzLiFIL7JZCH2O6KAtEDs6i5HPFAiA5UpZmqUML
+        XqNAPA4a7LstKb6nXIPSLIS1o/gMeAKJ+A==
+        -----END CERTIFICATE REQUEST-----
+        PEM;
+
+    expect($method->invoke($locator, $standard))->toBeTrue();
+    expect($method->invoke($locator, $dualSm2))->toBeFalse();
+});
+
+test('probeSm2 临时目录取自 sys_get_temp_dir，不写 storage_path（storage 不可写时不假阴性）', function () {
+    // 回归：探测临时 CSR 写 storage_path 时，storage 不可写（权限/只读挂载）会让 mkdir 失败、
+    // 被误判为"不支持 SM2"。改用系统临时目录，让探测只反映 openssl 能力本身。
+    $locator = new BinaryLocator;
+    $reflect = new ReflectionMethod($locator, 'sm2ProbeDir');
+    $dir = $reflect->invoke($locator);
+
+    expect($dir)->toStartWith(sys_get_temp_dir());
+    expect($dir)->not->toStartWith(storage_path());
+    // 唯一随机后缀防多进程争抢
+    expect($dir)->toMatch('#/sm2-probe-[0-9a-f]{16}$#');
+});
+
+test('sm2ProbeDir 每次返回不同随机目录（避免并发探测争抢同一目录）', function () {
+    $locator = new BinaryLocator;
+    $reflect = new ReflectionMethod($locator, 'sm2ProbeDir');
+
+    expect($reflect->invoke($locator))->not->toBe($reflect->invoke($locator));
+});
+
+test('gmOpenssl 在容器内真实探测到支持 SM2 的 openssl（不 mock、不 skip）', function () {
+    // 国密 CSR 生成是关键能力，必须真探到支持 SM2 的 openssl（gmOpenssl 的 probeSm2 已保证返回的二进制
+    // 通过 `ecparam -name SM2 -genkey` 验真）。dev 容器与 CI runner 一致，统一靠系统 OpenSSL 3.0+ 原生 SM2，
+    // gmOpenssl 复用系统 openssl 候选 + shell 兜底命中。
+    // 遵反模式 15 不 markTestSkipped 兜底（否则关键能力探测在 CI 静默跳过、生产才炸）。
+    // 裸机（如 macOS LibreSSL）无 SM2-capable openssl 会失败，提示按 docker/README 用容器。
+    $path = (new BinaryLocator)->gmOpenssl();
+
+    expect($path)->toBeString()
+        ->and(file_exists($path))->toBeTrue();
+});

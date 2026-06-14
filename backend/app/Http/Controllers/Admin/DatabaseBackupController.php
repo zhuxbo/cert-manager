@@ -121,7 +121,7 @@ class DatabaseBackupController extends BaseController
         ];
         foreach ($diff['table_differences'] ?? [] as $table => $td) {
             $items = [];
-            foreach (['missing_columns', 'extra_columns', 'modified_columns', 'missing_indexes', 'extra_indexes'] as $k) {
+            foreach (['missing_columns', 'extra_columns', 'modified_columns', 'missing_indexes', 'modified_indexes', 'extra_indexes'] as $k) {
                 if (! empty($td[$k])) {
                     $items[$k] = array_keys($td[$k]);
                 }

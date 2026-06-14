@@ -152,17 +152,25 @@ class AcmeController extends BaseController
             $this->error('订单不存在');
         }
 
+        // 按 ca 去重缓存 directory_url：
+        // (1) key 用 normalizeCa 归一，与 service 层缓存 key 口径一致；
+        // (2) 仅缓存非 null 结果，避免首个 unpaid（无 api_id → null）钉死同 ca 后续 active 的 directory_url
         $dirUrls = [];
         $items = $acmes->map(function ($acme) use (&$dirUrls) {
-            $ca = (string) ($acme->product->ca ?? '');
-            if (! array_key_exists($ca, $dirUrls)) {
-                $dirUrls[$ca] = $this->action->syncDirectoryUrl($acme);
+            $ca = $this->action->normalizeCa((string) ($acme->product->ca ?? ''));
+            if (isset($dirUrls[$ca])) {
+                $url = $dirUrls[$ca];
+            } else {
+                $url = $this->action->syncDirectoryUrl($acme);
+                if ($url !== null) {
+                    $dirUrls[$ca] = $url;
+                }
             }
             $acme->makeVisible('eab_hmac')
                 ->makeHidden(['user_id', 'plus', 'api_id', 'refer_id', 'admin_remark', 'channel']);
 
             $data = $acme->toArray();
-            $data['directory_url'] = $dirUrls[$ca];
+            $data['directory_url'] = $url;
 
             return $data;
         });
@@ -301,17 +309,25 @@ class AcmeController extends BaseController
             $this->error('仅能复制同一用户的 EAB');
         }
 
+        // 按 ca 去重缓存 directory_url（与 batchShow / service 层口径一致）：
+        // (1) key 用 normalizeCa 归一；(2) 仅缓存非 null，避免首个 unpaid（无 api_id → null）
+        // 钉死同 ca 后续 active 的 directory_url
         $dirUrls = [];
         $text = $acmes->map(function ($acme) use (&$dirUrls) {
-            $ca = (string) ($acme->product->ca ?? '');
-            if (! isset($dirUrls[$ca])) {
-                $dirUrls[$ca] = $this->action->syncDirectoryUrl($acme) ?? '';
+            $ca = $this->action->normalizeCa((string) ($acme->product->ca ?? ''));
+            if (isset($dirUrls[$ca])) {
+                $url = $dirUrls[$ca];
+            } else {
+                $url = $this->action->syncDirectoryUrl($acme);
+                if ($url !== null) {
+                    $dirUrls[$ca] = $url;
+                }
             }
             $kid = $acme->makeVisible('eab_hmac')->eab_kid;
             $hmac = $acme->makeVisible('eab_hmac')->eab_hmac;
             $email = $acme->contact_email ?? '';
 
-            return "directory_url={$dirUrls[$ca]}\ncontact_email=$email\neab_kid=$kid\neab_hmac=$hmac";
+            return 'directory_url='.($url ?? '')."\ncontact_email=$email\neab_kid=$kid\neab_hmac=$hmac";
         })->implode("\n\n");
 
         $this->success(['text' => $text, 'count' => $acmes->count()]);

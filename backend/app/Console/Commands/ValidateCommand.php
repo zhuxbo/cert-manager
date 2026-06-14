@@ -10,6 +10,7 @@ use App\Services\Delegation\CnameDelegationService;
 use App\Services\Order\Action;
 use App\Services\Order\Utils\VerifyUtil;
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
@@ -43,21 +44,31 @@ class ValidateCommand extends Command
 
     /**
      * 互斥锁 cache key 与 TTL（秒）。
-     * Cache::add 实现原子获取；每个订单处理前 Cache::put 刷新 TTL 模拟心跳。
-     * 健康任务无论跑多久都不会被锁过期；死进程停止续期后 TTL 到期自动释放。
+     * 用 Cache::lock（带 owner token）原子获取，释放走 Lock::release() 校验属主——
+     * 避免本实例超时后另一实例接管、本实例跑完误删他人的锁。
+     * 不做心跳续期：Cache::put 在 redis 驱动下会 serialize owner、破坏 RedisLock 的原始 owner 比对致 release 失效。
+     * 改用足够覆盖单次运行的 TTL，进程异常退出靠 TTL 自动释放；ValidateCommand 重复执行幂等
+     * （sync 有占位防抖、createTask 有 checkRepeat），极端锁过期导致的双跑无数据损害。
      */
     private const LOCK_KEY = 'cmd:schedule:validate';
 
-    private const LOCK_TTL = 120;
+    private const LOCK_TTL = 600;
+
+    /**
+     * 当前持有的互斥锁；供 handle 在 finally 属主安全释放。
+     */
+    private ?Lock $lock = null;
 
     /**
      * Execute the console command.
      *
-     * sub-minute 调度可能在 30 秒就再次触发，靠 Cache::add 返回 false 跳过。
+     * sub-minute 调度可能在 30 秒就再次触发，靠 Lock::get 返回 false 跳过。
      */
     public function handle(): void
     {
-        if (! Cache::add(self::LOCK_KEY, 1, self::LOCK_TTL)) {
+        $this->lock = Cache::lock(self::LOCK_KEY, self::LOCK_TTL);
+
+        if (! $this->lock->get()) {
             return; // 已有实例在跑
         }
 
@@ -67,7 +78,8 @@ class ValidateCommand extends Command
         try {
             $this->runValidation();
         } finally {
-            Cache::forget(self::LOCK_KEY);
+            // 属主安全释放：仅当锁仍属本实例时才删除（Lock::release 内部校验 owner）
+            $this->lock->release();
         }
     }
 
@@ -87,9 +99,6 @@ class ValidateCommand extends Command
         $this->info("待验证订单数量: {$orders->count()}");
 
         foreach ($orders as $order) {
-            // 心跳：刷新锁 TTL，让健康长任务不被误杀
-            Cache::put(self::LOCK_KEY, 1, self::LOCK_TTL);
-
             try {
                 // 查找或创建域名验证记录
                 $record = DomainValidationRecord::where('order_id', $order->id)->first();

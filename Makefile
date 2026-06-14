@@ -105,5 +105,6 @@ plugins-build: ## 构建所有插件前端（产物不入库，clone 后或改�
 	@for d in plugins/*/frontend/admin plugins/*/frontend/user; do \
 		[ -f "$$d/package.json" ] || continue; \
 		echo "==> $$d"; \
-		pnpm -C "$$d" install --ignore-workspace && pnpm -C "$$d" build || exit 1; \
+		pnpm -C "$$d" install --ignore-workspace --config.confirm-modules-purge=false || true; \
+		pnpm -C "$$d" --config.verify-deps-before-run=false exec vite build || exit 1; \
 	done

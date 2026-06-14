@@ -2,6 +2,7 @@
 
 use App\Exceptions\ApiResponseException;
 use App\Models\Admin;
+use App\Models\Callback;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
@@ -636,6 +637,47 @@ test('sync 终态守卫（force=false TOCTOU）：锁外慢 IO 期间被并发 c
     expect($cert->fresh()->status)->toBe('cancelled');
 });
 
+// ==================== sync 回调抑制（下游 pull 已同步返回，避免冗余回调）====================
+//
+// V1/V2 ApiController::get 内走 sync($id, force=true, suppressCallback=true)：下游主动 pull 时
+// get 已把新状态同步返回，无需再异步回调下游（多一次触发）。后台 TaskJob/手动 sync 不传，回调照常。
+
+function mockSyncReturnsActive(): void
+{
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('get')->andReturn([
+        'code' => 1,
+        'data' => ['status' => 'active'],
+    ]);
+    $ref = new ReflectionClass(test()->service);
+    $prop = $ref->getProperty('api');
+    $prop->setAccessible(true);
+    $prop->setValue(test()->service, $mockApi);
+}
+
+test('sync 默认（后台/手动）状态变 active 且启用回调时创建 callback 任务', function () {
+    Queue::fake();
+    [$order] = createOrderWithCertForRevoke('processing');
+    Callback::create(['user_id' => $this->user->id, 'url' => 'https://d.example.com/cb', 'token' => 't', 'status' => 1]);
+    mockSyncReturnsActive();
+
+    // force=true：sync 末尾 $force || success() 短路、不抛异常，直接调用
+    $this->service->sync($order->id, true, false);
+
+    expect(Task::where('order_id', $order->id)->where('action', 'callback')->count())->toBe(1);
+});
+
+test('sync 下游 pull（suppressCallback=true）状态变 active 不创建 callback 任务', function () {
+    Queue::fake();
+    [$order] = createOrderWithCertForRevoke('processing');
+    Callback::create(['user_id' => $this->user->id, 'url' => 'https://d.example.com/cb', 'token' => 't', 'status' => 1]);
+    mockSyncReturnsActive();
+
+    $this->service->sync($order->id, true, true);
+
+    expect(Task::where('order_id', $order->id)->where('action', 'callback')->count())->toBe(0);
+});
+
 // ==================== charge / pay 扣费核心 ====================
 //
 // charge() 是真金白银的最高频路径（ActionTrait::charge）。这里通过单订单
@@ -952,4 +994,16 @@ test('commit 非 pending 状态报错：订单状态不是待提交', function (
 
     // 状态未变化
     expect($cert->fresh()->status)->toBe('active');
+});
+
+test('checkDuplicate 原子占位：首次放行 0，同参数重复返回剩余秒数，不同参数独立', function () {
+    $method = new ReflectionMethod($this->service, 'checkDuplicate');
+    $method->setAccessible(true);
+
+    // 首次抢占成功 → 放行（0）
+    expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBe(0);
+    // 同参数重复 → Cache::add 失败 → 返回剩余秒数（>0 拒绝重复）
+    expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBeGreaterThan(0);
+    // 不同参数 → 独立 cacheKey 放行（0）
+    expect($method->invoke($this->service, 'atomicDupTest', ['p2'], 10))->toBe(0);
 });

@@ -320,6 +320,117 @@ class BinaryLocator
     }
 
     /**
+     * 支持 SM2 的 openssl —— 仅国密（SM2）相关命令用（生成 SM2 签名 CSR）。
+     *
+     * 与系统 openssl() 同源（共用同一批系统 openssl 候选路径），但探测条件更严：不只验 version，
+     * 还验 SM2 曲线真可用（`ecparam -name SM2 -genkey -noout` exit 0），防 LibreSSL / 编译 no-sm2 /
+     * FIPS-only 等假阳性（version 过但签不了 SM2）。OpenSSL 3.0+ 的 default provider 原生支持 SM2，
+     * 本系统统一依赖系统 OpenSSL 3 签发、不接独立国密二进制；PHP openssl 扩展不支持 SM2，故仍走命令行。
+     *
+     * 候选路径 miss 后 shell PATH 兜底，全失败抛 BinaryNotFoundException，调用方
+     * （CsrUtil/guardSm2Capable）catch 后 fail-closed（拒国密入口，绝不静默降级签 RSA）。
+     */
+    public function gmOpenssl(): string
+    {
+        if (isset($this->resolved['gmopenssl'])) {
+            return $this->resolved['gmopenssl'];
+        }
+
+        $tried = [];
+
+        // 与 openssl() 共用系统 openssl 候选，但要求「真支持 SM2」（probeSm2）而非仅 version 通过
+        foreach ($this->candidatePathsFor('openssl') as $candidate) {
+            $tried[] = $candidate;
+            if ($this->probeSm2($candidate)) {
+                return $this->resolved['gmopenssl'] = $candidate;
+            }
+        }
+
+        // shell PATH 兜底：command -v openssl 拿绝对路径，再验 SM2
+        $tried[] = 'openssl (shell PATH, SM2)';
+        $env = array_replace(getenv() ?: [], ['PATH' => self::SHELL_FALLBACK_PATH]);
+        $proc = @proc_open('command -v openssl 2>/dev/null', [1 => ['pipe', 'w']], $pipes, null, $env);
+        if (is_resource($proc)) {
+            $path = trim((string) stream_get_contents($pipes[1]));
+            fclose($pipes[1]);
+            if (proc_close($proc) === 0 && $path !== '' && $this->probeSm2($path)) {
+                return $this->resolved['gmopenssl'] = $path;
+            }
+        }
+
+        throw new BinaryNotFoundException(
+            tool: 'gmopenssl',
+            triedPaths: $tried,
+            diagnose: $this->diagnose('openssl'),
+        );
+    }
+
+    /**
+     * 探测 openssl 是否真支持 SM2 **且签出 id-ecPublicKey 标准编码**。
+     *
+     * 不能只验「能生成 SM2 key」——OpenSSL 3.0.0~3.0.12 / 3.1.x~3.2.0 能签 SM2，却把公钥
+     * SubjectPublicKeyInfo 的 algorithm 写成 SM2 曲线 OID（dual-sm2），被国密 CA（如 Keeptrust）拒为
+     * 「csr 解析失败」；官方 3.0.13（3.0 LTS backport）与 3.2.1 起 restore 回 id-ecPublicKey。故必须实际
+     * 签一张 SM2 CSR、校验 SPKI 是 id-ecPublicKey，才能 fail-closed 拒掉这类「能签但编码错」的 openssl，绝不签出 CA 不收的 CSR。
+     *
+     * array proc_open（execve，防注入 + 避 open_basedir）；临时私钥写系统临时目录、finally 强清不留盘。
+     */
+    protected function probeSm2(string $path): bool
+    {
+        // 临时目录用 sys_get_temp_dir() 而非 storage_path：storage 不可写（权限/只读挂载）时
+        // 写 storage 会让 mkdir 失败被误判为"不支持 SM2"，文案误导排障。系统临时目录始终可写，
+        // 让探测只反映「openssl 是否真支持 SM2 标准编码」这一能力判定本身。
+        $dir = $this->sm2ProbeDir();
+        if (! @mkdir($dir, 0700, true) && ! is_dir($dir)) {
+            return false;
+        }
+        $keyFile = $dir.'/k.pem';
+        $csrFile = $dir.'/c.csr';
+
+        try {
+            // 1. 生成 SM2 key + 2. 签一张 SM2 CSR（distid 不影响 SPKI 编码，从略；-subj 免交互）
+            if (! $this->probeWith([$path, 'ecparam', '-name', 'SM2', '-genkey', '-out', $keyFile], '')
+                || ! $this->probeWith([$path, 'req', '-new', '-key', $keyFile, '-sm3', '-subj', '/CN=probe', '-out', $csrFile], '')) {
+                return false;
+            }
+
+            // 3. 校验 CSR 的 SPKI 是 id-ecPublicKey 标准编码（拒 dual-sm2）
+            $csr = @file_get_contents($csrFile);
+
+            return $csr !== false && $this->csrUsesStandardEcPublicKey($csr);
+        } finally {
+            @unlink($keyFile);
+            @unlink($csrFile);
+            @rmdir($dir);
+        }
+    }
+
+    /**
+     * SM2 探测的临时目录（唯一随机名，独立成方法便于单测断言基路径）。
+     *
+     * 用 sys_get_temp_dir() 而非 storage_path：避免 storage 不可写时 mkdir 失败被误判为
+     * "openssl 不支持 SM2"。返回随机子目录名防多进程争抢。
+     */
+    protected function sm2ProbeDir(): string
+    {
+        return sys_get_temp_dir().'/sm2-probe-'.bin2hex(random_bytes(8));
+    }
+
+    /**
+     * 校验 CSR 的 SubjectPublicKeyInfo 是否用标准 id-ecPublicKey 编码（RFC 5480）。
+     *
+     * id-ecPublicKey OID 1.2.840.10045.2.1 的 DER 内容字节为 2a8648ce3d0201；OpenSSL 3.0.0~3.0.12 /
+     * 3.1.x~3.2.0 与 GmSSL 的 dual-sm2 编码把 algorithm 填成 sm2 曲线 OID（2a811ccf5501822d）、不含此串，以此区分。
+     * 独立成 protected 便于单测覆盖（dual-sm2 fixture → false / 标准 fixture → true）。
+     */
+    protected function csrUsesStandardEcPublicKey(string $csrPem): bool
+    {
+        $der = base64_decode((string) preg_replace('/-----[^-]+-----|\s/', '', $csrPem));
+
+        return $der !== '' && str_contains($der, hex2bin('2a8648ce3d0201'));
+    }
+
+    /**
      * SOFT 档候选路径，独立成方法便于子类覆盖供测试。
      *
      * @return string[]

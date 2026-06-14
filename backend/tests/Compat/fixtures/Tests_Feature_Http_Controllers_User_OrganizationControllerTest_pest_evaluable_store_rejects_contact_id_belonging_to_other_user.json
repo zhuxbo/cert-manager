@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrganizationControllerTest::__pest_evaluable_store_rejects_contact__id_belonging_to_other_user",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/organization",
+            "request_keys": [
+                "address",
+                "city",
+                "contact_id",
+                "country",
+                "name",
+                "registration_number",
+                "state"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

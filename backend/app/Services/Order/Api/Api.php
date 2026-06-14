@@ -116,10 +116,14 @@ class Api
     {
         $order = $this->findOrder($orderId);
         $api = $this->getSourceApi($order->product->source ?? '');
+        // uploadDocument 是可选能力（部分 CA 不支持传文档），不进 OrderSourceApiInterface；
+        // 运行时探测 source 是否实现，未实现给友好错误而非 fatal。
         $this->checkMethodExists($api, 'uploadDocument');
 
+        // 与其他操作方法统一：上游标识 api_id 作为独立首参传给 source（不埋进 $data）。
+        // 返回 source 原始结果（caller 按 $result['code'] 判定），不经 handleResult。
         /** @phpstan-ignore method.notFound */
-        return $api->uploadDocument($data);
+        return $api->uploadDocument($order->latestCert->api_id, $data);
     }
 
     /**

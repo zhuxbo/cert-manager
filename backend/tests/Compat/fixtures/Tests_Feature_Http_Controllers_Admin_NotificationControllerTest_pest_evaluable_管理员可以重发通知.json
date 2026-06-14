@@ -5,9 +5,7 @@
         {
             "method": "POST",
             "uri_pattern": "/api/admin/notification/{id}/resend",
-            "request_keys": [
-                "channels"
-            ],
+            "request_keys": null,
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",

@@ -219,6 +219,10 @@ class Action
 
         $domains = explode(',', $params['domains'] ?? '');
 
+        // SM2 能力探测前移到事务前（与 new/renew/reissue 对称）：批量同一 alg，探测一次即可
+        // （BinaryLocator singleton，与 initParams 内探测共享缓存、零重复 fork）
+        $this->guardSm2Capable($params['encryption']['alg'] ?? null);
+
         $orderIds = [];
         DB::beginTransaction();
         try {
@@ -354,8 +358,14 @@ class Action
         $order = null;
         $result = null;
 
-        DB::beginTransaction();
-        try {
+        // 用 DB::transaction 闭包而非手写 begin/commit/rollback：经 TaskJob 调用时本方法是嵌套事务，
+        // 手写 catch 内的 DB::rollback() 在 1213 死锁（InnoDB 已释放所有 savepoint）时会抛 1305
+        // 「SAVEPOINT does not exist」淹没原始死锁异常，致 TaskJob 识别不到并发错误、连接事务计数漂移、雪崩。
+        // 闭包形态交 Laravel 统一处理：嵌套死锁直接抛 DeadlockException 到最外层（与 sync 一致）。
+        // attempts 固定 1：上游下单 $this->api->$action() 在事务内，绝不能事务级重试（重复下单）；
+        // 死锁牺牲点 lock() 在上游调用之前，job 级重试由 status!='pending' 守卫防重
+        // （上游已建单后 save() 死锁的极窄窗口属传统 Order 既有行为，不在本次范围）。
+        DB::transaction(function () use ($orderId, &$order, &$result) {
             // 事务查询不锁定产品
             $order = Order::with(['latestCert'])
                 ->whereHas('user')
@@ -414,11 +424,7 @@ class Action
                 : $order->latestCert->validation;
             $order->latestCert->status = 'processing';
             $order->latestCert->save();
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        }, 1);
 
         $this->success([
             'order_id' => $orderId,
@@ -431,7 +437,7 @@ class Action
     /**
      * 同步证书信息
      */
-    public function sync(int $orderId, bool $force = false): void
+    public function sync(int $orderId, bool $force = false, bool $suppressCallback = false): void
     {
         // 10秒内仅请求一次 API 避免重复请求
         if ($this->checkDuplicate('sync', [$orderId], 10)) {
@@ -525,8 +531,13 @@ class Action
             && get_system_setting('site', 'autoRefundOnSync')
         ) {
             // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
-            $this->refundForSyncedCancel($order, $data);
-            $this->success();
+            $this->refundForSyncedCancel($order, $data, $suppressCallback);
+            // force 模式（V1/V2 ApiController::get 无 try-catch 直调 sync）必须沿用"不抛 success"契约，
+            // 否则 success() 抛 ApiResponseException 会打断 get 使其返回空 {code:1}，而非订单数据；
+            // 且无论是否 force 都要 return，避免 fall through 到下方第二个事务重复加锁处理已 cancelled 订单。
+            $force || $this->success();
+
+            return;
         }
 
         // 锁内重取 + 终态守卫 + 写回：慢 IO（上游 get）已在锁外完成，此事务只包状态判定副作用 + 写回。
@@ -535,7 +546,7 @@ class Action
         // 否则与 commitCancel(锁 sync,revalidate→order)/refundForSyncedCancel 反序，task 集合相交触发 InnoDB 死锁。
         // 经 TaskJob 调用时 TaskJob 已先持本 task 行锁（同事务 lockForUpdate 可重入），叠加后整体仍是 task→order，不反序。
         // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订单复活。
-        DB::transaction(function () use ($orderId, $order, $cert, $user, $data) {
+        DB::transaction(function () use ($orderId, $order, $cert, $user, $data, $suppressCallback) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
             Task::where('order_id', $orderId)
                 ->whereIn('action', ['commit', 'sync', 'revalidate'])
@@ -543,16 +554,28 @@ class Action
                 ->lockForUpdate()
                 ->get();
 
-            // 锁顺序 2：再锁 order。锁内重读权威 status（重取 order 带 latestCert 重新加载），重取失败回落到外层陈旧值
+            // 锁顺序 2：再锁 order。
             $lockedOrder = Order::with(['latestCert'])
                 ->whereHas('latestCert')
                 ->lock()
                 ->find($orderId);
-            $lockedStatus = $lockedOrder?->latestCert->status ?? $cert->status;
+
+            // 终态守卫必须按【写回目标 cert（外层 $cert，即本次 sync 的写回对象）自身】的权威 status 判定，
+            // 而非 order 当前 latestCert：上游 get 是事务外慢 IO，期间并发重签会把 order.latest_cert_id
+            // 切到新 cert B(pending)，若用 lockedOrder->latestCert(=B) 判定，旧 cert A 已 reissued 却被漏判，
+            // 导致上游滞后 status 复活 A、并误删 B 的延时 commit task（重签静默失败）。
+            // 故：order 当前 latestCert 仍是 A → 复用其锁内重载状态；已被切走 → 按 $cert->id 重读 A 自身权威状态。
+            $lockedStatus = ($lockedOrder && (int) $lockedOrder->latest_cert_id === (int) $cert->id)
+                ? $lockedOrder->latestCert->status
+                : (Cert::where('id', $cert->id)->value('status') ?? $cert->status);
 
             // 终态守卫（泛化到所有路径）：本地已是终态时拒绝上游 status 覆盖，防滞后 active 复活已退款/已重签订单
             if (in_array($lockedStatus, ['cancelled', 'revoked', 'renewed', 'reissued', 'failed'], true)) {
                 unset($data['status']);
+                // 终态订单拒绝 enc 回写：上游滞后返回的 enc 不落已终结证书（防御纵深，避免死敏感数据）
+                foreach (Cert::ENC_FIELDS as $encField) {
+                    unset($data[$encField]);
+                }
             }
 
             // 用锁内权威 status 重算状态变化，后续通知/回调/deleteTask 均以此为准
@@ -571,17 +594,29 @@ class Action
                 ));
             }
 
-            // 签发 取消 吊销 发起回调
+            // 签发 取消 吊销 发起回调（suppressCallback=true 跳过：下游经 V1/V2 get 主动 pull 触发同步，
+            // get 已把新状态同步返回，无需再异步回调下游；deleteTask 不受影响，照常清理）
             if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'], true)) {
-                $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
-                $callback && $this->createTask($orderId, 'callback');
+                if (! $suppressCallback) {
+                    $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+                    $callback && $this->createTask($orderId, 'callback');
+                }
                 // 删除相关任务
                 $this->deleteTask($orderId, 'commit,sync,revalidate');
             }
 
             $order->save();
+            // 先把 issuer 落到模型，确保随后 update 触发 setIntermediateCertAttribute 时 issuer 已就位，
+            // 非空 intermediate_cert 在本轮即写入 chains。fill 顺序不保证 issuer 早于 intermediate_cert；
+            // 且国密（enc_cert 非空）已短路 retrieved 钩子，不能再靠"降级→次轮补写"兜底，故须签发轮确定性入 chains。
+            // 放在终态守卫之后安全：chains 是 CA 公共数据，setIntermediateCertAttribute 仅在该 issuer 无行时 create，
+            // 不复活订单状态、不影响终态守卫语义。
+            ! empty($data['issuer']) && $cert->issuer = $data['issuer'];
+            // 写回目标 cert A（外层 $cert 即 A 同一行）：终态时上面已 unset $data['status']，
+            // 故并发重签下不会复活 A；$cert 在 sync 内未被改动，update 仅写 $data 键，无 stale 回写风险。
             $cert->update($data);
-        });
+        }, 3); // attempts=3：controller 直调时本事务为最外层，死锁/锁超时自动重试（上游 get 在事务外，重试只重跑锁+写回，安全）；
+        // 经 TaskJob 调用时为嵌套事务，Laravel 直接抛 DeadlockException 到外层，由 TaskJob job 级重试兜底
 
         // 强制更新不返回提示（success 抛 ApiResponseException 须在事务闭包外）
         $force || $this->success();
@@ -905,8 +940,10 @@ class Action
      */
     public function cancel(int $orderId): void
     {
-        DB::beginTransaction();
-        try {
+        // 同 commit：改 DB::transaction 闭包，避免手写 rollback 在嵌套死锁时抛 1305 淹没死锁异常 / 计数漂移。
+        // attempts 固定 1：上游 cancel + 退款 Transaction::create 在事务内，绝不能事务级重试（重复取消/退款）；
+        // 死锁牺牲点 lock() 在上游调用之前，job 级重试由锁内 status 校验 + transactions 唯一索引兜底防重。
+        DB::transaction(function () use ($orderId) {
             // 事务查询不锁定产品
             $order = Order::with(['latestCert'])
                 ->whereHas('user')
@@ -954,12 +991,7 @@ class Action
 
             // 保存取消时间
             $order->update(['cancelled_at' => now()]);
-
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        }, 1);
 
         $this->success();
     }
@@ -981,9 +1013,9 @@ class Action
      *
      * @throws Throwable
      */
-    private function refundForSyncedCancel(Order $order, array $certData): void
+    private function refundForSyncedCancel(Order $order, array $certData, bool $suppressCallback = false): void
     {
-        DB::transaction(function () use ($order, $certData) {
+        DB::transaction(function () use ($order, $certData, $suppressCallback) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
             Task::where('order_id', $order->id)
                 ->whereIn('action', ['commit', 'sync', 'revalidate'])
@@ -1043,12 +1075,15 @@ class Action
 
             // 副作用：发起回调 + 清理相关 task
             // TaskJob::dispatch 内部已加 ->afterCommit()，事务安全
-            $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
-            if ($callback) {
-                $this->createTask($order->id, 'callback');
+            // suppressCallback=true（下游 pull 触发）跳过回调：get 已同步返回 cancelled 状态，无需再异步回调
+            if (! $suppressCallback) {
+                $callback = Callback::where('user_id', $order->user_id)->where('status', 1)->first();
+                if ($callback) {
+                    $this->createTask($order->id, 'callback');
+                }
             }
             $this->deleteTask($order->id, 'commit,sync,revalidate');
-        });
+        }, 3); // attempts=3：与 sync 主事务一致；本事务无上游 HTTP，退款由 transactions 唯一索引保证幂等，重试不双退
     }
 
     /**

@@ -4,6 +4,8 @@ namespace App\Http\Controllers\User;
 
 use App\Models\User;
 use App\Models\UserRefreshToken;
+use App\Services\Notification\DTOs\NotificationIntent;
+use App\Services\Notification\NotificationCenter;
 use App\Utils\VerifyCodeHelper;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -310,13 +312,12 @@ class AuthController extends BaseController
 
         DB::transaction(function () use ($user, $newPassword) {
             $user->password = $newPassword;
-            // 改密后吊销所有旧会话：bump token_version 使旧 access token 失效，并清除全部 refresh token（与 logout 全设备登出一致）
-            $user->token_version = ($user->token_version ?? 0) + 1;
-            $user->logout_at = now();
-            $user->save();
-
-            UserRefreshToken::deleteTokenByUserId($user->id);
+            // 改密后吊销所有旧会话（单点）：bump token_version + 写 logout_at + 清全部 refresh token
+            $user->revokeAllSessions();
         });
+
+        // 改密成功后发安全提醒邮件（用户关闭 security 偏好 / 无邮箱则由通道 shouldSend 自动跳过）
+        $this->notifySecurityChange($user, '登录密码已修改');
 
         $this->success();
     }
@@ -435,14 +436,13 @@ class AuthController extends BaseController
         if ($user) {
             DB::transaction(function () use ($user, $password) {
                 $user->password = $password;
-                // 忘记密码重置后吊销所有旧会话（账号可能已失陷）：bump token_version 使旧 access token
-                // 失效 + 写 logout_at + 清除全部 refresh token（与登录态改密 updatePassword 一致）
-                $user->token_version = ($user->token_version ?? 0) + 1;
-                $user->logout_at = now();
-                $user->save();
-
-                UserRefreshToken::deleteTokenByUserId($user->id);
+                // 忘记密码重置后吊销所有旧会话（账号可能已失陷，单点）：
+                // bump token_version + 写 logout_at + 清全部 refresh token（与登录态改密一致）
+                $user->revokeAllSessions();
             });
+
+            // 重置成功后发安全提醒邮件（已过邮箱验证码必有邮箱）；dispatch 异步入队、响应仍统一 success，不放大账号枚举
+            $this->notifySecurityChange($user, '登录密码已通过邮箱验证码重置');
         }
 
         $this->success();
@@ -492,17 +492,28 @@ class AuthController extends BaseController
             /** @var User $user */
             $user = $this->guard->user();
 
-            // 更新token版本使所有token都失效
-            $user->token_version = ($user->token_version ?? 0) + 1;
-            $user->logout_at = now();
-            $user->save();
-
-            // 清除该用户所有刷新token
-            UserRefreshToken::deleteTokenByUserId($user->id);
+            // 全设备登出：吊销该用户全部现存会话（单点，与改密/重置一致）
+            $user->revokeAllSessions();
         }
 
         $this->guard->logout();
 
         $this->success();
+    }
+
+    /**
+     * 派发账号安全变更通知（仅 mail 通道；用户关闭 security 偏好或无邮箱时由 shouldSend 自动跳过）。
+     *
+     * 在改密事务提交后调用；NotificationJob 经 ->afterCommit() 入队，发送失败不影响改密主流程。
+     * event 仅传安全事件的可读描述，绝不含密码等凭据。
+     */
+    private function notifySecurityChange(User $user, string $event): void
+    {
+        app(NotificationCenter::class)->dispatch(new NotificationIntent(
+            'security',
+            'user',
+            $user->id,
+            ['event' => $event, 'email' => (string) $user->email]
+        ));
     }
 }

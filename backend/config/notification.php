@@ -6,6 +6,7 @@ use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
 use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
+use App\Services\Notification\Builders\SecurityNotificationBuilder;
 use App\Services\Notification\Builders\TaskFailedNotificationBuilder;
 use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 
@@ -33,6 +34,9 @@ return [
         'cert_expire' => CertExpireNotificationBuilder::class,
         'task_failed' => TaskFailedNotificationBuilder::class,
         'finance_audit' => FinanceAuditNotificationBuilder::class,
+        // 账号安全变更（改密/重置）：专用 Builder 白名单 username/event/email 入库，
+        // 不回落 DefaultNotificationBuilder（避免调用方误传敏感字段被直通进 notifications.data）
+        'security' => SecurityNotificationBuilder::class,
         // 携带初始密码：用专用 Builder 把密码走 transient（仅渲染、不入库），
         // 不能回落 DefaultNotificationBuilder（会把明文密码直通进 notifications.data）
         'user_created' => UserCreatedNotificationBuilder::class,

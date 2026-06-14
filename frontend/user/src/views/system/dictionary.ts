@@ -11,7 +11,7 @@ export const brandOptionsAll = [
   { label: "GoGetSSL", value: "gogetssl" },
   { label: "Positive", value: "positive" },
   { label: "锐安信", value: "ssltrus" },
-  { label: "KeepTrust", value: "keeptrust" },
+  { label: "环安信", value: "keeptrust" },
   { label: "Rapid", value: "rapid" },
   { label: "GeoTrust", value: "geotrust" },
   { label: "Sectigo", value: "sectigo" },

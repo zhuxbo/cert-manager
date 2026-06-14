@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\ApiLog;
 use App\Models\Cert;
 use App\Models\DeployToken;
 use App\Models\Order;
@@ -492,6 +493,26 @@ test('query field=private_key 返回私钥 PEM 纯文本', function () {
     expect($response->getContent())->toBe($cert->private_key);
 });
 
+test('field 拉取的纯 PEM 文本响应在 api_logs 记为成功 status=1', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [
+        'cert' => "-----BEGIN CERTIFICATE-----\nCERT_BODY\n-----END CERTIFICATE-----",
+        'intermediate_cert' => '',
+    ]);
+
+    deployGetRaw($token, "order=$order->id&field=certificate")->assertOk();
+
+    // 纯 PEM 文本响应无 code 字段、非 'success'：旧逻辑误记 status=0（失败），
+    // 修复后回落 HTTP 2xx 判成功，避免 deploy 证书/私钥拉取在日志里全部显示失败
+    $log = ApiLog::query()
+        ->where('url', 'like', '%field=certificate%')
+        ->latest('id')
+        ->first();
+
+    expect($log)->not->toBeNull()
+        ->and($log->status)->toBe(1);
+});
+
 test('query field 非法取值返回验证错误', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'active');
@@ -916,4 +937,44 @@ test('toggleAutoReissue 参数验证', function () {
     deployPost($token, '/api/deploy/auto-reissue', ['order_id' => 1])
         ->assertOk()
         ->assertJson(['code' => 0]);
+});
+
+// ========================================
+// 国密 (SM2) — Deploy 自动部署 gate
+// ========================================
+
+test('query field 拉取国密 SM2 证书被拒绝（防 certimate 单证书自动部署残缺）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [
+        'common_name' => 'gm.example.com',
+        'encryption_alg' => 'SM2',
+        'enc_cert' => "-----BEGIN CERTIFICATE-----\nENC\n-----END CERTIFICATE-----",
+    ]);
+
+    deployGet($token, "order={$order->id}&field=certificate")->assertStatus(400);
+    deployGet($token, "order={$order->id}&field=private_key")->assertStatus(400);
+});
+
+test('query field 拉取非国密证书正常返回 PEM 文本', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', ['encryption_alg' => 'RSA']);
+
+    deployGet($token, "order={$order->id}&field=certificate")
+        ->assertOk()
+        ->assertHeader('Content-Type', 'text/plain; charset=utf-8');
+});
+
+test('query 国密 active 订单返回加密双证书字段 + 算法标记', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [
+        'encryption_alg' => 'SM2',
+        'enc_cert' => "-----BEGIN CERTIFICATE-----\nENC\n-----END CERTIFICATE-----",
+        'enc_key' => 'ENC-KEY-0016',
+        'enc_key2' => 'ENC-KEY-0009',
+    ]);
+
+    $response = deployGet($token, "order={$order->id}")->assertOk();
+    $response->assertJsonPath('data.data.0.encryption_alg', 'sm2');
+    $response->assertJsonPath('data.data.0.enc_certificate', "-----BEGIN CERTIFICATE-----\nENC\n-----END CERTIFICATE-----");
+    $response->assertJsonPath('data.data.0.enc_private_key', 'ENC-KEY-0016');
 });

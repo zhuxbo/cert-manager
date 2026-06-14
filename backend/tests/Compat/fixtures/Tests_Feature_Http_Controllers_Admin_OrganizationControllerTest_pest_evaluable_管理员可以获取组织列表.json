@@ -19,6 +19,7 @@
                             "country": "string",
                             "phone": "string",
                             "created_at": "string",
+                            "contact": "null",
                             "user": {
                                 "id": "integer",
                                 "username": "string"

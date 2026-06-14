@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderControllerTest::__pest_evaluable_提交订单_commit_端到端：pending_订单真实提交上游转_processing",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/order/commit/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "cert_apply_status": "integer",
+                    "dcv": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    },
+                    "validation": "array<unknown>"
+                }
+            }
+        }
+    ]
+}

@@ -1,8 +1,10 @@
 # 完成检查 — Manager
 
-提交前逐项检查，跳过不涉及的部分。
+提交前逐项检查。"跳过不涉及"以 §1 范围表（脚本推导 + 棘轮规则）为准，不允许主智能体自由裁量。
 
 > 范围：仅 MySQL + 宝塔部署。
+
+**S 档降级（仅纯文档改动）**：`git diff HEAD --name-only && git diff --cached --name-only` 合并后 `grep -vE '\.md$'` 为空 → 跳过 §2、§3（保留 §3.2 对改动 md 跑 prettier）、§4；§8 降为 1 轮且 reviewer 模板"必须实际跑"第 1-4 项免除（第 5 项改为核对文档与代码一致性）。其余一切改动维持全量流程。
 
 ---
 
@@ -12,28 +14,35 @@
 git status --short
 git diff --stat
 git diff --cached --stat
+bash skills/scripts/derive-scope.sh   # 机器推导范围表，贴实际输出
 ```
 
-确认本次改动涉及的目录（backend / frontend/admin / frontend/user / frontend/shared / plugins / deploy）和敏感路径（migrations / 资金路径 / 索引 / 部署脚本）。变更范围决定后面要重点跑哪些测试。
+确认本次改动涉及的目录（backend / frontend/admin / frontend/user / frontend/shared / plugins / deploy / build / .github）和敏感路径（migrations / 资金路径 / 索引 / 部署脚本 / 打包与 CI）。变更范围决定后面要重点跑哪些测试。
 
-**结构化范围产出**（后续阶段判定依据，必须在 finish-check 总结里逐项填）：
+**结构化范围产出**（后续阶段判定依据，必须在 finish-check 总结里贴 `derive-scope.sh` 实际输出）：
 
-| 维度 | 本次涉及？ | 触发后续什么 |
-|------|------------|--------------|
-| backend/app/Services/Acme | 是/否 | ACME 测试集必跑 |
-| backend/app/Services/Order | 是/否 | Order 测试集必跑 |
-| backend/app/Models/Fund / Transaction / 资金路径 | 是/否 | §2.6 资金证据必贴 + §2.4 mysql 5.7 容器必跑 |
-| backend/database/migrations | 是/否 | 检查 enum/索引/外键/DDL → 任一是 → §2.4 必跑 |
-| 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`） | 是/否 | §2.4 必跑 |
-| AppServiceProvider 连接/时区注入 | 是/否 | §2.4 必跑 |
-| frontend/shared | 是/否 | admin + user 两端构建必验 |
-| plugins/ | 是/否 | §4 插件检查必跑 |
-| deploy/ 升级脚本 | 是/否 | 反模式 4/7 重点扫描 |
-| tests/ 文件本身（新增/修改测试） | 是/否 | §2.3 测试集 + 评审改测试是否伪绿（删断言/mock 过度） |
-| 通知模板 / NotificationTemplate / NotificationCenter | 是/否 | §7 部署风险加 `db:seed --class=NotificationTemplateSeeder` + 模板渲染单测 |
-| 删除了类/配置/命令/表/字段/函数 | 是/否 | §1.5 删除审核必跑 |
+| 维度                                                                           | 本次涉及？ | 触发后续什么                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| backend/app/Services/Acme                                                      | 是/否      | ACME 测试集必跑                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| backend/app/Services/Order                                                     | 是/否      | Order 测试集必跑                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| backend/app/Models/Fund / Transaction / 资金路径                               | 是/否      | §2.6 资金证据必贴 + §2.4 mysql 5.7 容器必跑                                                                                                                                                                                                                                                                                                                                                                                                     |
+| backend/database/migrations                                                    | 是/否      | 检查 enum/索引/外键/DDL → 任一是 → §2.4 必跑；改结构后**实跑 migrate + `db:structure --check` 验证生效**、增量迁移回灌建表迁移（反模式 21）                                                                                                                                                                                                                                                                                                     |
+| 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`）                               | 是/否      | §2.4 必跑                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| AppServiceProvider 连接/时区注入                                               | 是/否      | §2.4 必跑                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| frontend/shared                                                                | 是/否      | admin + user 两端构建必验                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| plugins/                                                                       | 是/否      | §4 插件检查必跑；含 backend/ 代码时后端条件层反模式按内容同主系统触发（鉴权/锁/并发/资金）                                                                                                                                                                                                                                                                                                                                                      |
+| deploy/ 升级脚本 / 后台升级目录同步                                            | 是/否      | 反模式 7/21 + 19（仅其"部署脚本外部值"条目）重点扫描（升级同步动态发现、外部值 env 传参防注入）；必跑 `for t in deploy/test/test-*.sh; do bash "$t" \|\| exit 1; done` 贴每个脚本末行输出 + 退出码                                                                                                                                                                                                                                              |
+| build/ 打包脚本 / .github/workflows                                            | 是/否      | 反模式 2/21 重点扫描：改打包清单后实跑 `bash build/build.sh` 打包并对产出 zip `unzip -l <zip> \| grep <新文件>` 贴输出（旗舰案例 php-requirements.json 正是单一形态漏文件）；改 CI 后贴 `git diff .github/workflows/ \| grep -E '^[-+].*(jobs:\|if:\|name:)'` 实际输出，被删/被条件短路的 job 逐个确认为有意变更                                                                                                                                |
+| tests/ 文件本身（新增/修改测试）                                               | 是/否      | §2.3 测试集 + 反模式 14（flaky 四源：faker/共享 storage/时钟/tearDown）+ 15（伪绿：`assertOk`、provider 方向反置、`markTestSkipped` 吞 bug）；diff 含 `backend/tests/Feature/Http/Controllers/` 下新增/修改测试 → 必跑 `COMPAT_COMPARE=true php artisan test <这些测试文件>`，`fixture_missing` 即按 remote-release §3.0.2 程序 `COMPAT_CAPTURE=true` 补 capture 并 `git add backend/tests/Compat/fixtures/`（shift-left：免发布期补救 commit） |
+| 鉴权 / 下载 / 解压 / CORS / 通知 / 公开端点（安全面）                          | 是/否      | §7 安全风险细化 + 反模式 17/18/19；**实际发一次绕过请求**验证防御生效                                                                                                                                                                                                                                                                                                                                                                           |
+| 外部命令调用（`exec`/`proc_open`/二进制探测）                                  | 是/否      | 反模式 12（BinaryLocator + 开发机/生产环境差异）                                                                                                                                                                                                                                                                                                                                                                                                |
+| 节流 / 防重 / 并发事务（`Cache::add` / 锁 / TaskJob / 死锁）                   | 是/否      | 反模式 10（task→业务行锁顺序，新增路径先 grep 现有路径对齐）/ 20（check-then-act 原子化、占位失败回滚、防重占位 ≠ 互斥锁、死锁不可吞 / 不可续写）                                                                                                                                                                                                                                                                                               |
+| catch 自定义异常后日志/落库（`ApiResponseException`）                          | 是/否      | 反模式 16（消息走 `getApiResponse()['msg']`，`getMessage()` 恒空）                                                                                                                                                                                                                                                                                                                                                                              |
+| 通知模板 / NotificationTemplate / NotificationCenter                           | 是/否      | §7 部署风险加 `db:seed --class=NotificationTemplateSeeder` + 模板渲染单测                                                                                                                                                                                                                                                                                                                                                                       |
+| 删除了类/配置/命令/表/字段/函数                                                | 是/否      | §1.5 删除审核必跑                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **兜底行**：上述任何行都未覆盖的改动路径（`derive-scope.sh` 的"残差路径"清单） | 文件清单   | 逐个声明归入上面哪一行，或写一句"确认无触发"理由；不允许整体留空                                                                                                                                                                                                                                                                                                                                                                                |
 
-每行"是/否"必须明确，不允许"不确定"；不确定的视为"是"。
+每行"是/否"必须明确，不允许"不确定"；不确定的视为"是"。**棘轮规则**：`derive-scope.sh` 判"是"的行不得改判"否"——要降级必须附一行理由（如"关键字出现在注释/删除行"）并接受 reviewer 反向断言抽查；人工只可加判"是"（安全面/删除审核两行由脚本给提示、人工判定）。
 
 ---
 
@@ -111,16 +120,20 @@ cd backend && php artisan test --parallel
 ```
 
 > 默认走 `.env.testing` 的 mysql；本地 MySQL 偶发 "server has gone away" / "Connection refused"（资源压力间歇性闪断 / paratest 连接占满）时，**最多重跑 2 次**。第 3 次仍失败 → 当真实回归处理，必须排查根因，禁止"重试到通过"。
+>
+> **重跑只赦免基础设施闪断，不赦免测试本身的不确定性**：若失败与断言/数据相关（非连接闪断），是 flaky bug，按 `review-checklist.md` 反模式 14 排查根因（faker 随机数据撞校验 / paratest 共享 storage 跨 worker 误删 / `time()` 时钟不可控 / tearDown 吞 rollback / Pest skip eager 求值），禁止靠重跑掩盖。新增或改测试时主动收敛这四类不确定源，并防伪绿（反模式 15：只断 `assertOk`、安全 provider 方向反置、`markTestSkipped` 吞 bug）。
 
 改特定模块时优先跑对应测试：
 
 - Models：`tests/Unit/Models/`
 - ACME 单元：`tests/Unit/Services/Acme/`
-- ACME 控制器：`tests/Feature/Controllers/Admin/AcmeControllerTest.php`、`tests/Feature/Controllers/User/AcmeControllerTest.php`
-- Deploy 控制器：`tests/Feature/Controllers/Deploy/`
+- ACME 控制器：`tests/Feature/Http/Controllers/Admin/AcmeControllerTest.php`、`tests/Feature/Http/Controllers/User/AcmeControllerTest.php`
+- Order：`tests/Unit/Services/Order/`（含 Api/Traits/Utils）+ `tests/Feature/Services/Order/`（sync 并发/退费等）+ 三端控制器 `tests/Feature/Http/Controllers/{Admin,User,Deploy}/OrderControllerTest.php`
+- Deploy 控制器：`tests/Feature/Http/Controllers/Deploy/`
 - 资金路径：`tests/Feature/FundAudit/`、`tests/Feature/Database/FundTransactionUniqueIndexesTest.php`
+- 通知模板渲染：`php artisan test --filter=Notification`（覆盖 Builders / 模板渲染 / NotificationJob / NotificationCenter）
 
-### 2.4 测试 — mysql 5.7 容器(可选,模拟 CI 环境)
+### 2.4 测试 — mysql 5.7 容器（条件必跑：§1 范围表标"§2.4 必跑"的行任一为"是"，不允许自判跳过；均为"否"才可跳）
 
 **何时触发**：§1 结构化范围产出中以下任一行为"是" → §2.4 必跑（不允许主智能体自判跳过）：
 
@@ -168,7 +181,7 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 - [ ] ACME 三步流程（new → pay → commit）状态流转完整
 - [ ] Sdk 通过 `ca.acme_url`/`ca.acme_token`（回落 `ca.url`/`ca.token`）调 Gateway
 - [ ] Transaction 类型正确（`acme_order`/`acme_cancel` 等），一对一防重豁免列表收紧到 `['order']`
-- [ ] 队列 Job 在测试环境同步执行（`QUEUE_CONNECTION=sync`）；事务内 dispatch 必须 `->afterCommit()`
+- [ ] 队列 Job 在测试环境同步执行（`QUEUE_CONNECTION=sync`）；`TaskJob::dispatch` 一律 `->afterCommit()`，且异步 Job 显式 `->onQueue()` 到 tasks/notifications 之一（生产 worker 不监听 default）——机器验证见 `skills/scripts/finish-check-greps.sh`
 - [ ] Observer / Model boot 钩子改动是否影响已有事件链（特别是 `Fund::updating` / `Transaction::creating`）
 
 ### 2.6 资金路径专项（涉及 funds/transactions/users.balance 时）
@@ -180,11 +193,11 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 - [ ] 修改 `user.balance` 必须在 `DB::transaction(fn)` 内 + 同事务内创建对应 transaction
 - [ ] 删除已入账 fund 路径必须事务内 `lockForUpdate` + 锁内 status/created_at 二次校验
 - [ ] 新增"资金相关"测试必须登记 `fundAuditGuardedTestPaths()` 或 `fundAuditGuardExcludedTestPaths()`（元测试 `tests/Unit/FundAuditGuardCoverageTest.php` 强制兜底）
-- [ ] 上线前先跑 `php artisan finance:audit`（dry-run），确认现有数据干净再加新约束/索引
+- [ ] 上线前先跑 `php artisan finance:audit`（不带 `--freeze-on-violation`，仅对账不冻结用户），确认现有数据干净再加新约束/索引
 
 **证据格式要求**（防止"声称做了"）：
 
-- 涉及资金路径的 PR 必须在 finish-check 总结中贴出 `php artisan finance:audit --dry-run` 的 stdout（无违反贴"全部 invariant 通过"一行 + 退出码 0；有违反 ≤ 5 条贴完整列表，>5 条按 §1.5 截断规则贴前 5 行 + "... 共 N 命中"）
+- 涉及资金路径的 PR 必须在 finish-check 总结中贴出 `php artisan finance:audit` 的 stdout（**绝不带 `--freeze-on-violation`**；无违反时贴实际输出行"资金审计校验通过"；有违反 ≤ 5 条贴完整列表，>5 条按 §1.5 截断规则贴前 5 行 + "... 共 N 命中"）。注意：该命令发现违反也返回 0（设计如此，告警走邮件），**退出码不能作为数据干净的证据，判定以 stdout 文案为准**
 - 涉及新增资金测试时贴出 `php artisan test --filter=FundAuditGuardCoverage` 的退出码（确认测试登记到 guarded/excluded 列表）
 
 ### 2.7 PHP 8.3 规范
@@ -245,7 +258,7 @@ git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -w
 - **仅对本次改过的 .sh 跑 `-w`**，避免顺手修历史不规范污染 PR
 - 跑完务必 `bash -n <file>` 验证语法（shfmt 一般不会破坏语义，但保险起见）
 
-> 大重构例外：和 prettier 同理，全仓库批改时可跑全量 `find . -name "*.sh" -not -path "./node_modules/*" -not -path "./vendor/*" -not -path "*/.husky/_/*" -not -path "./build/temp/*" -not -path "./frontend/base/*" | xargs shfmt -i 4 -ci -w`。
+> 大重构例外：和 prettier 同理，全仓库批改时可跑全量 `find . -name "*.sh" -not -path "./node_modules/*" -not -path "./vendor/*" -not -path "*/.husky/_/*" -not -path "./build/temp/*" | xargs shfmt -i 4 -ci -w`。
 
 ### 3.4 构建验证（admin + user 双端）
 
@@ -258,7 +271,6 @@ pnpm build
 ### 3.5 Monorepo 专项检查
 
 - [ ] 修改 `frontend/shared/` 后同时检查 admin 和 user 两端影响
-- [ ] `frontend/base/` 保持只读（git subtree，不直接修改）
 - [ ] `@shared/*` 路径别名引用正确解析
 - [ ] Workspace 依赖（`workspace:*`）版本一致
 - [ ] admin 和 user 各自的 API 路径前缀正确（不混用）
@@ -268,25 +280,26 @@ pnpm build
 - [ ] 新增组件有 `defineOptions({ name: "XxxPage" })`（keep-alive 依赖组件名）
 - [ ] `watch`/`watchEffect` 在组件卸载时清理
 - [ ] `addEventListener`、`mitt.on`、定时器在 `onBeforeUnmount` 中移除
-- [ ] `v-for` 有唯一 `:key`，不与 `v-if` 同时用在同一元素
+- 模板基础错误（`v-for` 唯一 `:key`、`v-if` 与 `v-for` 混用同元素等）由 ESLint vue3 essential 强制（error 级），§3.1 `pnpm lint` 即覆盖，无需人肉勾选
+- [ ] 新增轮询/定时器先查 `frontend/shared` 是否已有可复用 composable；组件级轮询上提父级统一调度（反模式 22）
 - [ ] Pinia store 的 state 使用函数返回
 - [ ] Element Plus 组件按需引入正确
 
 ### 3.7 样式检查
 
 - [ ] 组件样式使用 `scoped`
-- [ ] 深度选择器使用 `:deep()` 而非 `::v-deep` / `/deep/`
+- [ ] 新代码深度选择器使用 `:deep()`，禁用 `/deep/`；存量布局组件的 `::v-deep`（8 处，stylelint 放行）不强制改、渐进迁移
 - [ ] TailwindCSS 类名与自定义 SCSS 无冲突
 
 ---
 
 ## 4. 插件检查（如涉及 plugins/ 目录）
 
-- [ ] `plugin.json` 必填字段：`name` / `requires` / `provider`；按需 `php_ext` / `admin_bundle` / `admin_css` / `user_bundle` / `user_css`
-- [ ] 插件迁移幂等（同主系统约束）
+- [ ] `plugin.json` 必填字段：`name` / `requires`；**含 `backend/` 目录的插件**另必填 `provider`（纯前端插件如 api-docs 无 provider 是合法形态）；按需 `php_ext` / `admin_bundle` / `admin_css` / `user_bundle` / `user_css`
+- [ ] 插件迁移幂等（同主系统约束）；**插件后端代码与主系统同等约束**——安全/并发/资金类反模式按内容触发（见 §1 范围表 plugins/ 行），机器检查：`git grep -nE "query\(['\"](token|api_key|secret)" -- ':(glob)plugins/*/backend/**'` 应 0 命中（凭据不进 URL query）
 - [ ] Widget 插槽注册正确（如 `user-dashboard-top`）
 - [ ] 插件动态加载不影响主应用启动
-- [ ] `build.json` 的 `include` 数组包含所有需要打包的子目录（`backend/` / `frontend/web/` / `nginx/` 等）
+- [ ] `build.json` 的 `include` 数组包含所有需要打包的子目录（`backend/` / `frontend/web/` / `nginx/` 等）；发布 zip 不变量由 `plugins/release-plugin.sh` 的 `verify_zip_invariants` 硬校验（vendor 不进包 / composer.json 与 lock 配对），build 与 --publish-only 两路径都过
 
 ---
 
@@ -318,7 +331,7 @@ git status --short | grep "^??"
 - [ ] 部署相关 → 更新 `DEPLOY.md`
 - [ ] 升级回滚相关 → 更新 `UPGRADE.md`
 - [ ] 模块架构改动 → 更新 `skills/*.md`（按领域）
-- [ ] 跑 `bash skills/scripts/check-review-checklist-staleness.sh`，把 warning 项贴入 finish-check 总结的"已知局限性"段；若 warning 数 ≥ 3 → 必须列入 follow-up 维护任务（避免清单长期失真）
+- [ ] 跑 `bash skills/scripts/check-review-checklist-staleness.sh && bash skills/scripts/finish-check-greps.sh`，把 warning / FAIL 项贴入 finish-check 总结的"已知局限性"段；greps 脚本 FAIL > 0 必须当场修（硬零断言，恒红会驯化走过场）；staleness warning 数 ≥ 3 → 必须列入 follow-up 维护任务（避免清单长期失真）
 
 ---
 
@@ -335,11 +348,14 @@ git status --short | grep "^??"
 
 ### 安全风险
 
-- 新增 API 是否有认证中间件（JWT / Token）
-- 用户输入是否经 Request 类验证
-- UserScope 是否覆盖新增查询
+- 新增 API 是否有认证中间件（JWT / Token）；UserScope 是否覆盖新增查询
+- 用户输入是否经 Request 类验证；敏感字段在响应中是否隐藏（`makeHidden`）
 - 支付相关改动（yansongda/pay）是否安全（CAS 路径金额/方式校验完整？回调失败让支付平台重试而非吞错？）
-- 敏感字段在响应中是否隐藏
+- **免登录 / 自证端点是否挂限流**（防爆破/枚举/滥用）；账号枚举防护（去 `exists:users`、查无此人不分叉响应、限流 key 归一化大小写）—— 反模式 17
+- **改密所有入口**是否同事务 bump `token_version` + 清 refresh token；凭据不进 URL（短时签名 URL）、admin 详情 `makeHidden` 他人 token；鉴权配置双空 fail-close —— 反模式 17
+- **外部 URL 下载**（升级包 / 插件包）：sha256 fail-closed、SSRF 白名单制（拒 169.254 云元数据 / CGNAT）、重定向限 https、最终下载 URL 再校验；解压走 ArchiveGuard —— 反模式 18
+- **敏感数据落库**：通知携密 / 安全字段走专用 Builder 不回落 Default；携密 Job `implements ShouldBeEncrypted`（jobs/failed_jobs 是第二落库面）；CORS 白名单不 reflect 任意 Origin；用户可控字节下载默认 `attachment` + `nosniff`，内联类型走白名单 + 兜底 CSP（现行：图片与 PDF inline）—— 反模式 19
+- **机制可达性**：任何"声称有鉴权 / 签名 / 限流"的防御，实际发一次绕过请求验证真被拦（反模式 2 第二例 + 15，防半修假绿）。**证据格式**：总结里贴一行"发了什么绕过请求 → 响应码/是否被拦"，"已验证"式声称不算证据
 
 ### 数据风险
 
@@ -361,7 +377,7 @@ git status --short | grep "^??"
 - 是否需要跑迁移
 - 是否需要 `php artisan config:clear` / `cache:clear`
 - 是否需要 `php artisan db:seed --class=NotificationTemplateSeeder`（新增通知模板）
-- 是否需要重启队列 worker（宝塔 Supervisor 重启 `ssl-manager-queue`）
+- 是否需要重启队列 worker（宝塔 Supervisor 重启队列进程，程序名为站点域名）
 - 前端构建产物是否需要清除 CDN 缓存
 - 插件是否需要重新发布（`plugins/release-plugin.sh`）
 
@@ -371,50 +387,49 @@ git status --short | grep "^??"
 
 **目的**：用干净上下文的独立 reviewer subagent 以"破坏模式"找毛病，避开主智能体改完测试通过就停手的天然偏差。
 
-**质量门定义**：声明"完成"前必须满足 — reviewer 输出过 **以 `REVIEW_PASS:` 为前缀的签字行**（前缀后人读说明文字可变，仅前缀参与 `grep -F` 验证）。`REVIEW_PASS:` 仅表示 critical/high 已清零；reviewer 可同时列出 medium/low 供用户决议，不影响签字。
+**质量门定义**：声明"完成"前必须满足 — **落盘的 round 文件**中存在 **以 `REVIEW_PASS:` 为前缀的签字行**（前缀后回执字段与人读说明可变，仅前缀参与 `grep -F` 验证）。`REVIEW_PASS:` 仅表示 critical/high 已清零；reviewer 可同时列出 medium/low 供用户决议，不影响签字。**签字必须有产物**：grep 的对象是 `.superpowers/reviews/` 下的落盘文件，不是主智能体自己上下文里的转述——自己写一行再 grep 自己 = 流程未执行。
 
 ### 8.1 执行结构（循环到收敛，最多 5 轮）
 
 ```
+进入 §8 前：建本次运行专属目录 .superpowers/reviews/$(date +%Y%m%d-%H%M)-<简短主题>/
 loop:
-  ① 派 reviewer subagent（见 §8.2 调用方式）
-  ② 主智能体读 reviewer 报告
+  ① 派 reviewer subagent（见 §8.2 调用方式），prompt 中"本轮报告写入"字段填该目录 round-<N>.md
+  ② reviewer 返回后第一步：确认报告已写入 round-<N>.md（reviewer 落盘 + 主智能体核对；
+     文件缺失或与返回正文不一致 → 本轮无效重派）；实跑
+     grep -Fn "REVIEW_PASS:" <round 文件> 或 grep -Fn "REVIEW_FAIL:" <round 文件>，
+     并确认报告含 "## 证据回执" 固定段（grep -F "证据回执"，缺失视同 REVIEW_FAIL 退回重派）
+  ③ 主智能体读 reviewer 报告
      ├─ Critical / High：必须修 → 修完跳回 §2/§3（只对改动文件）→ 重新执行 §8
+     │   └─ 修复是否生效由下一轮 reviewer 复验判定（"已修待复验"），主智能体的"已修"标注不构成验证
      ├─ Medium：报告给用户决议（当场修 / follow-up issue / 接受）—— 主智能体不擅自处理
      │   └─ 用户选"当场修"：视同 Critical/High 处理（修完跳回 §2/§3 → 重新执行 §8；修完后主智能体必须把此项加入下一轮 reviewer prompt 的"上一轮 medium 用户决议为'当场修'的项"字段，避免下轮重复报告）
      └─ Low / Nit：默认 follow-up，不阻塞
-  ③ reviewer 输出 `REVIEW_PASS:` 前缀的签字行 → 主智能体 grep 验证 → 退出循环
-  ④ 第 5 轮结束仍有 critical/high 未收敛 → 主智能体停止执行，
+  ④ round 文件 grep 命中 `REVIEW_PASS:` → 退出循环
+  ⑤ 第 5 轮结束仍有 critical/high 未收敛 → 主智能体停止执行，
      输出 `REVIEW_STALLED:` 前缀标记，由用户决定拆 PR / 接受残留 / 强行继续
 ```
 
 **强制约束**：
 
-- 声明完成前**必须用 `grep -F "REVIEW_PASS:"` 检测 reviewer 输出前缀**，并在最终报告中引用该行。没有这行 grep 命中 → 流程未完成。冒号后的人读说明文字不参与 grep。
+- 声明完成前**必须对落盘 round 文件实跑 `grep -Fn "REVIEW_PASS:"`**，并在最终报告中按 §1.5 证据格式引用"文件路径 + 命中行"。没有落盘文件或没有命中行 → 流程未完成。冒号后的回执/说明文字不参与 grep。
+- 轮次数 = 本次 run 目录内 `round-*.md` 文件数（可数文件防虚报；不可用整个 reviews/ 目录计数，跨运行会累积旧轮）。
 - Reviewer 输出以 `REVIEW_FAIL:` 为前缀的签字行 → 等同于有 critical/high 问题，**必须按"修 critical/high → 重跑 §8"路径处理**，不允许只读 `REVIEW_PASS:` 缺失就推断"继续循环"。
 - Medium 问题不允许主智能体擅自修或忽略 — 必须列给用户决议。**用户选"当场修"时视同 Critical/High：修完必须重新执行 §8**，不允许跳过下一轮 review。
-- 第 5 轮硬停 — 不论是否还有问题，主智能体必须停下来等用户指令，不允许进入第 6 轮。停止时**必须输出可 grep 标记**：`REVIEW_STALLED: 已达 5 轮上限，等待用户决策` —— 与 `REVIEW_PASS:` / `REVIEW_FAIL:` 对称，便于用户和外部工具感知流程实际卡在哪一步。
+- 第 5 轮硬停 — 不论是否还有问题，主智能体必须停下来等用户指令，不允许进入第 6 轮。停止时**必须输出可 grep 标记**：`REVIEW_STALLED: 已达 5 轮上限，等待用户决策`。**输出 STALLED 前必须在最终报告中逐轮引用第 1~5 轮 round 文件各自的 `REVIEW_FAIL:` 签字行**（STALLED 成立必然意味着每轮均 FAIL；缺任一轮签字或 round 文件 = 未达 5 轮，不得输出 STALLED——堵"第 1 轮就喊 STALLED 把球踢给用户"的逃逸口）。
 
 ### 8.2 Reviewer Subagent 调用方式
 
-用 Claude Code 的 Agent tool 派出独立子对话：
+用 Claude Code 的 Agent tool 派出独立子对话（默认通用 reviewer，不指定 subagent_type）：
 
 ```
 Agent({
-  subagent_type: "feature-dev:code-reviewer",
   description: "<3-5 字描述>",
   prompt: <prompt 模板见 skills/review-checklist.md "Reviewer Subagent 任务模板" 章节>
 })
 ```
 
-**Fallback**：若 `feature-dev:code-reviewer` 不可用（subagent_type 未注册 / 报错），改用通用 reviewer：
-
-```
-Agent({
-  description: "<3-5 字描述>",
-  prompt: <同上>
-})
-```
+若环境已注册专用 reviewer 类型（如 `feature-dev:code-reviewer`，查 installed plugins / agents 确认）则可优先指定 `subagent_type` 使用；未确认已注册时不要先试——必失败的派发只会留下"降级当异常"的即兴空间。最终报告引用 REVIEW_PASS 签字行处须同行注明本轮实际使用的 subagent_type（通用则写 general-purpose）。
 
 **Prompt 模板的单一来源**：`skills/review-checklist.md` 中 "Reviewer Subagent 任务模板" 章节是唯一权威。本文件不内嵌模板内容，避免漂移。主智能体派 reviewer 前先读该章节，按模板填空（改动范围 / 已知 review 历史 / 主要功能背景）。
 
@@ -424,9 +439,9 @@ Agent({
 
 防无限循环和噪音：
 
-1. **传"已知问题 + 决议"给下一轮 reviewer**：每轮把上一轮发现作为 context，让它不要重复报告同一处
+1. **传"已知问题 + 决议"给下一轮 reviewer**：每轮把上一轮发现（含上一轮 round 文件路径）作为 context，让它不要**原样重复报告**同一处；但"已修待复验"项下一轮 reviewer 必须复验运行路径生效后才真正豁免（防半修——"声称修了"正是 `76a2f58` 三处教训的根因），复验规则见模板"已知 review 历史"段
 2. **置信度阈值**：`confidence ≥ 80` 才报告（过滤理论问题）
-3. **轮次硬上限**：5 轮；第 5 轮后无论结果主智能体停止，输出 `REVIEW_STALLED:` 标记等用户决策（拆 PR / 接受残留 / 强行继续）
+3. **轮次硬上限**：5 轮；第 5 轮后无论结果主智能体停止，输出 `REVIEW_STALLED:` 标记（须附逐轮 FAIL 凭证，见 §8.1）等用户决策（拆 PR / 接受残留 / 强行继续）
 4. **三类机器可验证标记**（前缀固定，全程用 `grep -F` 验证前缀，不允许凭语义判断近义句；前缀**后**的人读说明文字可在不同场景下调整）：
    - `REVIEW_PASS:` — reviewer 通过签字（critical/high 清零；可附 medium/low 供用户决议），主智能体见到即退出循环
    - `REVIEW_FAIL:` — reviewer 失败签字（critical/high > 0），主智能体进入"修 → 重跑 §8"路径
@@ -434,15 +449,10 @@ Agent({
 
 ### 8.4 真实参考
 
-`feat: 升级链路加入 PHP 环境检测与流程加固`（commit `9dd8ce1d`）实际跑了 4 轮 review 才收敛：
+`9dd8ce1d`（升级链路 PHP 环境检测）实际跑了 4 轮 review 才收敛、第 4 轮 0 new 通过——每轮发现都对应反模式清单某条（明细 `git show 9dd8ce1d` 及 review-checklist 各反模式案例可查）。本节把这次自然形成的流程显式化，防"跑一次就停"。
 
-- 第 1 轮 → DRY / 跨脚本工具复制 / python3 → PHP / 一致性问题（5-6 条）
-- 第 2 轮 → 防御机制完全失效（清单未打进升级包）/ 数据丢失风险（检测过晚导致 storage 被 trap cleanup 删）/ shell 函数名笔误（log_warn vs log_warning）
-- 第 3 轮 → 字符串拼接路径不安全 / autoload 兜底对称性缺失 / 新方法无单测
-- 第 4 轮 → 0 new → 通过
-
-每一轮的发现都对应 `skills/review-checklist.md` 反模式 1-13 的某条，案例锚定可双向验证。本节就是把这次自然形成的流程显式化，防止下次"跑一次就停"。
+**反面教材**：`76a2f58` 一次性补三处半修（测试绿但运行路径未生效），reviewer 必须实际制造绕过请求 —— 详见 review-checklist.md 反模式 2 第二例。
 
 ---
 
-逐项检查完毕、阶段 8 reviewer 输出以 `REVIEW_PASS:` 为前缀的签字行并被主智能体 `grep -F` 命中后，输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。
+逐项检查完毕、阶段 8 的落盘 round 文件被主智能体 `grep -F "REVIEW_PASS:"` 命中并在总结中引用"文件路径 + 命中行"后，输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。**签字行随 commit body 要点或 PR body 落库**（`.github/workflows/review-pass-gate.yml` 在 PR→main 时校验双通道任一命中；防无声遗忘而非伪造）。

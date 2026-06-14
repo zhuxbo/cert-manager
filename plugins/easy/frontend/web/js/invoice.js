@@ -32,11 +32,21 @@
   //   /easy/invoice/<tid>             → 自动填 tid
   //   /easy/invoice/<tid>/<email>     → 自动填 tid + email
   //   /easy/invoice?tid=&email=       → query 形式(query 优先级最高)
+  // 容错解码:tid/email 含裸 % 等非法转义序列时 decodeURIComponent 会抛 URIError,
+  // 回落到原始字符串,避免刷新页面整体崩溃
+  function safeDecode(value) {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+
   function fillFromQuery() {
     const path = location.pathname.replace(/^\/easy\/invoice\/?/, "");
     const parts = path.split("/").filter(Boolean);
-    if (parts[0]) $("tid").value = decodeURIComponent(parts[0]);
-    if (parts[1]) $("email").value = decodeURIComponent(parts[1]);
+    if (parts[0]) $("tid").value = safeDecode(parts[0]);
+    if (parts[1]) $("email").value = safeDecode(parts[1]);
 
     const qs = new URLSearchParams(location.search);
     if (qs.get("tid")) $("tid").value = qs.get("tid");
@@ -44,13 +54,16 @@
   }
 
   // 用 history.pushState 把 tid/email 同步到 URL,与 Easy 主页 main.js 的 updateUrl 行为一致
-  // tid/email 不做 encode(已验证 nginx + 浏览器接受 @ 等字符)
+  // 写入时 encodeURIComponent,读取时 safeDecode 还原,确保 tid/email 含 % 等特殊字符也稳
   function updateUrl(tid, email) {
     if (!tid) {
       window.history.pushState({}, "", BASE_PATH);
       return;
     }
-    const target = `${BASE_PATH}/${tid}${email ? "/" + email : ""}`;
+    const encodedTid = encodeURIComponent(tid);
+    const target = `${BASE_PATH}/${encodedTid}${
+      email ? "/" + encodeURIComponent(email) : ""
+    }`;
     window.history.pushState({ tid, email }, "", target);
   }
 

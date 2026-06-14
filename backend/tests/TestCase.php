@@ -54,11 +54,17 @@ abstract class TestCase extends BaseTestCase
 
     protected function tearDown(): void
     {
-        if (Helpers::isCaptureMode() || Helpers::isCompareMode()) {
-            SnapshotListener::finalizeTest($this->toString());
-            SnapshotListener::setCurrentTest(null);
+        try {
+            // compare 模式下 finalizeTest 命中 diff 会 Assert::fail 抛异常；
+            // 必须用 finally 兜住，否则会跳过 parent::tearDown()（含 RefreshDatabase
+            // 事务 rollback），导致连接持锁泄漏 + 事务层级漂移，串行跑全套时雪崩
+            // 成 Lock wait timeout。
+            if (Helpers::isCaptureMode() || Helpers::isCompareMode()) {
+                SnapshotListener::finalizeTest($this->toString());
+                SnapshotListener::setCurrentTest(null);
+            }
+        } finally {
+            parent::tearDown();
         }
-
-        parent::tearDown();
     }
 }

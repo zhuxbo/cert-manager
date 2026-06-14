@@ -65,7 +65,9 @@ fi
 if [ "$NEED_INSTALL" = true ]; then
     log_info "安装 pnpm workspace 依赖..."
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    pnpm install --frozen-lockfile --prefer-offline
+    # CI=true：容器内无 TTY，pnpm 11 切版本/重建 node_modules 时需非交互确认 purge
+    # （否则报 ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY）；并让 supply-chain 校验走 CI 默认放行已落 lockfile
+    CI=true pnpm install --frozen-lockfile --prefer-offline
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "$CURRENT_HASH" >"$HASH_FILE"
 fi

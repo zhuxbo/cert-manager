@@ -6,22 +6,16 @@
             "method": "PUT",
             "uri_pattern": "/api/setting/notification-preferences",
             "request_keys": [
-                "email_enabled"
+                "cert_expire",
+                "cert_issued"
             ],
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "mail": {
-                        "cert_issued": "boolean",
-                        "cert_expire": "boolean",
-                        "security": "boolean"
-                    },
-                    "sms": {
-                        "cert_issued": "boolean",
-                        "cert_expire": "boolean",
-                        "security": "boolean"
-                    }
+                    "cert_issued": "boolean",
+                    "cert_expire": "boolean",
+                    "security": "boolean"
                 }
             }
         }

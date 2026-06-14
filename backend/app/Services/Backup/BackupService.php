@@ -16,7 +16,7 @@ use RuntimeException;
  * {prefix}_YYYYMMDD_HHMMSS.schema.json — 当前数据库结构（同名异后缀）
  * prefix：
  * backup — 常规备份（受 --keep 清理）
- * pre_restore — 恢复前自动保险备份（永不自动清理）
+ * pre_restore — 恢复前自动保险备份（不按天清理，按 config('database.backup.pre_restore_keep') 保留最近 N 份）
  */
 class BackupService
 {

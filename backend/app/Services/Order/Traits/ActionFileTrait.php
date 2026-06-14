@@ -113,6 +113,16 @@ trait ActionFileTrait
         $random = sprintf('%04x%04x', mt_rand(0, 0xFFFF), mt_rand(0, 0xFFFF));
         $certPath = in_array($commonName, $domains) ? $certName.'-'.$random.'/' : $certName.'/';
 
+        // 国密双证书：按 encryption_alg 判定（与前端 isSM2 / Deploy gate 同口径），国密证书一律只出
+        // nginx 国密包，绝不走下方普通格式分支 —— 普通分支的 openssl_x509_check_private_key / PKCS12 不支持
+        // SM2，会丢签名私钥、且 iis/tomcat 还会硬报错。加密证书/私钥由上游 CA/KGC 经 get 透传，为空
+        // （gateway 未就绪）时 addSm2CertToZip 内部降级仅出签名部分 + 提示。
+        if (strtolower((string) ($order->latestCert->encryption_alg ?? '')) === 'sm2') {
+            $this->addSm2CertToZip($zip, $certPath, $certName, $commonName, $cert, $privateKey, $intermediateCert, $order->latestCert->enc_cert ?? '', $order->latestCert->enc_key ?? '', $order->latestCert->enc_key2 ?? '');
+
+            return;
+        }
+
         $password = '123456';
         $keyMatched = $privateKey && openssl_x509_check_private_key($cert, $privateKey);
 
@@ -175,9 +185,12 @@ trait ActionFileTrait
                 file_put_contents($keyFile, $privateKey);
                 file_put_contents($chainFile, $intermediateCert);
 
-                // 用 PBE-SHA1-3DES + HMAC-SHA1 生成 PFX，兼容 Windows Server 2008+ 全系列
-                // PHP openssl_pkcs12_export 在 OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，老 Windows 报"密码错误"无法导入
-                $baseCmd = escapeshellarg($openssl).' pkcs12 -export'
+                // 显式 PBE-SHA1-3DES + HMAC-SHA1 生成 PFX，兼容 Windows Server 2008+ 全系列。
+                // PHP openssl_pkcs12_export 在 OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，老 Windows 报"密码错误"无法导入。
+                // 3DES 在 OpenSSL 3.x default provider / 1.x 原生可用，无需 -legacy：-legacy 是 3.0 新增选项，在
+                // 1.x、LibreSSL 上会报 Unrecognized flag 反需回落兜底，且 3.x 上显式指定 3DES 时它是空操作——故去掉，
+                // 单条命令全版本一次成功（RC2-40 才需 legacy provider，本系统不用）。
+                $cmd = escapeshellarg($openssl).' pkcs12 -export'
                     .' -inkey '.escapeshellarg($keyFile)
                     .' -in '.escapeshellarg($certFile)
                     .' -certfile '.escapeshellarg($chainFile)
@@ -186,10 +199,23 @@ trait ActionFileTrait
                     .' -password '.escapeshellarg("pass:$password")
                     .' -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1';
 
-                // OpenSSL 3.x 需 -legacy 启用 3DES/RC2 老算法；1.x 默认即老算法，无此参数
-                @exec("$baseCmd -legacy > /dev/null 2>&1", $output, $returnCode);
-                if ($returnCode !== 0) {
-                    @exec("$baseCmd > /dev/null 2>&1", $output, $returnCode);
+                // 捕获 stderr（不再 > /dev/null 丢弃）：FIPS / no-des 环境下 PBE-SHA1-3DES 必失败，
+                // 显式请求 iis/tomcat 时必须报错 + 记日志（与 binary 缺失路径对称），不能静默给残缺包。
+                $output = [];
+                @exec("$cmd 2>&1", $output, $returnCode);
+
+                if ($returnCode !== 0 || ! file_exists($pfx)) {
+                    // 显式单格式（iis/tomcat）失败必须硬报错 + Log::error；all 模式 PFX 可选，静默降级跳过
+                    if ($type == 'iis' || $type == 'tomcat') {
+                        Log::error('PFX 生成失败', [
+                            'returnCode' => $returnCode,
+                            'output' => implode("\n", $output),
+                            'common_name' => $commonName,
+                        ]);
+                        $this->error('PFX 生成失败，请联系管理员检查 OpenSSL 是否支持 PBE-SHA1-3DES（FIPS / no-des 环境会失败）');
+                    } else {
+                        Log::info('PFX 生成失败，跳过 IIS/JKS 输出', ['returnCode' => $returnCode]);
+                    }
                 }
 
                 if ($returnCode === 0 && file_exists($pfx)) {
@@ -201,9 +227,28 @@ trait ActionFileTrait
                     if (($type == 'all' || $type == 'tomcat') && $keytool !== null) {
                         $jks = $tempDir.'/temp.jks';
                         $cmd = escapeshellarg($keytool).' -importkeystore -srckeystore '.escapeshellarg($pfx)." -srcstoretype PKCS12 -srcstorepass $password -deststoretype jks -deststorepass $password -destkeystore ".escapeshellarg($jks);
-                        @exec("$cmd > /dev/null 2>&1");
-                        $zip->addFile($jks, $certPath.'tomcat/'.$certName.'.jks');
-                        $zip->addFromString($certPath.'tomcat/password.txt', $password);
+
+                        // 捕获 stderr（不再 > /dev/null 丢弃）+ 检查返回码/文件：keytool 环境异常时
+                        // 显式请求 tomcat 必须报错 + 记日志（与 PFX 失败路径对称），不能静默给空 jks。
+                        $jksOutput = [];
+                        @exec("$cmd 2>&1", $jksOutput, $jksReturnCode);
+
+                        if ($jksReturnCode !== 0 || ! file_exists($jks)) {
+                            // 显式 tomcat 失败硬报错 + Log::error；all 模式 jks 可选，静默降级跳过
+                            if ($type == 'tomcat') {
+                                Log::error('JKS 生成失败', [
+                                    'returnCode' => $jksReturnCode,
+                                    'output' => implode("\n", $jksOutput),
+                                    'common_name' => $commonName,
+                                ]);
+                                $this->error('JKS 生成失败，请联系管理员检查 keytool（JDK）是否可用');
+                            } else {
+                                Log::info('JKS 生成失败，跳过 tomcat 输出', ['returnCode' => $jksReturnCode]);
+                            }
+                        } else {
+                            $zip->addFile($jks, $certPath.'tomcat/'.$certName.'.jks');
+                            $zip->addFromString($certPath.'tomcat/password.txt', $password);
+                        }
                     }
                 }
             }
@@ -239,19 +284,79 @@ trait ActionFileTrait
                     $cmd = escapeshellarg($openssl).' pkcs8 -in '.escapeshellarg($key).' -out '.escapeshellarg($rsaKey).' -nocrypt -traditional';
                     @exec("$cmd 2>&1", $output, $returnCode);
 
-                    // 如果 -traditional 参数失败，使用 RSA 命令转换
+                    // 如果 -traditional 参数失败，使用 RSA 命令转换（捕获 stderr，不再 > /dev/null 丢弃）
                     if ($returnCode !== 0) {
                         $cmd = escapeshellarg($openssl).' rsa -in '.escapeshellarg($key).' -out '.escapeshellarg($rsaKey).' -traditional';
-                        @exec("$cmd > /dev/null 2>&1", $output, $returnCode);
+                        $output = [];
+                        @exec("$cmd 2>&1", $output, $returnCode);
                     }
 
-                    // 只有转换成功才添加到zip
+                    // 只有转换成功才添加到zip；失败属 best-effort（仅 all 模式附加输出），记日志跳过、留排障痕迹
                     if ($returnCode === 0 && file_exists($rsaKey)) {
                         $zip->addFile($rsaKey, $certPath.'rsa_key/'.$certName.'-rsa.key');
+                    } else {
+                        Log::info('RSA 传统格式私钥转换失败，跳过 rsa_key 输出', [
+                            'returnCode' => $returnCode,
+                            'output' => implode("\n", $output),
+                        ]);
                     }
                 }
             }
         }
+    }
+
+    /**
+     * 生成 SM2 国密 nginx 双证书包（签名证书 + 加密证书）。
+     *
+     * 国密 SSL 双证书：签名证书走用户密钥对，加密证书 + 加密私钥由 CA/KGC 托管下发。
+     * 纯 addFromString 无需 openssl。加密私钥为空（gateway 未就绪）时仅出签名部分。
+     */
+    protected function addSm2CertToZip(
+        ZipArchive $zip,
+        string $certPath,
+        string $certName,
+        string $commonName,
+        string $cert,
+        string $privateKey,
+        string $intermediateCert,
+        string $encCert,
+        string $encKey,
+        string $encKey2
+    ): void {
+        $dir = $certPath.'nginx/';
+
+        $zip->addFromString($dir.$certName.'_sign.crt', $cert);
+        $privateKey && $zip->addFromString($dir.$certName.'_sign.key', $privateKey);
+        $intermediateCert && $zip->addFromString($dir.$certName.'_sign_ca.crt', $intermediateCert);
+        // 加密部分需 enc_cert + enc_key 成对才有效（加密证书 + 对应私钥）；缺任一视为未就绪，降级仅出
+        // 签名，绝不写出"有证书无私钥"或"有私钥无证书"的残缺包（上游异步下发 enc、无成对到达约束）
+        $encReady = $encCert !== '' && $encKey !== '';
+        if ($encReady) {
+            $zip->addFromString($dir.$certName.'_enc.crt', $encCert);
+            $zip->addFromString($dir.$certName.'_enc.key', $encKey);
+            $zip->addFromString($dir.$certName.'_enc_gmt0016.key', $encKey);
+            $encKey2 && $zip->addFromString($dir.$certName.'_enc_gmt0009.key', $encKey2);
+        }
+
+        $lines = [
+            "{$certName}_sign.crt 签名证书",
+            "{$certName}_sign.key 签名私钥（与签名证书匹配）",
+        ];
+        if ($intermediateCert) {
+            $lines[] = "{$certName}_sign_ca.crt 证书链";
+        }
+        if ($encReady) {
+            $lines[] = "{$certName}_enc.crt 加密证书";
+            $lines[] = "{$certName}_enc.key 加密私钥（GMT-0016 格式，需解密后使用）";
+            if ($encKey2) {
+                $lines[] = "{$certName}_enc_gmt0009.key 加密私钥（GMT-0009 格式）";
+            }
+        } else {
+            $lines[] = '';
+            $lines[] = '注意：加密证书尚未就绪（CA/KGC 下发中），当前仅含签名证书，暂不可用于国密双证书部署，请稍后重新下载完整包。';
+        }
+
+        $zip->addFromString($dir.'说明.txt', implode(PHP_EOL, $lines));
     }
 
     /**

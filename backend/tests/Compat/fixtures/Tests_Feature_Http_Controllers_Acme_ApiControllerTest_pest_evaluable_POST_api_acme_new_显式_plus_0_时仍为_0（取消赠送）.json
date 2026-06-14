@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_acme_new_显式_plus_0_时仍为_0（取消赠送）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/acme/new",
+            "request_keys": [
+                "contact_email",
+                "plus",
+                "product_code"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "eab_kid": "string",
+                    "eab_hmac": "string",
+                    "status": "string",
+                    "directory_url": "null"
+                }
+            }
+        }
+    ]
+}

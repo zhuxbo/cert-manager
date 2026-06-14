@@ -1,0 +1,44 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_POST_upgrade_execute_在_FPM_disable__functions_禁了_proc__open_时返回_503",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/upgrade/execute",
+            "request_keys": [
+                "version"
+            ],
+            "response_status": "5xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "data": {
+                    "blocking": {
+                        "__list_of__": {
+                            "code": "string",
+                            "reason": "string",
+                            "fix": "string"
+                        }
+                    },
+                    "items": {
+                        "__list_of__": {
+                            "tool": "string",
+                            "status": "string",
+                            "path": "string"
+                        }
+                    },
+                    "ini": {
+                        "fpm": {
+                            "disable_functions_ok": "boolean",
+                            "ini_path": "string"
+                        },
+                        "cli": {
+                            "disable_functions_ok": "boolean",
+                            "ini_path": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

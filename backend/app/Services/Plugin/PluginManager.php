@@ -22,11 +22,20 @@ class PluginManager
 
     protected string $downloadPath;
 
+    protected PluginComposerRunner $composerRunner;
+
+    /**
+     * @param  PluginComposerRunner|null  $composerRunner  运行时 composer 安装器；为兼容存量单测
+     *                                                     （`new PluginManager($vm)` 单参构造）默认 null，
+     *                                                     首次使用时从容器解析
+     */
     public function __construct(
         protected VersionManager $versionManager,
+        ?PluginComposerRunner $composerRunner = null,
     ) {
         $this->pluginsPath = base_path('../plugins');
         $this->downloadPath = Config::get('upgrade.package.download_path', storage_path('upgrades'));
+        $this->composerRunner = $composerRunner ?? app(PluginComposerRunner::class);
 
         if (! File::isDirectory($this->downloadPath)) {
             File::makeDirectory($this->downloadPath, 0755, true);
@@ -165,6 +174,9 @@ class PluginManager
             // 移动到 plugins 目录
             $this->applyPlugin($pluginSourceDir, $pluginDir);
 
+            // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
+            $this->installPluginComposerDeps($name, $pluginDir);
+
             // 运行 migrate
             $this->runPluginMigrations($name);
             $this->runPluginSeeders($name);
@@ -187,6 +199,15 @@ class PluginManager
             }
 
             return $result;
+        } catch (\Throwable $e) {
+            // composer install / migrate 等失败：清理本次落地的半装目录。
+            // 远程安装的"已安装"前置校验在 try 外，故 try 内 $pluginDir 必为本次新建，
+            // 直接删安全——否则残留半装目录会让重装命中"已安装"、更新命中"已是最新"陷入死锁。
+            if (is_dir($pluginDir)) {
+                File::deleteDirectory($pluginDir);
+            }
+
+            throw $e;
         } finally {
             // 清理临时文件
             $this->cleanupTemp($zipPath, $extractDir ?? null);
@@ -199,6 +220,8 @@ class PluginManager
     public function installFromZip(string $zipPath): array
     {
         $extractDir = $this->extractPlugin($zipPath);
+        $applied = false;
+        $pluginDir = null;
 
         try {
             // 查找插件目录（ZIP 内可能有一层根目录）
@@ -219,8 +242,13 @@ class PluginManager
                 throw new RuntimeException("插件 $name 已安装，请使用更新功能");
             }
 
-            // 移动到 plugins 目录
+            // 移动到 plugins 目录（$applied 标记本次是否落地了目录：仅本次新建才在失败时清理，
+            // 不误删"已安装"校验命中的他人目录）
             $this->applyPlugin($pluginSourceDir, $pluginDir);
+            $applied = true;
+
+            // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
+            $this->installPluginComposerDeps($name, $pluginDir);
 
             // 运行 migrate
             $this->runPluginMigrations($name);
@@ -246,6 +274,14 @@ class PluginManager
             }
 
             return $result;
+        } catch (\Throwable $e) {
+            // composer install / migrate 等失败：清理本次落地的半装目录（$applied 守卫，
+            // 不误删"已安装"校验命中的既有插件），避免死锁循环
+            if ($applied && $pluginDir && is_dir($pluginDir)) {
+                File::deleteDirectory($pluginDir);
+            }
+
+            throw $e;
         } finally {
             $this->cleanupTemp(null, $extractDir);
         }
@@ -292,6 +328,12 @@ class PluginManager
         // 备份当前插件
         $backupDir = $this->backupPlugin($name);
 
+        // 旧版本 composer.lock 哈希（删旧版前抓取），用于更新后对比决定是否重装依赖
+        $oldLockHash = $this->composerRunner->lockHash($pluginDir);
+
+        // 旧 vendor 暂存路径（删旧目录前移出，lock 未变时移回复用，避免重拉大体量 vendor）
+        $vendorStash = null;
+
         // 下载新版本
         $downloadUrl = $this->resolveAssetUrl($release, $releaseUrl);
         $expectedSha256 = $this->findPluginAssetSha256($release);
@@ -315,8 +357,32 @@ class PluginManager
 
             // 删除旧版本 → 移入新版本（校验路径归属，防止 symlink 攻击）
             $this->validatePluginPath($pluginDir);
+
+            // 删目录前把运行时装的 vendor 移出暂存：发布包不含 vendor，若直接删掉旧目录后
+            // 又因 lock 未变跳过 install，vendor 会永久丢失（备份也随成功路径删除无法恢复）。
+            $oldVendorDir = "$pluginDir/backend/vendor";
+            if (is_dir($oldVendorDir)) {
+                $vendorStash = "$this->downloadPath/vendor-stash-$name-".bin2hex(random_bytes(6));
+                File::moveDirectory($oldVendorDir, $vendorStash);
+            }
+
             File::deleteDirectory($pluginDir);
             $this->applyPlugin($pluginSourceDir, $pluginDir);
+
+            // 安装 composer 依赖：仅当插件自带 composer.json。
+            // lock 未变且有可复用的旧 vendor → 移回复用（避免重拉大体量 vendor）；
+            // lock 有变 或 无 vendor 可复用（缺失 / 上次半装）→ 必须安装，否则 vendor 永久缺失。
+            if ($this->composerRunner->pluginHasComposer($pluginDir)) {
+                $newLockHash = $this->composerRunner->lockHash($pluginDir);
+                if ($newLockHash === $oldLockHash && $vendorStash && is_dir($vendorStash)) {
+                    Log::info("[Plugin] composer.lock 未变化，复用原 vendor: $name");
+                    File::moveDirectory($vendorStash, "$pluginDir/backend/vendor");
+                    $vendorStash = null;
+                } else {
+                    Log::info("[Plugin] 安装依赖（composer.lock 变化或 vendor 缺失）: $name");
+                    $this->composerRunner->install($pluginDir, $name);
+                }
+            }
 
             // 运行 migrate（增量迁移）
             $this->runPluginMigrations($name);
@@ -355,6 +421,10 @@ class PluginManager
             throw $e;
         } finally {
             $this->cleanupTemp($zipPath, $extractDir ?? null);
+            // 清理未被复用的 vendor 暂存（lock 变化重装 / 异常恢复备份后，暂存即为冗余）
+            if ($vendorStash && is_dir($vendorStash)) {
+                File::deleteDirectory($vendorStash);
+            }
         }
     }
 
@@ -703,6 +773,23 @@ class PluginManager
         }
 
         File::moveDirectory($from, $to);
+    }
+
+    /**
+     * 安装插件 composer 依赖（首次安装路径）。
+     *
+     * 仅当插件自带 `backend/composer.json` 时执行；无 composer.json 的插件（easy/invoice/
+     * notice/api-docs 等）整条 composer 路径跳过，完全不触碰 BinaryLocator——保证不破坏现有插件。
+     * 失败抛 RuntimeException：被 install/installFromZip 的 catch 接住并清理本次落地的半装目录
+     * （install 前置校验在 try 外、installFromZip 用 $applied 守卫，均只删本次新建目录），前端可见明确文案。
+     */
+    protected function installPluginComposerDeps(string $name, string $pluginDir): void
+    {
+        if (! $this->composerRunner->pluginHasComposer($pluginDir)) {
+            return;
+        }
+
+        $this->composerRunner->install($pluginDir, $name);
     }
 
     /**

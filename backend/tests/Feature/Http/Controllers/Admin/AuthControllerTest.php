@@ -123,6 +123,8 @@ test('管理员可以更新个人资料', function () {
 test('管理员使用正确旧密码可以修改密码', function () {
     $admin = Admin::factory()->create([
         'password' => 'oldpassword',
+        'token_version' => 0,
+        'logout_at' => null,
     ]);
     AdminRefreshToken::createToken($admin->id);
     expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(1);
@@ -138,6 +140,10 @@ test('管理员使用正确旧密码可以修改密码', function () {
     $admin->refresh();
     expect(Hash::check('newpassword123', $admin->password))->toBeTrue();
     expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(0);
+    // 改密必须吊销旧 access token：bump token_version（旧 JWT 进黑名单宽限期）+ 落地 logout_at（宽限期起算）
+    // 否则只清 refresh token，旧 access token 在 ttl 内仍有效 → 安全漏洞
+    expect($admin->token_version)->toBe(1);
+    expect($admin->logout_at)->not->toBeNull();
 });
 
 test('管理员使用错误旧密码无法修改密码', function () {

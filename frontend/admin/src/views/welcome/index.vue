@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick, computed } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { ElProgress, ElTag, ElButton } from "element-plus";
 import { Refresh } from "@element-plus/icons-vue";
 import { useRouter } from "vue-router";
@@ -27,6 +27,7 @@ import type {
   FinanceOverviewData
 } from "@/types/dashboard";
 import { message } from "@shared/utils";
+import { useLazyVisible } from "@shared/hooks";
 import { brandLabels } from "@/views/system/dictionary";
 
 defineOptions({
@@ -93,11 +94,8 @@ const consumptionDelta = computed(() => {
 const chartsLoading = ref(true);
 const refreshing = ref(false);
 
-// 图表区域哨兵元素 + IntersectionObserver，用于延迟加载二屏图表
+// 图表区域哨兵元素：进入视口才加载二屏图表（懒加载由 useLazyVisible 统一处理）
 const chartsSentinel = ref<HTMLElement>();
-let chartsObserver: IntersectionObserver | null = null;
-// 防止 observer 多次触发或与刷新重复发起请求
-const chartsRequested = ref(false);
 
 // 格式化金额
 const formatCurrency = (amount: number): string => {
@@ -325,8 +323,6 @@ const fetchOverviewData = async () => {
 
 // 次批：图表/排行（系统趋势 / 产品销售排行 / 品牌分布 / 用户等级分布），二屏内容延后加载
 const fetchChartsData = async () => {
-  // 标记已发起，避免 observer 重复触发；刷新时由调用方先复位
-  chartsRequested.value = true;
   try {
     chartsLoading.value = true;
 
@@ -355,50 +351,6 @@ const fetchChartsData = async () => {
   }
 };
 
-// 触发次批加载（仅首次有效）：observer 命中或兜底定时器调用
-const triggerChartsLoad = () => {
-  if (chartsRequested.value) return;
-  disconnectChartsObserver();
-  fetchChartsData();
-};
-
-const disconnectChartsObserver = () => {
-  if (chartsObserver) {
-    chartsObserver.disconnect();
-    chartsObserver = null;
-  }
-};
-
-// 建立 IntersectionObserver，图表区域进入视口即加载次批
-const setupChartsObserver = () => {
-  // 已请求则无需观察
-  if (chartsRequested.value) return;
-
-  // 环境不支持 IntersectionObserver 时直接加载，保证降级可用
-  if (typeof IntersectionObserver === "undefined") {
-    triggerChartsLoad();
-    return;
-  }
-
-  const el = chartsSentinel.value;
-  if (!el) {
-    // 哨兵未挂载（异常情况）兜底直接加载
-    triggerChartsLoad();
-    return;
-  }
-
-  chartsObserver = new IntersectionObserver(
-    entries => {
-      if (entries.some(entry => entry.isIntersecting)) {
-        triggerChartsLoad();
-      }
-    },
-    // 提前 200px 预加载，滚动到图表前数据已就绪
-    { rootMargin: "200px 0px" }
-  );
-  chartsObserver.observe(el);
-};
-
 // 刷新缓存并重新获取数据
 const handleRefreshData = async () => {
   try {
@@ -406,9 +358,6 @@ const handleRefreshData = async () => {
 
     // 清除后端缓存
     await clearDashboardCache();
-
-    // 复位次批标记，刷新时连同图表一起重新拉取
-    chartsRequested.value = false;
 
     // 首批与次批并行刷新，互不阻塞
     await Promise.all([fetchOverviewData(), fetchChartsData()]);
@@ -424,15 +373,10 @@ onMounted(async () => {
   // 首屏仅等待管理员信息 + 首批关键卡片数据
   await Promise.all([fetchAdminInfo(), fetchOverviewData()]);
   loading.value = false;
-
-  // 等待 v-else 分支 DOM 渲染后再观察图表哨兵元素
-  await nextTick();
-  setupChartsObserver();
 });
 
-onBeforeUnmount(() => {
-  disconnectChartsObserver();
-});
+// 图表区域哨兵（v-else 分支挂载后）进入视口（提前 200px 预加载）即触发次批加载，仅首次有效
+useLazyVisible(chartsSentinel, fetchChartsData);
 </script>
 
 <template>

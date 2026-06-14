@@ -12,14 +12,7 @@
   </el-scrollbar>
 </template>
 <script setup lang="ts">
-import {
-  computed,
-  provide,
-  reactive,
-  onMounted,
-  onBeforeUnmount,
-  toRefs
-} from "vue";
+import { computed, provide, reactive, toRefs } from "vue";
 import { buildUUID } from "@pureadmin/utils";
 import SslDetail from "./components/ssl/index.vue";
 import SmimeDetail from "./components/smime/index.vue";
@@ -59,34 +52,8 @@ const get = (notification = false) => {
 provide("sync", sync);
 provide("get", get);
 
-// 定时器引用
-type TimerRef = ReturnType<typeof setInterval>;
-let autoRefreshIntervalId: TimerRef | null = null;
-
-// 标签页重新可见时立即刷新一次，避免等待整个轮询周期
-const handleVisibilityChange = () => {
-  if (!document.hidden) get();
-};
-
-onMounted(() => {
-  autoRefreshIntervalId = setInterval(
-    () => {
-      // 页面被切到后台标签页时跳过本次刷新，回到前台再恢复
-      if (document.hidden) return;
-      get();
-    },
-    3 * 60 * 1000
-  );
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
-  if (autoRefreshIntervalId !== null) {
-    clearInterval(autoRefreshIntervalId);
-    autoRefreshIntervalId = null;
-  }
-});
+// 定时刷新已上提到父级 details.vue（单个 batchShow 批量刷新），此处不再各自轮询，
+// 消除多卡片并发请求风暴。get / sync 保留，供子组件操作后单卡刷新。
 </script>
 <style scoped lang="scss">
 @import url("./styles/detail.scss");

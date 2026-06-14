@@ -1,0 +1,8 @@
+# 依赖与构建产物（prettier 默认仅忽略 node_modules，其余需显式声明）
+node_modules
+dist
+public
+pnpm-lock.yaml
+
+# 生成文件 —— iconfont 自动生成的图标字体（IIFE，prettier 重排只产生纯格式噪音）
+src/assets/iconfont/

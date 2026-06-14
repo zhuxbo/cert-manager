@@ -88,9 +88,10 @@ class Sdk
     /**
      * 上传文档（使用 JSON 发送，避免 base64 被 URL-encoded 二次膨胀）
      */
-    public function uploadDocument(array $data): array
+    public function uploadDocument(string|int $apiId, array $data): array
     {
-        return $this->call('upload-document', $data, 'json');
+        // 上游按 order_id 定位订单（= 本系统下发给下游的 api_id），线协议字段名不变
+        return $this->call('upload-document', ['order_id' => $apiId] + $data, 'json');
     }
 
     /**

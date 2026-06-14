@@ -11,7 +11,6 @@
     { "path": "./frontend/user" }
   ],
   "exclude": [
-    "frontend/base",
     "**/node_modules"
   ]
 }

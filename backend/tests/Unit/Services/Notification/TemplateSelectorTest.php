@@ -1,7 +1,6 @@
 <?php
 
 use App\Models\NotificationTemplate;
-use App\Services\Notification\TemplateSelection;
 use App\Services\Notification\TemplateSelector;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -23,18 +22,16 @@ test('按代码查询启用的模板', function () {
         'status' => 1,
     ]);
 
-    $selection = $this->selector->select('test_selector_basic');
+    $template = $this->selector->select('test_selector_basic');
 
-    expect($selection)->toBeInstanceOf(TemplateSelection::class);
-    expect($selection->isEmpty())->toBeFalse();
-    expect($selection->template()->code)->toBe('test_selector_basic');
+    expect($template)->toBeInstanceOf(NotificationTemplate::class);
+    expect($template->code)->toBe('test_selector_basic');
 });
 
 test('查询不存在的代码返回空选择', function () {
-    $selection = $this->selector->select('nonexistent_code_'.uniqid());
+    $template = $this->selector->select('nonexistent_code_'.uniqid());
 
-    expect($selection->isEmpty())->toBeTrue();
-    expect($selection->template())->toBeNull();
+    expect($template)->toBeNull();
 });
 
 test('禁用的模板不会被选中', function () {
@@ -46,7 +43,7 @@ test('禁用的模板不会被选中', function () {
         'status' => 0,
     ]);
 
-    $selection = $this->selector->select('test_disabled_tpl');
+    $template = $this->selector->select('test_disabled_tpl');
 
-    expect($selection->isEmpty())->toBeTrue();
+    expect($template)->toBeNull();
 });

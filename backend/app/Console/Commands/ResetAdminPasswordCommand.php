@@ -92,8 +92,11 @@ class ResetAdminPasswordCommand extends Command
         try {
             // 更新密码
             $admin->password = $password; // 模型会自动进行 Hash 处理
-            $admin->token_version = ($admin->token_version ?? 0) + 1; // 增加令牌版本，使现有令牌失效
             $admin->save();
+
+            // 吊销全部现存会话（三件套：bump token_version + logout_at + 清 refresh token），
+            // 否则只 bump token_version 会漏 logout_at（中间件宽限期起算）+ 漏清 refresh token（旧会话仍可续期）
+            $admin->revokeAllSessions();
 
             $this->info("管理员 '$username' 的密码已成功重置");
             $this->line("新密码：$password");

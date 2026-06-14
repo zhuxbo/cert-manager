@@ -1,0 +1,39 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\TransactionControllerTest::__pest_evaluable_quickSearch_的_OR_分组与_type_过滤正确_AND_组合（无_OR_优先级泄漏）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/transaction",
+            "request_keys": [
+                "quickSearch",
+                "type"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "user_id": "integer",
+                            "type": "string",
+                            "transaction_id": "integer",
+                            "amount": "string",
+                            "balance_before": "string",
+                            "balance_after": "string",
+                            "remark": "null",
+                            "created_at": "string",
+                            "user": {
+                                "id": "integer",
+                                "username": "string"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

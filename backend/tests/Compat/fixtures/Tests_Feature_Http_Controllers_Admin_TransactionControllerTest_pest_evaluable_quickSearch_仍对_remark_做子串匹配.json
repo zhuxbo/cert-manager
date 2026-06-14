@@ -1,0 +1,38 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\TransactionControllerTest::__pest_evaluable_quickSearch_仍对_remark_做子串匹配",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/transaction",
+            "request_keys": [
+                "quickSearch"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "user_id": "integer",
+                            "type": "string",
+                            "transaction_id": "integer",
+                            "amount": "string",
+                            "balance_before": "string",
+                            "balance_after": "string",
+                            "remark": "string",
+                            "created_at": "string",
+                            "user": {
+                                "id": "integer",
+                                "username": "string"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

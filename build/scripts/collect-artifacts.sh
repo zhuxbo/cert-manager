@@ -218,10 +218,12 @@ log_info "Monorepo commit: ${MONOREPO_COMMIT:-N/A}"
 
 # 复制 PHP 环境需求清单到生产代码根（后续 package.sh 会随 rsync 带入 FULL/UPGRADE 包）
 # 后台升级 EnvironmentChecker / upgrade.sh 启动前都从这里读
+# fail-closed：源清单是当前仓库内固定文件，缺失即构建配置错误，报错中止而非静默跳过
+# （注：被升级的线上旧版本无此文件时升级流程自身会 skip 检测，那是运行时兼容，与打包源无关）
 PHP_REQ_SRC="$SOURCE_DIR/build/php-requirements.json"
-if [ -f "$PHP_REQ_SRC" ]; then
-    cp "$PHP_REQ_SRC" "$PRODUCTION_DIR/php-requirements.json"
-    log_success "php-requirements.json 已生成"
-else
-    log_warning "未找到 build/php-requirements.json，跳过（旧版本无此文件时升级流程会自动 skip 检测）"
+if [ ! -f "$PHP_REQ_SRC" ]; then
+    log_error "缺少 PHP 环境需求清单: $PHP_REQ_SRC（升级流程 EnvironmentChecker / upgrade.sh 必读，缺失会让发布包静默缺关键检测清单）"
+    exit 1
 fi
+cp "$PHP_REQ_SRC" "$PRODUCTION_DIR/php-requirements.json"
+log_success "php-requirements.json 已生成"

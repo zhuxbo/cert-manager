@@ -7,16 +7,12 @@
             "uri_pattern": "/api/deploy/acme/new",
             "request_keys": [
                 "contact_email",
-                "period",
-                "product_id"
+                "product_code"
             ],
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string",
-                "errors": {
-                    "product_id": "array<string>"
-                }
+                "msg": "string"
             }
         }
     ]

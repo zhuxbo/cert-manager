@@ -531,13 +531,16 @@ async function onLookup() {
         formData.contact.title = "法定代表人";
       }
     }
-    // 若拿到 regionname 或省+市,异步查邮编(公司名用于县级市识别)
+    // 工商查询已成功，先提示（邮编是附属增强，不让它的耗时拖慢成功反馈）
+    ElMessage.success("查询成功，已填入工商信息");
+    // 若拿到 regionname 或省+市,查邮编(公司名用于县级市识别)。
+    // await 等待回填完成再解除 loading：避免用户在 postcode/city 回填前点保存
+    // （回填丢失竞态）。lookupZipcode 内部已 catch，失败静默、不冒泡到此处 catch。
     const regionname =
       d.regionname || [d.state, d.city].filter(Boolean).join("");
     if (regionname) {
-      lookupZipcode(regionname, d.name);
+      await lookupZipcode(regionname, d.name);
     }
-    ElMessage.success("查询成功，已填入工商信息");
   } catch (e: any) {
     ElMessage.error(e?.msg || "查询失败，请手动填写");
   } finally {

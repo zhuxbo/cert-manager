@@ -64,3 +64,51 @@ test('generateCode 生成 6 位纯数字且随机', function () {
     // 50 次生成不应全部相同（random_int 随机性）
     expect(count(array_unique($codes)))->toBeGreaterThan(1);
 });
+
+test('checkSendCooldown 首次放行并原子占位，冷却期内二次被拦截', function () {
+    $check = new ReflectionMethod(VerifyCodeHelper::class, 'checkSendCooldown');
+    $check->setAccessible(true);
+
+    // 首次：放行（null），并用 Cache::add 写入冷却占位
+    expect($check->invoke(null, 'user@example.com'))->toBeNull();
+
+    // 二次（冷却期内）：被原子占位拦截
+    $result = $check->invoke(null, 'user@example.com');
+    expect($result)->toBeArray()
+        ->and($result['code'])->toBe(0)
+        ->and($result['msg'])->toContain('过于频繁');
+});
+
+test('releaseSendCooldown 释放占位后可立即重试（模拟发送失败回滚）', function () {
+    $check = new ReflectionMethod(VerifyCodeHelper::class, 'checkSendCooldown');
+    $check->setAccessible(true);
+    $release = new ReflectionMethod(VerifyCodeHelper::class, 'releaseSendCooldown');
+    $release->setAccessible(true);
+
+    expect($check->invoke(null, 'user@example.com'))->toBeNull();          // 占位
+    expect($check->invoke(null, 'user@example.com'))->toBeArray();         // 冷却期内被拦
+
+    $release->invoke(null, 'user@example.com');                            // 发送失败 → 释放占位
+
+    expect($check->invoke(null, 'user@example.com'))->toBeNull();          // 释放后可立即重试
+});
+
+test('checkSendCooldown 今日达上限时拒绝并释放冷却占位', function () {
+    $check = new ReflectionMethod(VerifyCodeHelper::class, 'checkSendCooldown');
+    $check->setAccessible(true);
+
+    // 预置当日计数已达上限（DAILY_SEND_LIMIT = 10）
+    $dailyKey = 'verify_code_daily_user@example.com_'.date('Ymd');
+    Cache::put($dailyKey, 10, now()->endOfDay());
+
+    // 冷却占位成功但每日超限 → 返回"已达上限"
+    $result = $check->invoke(null, 'user@example.com');
+    expect($result)->toBeArray()
+        ->and($result['code'])->toBe(0)
+        ->and($result['msg'])->toContain('上限');
+
+    // 关键回归：超限时释放了冷却占位 → 再次调用仍返回"上限"（而非"过于频繁"），
+    // 证明冷却未被白占（若漏 releaseSendCooldown，此处会变成"过于频繁"）
+    $result2 = $check->invoke(null, 'user@example.com');
+    expect($result2['msg'])->toContain('上限');
+});

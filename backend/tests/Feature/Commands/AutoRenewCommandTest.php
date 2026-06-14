@@ -186,3 +186,46 @@ test('域名包含 IP 地址时跳过订单', function () {
         ->expectsOutputToContain('域名包含 IP 地址')
         ->assertSuccessful();
 });
+
+test('自动续费构造的 params 不含 encryption（依赖后端 initParams 继承，不注入降级默认）', function () {
+    $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1, 'reuse_csr' => 0]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5),
+        'amount' => '100.00',
+        'channel' => 'web',
+        'encryption_alg' => 'ECDSA',
+        'encryption_bits' => 256,
+        'signature_digest_alg' => 'SHA256',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    $captured = null;
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('renew')->once()
+        ->andReturnUsing(function ($params) use (&$captured, $order) {
+            $captured = $params;
+            throw new ApiResponseException('', null, ['order_id' => $order->id], 1);
+        });
+    $actionMock->shouldReceive('pay')->once()->with($order->id, false)
+        ->andThrow(new ApiResponseException('', null, null, 1));
+    $actionMock->shouldReceive('createTask')->once()
+        ->with($order->id, 'commit', Mockery::type('int'));
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+
+    expect($captured)->not->toBeNull();
+    expect(isset($captured['encryption']))->toBeFalse();
+    expect($captured['csr_generate'] ?? null)->toBe(1);
+});

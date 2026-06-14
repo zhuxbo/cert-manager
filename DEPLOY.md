@@ -165,7 +165,7 @@ sudo -u www php artisan schedule:backup # 手动触发备份
 sudo -u www php artisan upgrade:check # 检查更新
 
 # Supervisor 队列
-bt 14 # 进入宝塔面板 → 软件商店 → Supervisor → 重启 ssl-manager-queue
+bt 14 # 进入宝塔面板 → 软件商店 → Supervisor → 重启队列进程（程序名为站点域名）
 ```
 
 ---

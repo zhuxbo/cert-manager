@@ -10,16 +10,9 @@
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "mail": {
-                        "cert_issued": "boolean",
-                        "cert_expire": "boolean",
-                        "security": "boolean"
-                    },
-                    "sms": {
-                        "cert_issued": "boolean",
-                        "cert_expire": "boolean",
-                        "security": "boolean"
-                    }
+                    "cert_issued": "boolean",
+                    "cert_expire": "boolean",
+                    "security": "boolean"
                 }
             }
         }

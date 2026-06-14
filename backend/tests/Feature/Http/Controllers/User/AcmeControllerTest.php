@@ -11,6 +11,7 @@ use App\Models\Task;
 use App\Models\User;
 use App\Services\Acme\Action;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Traits\ActsAsUser;
@@ -272,6 +273,54 @@ test('batchShow 全部不存在的 ID 报错', function () {
         ->getJson('/api/acme/batch?ids=999999,888888')
         ->assertOk()
         ->assertJson(['code' => 0]);
+});
+
+test('batchShow 首个 unpaid(null) 不污染同 ca 后续 active 的 directory_url', function () {
+    // #27：directory_url 按 ca 去重缓存时，把 null 也存进 map（首个 unpaid 无 api_id → null），
+    // 钉死同 ca 后续 active 的 directory_url。修复后仅缓存非 null，active 应能各自回源拿到 url。
+    Cache::flush(); // 确保 directory_url 缓存为空，unpaid 真返回 null
+    Queue::fake();
+
+    $user = User::factory()->create();
+    // 同一产品 → 同一 ca（factory 默认 'Test CA'），命中去重 map 同 key
+    $product = createUserAcmeProduct(['source' => 'default']);
+
+    // active 先创建（id 更小，desc 排序在后）
+    $active = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-active',
+    ]);
+    // unpaid 后创建（id 更大，desc 排序在前 → 先被枚举，cache 空时 syncDirectoryUrl 返回 null）
+    $unpaid = Acme::factory()->unpaid()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => null,
+    ]);
+
+    setupUserGatewaySettings();
+    // active 的 syncDirectoryUrl 走 sync 回源，上游返回 directory_url
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'status' => 'active',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
+
+    $response = $this->actingAsUser($user)
+        ->getJson("/api/acme/batch?ids=$active->id,$unpaid->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $items = collect($response->json('data.items'))->keyBy('id');
+
+    // unpaid 无 api_id → null（合理）
+    expect($items[$unpaid->id]['directory_url'])->toBeNull();
+    // active 必须拿到真实 directory_url，不被 unpaid 的 null 污染钉死
+    expect($items[$active->id]['directory_url'])->toBe('https://acme.example.test/directory/');
 });
 
 // ==================== new ====================
@@ -626,4 +675,54 @@ test('user batch-copy-eab 返回含 eab_kid + contact_email 的文本', function
     $res->assertJsonPath('code', 1);
     expect($res->json('data.text'))->toContain('eab_kid=KID1')
         ->and($res->json('data.text'))->toContain('contact_email=u@example.com');
+});
+
+test('user batch-copy-eab 首个空 directory_url 不污染同 ca 后续 active', function () {
+    // #27 同款：directory_url 按 ca 去重缓存时未 normalizeCa 且把空串也存进 map，
+    // 钉死同 ca 后续 active 的 directory_url。修复后仅缓存非 null 且 key 归一。
+    Cache::flush(); // 确保 directory_url 缓存为空，pending(无 api_id) 真返回 null → ''
+    Queue::fake();
+
+    $user = User::factory()->create();
+    // 同一产品 → 同一 ca，命中去重 map 同 key
+    $product = createUserAcmeProduct(['source' => 'default', 'ca' => 'Google']);
+    setupUserGatewaySettings();
+
+    // pending 先创建（id 更小）→ batchCopyEab 按 whereIn 主键 asc 序先枚举它（无 api_id → syncDirectoryUrl 返回 null）
+    $pending = Acme::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => null,
+        'eab_kid' => 'KID_PENDING',
+        'eab_hmac' => 'HMAC_PENDING',
+    ]);
+    // active 后创建（id 更大）→ 后枚举；旧版若把 pending 的空缓存钉死同 ca，则 active 的 directory_url 丢失
+    $active = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-active',
+        'eab_kid' => 'KID_ACTIVE',
+        'eab_hmac' => 'HMAC_ACTIVE',
+    ]);
+
+    // active 的 syncDirectoryUrl 走 sync 回源，上游返回 directory_url
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'status' => 'active',
+                'directory_url' => 'https://acme.example.test/directory/',
+            ],
+        ]),
+    ]);
+
+    $res = $this->actingAsUser($user)
+        ->postJson('/api/acme/batch-copy-eab', ['ids' => [$pending->id, $active->id]]);
+
+    $res->assertOk()->assertJson(['code' => 1]);
+
+    $text = $res->json('data.text');
+    // active 必须拿到真实 directory_url，不被首个 pending 的空串污染钉死
+    expect($text)->toContain('eab_kid=KID_ACTIVE')
+        ->and($text)->toContain('directory_url=https://acme.example.test/directory/');
 });

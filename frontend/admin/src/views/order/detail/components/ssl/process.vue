@@ -70,20 +70,31 @@
           <td class="label" />
           <td class="content"><Install /></td>
         </tr>
-        <tr>
-          <td class="label">
-            <el-icon :size="16" class="icon" :color="issuedColor">
-              <Select />
-            </el-icon>
-          </td>
-          <td class="content">自动部署</td>
-        </tr>
-        <tr>
-          <td class="label" />
-          <td class="content"><Deploy /></td>
-        </tr>
+        <template v-if="!isGm">
+          <tr>
+            <td class="label">
+              <el-icon :size="16" class="icon" :color="issuedColor">
+                <Select />
+              </el-icon>
+            </td>
+            <td class="content">自动部署</td>
+          </tr>
+          <tr>
+            <td class="label" />
+            <td class="content"><Deploy /></td>
+          </tr>
+        </template>
       </tbody>
     </table>
+    <div class="plugin-ssl-actions">
+      <component
+        :is="w.component"
+        v-for="w in sslActionWidgets"
+        :key="w.name"
+        :order="order"
+        :cert="cert"
+      />
+    </div>
   </el-card>
 </template>
 <script setup lang="ts">
@@ -98,9 +109,14 @@ import DocumentUpload from "../documentUpload.vue";
 import { ElButton } from "element-plus";
 import { Select } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
+import { getPluginWidgets } from "@shared/utils/plugin-loader";
+
+const sslActionWidgets = getPluginWidgets("admin-order-detail-ssl-actions");
 
 const order = inject("order") as any;
 const cert = inject("cert") as any;
+// 国密(SM2)证书为双证书，不支持单证书自动部署，隐藏自动部署入口（后端 Deploy API 亦拒绝）
+const isGm = computed(() => /sm2/i.test(cert.value?.encryption_alg ?? ""));
 // 检查是否有文档
 const hasDocuments = computed(() => {
   const docs = cert.value?.documents;

@@ -156,7 +156,7 @@ php artisan db:structure --export       # 导出标准结构
 ### 异常处理约定
 
 - **升级流程**（`UpgradeService` / `UpgradeController`）—— PHP / composer 找不到由 preflight 阻塞，业务路径不需 catch
-- **证书下载**（`Services/Order/Traits/ActionFileTrait`）—— openssl/keytool 失败跳过对应格式（IIS PFX / Tomcat JKS），try-catch `BinaryNotFoundException` 后 `return` 跳过该段，不影响其它格式输出
+- **证书下载**（`Services/Order/Traits/ActionFileTrait`）—— 失败处理分两档（`71db6d7b`）：**用户显式请求单格式**（type=iis/tomcat）时 openssl/keytool 失败必须硬报错 + `Log::error`，绝不静默给残缺包；仅 **type=all 聚合路径**可 try-catch `BinaryNotFoundException` 后 `return` 跳过该段（best-effort），且须 returnCode + file_exists 双判 + Log 留痕、不 `> /dev/null` 丢 stderr。同族先例：SM2 绝不静默降级 RSA（`21b5ab45`）、fail-closed 拒 dual-sm2（`06e40f74`）
 - **备份/恢复**（`Services/Backup/BackupService` 链路 / `Jobs/RestoreBackupJob` / `Http/Controllers/Admin/DatabaseBackupController`）—— mysqldump/mysql 失败由 `ApiResponse` 错误返回，传 `diagnose` 到 errors 字段
 - **插件/Release 下载**（`Services/Plugin/PluginManager` / `Services/Upgrade/ReleaseClient`）—— curl 找不到回落到 `file_get_contents` 等（保持原 `ResolvesExecutablePath` null 语义）
 
@@ -189,6 +189,12 @@ php artisan db:structure --export       # 导出标准结构
 - BinaryLocator 内部意外错误（非 `BinaryNotFoundException`）被兜成 `health_check_failed` blocking，让 Controller 仍能返 503 + 友好错误，不冒泡成 500
 - **`UpgradeController::execute` 入口**（`isRunning` 短路后）先跑 preflight，任一 blocking → 503 + 完整诊断到 errors 字段
 - **`GET /api/admin/upgrade/binary-health` 端点**：纯展示 8 个工具状态（php/composer/openssl/java/keytool/mysqldump/mysql/curl）+ FPM/CLI ini，不阻塞，供前端升级页面参考
+
+### PFX / IIS 包算法（防回归）
+
+- **`ActionFileTrait::addCertToZip` 生成 IIS `.pfx` 走 openssl CLI** `pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1`，不用 PHP `openssl_pkcs12_export`（OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，Windows Server 2008/2012/2016 报"密码错误"无法导入）
+- **单条命令、不加 `-legacy`**：3DES 在 OpenSSL 3.x default provider、1.x 原生可用；`-legacy` 是 3.0 新增选项，1.x/LibreSSL 报 `Unrecognized flag` 反需回落兜底，3.x 上显式指定 3DES 时它是空操作（实测带不带产物字节相同）。只有 **RC2-40 加密证书**才需 legacy provider，本系统不用（40 位弱加密、新系统在弃用）。`tests/Unit/Services/Order/PfxDownloadTest.php` 用 **DER 字节级 OID 断言**锁定算法（含 3DES OID `1.2.840.113549.1.12.1.3`、不含 AES-256 OID）——**别改回 AES、别加回 `-legacy`**
+- `-certfile` 需有效中间证书；`download()` 入口已过滤空 `intermediate_cert`（`Cert::intermediate_cert` 是依赖 `issuer` + `cert.chainMap` 的 computed accessor，非真实列；测试构造需注入 chainMap + 设 issuer 还原此前提）
 
 ---
 
@@ -418,10 +424,46 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - `Order\Action::sync`/`Acme\Action::sync` 锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，防上游旧状态把已取消/已吊销订单复活回 active（与 commitCancel 串行化配合）
 
+### sync 回调抑制（下游 pull 不冗余回调）
+
+- `Order\Action::sync(int $orderId, bool $force = false, bool $suppressCallback = false)` 第三参 `suppressCallback=true` 时跳过状态变终态后对下游的主动回调（`createTask($orderId, 'callback')`），**仅抑制回调创建**，`deleteTask` 与退款 `Transaction` 照常。该参数透传给 `refundForSyncedCancel($order, $data, $suppressCallback)`，覆盖 sync 的两条回调路径（主路径 + 同步退款取消路径），两处 `DB::transaction` 闭包 `use` 均捕获它
+- **按"触发来源"gate，不按订单 channel**：仅 V1/V2 `ApiController::get`（下游主动 pull）两个入口传 `true` —— get 内 sync 后已重新查询并把新状态同步返回给下游，再异步回调即多一次冗余触发。后台 `TaskJob`（动态单参调用）、手动 `sync`、`PurgeCommand`/`ValidateCommand`、Action 内部 sync 均不传 → 默认 `false` → 回调照常。**反例（已规避）**：按 `channel='api'` 一刀切会误杀"后台 sync 把订单推进到 active"时对不轮询客户的必要回调，故必须按入口而非订单来源判定
+
+### tasks 死锁防护与并发错误处理
+
+**线上现象（2026-06）**：同一订单被 V2 `get`（内联 sync）+ `POST /api/order/sync` + queue worker 多入口高频并发，都抢 `tasks` 表 `WHERE order_id=X AND action IN (commit,sync,revalidate) AND status IN (executing,stopped) FOR UPDATE`，触发 InnoDB 死锁（1213）；TaskJob 的 `catch (Throwable)` 又把死锁异常当普通业务异常吞掉后继续 `$task->update()`，外层 `DB::transaction` 提交时抛 `PDOException: There is no active transaction`，job 失败被 queue 无脑重试 → 雪崩刷屏。
+
+**三层修复（缺一不可，对应 `TaskJob` / `Order\Action` / `create_tasks_table` 迁移）**：
+
+1. **复合索引 `tasks(order_id, action, status)`（降频）**：让 `FOR UPDATE` 精确定位，二级索引间隙锁范围从"整个 order_id 区间"收窄到精确区间，消除大部分 sync×commit 跨 action 抢锁的死锁。命中 `sync`/`checkRepeat`/`createTask`/`batchCommitCancel`/`refundForSyncedCancel` 所有 task 查询。
+2. **TaskJob 死锁不可吞（治本）**：`TaskJob::handle` 的 `catch (Throwable)` 对并发错误（`Illuminate\Database\DeadlockException` 或 `DetectsConcurrencyErrors::causedByConcurrencyError`：1213/1205/序列化失败）**重新抛出**，绝不在已被 MySQL 回滚的事务里继续 `$task->update()` 或让闭包正常返回触发 commit。抛出 → 外层事务回滚 → queue `--tries --delay` 错峰重试自愈；重试耗尽由 `failed()` 钩子兜底标记 `task=failed`（守卫 `status==='executing'`，否则普通异常路径重复 update）——不标记会永久卡 executing 被 `checkRepeat` 当"处理中"阻塞该订单后续 commit/sync。
+3. **sync 事务死锁自动重试（web 入口自愈）**：`Order\Action::sync` / `refundForSyncedCancel` / `Acme\Action::sync` 的 `DB::transaction(..., 3)` 加 `attempts=3`。controller 直调时本事务为最外层、上游 `get` 在事务外，重试只重跑锁+写回，安全。**`commit` 绝不加重试**——其上游下单 `$this->api->$action()` 在事务内（`Action.php:401`），重试 = 重复下单/重复扣费；且 commit 只锁 order 行、不执行 `tasks FOR UPDATE`，本就不是死锁受害者。
+
+**关键认识**：死锁是 InnoDB 行锁并发写的正常现象，**无法根除，只能降频 + 重试自愈**（MySQL 官方亦要求应用层重试）；把"偶发死锁"放大成"持续雪崩"的是错误的死锁后处理（吞异常 + 死事务上继续写 + 无脑重试），那才是真正的炸点。嵌套事务（TaskJob 包 sync/commit）里 Laravel 对并发错误直接抛 `DeadlockException` 到最外层、不在内层重试（`ManagesTransactions::handleTransactionException` 的 `transactions > 1` 分支）——故 `attempts` 只在 controller 直调（最外层）时生效，TaskJob 路径统一由 job 级重试兜底。**减少多入口并发（如 V2 get 去内联 sync）不是根治方向**：并发不可消除、且会动对外 API 契约。
+
+### 节流统一 Cache::add 原子占位
+
+**坑**：业务防重/节流若用 `Cache::get` 判断 + `Cache::set` 写入（check-then-act），两步之间有窗口，并发请求都读到空 → 都放行 → 击穿（重复调上游 sync/pay/commit、超发验证码）。
+
+**规则**：所有"N 秒内防重复"节流统一用 `Cache::add($key, $val, $ttl)`（SETNX 语义，redis/database/array driver 均原子）—— 返回 true = 抢占成功放行，false = 已有占位拒绝。已落地的范式（新增节流点照此写，勿再用 get+set）：
+
+- `ActionTrait::checkDuplicate`（Order new/batchNew/renew/reissue/sync/revalidate/updateDCV 7 入口防重）：返回 `0`=放行 / `>0`=剩余秒数拒绝；`Cache::add` 抛异常时 catch 降级**放行**（return 0），不阻塞业务
+- `Acme\Action::sync` 内联 `acme_sync_` 节流：占位放在 `find`+api_id 校验**之后**、上游调用**之前**（acme 不存在始终走 error，不因占位变 success）；占位后删除原末尾 `Cache::set`
+- V1/V2 `ApiController::get` 的 `api_get_`：`Cache::add` 决定是否进 sync/pay/commit（并发只放一个）；**末尾保留 `Cache::set`** 按最终 status 刷新滑动窗口（active=120s/其他=10s，避免已签发证书每 10s 重复 sync 打上游）
+- `VerifyCodeHelper::checkSendCooldown` 发送冷却：占位前移到发送前 → **所有发送失败路径必须 `releaseSendCooldown` 释放占位**（sendSmsCode else / sendEmailCode 未配置 return / catch），否则失败后正常用户白卡 60s；今日超限也要释放冷却
+- 计数型配额（每日上限）仿 `AliyunDriver::enforceAndIncrementDailyQuota`：`Cache::add(0)+increment` 后判 `>limit`，超限 `decrement` 回滚
+
+**例外（不必改）**：登录限流 `LoginRateLimiter` / `VerifyCodeRateLimiter` 走 Laravel `RateLimiter` facade，`tooManyAttempts`+`hit` 有固有 TOCTOU（注释已承认，登录/发码场景可接受）；自定义 `RateLimiter` 中间件滑动窗口已是 `Cache::add+increment` 原子；互斥锁用 `Cache::lock`（`ValidateCommand`/`SnowFlake`/Backup Job）。
+
 ### 批量操作上限（`config/batch.php`）
 
 - `max_ids=100`：所有 `GetIdsRequest` 的 ids 数量上限（`BaseRequest::messages` 统一错误文案）
 - `max_upstream=20`：batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游
+- **`GetIdsRequest` 规则单点**：共享的 `ids` 数组+max 规则收敛进 `BaseRequest::idsRules(string $idRule)`，子类 `rules()` 调它即可。**两个行为族不可混淆**：exists 族传 `'integer|exists:表名,id'`（任一 id 不存在则整体校验失败拒绝），filter 族传 `'integer'` + 各自 `passedValidation()` 用 `Model::whereIn` **静默剔除**未知 id（如 Order/Acme，UserScope 已自动限当前用户范围）。新增子类按语义选族，勿把 exists 退化为 filter 或反之。
+
+### Controllers/Concerns 共享 trait（DRY 收口）
+
+`App\Http\Controllers\Concerns` 是控制器层去重的统一去处：`ResolvesContactId`（企业-联系人 contact_id 解析）、`HandlesEnterpriseLookup`/`HandlesZipcodeLookup`（工商/邮编查询 admin·user 端逐字相同的方法体）。Admin/User 两端逐字相同的控制器方法优先抽 trait 而非复制（类名/方法名/可路由性不变，路由按类名引用）。阿里云 composer 镜像命令收敛进 `App\Services\Composer\ComposerMirror`（仅命令字符串+网络探测，执行器/`FORCE_CHINA_MIRROR`/日志保留各调用方）。
 
 ## MySQL 兼容性
 
@@ -564,6 +606,27 @@ Schema::table('products', function (Blueprint $table) {
 
 ---
 
+## 用户数据导出/清理（user:data）
+
+`php artisan user:data {export|import|purge}`，服务在 `app/Services/UserData/`：`UserDataExporter`（导出 SQL dump，仅核心表，供跨系统迁移）/ `UserDataImporter`（导入 + 冲突检测）/ `UserDataPurger`（彻底清理用户全部数据）/ `UserDataTableRegistry`（表清单与删除顺序的单一来源）。
+
+### tasks.order_id 双归属（删除/统计必须覆盖 orders + acmes）
+
+`tasks` 表**没有 `user_id` 列**，仅靠 `order_id` 间接归属，且 `order_id` 同时承载两类：
+
+- 普通订单任务 → `orders.id`
+- ACME 任务（`commit_acme`/`sync_acme`/`cancel_acme`）→ `acmes.id`（`Acme\Action` 多处 `'order_id' => $acme->id`）
+
+`orders`/`acmes` 均为全局唯一雪花 ID，二者 id 集合天然不相交，所以"这个 task 归谁"**完全由 order_id 命中哪张归属表决定，与 action 字符串无关**。`UserDataPurger::deleteTasks` 因此分两遍删：`orders` 子查询 + `acmes` 子查询（各自 `where('user_id', ...)` 限定，不会误删他人任务），不靠 `action LIKE '%_acme'` 过滤——避免 action 命名与真实归属漂移时重新制造孤儿。`getStatistics` 对 `tasks` 同样合并两张子查询计数。
+
+- **删除顺序**：`purgeOrder()` 里 `tasks`（type=`tasks`）必须排在 `orders`/`acmes` 之前，否则归属表行先删、子查询查不到 → 漏删。
+- **certs / domain_validation_records 是 Order 独有**（ACME 不产生），所以唯一需要双归属处理的间接表就是 `tasks`。
+- **exporter 不导出 tasks**（瞬时队列态，不属迁移范畴；有测试断言 `not->toContain('INSERT INTO \`tasks\`')`），故 `cleanupOrphans` 对 tasks 自然跳过，无需特殊处理。
+- 漏删后果：孤儿 task 被 `TaskJob` 唤醒后查不到对应 acme → 报错 / 失败任务噪音。
+- 测试：`tests/Feature/Commands/UserDataCommandTest.php` 覆盖"order+acme 任务都删""不误删他人任务""统计含 ACME 任务"。
+
+---
+
 ## 同步取消退款开关（site.autoRefundOnSync）
 
 多级代理场景下，上级 Manager 可能先取消订单（如其自身的 PurgeCommand 触发）；下级 Manager 的 `Order\Action::sync` 同步上游状态时，默认仅更新本地 `cert.status='cancelled'`，**不退款**。是否退款给末端用户由各级 Manager 管理员自决。
@@ -596,7 +659,7 @@ Schema::table('products', function (Blueprint $table) {
 
 ### sync 集成
 
-`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用。
+`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data, $suppressCallback)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用（callback 受 `$suppressCallback` 透传 gate，下游 pull 入口抑制，见"sync 回调抑制"小节）。
 
 ### 设计决策
 
@@ -794,6 +857,10 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 ```
 
 > **CI 经验**：本地务必用 `--parallel` 跑测试，与 CI 保持一致。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
+
+> **并行 storage 隔离**：paratest 各 worker 共享同一 `storage/` 真实磁盘但各自独立 DB（RefreshDatabase）。一测试造真实磁盘文件（`storage_path('app/verification/...')`）、另一测试触发扫/删目录的命令（如 `PurgeCommand` 扫 `verification/` 根按本 worker DB 判“孤立”删除）→ 并行时跨 worker 误删对方文件 → `file_exists` 偶发 false。`TestCase::isolateWorkerStorage()` 已按 `TEST_TOKEN` 把运行时 `storage_path()` + Storage 门面（local/public disk）重定向到 `storage/framework/testing/worker-{token}`，**新写“造真实磁盘文件”的测试自动隔离、无需额外处理**（隔离只覆盖运行时 `storage_path()`/门面，不动 framework cache/log/session — 后者用 bootstrap config 路径）。普通 `artisan test --parallel` 无 coverage、窗口小常测不出，**变异门禁 `XDEBUG_MODE=coverage` 放大并发窗口才稳定复现**（曾致 `DocumentSubmit/PreviewTest` 偶发挂）。
+
+> **API 快照对照（compat-snapshot）+ tearDown 吞 rollback 陷阱**：`compat-snapshot` job 仅 push main / tag 触发（dev PR 不跑），改了 API schema 或新增 Controller 测试后**必须** `composer test:snapshot:capture` 重新生成 fixtures 并提交，否则合 main 首跑即大面积 diff。更隐蔽的是 `TestCase::tearDown` 把 `SnapshotListener::finalizeTest()`（compare 模式命中 diff 会 `Assert::fail()` 抛异常）放在 `parent::tearDown()` 之前——**任何在 `parent::tearDown()` 之前、可能抛异常的清理逻辑都必须 `try/finally` 兜住 `parent::tearDown()`**，否则异常跳过 RefreshDatabase 的事务 rollback → 连接持锁泄漏 + 事务层级逐测试漂移 → 串行跑全套时后续测试 setUp/seed 撞锁，雪崩成 `Lock wait timeout`（单次 50s × N，job 直接卡满超时）。**只有串行全套暴露**：`--parallel` 各 worker 独立库/连接把泄漏掩盖，单文件也因同连接层级漂移不自锁而看不出。排查时 job 日志会被 MySQL service 容器 health-check 的 `Access denied ... using password: NO` 噪音淹没，真正错因在 `Run snapshot compare` step 的 `php artisan test` 输出尾部。
 
 ### 测试分组
 

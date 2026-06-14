@@ -17,7 +17,8 @@
                             "registration_number": "string",
                             "country": "string",
                             "phone": "string",
-                            "created_at": "string"
+                            "created_at": "string",
+                            "contact": "null"
                         }
                     },
                     "total": "integer",

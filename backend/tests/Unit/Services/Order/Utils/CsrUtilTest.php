@@ -1,6 +1,9 @@
 <?php
 
 use App\Services\Order\Utils\CsrUtil;
+use Tests\TestCase;
+
+uses(TestCase::class);
 
 // ==================== generate ====================
 
@@ -48,6 +51,52 @@ test('generate ecdsa csr', function () {
     expect($result['csr'])->toContain('BEGIN CERTIFICATE REQUEST');
     // PHP 8+ 使用 PKCS#8 格式（通用私钥格式），而非 EC 专用格式
     expect($result['private_key'])->toContain('BEGIN PRIVATE KEY');
+});
+
+test('generate sm2 csr（真实走 gmOpenssl，靠系统 OpenSSL 3.0+ 原生 SM2）', function () {
+    $params = [
+        'domains' => 'sm2.example.com',
+        'encryption' => ['alg' => 'sm2'],
+    ];
+
+    $result = CsrUtil::generate($params);
+
+    expect($result)->toHaveKey('csr');
+    expect($result)->toHaveKey('private_key');
+    expect($result['csr'])->toContain('BEGIN CERTIFICATE REQUEST');
+    // SM2 私钥为 EC 格式，已剥离 ecparam 附带的 PARAMETERS 块（部分国密 nginx 只认纯私钥块）
+    expect($result['private_key'])->toContain('PRIVATE KEY');
+    expect($result['private_key'])->not->toContain('EC PARAMETERS');
+
+    // 回归守卫：SM2 CSR 的 SubjectPublicKeyInfo 必须是标准 id-ecPublicKey 编码（RFC 5480 / OpenSSL 3），
+    // 而非非标准的 dual-sm2（algorithm 字段填 sm2 曲线 OID）编码 —— 后者会被国密 CA（如 Keeptrust）
+    // 拒为"csr 解析失败"。id-ecPublicKey OID 1.2.840.10045.2.1 的 DER 内容字节为 2a8648ce3d0201；
+    // dual-sm2 编码的 algorithm 用 sm2 曲线 OID、不含此串，故以此区分、钉死走系统 OpenSSL 3 的标准编码。
+    $der = base64_decode((string) preg_replace('/-----[^-]+-----|\s/', '', $result['csr']));
+    expect(str_contains($der, hex2bin('2a8648ce3d0201')))->toBeTrue();
+});
+
+test('generate sm2 临时文件 finally 清理，私钥不留盘', function () {
+    $dir = storage_path('app/sm2');
+    $before = is_dir($dir) ? glob($dir.'/*') : [];
+
+    CsrUtil::generate(['domains' => 'sm2.example.com', 'encryption' => ['alg' => 'sm2']]);
+
+    $after = is_dir($dir) ? glob($dir.'/*') : [];
+    expect($after)->toBe($before); // 无残留临时目录（私钥敏感，必须清理）
+});
+
+test('buildSm2Subject 构建主题串并转义 / 分隔符', function () {
+    $reflect = new ReflectionMethod(CsrUtil::class, 'buildSm2Subject');
+    $subject = $reflect->invoke(null, [
+        'commonName' => 'a.com',
+        'countryName' => 'CN',
+        'stateOrProvinceName' => 'Beijing',
+        'localityName' => 'Beijing',
+        'organizationName' => 'GM/Co',
+    ]);
+
+    expect($subject)->toBe('/CN=a.com/C=CN/ST=Beijing/L=Beijing/O=GM\/Co');
 });
 
 test('generate with organization', function () {
@@ -119,6 +168,14 @@ test('get encryption params', function (array $input, array $expected) {
     '无效位数回退' => [
         ['encryption' => ['alg' => 'rsa', 'bits' => 1024]],
         ['alg' => 'rsa', 'bits' => 2048, 'digest_alg' => 'sha256'],
+    ],
+    'SM2 固定曲线+SM3' => [
+        ['encryption' => ['alg' => 'sm2']],
+        ['alg' => 'sm2', 'curve' => 'SM2', 'digest_alg' => 'sm3'],
+    ],
+    'SM2 强制 SM3（传 sha256 也回 sm3）' => [
+        ['encryption' => ['alg' => 'sm2', 'digest_alg' => 'sha256']],
+        ['alg' => 'sm2', 'curve' => 'SM2', 'digest_alg' => 'sm3'],
     ],
 ]);
 

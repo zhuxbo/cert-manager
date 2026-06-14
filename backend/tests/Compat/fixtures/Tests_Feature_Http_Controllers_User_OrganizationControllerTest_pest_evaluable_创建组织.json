@@ -17,7 +17,23 @@
             ],
             "response_status": "2xx",
             "response_schema": {
-                "code": "integer"
+                "code": "integer",
+                "data": {
+                    "name": "string",
+                    "registration_number": "string",
+                    "country": "string",
+                    "state": "string",
+                    "city": "string",
+                    "address": "string",
+                    "postcode": "string",
+                    "phone": "string",
+                    "user_id": "integer",
+                    "contact_id": "null",
+                    "id": "integer",
+                    "updated_at": "string",
+                    "created_at": "string",
+                    "contact": "null"
+                }
             }
         }
     ]

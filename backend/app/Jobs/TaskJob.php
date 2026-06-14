@@ -15,6 +15,8 @@ use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\DeadlockException;
+use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
@@ -24,7 +26,7 @@ use Throwable;
 
 class TaskJob implements ShouldQueue
 {
-    use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
+    use DetectsConcurrencyErrors, Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
     protected array $data;
 
@@ -92,6 +94,14 @@ class TaskJob implements ShouldQueue
                     $data['result'] = $response;
                     $data['status'] = $response['code'] === 1 ? 'successful' : 'failed';
                 } catch (Throwable $e) {
+                    // 并发错误（死锁 1213 / 锁等待超时 1205 / 序列化失败）：MySQL 已回滚整个事务，
+                    // 连接已不在事务中。绝不能继续 $task->update() 或让闭包正常返回触发外层 commit
+                    // —— 否则抛 PDOException "There is no active transaction" 且 task 状态错乱。
+                    // 抛出 → 外层 DB::transaction 回滚 → queue --tries 重试（--delay 错峰自愈）；
+                    // 重试耗尽后由 failed() 兜底把 task 标记为 failed，避免永久卡 executing。
+                    if ($e instanceof DeadlockException || $this->causedByConcurrencyError($e)) {
+                        throw $e;
+                    }
                     $data['result'] = [
                         'code' => 0,
                         'msg' => $e->getMessage(),
@@ -133,6 +143,20 @@ class TaskJob implements ShouldQueue
         $task = TaskModel::where('id', $this->data['id'] ?? 0)->first();
         if (! $task) {
             return;
+        }
+
+        // 兜底落库失败状态：handle() 对并发错误改为抛出（不在死事务内 update），
+        // 重试耗尽进入本钩子时 task 仍是 executing，不标记会被 checkRepeat 当"处理中"永久阻塞后续。
+        // 本钩子在 job 彻底失败后调用，无外层事务，autocommit 下 update 安全；
+        // 普通业务异常路径已在 handle() 内标过 failed（status != executing），守卫跳过避免重复。
+        if ($task->status === 'executing') {
+            $task->update([
+                'status' => 'failed',
+                'weight' => 0,
+                'last_execute_at' => now(),
+                'attempts' => ($task->attempts ?? 0) + 1,
+                'result' => ['code' => 0, 'msg' => $e->getMessage()],
+            ]);
         }
 
         $adminEmail = get_system_setting('site', 'adminEmail');

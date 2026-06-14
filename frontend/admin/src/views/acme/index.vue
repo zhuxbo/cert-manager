@@ -1,11 +1,6 @@
 <script setup lang="tsx">
-import {
-  ref,
-  onMounted,
-  onActivated,
-  onDeactivated,
-  onBeforeUnmount
-} from "vue";
+import { ref, onMounted } from "vue";
+import { usePolling } from "@shared/hooks/usePolling";
 import { useRoute } from "vue-router";
 import { PlusSearch } from "plus-pro-components";
 import { useAcme } from "./hook";
@@ -49,37 +44,12 @@ const { searchColumns } = useAcmeSearch(onSearch, search);
 
 const createVisible = ref(false);
 
-type TimerRef = ReturnType<typeof setInterval>;
-let searchTimer: TimerRef | null = null;
-
-// 启动 3 分钟轮询：幂等，重复调用不会产生多个定时器
-const startPolling = () => {
-  if (searchTimer !== null) return;
-  searchTimer = setInterval(
-    () => {
-      // 页面被切到后台标签页时跳过本次刷新，回到前台再恢复
-      if (document.hidden) return;
-      // 用户已勾选批量操作目标行时跳过本次自动刷新，避免清空选择
-      if (selectedIds.value.length > 0) return;
-      onSearch();
-    },
-    3 * 60 * 1000
-  );
-};
-
-const stopPolling = () => {
-  if (searchTimer !== null) {
-    clearInterval(searchTimer);
-    searchTimer = null;
-  }
-};
-
-// 标签页重新可见时立即刷新一次（勾选中则跳过），避免等待整个轮询周期
-const handleVisibilityChange = () => {
-  if (document.hidden) return;
-  if (selectedIds.value.length > 0) return;
-  onSearch();
-};
+// 3 分钟轮询 + 切后台跳过 + 切回前台立即刷新 + keep-alive 暂停/恢复 + 卸载清理：
+// 已勾选批量操作目标行时跳过本次自动刷新（含轮询与切回前台），避免清空选择。
+usePolling(onSearch, {
+  shouldSkip: () => selectedIds.value.length > 0,
+  keepAlive: true
+});
 
 onMounted(() => {
   // 支持从交易流水等页面通过 ?id= 跳转定位到具体 ACME 订阅
@@ -88,25 +58,6 @@ onMounted(() => {
     search.value.id = queryId;
   }
   onSearch();
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-  startPolling();
-});
-
-// keepAlive 缓存下离开页面不会触发卸载，需在 deactivated 暂停轮询，
-// 避免多个列表页同时在后台并发刷新
-onActivated(() => {
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-  startPolling();
-});
-
-onDeactivated(() => {
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
-  stopPolling();
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
-  stopPolling();
 });
 </script>
 

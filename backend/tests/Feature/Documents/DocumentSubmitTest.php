@@ -5,11 +5,13 @@ use App\Jobs\SubmitDocumentJob;
 use App\Models\OrderDocument;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\Traits\CreatesTestData;
 
@@ -242,6 +244,27 @@ test('uploadDocument 文件上传：设置 content_hash + 按内容去重 + 自�
     @unlink(storage_path("app/{$docs->first()->file_path}"));
 });
 
+test('uploadDocument storeAs 落盘失败时硬报错且不写 DB 行（filesystems.throw=false 返回 false）', function () {
+    Queue::fake();
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'processing']);
+
+    // 模拟磁盘满 / 权限不足：local disk throw=false 时 putFileAs 返回 false，不抛异常
+    $disk = Mockery::mock(Filesystem::class);
+    $disk->shouldReceive('putFileAs')->andReturn(false);
+    Storage::shouldReceive('disk')->with('local')->andReturn($disk);
+
+    $file = UploadedFile::fake()->createWithContent('a.pdf', 'BYTES');
+    $res = captureDocResponse(fn () => app(Action::class)->uploadDocument($order->id, $file, 'APPLICANT', 'user'));
+
+    // 必须报错（不能静默成功），且绝不落 DB 行（否则 content_hash 占位、文件不在盘上、无法自愈/提交上游）
+    expect($res['code'])->toBe(0)
+        ->and($res['msg'])->toContain('保存失败');
+    expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
+    Queue::assertNotPushed(SubmitDocumentJob::class);
+});
+
 test('uploadDocument 在证书已签发（active）后拒绝上传', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
@@ -289,12 +312,17 @@ test('previewDocument 图片走 inline 预览 + 带 nosniff', function () {
     @unlink($full);
 });
 
-test('previewDocument 非图片（pdf / xades）强制 attachment 下载 + 带 nosniff', function () {
+test('previewDocument：pdf 走 inline + CSP sandbox，xades 强制 attachment（均带 nosniff）', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
     $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
 
-    foreach (['report.pdf' => 'application/pdf', 'sig.xades' => 'application/xml'] as $name => $expectedMime) {
+    // [mime, disposition, 是否挂 CSP sandbox] —— pdf 内联预览且禁内嵌脚本；xades 仍强制下载
+    $cases = [
+        'report.pdf' => ['application/pdf', 'inline', true],
+        'sig.xades' => ['application/xml', 'attachment', false],
+    ];
+    foreach ($cases as $name => [$expectedMime, $expectedDisposition, $expectCsp]) {
         $ext = pathinfo($name, PATHINFO_EXTENSION);
         $rel = 'verification/test/'.Str::uuid().".$ext";
         $full = storage_path("app/$rel");
@@ -310,7 +338,10 @@ test('previewDocument 非图片（pdf / xades）强制 attachment 下载 + 带 n
 
         expect($response->headers->get('Content-Type'))->toBe($expectedMime)
             ->and($response->headers->get('X-Content-Type-Options'))->toBe('nosniff')
-            ->and($response->headers->get('Content-Disposition'))->toStartWith('attachment');
+            ->and($response->headers->get('Content-Disposition'))->toStartWith($expectedDisposition);
+
+        $csp = $response->headers->get('Content-Security-Policy');
+        $expectCsp ? expect($csp)->toContain('sandbox') : expect($csp)->toBeNull();
 
         @unlink($full);
     }
@@ -334,6 +365,28 @@ test('submitDocument 上游调用抛异常时也记录 submit_error（observabil
         ->and($doc->submit_attempts)->toBe(1);
 
     @unlink(storage_path("app/$rel"));
+});
+
+test('failed() 不抹空已记录的 submit_error（ApiResponseException 的 getMessage 恒空）', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    // submitDocument 每次失败已写入更具体的可读错误；重试耗尽的 failed() 兜底不应覆盖它
+    $doc = newDoc($order->id, $user->id, ['submit_error' => '产品配置错误']);
+
+    (new SubmitDocumentJob($doc->id))->failed(new ApiResponseException('上游返回错误'));
+
+    expect($doc->refresh()->submit_error)->toBe('产品配置错误');
+});
+
+test('failed() 在 submit_error 为空时回填 ApiResponseException 的可读 msg（取 getApiResponse 而非空 getMessage）', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $doc = newDoc($order->id, $user->id, ['submit_error' => null]);
+
+    (new SubmitDocumentJob($doc->id))->failed(new ApiResponseException('上游返回错误 ABC'));
+
+    // ApiResponseException 的可读消息在 getApiResponse()['msg']，不是空的 getMessage()
+    expect($doc->refresh()->submit_error)->toBe('上游返回错误 ABC');
 });
 
 // ==========================================

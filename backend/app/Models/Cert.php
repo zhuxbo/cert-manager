@@ -20,6 +20,12 @@ class Cert extends BaseModel
      */
     private bool $intermediateCertCached = false;
 
+    /**
+     * 国密(SM2)加密三元组列名：加密证书 / 加密私钥 / 加密私钥(GMT-0009)。
+     * 单一来源，避免在 fillable / V2 get select 白名单 / sync 终态守卫等多处硬编码漂移。
+     */
+    public const ENC_FIELDS = ['enc_cert', 'enc_key', 'enc_key2'];
+
     protected $fillable = [
         'order_id',
         'last_cert_id',
@@ -46,6 +52,7 @@ class Cert extends BaseModel
         'csr',
         'private_key',
         'cert',
+        ...self::ENC_FIELDS,
         'intermediate_cert',
         'serial_number',
         'fingerprint',

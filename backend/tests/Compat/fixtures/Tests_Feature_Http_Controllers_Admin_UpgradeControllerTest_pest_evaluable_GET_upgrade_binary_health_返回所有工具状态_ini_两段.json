@@ -1,0 +1,35 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_GET_upgrade_binary_health_返回所有工具状态___ini_两段",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/upgrade/binary-health",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "tool": "string",
+                            "status": "string",
+                            "path": "string",
+                            "diagnose": "array<string>"
+                        }
+                    },
+                    "ini": {
+                        "fpm": {
+                            "disable_functions_ok": "boolean",
+                            "ini_path": "string"
+                        },
+                        "cli": {
+                            "disable_functions_ok": "boolean",
+                            "ini_path": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

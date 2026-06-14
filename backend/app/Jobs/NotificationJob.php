@@ -11,18 +11,27 @@ use App\Models\NotificationTemplate;
 use App\Services\Notification\Builders\NotificationBuilderInterface;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\DTOs\NotificationIntent;
+use App\Services\Notification\DTOs\NotificationPayload;
 use App\Services\Notification\NotificationRepository;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
-class NotificationJob implements ShouldQueue
+/**
+ * 携密通知（如 user_created 初始密码）的 context 会作为构造参数序列化进队列存储。
+ * 实现 ShouldBeEncrypted 让 Laravel 用 APP_KEY 加密整个 job payload，
+ * 避免明文密码/凭据落入 jobs（执行前窗口）与 failed_jobs（长期留存）表。
+ * sync 队列不序列化、直接执行，加密 marker 无副作用。
+ */
+class NotificationJob implements ShouldBeEncrypted, ShouldQueue
 {
     use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
@@ -122,6 +131,41 @@ class NotificationJob implements ShouldQueue
         }
 
         $notificationRepository->updateSendResult($notification, $result, $isSuccessful);
+
+        // 兜底清理本次 build 生成的临时文件（如 CertIssued 的证书 ZIP）。
+        // Builder 按通道各 build 一次，附件类 payload 会为每个通道各生成一份临时文件；
+        // 仅消费附件的通道（mail）在 send 内清理自己那份，非 mail 通道（插件注入）无清理逻辑，
+        // 会导致含私钥的临时 ZIP 泄漏。此处对所有通道、含发送失败路径统一兜底清理，
+        // 与 MailChannel 内清理幂等（cleanupPath 以 is_dir/is_file 守卫，重复删除安全跳过）。
+        $this->cleanupTempPaths($payload);
+    }
+
+    /**
+     * 清理 payload._meta.cleanup_paths 指向的临时文件/目录（兜底，不抛异常）。
+     */
+    protected function cleanupTempPaths(NotificationPayload $payload): void
+    {
+        $cleanupPaths = $payload->data['_meta']['cleanup_paths'] ?? [];
+        if (! is_array($cleanupPaths) || $cleanupPaths === []) {
+            return;
+        }
+
+        foreach ($cleanupPaths as $path) {
+            if (! is_string($path) || $path === '') {
+                continue;
+            }
+
+            try {
+                if (is_dir($path)) {
+                    File::deleteDirectory($path);
+                } elseif (is_file($path)) {
+                    File::delete($path);
+                }
+            } catch (Throwable $e) {
+                // 清理失败不应影响通知主流程，记录后继续
+                app(ApiExceptions::class)->logException($e);
+            }
+        }
     }
 
     protected function resolveNotifiable(): ?Model

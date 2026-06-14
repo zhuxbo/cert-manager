@@ -6,6 +6,7 @@ use App\Exceptions\ApiResponseException;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\OrderIdCompatTrait;
 use App\Models\ApiToken;
+use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Services\Order\Action;
@@ -405,6 +406,7 @@ class ApiController extends Controller
             'csr',
             'private_key',
             'cert',
+            ...Cert::ENC_FIELDS,
             'issuer',
             'issued_at',
             'expires_at',
@@ -429,13 +431,13 @@ class ApiController extends Controller
         }
 
         $cacheKey = 'api_get_'.$order_id;
-        // 获取上次缓存的时间戳
-        $lastTime = Cache::get($cacheKey);
-        // 签发状态120秒 其他状态10秒 内不能重复调用接口
-        if (! $lastTime) {
+        // 原子占位：Cache::add（SETNX）保证并发下只放一个请求进 sync/pay/commit，防击穿重复调上游。
+        // 保守 10s 占位；末尾按最终状态刷新滑动窗口（签发 120s / 其他 10s）
+        if (Cache::add($cacheKey, time(), 10)) {
             // 待验证、待审批、已签发的订单同步
             if (in_array($order->latestCert->status, ['processing', 'approving', 'active'])) {
-                $this->action->sync($order_id, true);
+                // suppressCallback=true：下游主动 pull，get 末尾已重新查询并同步返回新状态，无需再异步回调（避免冗余触发）
+                $this->action->sync($order_id, true, true);
             }
 
             // 未支付订单支付
@@ -481,6 +483,14 @@ class ApiController extends Controller
         // 避免返回空的 key
         if (empty($result['private_key'])) {
             unset($result['private_key']);
+        }
+
+        // 国密 enc 字段：仅 SM2 证书非空，非国密清理（与 private_key 同策略）。经 default source
+        // （{ca.url}/get）透传给下游 manager，下游 sync 以列名 fillable 写入自身 certs.enc_*，打通多级国密链路
+        foreach (Cert::ENC_FIELDS as $encField) {
+            if (empty($result[$encField])) {
+                unset($result[$encField]);
+            }
         }
 
         // 清理 dcv/validation 中不可跨级传递的内部字段

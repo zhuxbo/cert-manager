@@ -10,6 +10,7 @@ return new class extends Migration
     public function up(): void
     {
         $this->cleanupNotificationTemplates();
+        $this->renameLegacyFinanceAuditAlert();
         $this->dropChannelsColumn();
         $this->ensureUniqueCodeOnNotificationTemplates();
         $this->flattenUserNotificationSettings();
@@ -56,6 +57,85 @@ return new class extends Migration
     }
 
     /**
+     * 存量改名：旧 code = finance_audit_alert → finance_audit。
+     *
+     * 背景：老版本 seeder 用 finance_audit_alert，现已改名为 finance_audit；
+     * 若不改名，旧行会变孤儿死数据，管理员对旧行做过的自定义配置也会丢失。
+     *
+     * 顺序：本步骤在 cleanup 之后、去重(ensureUnique)之前执行，
+     * 让改名产生的与既有 finance_audit 的重复行交由去重步骤按"保留启用行"规则收敛。
+     *
+     * 幂等 + 唯一约束安全：
+     *   - 无 finance_audit_alert 行直接返回；
+     *   - 改名前若 finance_audit 已存在（索引可能已是 unique），先把两个 code 的行
+     *     合并去重（保留启用行）只留一行，避免改名撞唯一索引。
+     */
+    protected function renameLegacyFinanceAuditAlert(): void
+    {
+        if (! Schema::hasTable('notification_templates') ||
+            ! Schema::hasColumn('notification_templates', 'code')) {
+            return;
+        }
+
+        $hasLegacy = DB::table('notification_templates')
+            ->where('code', 'finance_audit_alert')
+            ->exists();
+
+        if (! $hasLegacy) {
+            return;
+        }
+
+        $hasNew = DB::table('notification_templates')
+            ->where('code', 'finance_audit')
+            ->exists();
+
+        // 仅有旧行：直接整体改名（含潜在多旧行，去重交给后续 ensureUnique 收敛）
+        if (! $hasNew) {
+            DB::table('notification_templates')
+                ->where('code', 'finance_audit_alert')
+                ->update(['code' => 'finance_audit']);
+
+            return;
+        }
+
+        // 新旧 code 同时存在：合并候选行，保留启用行的最小 id，删除其余，
+        // 再把保留行统一为 finance_audit（避免改名撞唯一索引）。
+        $keepId = $this->resolveKeepId(['finance_audit_alert', 'finance_audit']);
+
+        DB::table('notification_templates')
+            ->whereIn('code', ['finance_audit_alert', 'finance_audit'])
+            ->where('id', '!=', $keepId)
+            ->delete();
+
+        DB::table('notification_templates')
+            ->where('id', $keepId)
+            ->update(['code' => 'finance_audit']);
+    }
+
+    /**
+     * 在给定 code 集合的所有行中，挑出应保留的行 id：
+     *   - 优先保留 status=1（启用）行中 id 最小的；
+     *   - 若无启用行，退回保留 id 最小行。
+     */
+    protected function resolveKeepId(array $codes): ?int
+    {
+        $enabledMin = DB::table('notification_templates')
+            ->whereIn('code', $codes)
+            ->where('status', 1)
+            ->min('id');
+
+        if ($enabledMin !== null) {
+            return (int) $enabledMin;
+        }
+
+        $anyMin = DB::table('notification_templates')
+            ->whereIn('code', $codes)
+            ->min('id');
+
+        return $anyMin === null ? null : (int) $anyMin;
+    }
+
+    /**
      * 删除 notification_templates.channels 字段
      */
     protected function dropChannelsColumn(): void
@@ -93,17 +173,24 @@ return new class extends Migration
             return;
         }
 
-        // 去重：保留每个 code 的最小 id
-        $duplicates = DB::table('notification_templates')
-            ->select('code', DB::raw('MIN(id) as keep_id'))
+        // 去重：每个 code 优先保留 status=1（启用）行中 id 最小的，
+        // 无启用行才退回保留 id 最小行——避免删掉实际生效的启用行（DELETE 不可逆）。
+        $dupCodes = DB::table('notification_templates')
+            ->select('code')
             ->groupBy('code')
             ->havingRaw('COUNT(*) > 1')
-            ->get();
+            ->pluck('code');
 
-        foreach ($duplicates as $row) {
+        foreach ($dupCodes as $code) {
+            $keepId = $this->resolveKeepId([$code]);
+
+            if ($keepId === null) {
+                continue;
+            }
+
             DB::table('notification_templates')
-                ->where('code', $row->code)
-                ->where('id', '!=', $row->keep_id)
+                ->where('code', $code)
+                ->where('id', '!=', $keepId)
                 ->delete();
         }
 
