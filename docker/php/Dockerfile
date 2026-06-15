@@ -17,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # 1. 系统依赖（PHP 扩展编译所需 + 常用工具）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git unzip default-mysql-client \
+        git unzip default-mysql-client jq \
         libicu-dev libzip-dev libonig-dev libxml2-dev \
         libpng-dev libjpeg-dev libfreetype6-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -28,6 +28,17 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
         bcmath calendar exif gd intl mbstring pcntl pdo_mysql zip \
     && pecl install redis \
     && docker-php-ext-enable redis
+
+# 2b. 覆盖率驱动 pcov：仅供资金核心变异门禁（composer test:mutate）用。
+#     默认 pcov.enabled=0，不给普通 `make test` 加每行 hook 开销；变异跑时由 backend/scripts/test-mutate.sh
+#     临时写 conf.d 开启（pest --parallel 各 worker 是独立进程，只有 conf.d 能让 worker 也开 pcov）。
+#     装进镜像使门禁开箱即跑，免去发布时临时 pecl（宿主机无 php/composer）。
+RUN pecl install pcov \
+    && docker-php-ext-enable pcov \
+    && { \
+        echo "pcov.enabled=0"; \
+        echo "pcov.directory=/var/www"; \
+    } >"$PHP_INI_DIR/conf.d/zz-pcov.ini"
 
 # 3. Composer（2.8+，来自官方镜像）+ 阿里云镜像加速
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

@@ -945,6 +945,8 @@ baseline 不是终点，而是逐步提升的安全网。演进发生在四个�
 
 **首次跑出 baseline**：
 
+> 容器内 pcov 默认 `enabled=0`；直接跑下面的 `./vendor/bin/pest --mutate` 前需临时开 pcov（`printf 'pcov.enabled=1\npcov.directory=%s\n' "$(pwd)" >"$PHP_INI_DIR/conf.d/zzz-pcov-mutate.ini"`，跑完删掉），宿主机用 xdebug 则 `XDEBUG_MODE=coverage` 即生效。日常重算基线直接 `composer test:mutate`（脚本已自动处理 pcov）。
+
 ```bash
 cd backend
 XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
@@ -967,10 +969,15 @@ composer test:mutate -- --bail        # 遇到第一个 untested 立即停（deb
 composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
 ```
 
-**依赖**：
+**依赖（dev 容器已内置，开箱即跑）**：
 
-- 本机 PHP 必须装 xdebug 或 pcov（变异测试需要 code coverage driver）
-- 本机必须装 jq（`brew install jq` / `apt install jq`）
+- 开发容器（`docker/php/Dockerfile`）已装 **jq + pcov**，`composer test:mutate` 容器内直接跑、无需手动安装。pcov 默认 `pcov.enabled=0`（不拖慢普通 `make test`）；`backend/scripts/test-mutate.sh` 跑变异时临时写 `conf.d/zzz-pcov-mutate.ini` 开启（含 paratest 各 worker——worker 是独立进程，env/`-d` 不生效，只能走 conf.d），结束 `trap` 复原。
+- 容器内必锁测试库：`docker compose exec -T -e DB_DATABASE=ssl_manager_test app composer test:mutate`（否则 RefreshDatabase 清开发库）。
+- **宿主机直跑**才需自备 coverage driver（xdebug/pcov）+ jq；本机无 php/composer 时一律走容器。
+
+**已知 flake（并行 + 覆盖率放大 TOCTOU）**：
+
+- 变异跑 `--parallel` 且开覆盖率时，清缓存类命令测试（`ClearAllCacheCommandTest` / `BackupCommandTest` 等测 `cache:clear-all`/备份）清掉**所有 worker 共享**的 `bootstrap/cache/{packages,services}.php`，pcov/xdebug 放大窗口 → baseline 测试轮偶发 `require(...packages|services.php): Failed to open stream`（1 failed、中断不出 MSI，命中率约 50%+）。测试隔离 flake、**非资金代码 bug**：`bootstrap/cache` 在框架 bootstrap 阶段加载、早于 `TestCase::setUp`，无法像 `isolateWorkerStorage()` 按 worker 隔离，性价比低。**`test-mutate.sh` 已对该签名自动重试（最多 5 次，每轮 `package:discover` 重建 cache），只重试该 TOCTOU、不掩盖真实失败 / MSI 不达标**；极端连挂 5 次再人工重跑即可。
 
 **为什么不入 CI**：
 
