@@ -1,0 +1,15 @@
+{
+    "test": "P\\Tests\\Feature\\Meta\\ApiDocTest::__pest_evaluable_api_doc_返回三套_surface_的_OpenAPI_YAML@dataset \"acme\" with data ('acme', 'eab_kid')",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/meta/api-doc",
+            "request_keys": [
+                "surface"
+            ],
+            "response_status": "2xx",
+            "response_schema": null
+        }
+    ]
+}
