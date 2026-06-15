@@ -10,7 +10,7 @@
 # 检查项：
 #   1. Docker 可用
 #   2. Manager 可达（GET /api/admin/login 或任意公开路由返回非 000）
-#   3. 上游 ACME 产品端点可达（通过 Manager 代理 /api/acme/get-products 或 /api/v2/get-products 已配 token 情况下）
+#   3. 上游系统 ACME 产品端点可达（直连 $UPSTREAM_URL/api/acme/get-products；上游未迁仍用 /api/acme，迁移后改 /api/v2/acme）
 #   4. Manager system_settings: ca.acme_url 或 ca.url 已配置（由 Manager backend 本地校验）
 #
 

@@ -20,8 +20,9 @@ class Sdk
     {
         $acmeUrl = get_system_setting('ca', 'acme_url');
         if (! $acmeUrl) {
-            $caUrl = (string) get_system_setting('ca', 'url');
-            $acmeUrl = preg_replace('#/[^/]+$#', '/acme', $caUrl);
+            // ca.url 形如 https://upstream/api/v2（v2 base），acme 复用同一配置 → 追加 /acme
+            $caUrl = rtrim((string) get_system_setting('ca', 'url'), '/');
+            $acmeUrl = $caUrl !== '' ? $caUrl.'/acme' : '';
         }
         $this->baseUrl = rtrim((string) $acmeUrl, '/');
 

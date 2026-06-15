@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Route;
 |--------------------------------------------------------------------------
 */
 
-Route::prefix('acme')->middleware('api.v2')->group(function () {
+Route::prefix('v2/acme')->middleware('api.v2')->group(function () {
     Route::post('new', [ApiController::class, 'new']);
     Route::get('get', [ApiController::class, 'get']);
     Route::post('cancel', [ApiController::class, 'cancel']);

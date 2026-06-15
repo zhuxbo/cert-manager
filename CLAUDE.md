@@ -86,16 +86,16 @@ skills/ # 开发规范（详细文档）
 - **字段映射**：上游响应 `data.order_id` → 本地 `acmes.api_id` 列（**切勿用 `api_id` 键读上游响应**，老代码踩过坑）
 - **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id, bool $autoCommit = true)`（Admin/User 入口默认"先支付独立事务，再单独事务调 commit"——commit 失败 **不回滚扣费**，订单保留 pending 可走 `commit` 接口重试；`$autoCommit=false` 仅置 pending，由 batchPay 统一入队 commit）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（**单事务原子，失败回滚**，API 入口使用）
 - **上游 `/acme/new` 入参**（manager 视角完整 schema）：`contact_email`（= `acmes.contact_email`，**所有入口必填**：User/Admin 表单 / API Token / Deploy Token；上游正常返回会覆盖回写，缺失则保持本地值）/ `product_code` / `period`(int，预留 Certum 多年期；gateway 当前 validate 暂不接收由 `product.periods[0]` 决定，但 manager 稳定外发) / `plus`(int 0/1，与传统 V2 Order 一致；gateway 端 `(bool)` cast 兼容) / `refer_id`（端到端幂等键，下游传则用之、未传则 manager 生成 32 字符 hex），**不传** `purchased_*count`/`product_type` 等。**字段名与多级代理链路全程对齐**；`source` 是 manager 内部 Api 路由参数，作为 `Api::new($data, $source)` 第二个独立参数，不混入 data；Certum 侧的 `customer` 术语仅存在于 Gateway → Certum SDK 的最后一跳
-- **对外 API 入参契约**（manager 视角）：`/api/acme/new`（API Token）与 `/api/deploy/acme/new`（Deploy Token）入参同构，validate `product_code` required\|string\|max:50 + `contact_email` required\|email\|max:254 + `period` sometimes\|integer（未传则取产品默认周期 `product.periods[0]`，控制器不再硬编码 12）+ `plus` nullable\|integer\|in:0,1（与 V2 Order 风格一致）+ `refer_id` sometimes\|string\|max:64。`refer_id` 由 `App\Traits\AcmeReferIdCheck::checkAcmeReferId` 做应用层防重（按当前 user 范围 + DB `acmes.refer_id` unique 兜底）
+- **对外 API 入参契约**（manager 视角）：`/api/v2/acme/new`（API Token）与 `/api/deploy/acme/new`（Deploy Token）入参同构，validate `product_code` required\|string\|max:50 + `contact_email` required\|email\|max:254 + `period` sometimes\|integer（未传则取产品默认周期 `product.periods[0]`，控制器不再硬编码 12）+ `plus` nullable\|integer\|in:0,1（与 V2 Order 风格一致）+ `refer_id` sometimes\|string\|max:64。`refer_id` 由 `App\Traits\AcmeReferIdCheck::checkAcmeReferId` 做应用层防重（按当前 user 范围 + DB `acmes.refer_id` unique 兜底）
 - **directory_url 缓存**：Laravel `Cache::forever("acme_directory_url:{ca}")` 按签发 CA 聚合；commit/sync 刷新、show 缺失时回源一次性回填；不入 system_setting、不落库
-- **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
+- **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/v2/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
 - **撤回取消**：`revokeCancel(int $id)` 在 acme.status=cancelling 且延时任务未执行时生效 — 悲观锁回滚 status→active、清空 cancelled_at、删除 executing/stopped 的 `cancel_acme` Task（已 dispatch 的 TaskJob 唤醒后找不到任务直接跳过）
 - **Transaction 类型**：`acme_order`/`acme_cancel`（一对一防重，禁止重复 `transaction_id`；仅传统 `order` 因证书重签增域名场景允许重复）
 - **产品标识**：`products.product_type = 'acme'`
-- **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由，仅 `default` 源（和 Order 一致），`AcmeSourceApiInterface` 统一 `new`/`get`/`cancel`/`getProducts` 接口，`default/Sdk` 通过系统设置 `ca.acme_url`/`ca.acme_token`（回落到 `ca.url`/`ca.token`）调用 上游系统 `/api/acme/*` 端点
+- **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由，仅 `default` 源（和 Order 一致），`AcmeSourceApiInterface` 统一 `new`/`get`/`cancel`/`getProducts` 接口，`default/Sdk` 通过系统设置 `ca.acme_url`/`ca.acme_token`（回落到 `ca.url`/`ca.token`）调用 上游系统 `/api/v2/acme/*` 端点（`ca.acme_url` 配置值形如 `http://upstream/api/v2/acme`）
 - **产品导入**：`Order\Action::importProduct()` 同时查询 Order 和 ACME 两端产品，合并后按 `api_id` 去重
 - **控制器路由**：
-  - API：`/api/acme/` — new, get, cancel, get-products（对下游代理，与 上游系统 对齐）
+  - API：`/api/v2/acme/` — new, get, cancel, get-products（对下游代理，与 上游系统 对齐）
   - Admin：`/api/admin/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
   - User：`/api/user/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
   - Deploy：`/api/deploy/acme/` — new（一步到位：创建+支付+提交）, get（含 EAB + directory_url）
@@ -104,7 +104,7 @@ skills/ # 开发规范（详细文档）
   - Deploy/V2 API `get` 走 `makeHidden(['user_id','plus','api_id','admin_remark','channel'])`；**保留 `refer_id`**（客户端关联键，contract 一部分）
   - Admin 全字段返回，不做 makeHidden
 - **搜索**：Admin/User 控制器 `index` 支持 quickSearch / id / status / brand / period / **eab_kid 前缀匹配（走索引）** / amount 范围 / product_name / created_at / period_till 范围；Admin 额外 user_id/username
-- **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
+- **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/v2/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
 - **传统流程完全隔离**：ACME 通过独立控制器、服务和前端模块处理，与传统订单无交集；V2 API `new` 和 `Order\Action::initParams` 拒绝 ACME 产品
 - **批量操作**：列表页 7 个批量按钮
   - `GET /api/{admin,user}/acme/batch?ids=1,2,3` — 批量详情聚合（纯读）；URL 可分享，前端 `details.vue` v-for 渲染。返回 `{items: [...]}` 含 directory_url（按 ca 缓存避免重复算）。User 端复用 show 的字段隐藏；Admin 端全字段

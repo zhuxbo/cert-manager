@@ -237,8 +237,8 @@ php artisan test
 - 单一 `Acme` 模型（表 `acmes`），独立于传统订单/证书；`eab_hmac` 加密存储且默认 hidden
 - 计费三步流程：`Action::new()`（unpaid）→ `Action::pay()`（pending）→ `Action::commit()`（active，回写 EAB + directory_url）；`newAndCommit()` 一步到位（API/Deploy Token 入口）
 - 取消流程：Web `commitCancel()`（标记 cancelling + 120s 延时 Task）→ `cancel()`（调上游 + 退费）；Deploy/API `cancelNow()` 立即同步执行
-- Source API 层：`AcmeSourceApiInterface`（new / get / cancel / getProducts），按 `product.source` 路由，通过 Sdk 调用上游 `/api/acme/*` 端点
-- 产品映射由上游维护，Manager 通过 `GET /api/acme/get-products` 拉取并 `importProduct()` 入库
+- Source API 层：`AcmeSourceApiInterface`（new / get / cancel / getProducts），按 `product.source` 路由，通过 Sdk 调用上游 `/api/v2/acme/*` 端点
+- 产品映射由上游维护，Manager 通过 `GET /api/v2/acme/get-products` 拉取并 `importProduct()` 入库
 - Admin/User/Deploy/API Token 四端独立路由，Deploy/API Token 入口支持一步到位下单
 
 ### 系统集成

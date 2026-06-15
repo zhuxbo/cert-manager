@@ -1,13 +1,12 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_acme_new_显式_plus_0_时仍为_0（取消赠送）",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_v2_acme_new_未传_period_时回落_product_periods_0_（产品仅支持_24_月时取_24，不报错）",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/acme/new",
+            "uri_pattern": "/api/v2/acme/new",
             "request_keys": [
                 "contact_email",
-                "plus",
                 "product_code"
             ],
             "response_status": "2xx",

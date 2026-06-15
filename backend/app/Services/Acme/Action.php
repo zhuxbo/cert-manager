@@ -371,7 +371,7 @@ class Action
     /**
      * 立即取消 — 不走延时任务，同步调上游并退费
      *
-     * 下游 API（/api/acme/cancel）场景使用；Web 入口仍走 commitCancel 延时流程，保留撤回窗口。
+     * 下游 API（/api/v2/acme/cancel）场景使用；Web 入口仍走 commitCancel 延时流程，保留撤回窗口。
      * 并发安全：整个流程（状态校验 + 上游调用 + 退费 + 状态更新）在同一事务内持有 acme 行级锁，
      * 避免与 revokeCancel 产生"退费成功 + 订单被吊销"的双重损害。
      */
@@ -775,7 +775,7 @@ class Action
      * product_code / contact_email / period / plus(int 0/1) / refer_id
      * source 是 manager 内部 Api 路由参数，作为 (new Api)->new 的第二个独立参数，不混入 data
      * plus 与传统 Order 一致用 int 0/1（gateway 端 (bool) cast 兼容）
-     * period 当前 gateway /api/acme/new validate 暂不接收（由 product.periods[0] 决定）；
+     * period 当前 gateway /api/v2/acme/new validate 暂不接收（由 product.periods[0] 决定）；
      * 但 manager 这一侧视为完整 schema 一部分稳定外发，等 gateway 升级多年期后自然贯通
      */
     private function commitOrder(Acme $acme): Acme
