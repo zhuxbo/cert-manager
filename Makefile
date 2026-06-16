@@ -101,10 +101,14 @@ install: ## 宿主机安装前端依赖
 front: ## 宿主机启动前端 dev（admin:5201 / user:5202）
 	pnpm install && pnpm dev
 
+# --ignore-scripts：插件 --ignore-workspace 独立安装时 pnpm 11 读不到 allowBuilds 批准
+# （插件目录的 pnpm-workspace.yaml 被 --ignore-workspace 忽略，该文件 gitignored、由 pnpm 运行时生成占位符），
+# 会对 esbuild/vue-demi 的 postinstall 报 ERR_PNPM_IGNORED_BUILDS 噪音。这俩 postinstall 非必需
+# （esbuild binary 走 optionalDependencies、vue-demi 默认 Vue3），故显式 --ignore-scripts 静音。
 plugins-build: ## 构建所有插件前端（产物不入库，clone 后或改插件 src 后跑一次）
 	@for d in plugins/*/frontend/admin plugins/*/frontend/user; do \
 		[ -f "$$d/package.json" ] || continue; \
 		echo "==> $$d"; \
-		pnpm -C "$$d" install --ignore-workspace --config.confirm-modules-purge=false || true; \
+		pnpm -C "$$d" install --ignore-workspace --ignore-scripts --config.confirm-modules-purge=false || true; \
 		pnpm -C "$$d" --config.verify-deps-before-run=false exec vite build || exit 1; \
 	done

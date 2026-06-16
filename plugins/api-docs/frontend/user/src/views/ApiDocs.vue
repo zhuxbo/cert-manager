@@ -11,6 +11,14 @@ const segOptions = [
 ];
 const active = ref("v2");
 
+// surface → 对外 API 路径前缀。acme 已迁至 /api/v2/acme（不再是 /api/acme），
+// surface 名与路径段不再一一对应，故显式映射；须与各 yaml 的 servers.url 一致。
+const SERVER_PATH: Record<string, string> = {
+  v2: "/api/v2",
+  acme: "/api/v2/acme",
+  deploy: "/api/deploy"
+};
+
 // iframe 高度自适应：先按 视口高-顶部距离 设一个值，下一帧测整页实际溢出量再扣除，
 // 这样不依赖页脚/内边距的具体数值，底部有任何占位都能吃掉
 const frameEl = ref<HTMLIFrameElement>();
@@ -56,7 +64,9 @@ const srcdoc = computed(() => {
   const origin = window.location.origin;
   const cfg = JSON.stringify({
     url: `${origin}/api/meta/api-doc?surface=${active.value}`,
-    servers: [{ url: `${origin}/api/${active.value}` }],
+    servers: [
+      { url: `${origin}${SERVER_PATH[active.value] ?? `/api/${active.value}`}` }
+    ],
     layout: "modern",
     hideClientButton: true,
     hideDownloadButton: false,
