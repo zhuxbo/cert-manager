@@ -41,7 +41,14 @@ class ApiExceptions
     public function handle(Exceptions $exceptions): void
     {
         $exceptions->render(function (Throwable $e) {
-            return $this->handleApiException($e);
+            // 非 HttpResponseException 路径（ValidationException / AuthenticationException 等）
+            // 走此 callback，统一不转义中文（\uXXXX → UTF-8）便于日志 / 文档 try-it 可读；
+            // 客户端 JSON 解析两者等价。用 |= 叠加而非直接覆盖，保留 response 已有 encodingOptions。
+            // 注：ApiResponseException(extends HttpResponseException) 不经此 callback，
+            // 其编码在该异常构造时直接设定（见 App\Exceptions\ApiResponseException）。
+            $response = $this->handleApiException($e);
+
+            return $response->setEncodingOptions($response->getEncodingOptions() | JSON_UNESCAPED_UNICODE);
         });
 
         $exceptions->reportable(function (Throwable $e) {
