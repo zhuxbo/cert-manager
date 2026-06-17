@@ -3,8 +3,11 @@
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\FundAudit\FundInvariants;
+use App\Services\Payment\PaymentGateway;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Yansongda\Pay\Pay;
+use Yansongda\Supports\Collection;
 
 /*
 |--------------------------------------------------------------------------
@@ -141,4 +144,65 @@ function fakeMysqlClientBin(string $tool = 'mysqldump'): string
     register_shutdown_function(static fn () => @unlink($path));
 
     return $path;
+}
+
+/**
+ * 配置微信支付公钥（publicKeyId + publicKey 俱全），满足 wechatSerial 发头的对称 gate。
+ */
+function setWechatPublicKeyId(string $id): void
+{
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'wechat'],
+        ['title' => '微信支付设置', 'weight' => 7],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'publicKeyId'],
+        ['type' => 'string', 'value' => $id],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'publicKey'],
+        ['type' => 'base64', 'value' => 'TEST_PUBLIC_KEY_CONTENT'],
+    );
+    Setting::clearGroupCache($group->id);
+}
+
+/**
+ * Mock 支付 provider（经 PaymentGateway 包装），捕获传给 wechat/alipay 的 scan/query 参数。
+ * 用于断言微信 v3 请求是否带 _serial_no（Wechatpay-Serial 公钥头），
+ * 以及支付查询是否走标准 PaymentGateway 包装（而非旧的 Pay:: 静态 / 坏配置）。
+ */
+function mockPayCapture(): object
+{
+    Pay::clear();
+
+    $captured = new stdClass;
+    $captured->scan = null;
+    $captured->query = null;
+    $captured->alipayQuery = null;
+
+    $wechat = Mockery::mock();
+    $wechat->shouldReceive('scan')->andReturnUsing(function ($order) use ($captured) {
+        $captured->scan = $order;
+
+        return new Collection(['code_url' => 'weixin://wxpay/test']);
+    });
+    $wechat->shouldReceive('query')->andReturnUsing(function ($order) use ($captured) {
+        $captured->query = $order;
+
+        return new Collection(['trade_state' => 'NOTPAY']);
+    });
+
+    $alipay = Mockery::mock();
+    $alipay->shouldReceive('query')->andReturnUsing(function ($order) use ($captured) {
+        $captured->alipayQuery = $order;
+
+        return new Collection(['trade_status' => 'WAIT_BUYER_PAY']);
+    });
+
+    $gateway = Mockery::mock(PaymentGateway::class);
+    $gateway->shouldReceive('wechat')->andReturn($wechat);
+    $gateway->shouldReceive('alipay')->andReturn($alipay);
+    app()->instance(PaymentGateway::class, $gateway);
+
+    return $captured;
 }

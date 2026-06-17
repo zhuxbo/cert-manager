@@ -408,6 +408,43 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 5. 删除已入账 fund 路径必须事务内 `lockForUpdate` + 锁内 status/created_at 二次校验
 6. 上线前先跑 `php artisan finance:audit` 确认现有数据干净，否则改约束之后下一次相关 INSERT 触发"交易记录已存在"误报
 
+## 微信支付公钥验签切换（yansongda）
+
+> 支付走 `yansongda/pay` v3.7.x（`Pay::wechat()`，薄封装 `App\Services\Payment\PaymentGateway`）；验签逻辑全在 SDK，项目不自处理 `Wechatpay-Serial`。
+
+### 背景：平台证书 → 微信支付公钥
+
+微信 v3 验签正从「平台证书」灰度切到「微信支付公钥」，商户后台两条进度：
+
+- **回调**（微信 → 商户）：微信平台控制灰度（约 7 天完成）
+- **应答**（商户调 API 的响应）：**商户请求参数控制** —— 请求头 `Wechatpay-Serial` 带公钥 ID（`PUB_KEY_ID_xxx`），微信才用公钥签应答；「应答使用公钥比例」= 近 7 天带公钥头请求数 / v3 总请求数
+
+### 坑：yansongda 默认不发头，应答比例恒 0%
+
+`AddRadarPlugin`（`vendor/yansongda/pay/src/Plugin/Wechat/AddRadarPlugin.php`）只在 body 有敏感信息加密内容（`_serial_no` 由加密插件设）时才发 `Wechatpay-Serial`。普通充值下单 `scan` / 查单 `query` 不带 → 微信收不到公钥请求 → 应答比例卡 0%、切换无法完成。
+
+### 解法：所有微信 v3 商户请求注入 `_serial_no`
+
+`PaymentConfigTrait::wechatSerial()` 返回 `['_serial_no' => publicKeyId]`，控制器 `array_merge($order, $this->wechatSerial())`：
+
+- yansongda 据 payload 的 `_serial_no` 设 `Wechatpay-Serial` 请求头
+- artful `filter_params` 过滤所有 `_` 前缀 key → `_serial_no` **不进发给微信的 body**，不污染业务参数
+- 调用点：`User/TopUpController`（下单 `scan` + 查单 `query`）、`{Admin,User}/FundController::check`；FundController 统一走 `app(PaymentGateway::class)` 包装（便于测试替换，**勿用 `Pay::` 静态**）
+
+### gate 与本地公钥就绪条件对称（防误配）
+
+`wechatSerial()` 发头 gate = `publicKeyId` + `publicKey` **俱全**，与 `getPayConfig` 注册本地公钥到 `wechat_public_cert_path` 的条件逐字对称。**只填 ID 未填公钥内容时不发头** —— 否则微信用公钥签应答，本地却无公钥、回退下载 `v3/certificates` 只返平台证书（永不含 `PUB_KEY_ID`）→ 验签失败。漏配时不发头 = 应答留平台证书、本地可验、保持可用。
+
+### 验签兼容（平台证书签 + 公钥签都能验）
+
+回调 / 应答验签同源 SDK `verify_wechat_sign`：读响应头 `Wechatpay-Serial` → 在 `wechat_public_cert_path` 找 → 命中公钥直接验 / 找不到回退 `GET v3/certificates` 下载平台证书验。故切换期两种签名都能验，满足微信「兼容验签」要求。
+
+### 配置与运维流程
+
+- 配置项：`system_setting` 的 `wechat.publicKeyId` + `wechat.publicKey`（base64），`PaymentConfigTrait` 注入 `wechat_public_cert_path[publicKeyId]=公钥文件`
+- 切换流程：① 后台发起灰度 → ② 等回调进度 100%（约 7 天）→ ③ 部署带公钥头改动 → ④ 应答进度上升（近 7 天窗口，需几天到 100%）→ ⑤ 后台「确认切换」、停用平台证书
+- 改支付配置后需 `config:clear`（走 `pay_config_*` cache）
+
 ## 安全补强
 
 ### 邮件验证码防爆破（VerifyCodeRateLimiter）

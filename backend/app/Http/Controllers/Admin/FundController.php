@@ -8,9 +8,9 @@ use App\Http\Requests\Fund\StoreRequest;
 use App\Http\Requests\Fund\UpdateRequest;
 use App\Http\Traits\PaymentConfigTrait;
 use App\Models\Fund;
+use App\Services\Payment\PaymentGateway;
 use Illuminate\Support\Facades\DB;
 use Throwable;
-use Yansongda\Pay\Pay;
 
 /**
  * 资金管理
@@ -284,7 +284,7 @@ class FundController extends BaseController
 
         if ($fund->pay_method === 'alipay') {
             $this->getPayConfig('alipay');
-            $order = Pay::alipay()->query(['out_trade_no' => $fund->id]);
+            $order = app(PaymentGateway::class)->alipay()->query(['out_trade_no' => $fund->id]);
             if ($order['trade_status'] === 'TRADE_SUCCESS' || $order['trade_status'] === 'TRADE_FINISHED') {
                 $pay_sn = $order['trade_no'];
             }
@@ -292,7 +292,7 @@ class FundController extends BaseController
 
         if ($fund->pay_method === 'wechat') {
             $this->getPayConfig('wechat');
-            $order = Pay::wechat()->query(['out_trade_no' => $fund->id]);
+            $order = app(PaymentGateway::class)->wechat()->query(array_merge(['out_trade_no' => $fund->id], $this->wechatSerial()));
             if ($order['trade_state'] === 'SUCCESS') {
                 $pay_sn = $order['transaction_id'];
             }

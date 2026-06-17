@@ -287,3 +287,40 @@ test('未认证用户无法访问资金管理', function () {
 
     $response->assertUnauthorized();
 });
+
+test('检查充值状态-微信查单带 Wechatpay-Serial 公钥序列号', function () {
+    setWechatPublicKeyId('PUB_KEY_ID_TEST_0001');
+    $fund = Fund::factory()->create([
+        'user_id' => $this->user->id,
+        'type' => 'addfunds',
+        'pay_method' => 'wechat',
+        'status' => 0,
+    ]);
+
+    $captured = mockPayCapture();
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/fund/check/$fund->id")
+        ->assertOk();
+
+    expect($captured->query)->not->toBeNull();
+    expect($captured->query['_serial_no'] ?? null)->toBe('PUB_KEY_ID_TEST_0001');
+});
+
+test('检查充值状态-支付宝查单走标准 PaymentGateway 配置', function () {
+    $fund = Fund::factory()->create([
+        'user_id' => $this->user->id,
+        'type' => 'addfunds',
+        'pay_method' => 'alipay',
+        'status' => 0,
+    ]);
+
+    $captured = mockPayCapture();
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/fund/check/$fund->id")
+        ->assertOk();
+
+    expect($captured->alipayQuery)->not->toBeNull();
+    expect($captured->alipayQuery['out_trade_no'] ?? null)->toBe($fund->id);
+});

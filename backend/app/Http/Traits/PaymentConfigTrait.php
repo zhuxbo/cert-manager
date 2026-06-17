@@ -188,4 +188,25 @@ trait PaymentConfigTrait
             }
         }
     }
+
+    /**
+     * 微信支付公钥序列号请求头参数。
+     *
+     * 配置了微信支付公钥（publicKeyId + publicKey 俱全）时，给微信 v3 请求注入 _serial_no，
+     * yansongda 据此设置 Wechatpay-Serial 请求头，微信端遂以公钥签名应答，
+     * 推进商户后台「应答使用公钥比例」直至可完成验签方式切换。
+     *
+     * 发头条件与 getPayConfig 注册本地公钥的条件对称（二者俱全）：仅填 publicKeyId
+     * 未填 publicKey 内容时本地无公钥可验签，若发头会让应答切公钥却验签失败，故此时
+     * 返回空数组不发头（应答仍用平台证书、本地可验、保持可用）。未配置时同样回退，
+     * 行为与切换前一致。
+     */
+    protected function wechatSerial(): array
+    {
+        $wechat = get_system_setting('wechat');
+
+        return (! empty($wechat['publicKeyId']) && ! empty($wechat['publicKey']))
+            ? ['_serial_no' => $wechat['publicKeyId']]
+            : [];
+    }
 }

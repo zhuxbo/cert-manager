@@ -4,17 +4,19 @@ namespace App\Http\Controllers\User;
 
 use App\Bootstrap\ApiExceptions;
 use App\Http\Requests\Fund\IndexRequest;
+use App\Http\Traits\PaymentConfigTrait;
 use App\Models\Fund;
-use App\Models\Setting;
+use App\Services\Payment\PaymentGateway;
 use Illuminate\Support\Facades\DB;
 use Throwable;
-use Yansongda\Pay\Pay;
 
 /**
  * 资金管理
  */
 class FundController extends BaseController
 {
+    use PaymentConfigTrait;
+
     public function __construct()
     {
         parent::__construct();
@@ -96,18 +98,16 @@ class FundController extends BaseController
         }
 
         if ($fund->pay_method === 'alipay') {
-            $config = Setting::getByGroupName('alipay');
-            Pay::config($config);
-            $order = Pay::alipay()->query(['out_trade_no' => $fund->id]);
+            $this->getPayConfig('alipay');
+            $order = app(PaymentGateway::class)->alipay()->query(['out_trade_no' => $fund->id]);
             if ($order['trade_status'] === 'TRADE_SUCCESS' || $order['trade_status'] === 'TRADE_FINISHED') {
                 $pay_sn = $order['trade_no'];
             }
         }
 
         if ($fund->pay_method === 'wechat') {
-            $config = Setting::getByGroupName('wechat');
-            Pay::config($config);
-            $order = Pay::wechat()->query(['out_trade_no' => $fund->id]);
+            $this->getPayConfig('wechat');
+            $order = app(PaymentGateway::class)->wechat()->query(array_merge(['out_trade_no' => $fund->id], $this->wechatSerial()));
             if ($order['trade_state'] === 'SUCCESS') {
                 $pay_sn = $order['transaction_id'];
             }
