@@ -23,6 +23,8 @@ class IndexRequest extends BaseRequest
             'balance' => 'nullable|array|size:2',
             'balance.*' => 'nullable|numeric',
             'credit_limit' => 'nullable|numeric|min:0',
+            'sort_prop' => 'nullable|string|in:id,balance,credit_limit,created_at',
+            'sort_order' => 'nullable|string|in:asc,desc',
         ];
     }
 }

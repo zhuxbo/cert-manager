@@ -13,6 +13,8 @@ export interface IndexParams {
   created_at?: [string, string];
   balance?: [string | null, string | null];
   credit_limit?: number;
+  sort_prop?: string;
+  sort_order?: string;
 }
 
 /** 获取用户列表 */

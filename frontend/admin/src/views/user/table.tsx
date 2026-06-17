@@ -56,7 +56,8 @@ export const useUserTable = () => {
     {
       label: "余额",
       prop: "balance",
-      minWidth: 100
+      minWidth: 100,
+      sortable: "custom"
     },
     {
       label: "信用额度",

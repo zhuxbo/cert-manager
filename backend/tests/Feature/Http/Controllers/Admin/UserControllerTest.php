@@ -169,3 +169,24 @@ test('未认证用户无法访问用户管理', function () {
 
     $response->assertUnauthorized();
 });
+
+test('管理员可以按余额升序排序用户列表', function () {
+    User::factory()->create(['balance' => 100]);
+    User::factory()->create(['balance' => 300]);
+    User::factory()->create(['balance' => 200]);
+
+    $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/user?sort_prop=balance&sort_order=asc');
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    $items = $response->json('data.items');
+    expect(count($items))->toBe(3);
+    expect((float) $items[0]['balance'])->toBeLessThanOrEqual((float) $items[1]['balance']);
+    expect((float) $items[1]['balance'])->toBeLessThanOrEqual((float) $items[2]['balance']);
+});
+
+test('非法 sort_prop 被 validation 拒绝', function () {
+    $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/user?sort_prop=password');
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($response->json('errors.sort_prop'))->not->toBeNull();
+});
