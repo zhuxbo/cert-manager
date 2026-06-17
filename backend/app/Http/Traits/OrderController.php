@@ -97,6 +97,16 @@ trait OrderController
     }
 
     /**
+     * 标记订单为已续费（renewed 终态，到期前 30 天内可用）
+     *
+     * @throws Throwable
+     */
+    public function markRenewed(int $id): void
+    {
+        $this->action->markRenewed($id);
+    }
+
+    /**
      * 备注订单
      */
     public function remark(int $id): void

@@ -10,6 +10,7 @@ use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Order\Api\Api;
+use Illuminate\Support\Carbon;
 use Tests\Traits\ActsAsUser;
 use Tests\Traits\CreatesTestData;
 use Tests\Traits\MocksExternalApis;
@@ -636,4 +637,110 @@ test('取消订单-不能取消其他用户的订单（UserScope 越权拒绝）
     // 越权未生效：他人订单仍 active，未生成 cancel 任务
     expect($otherCert->fresh()->status)->toBe('active')
         ->and(Task::where('order_id', $otherOrder->id)->where('action', 'cancel')->count())->toBe(0);
+});
+
+// ==================== 标记已续费（mark-renewed）====================
+//
+// renewed 是终态：手工标记后订单不再自动续费/到期提醒，sync 终态守卫防上游复活。
+// 这些用例真实执行 Action::markRenewed（不 mock），验证锁内二次校验：
+//   - 仅 active 证书可标记；
+//   - 仅到期前 30 天内且未过期可标记；
+//   - UserScope 越权边界。
+
+/**
+ * 造一个 user 名下 active 证书订单，可指定 expires_at（到期窗口校验依赖此字段）。
+ */
+function createUserActiveOrder(User $user, Product $product, ?Carbon $expiresAt = null): array
+{
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => $expiresAt ?? now()->addDays(25),
+    ]);
+
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    return [$order, $cert];
+}
+
+test('标记已续费-active + 到期前 25 天成功标记为 renewed', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$order, $cert] = createUserActiveOrder($user, $product, now()->addDays(25));
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // 状态确为 renewed（终态）
+    expect($cert->fresh()->status)->toBe('renewed');
+});
+
+test('标记已续费-active + 到期 40 天后被拒（超 30 天），状态不变', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$order, $cert] = createUserActiveOrder($user, $product, now()->addDays(40));
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect($cert->fresh()->status)->toBe('active');
+});
+
+test('标记已续费-已过期证书被拒，状态不变', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    // active 但 expires_at 已是过去（手工造越窗数据）
+    [$order, $cert] = createUserActiveOrder($user, $product, now()->subDay());
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect($cert->fresh()->status)->toBe('active');
+});
+
+test('标记已续费-非 active（pending）证书被拒，状态不变', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'pending',
+        'expires_at' => now()->addDays(25),
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect($cert->fresh()->status)->toBe('pending');
+});
+
+test('标记已续费-不能标记其他用户的订单（UserScope 越权拒绝）', function () {
+    $user = $this->createTestUser();
+    $otherUser = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$otherOrder, $otherCert] = createUserActiveOrder($otherUser, $product, now()->addDays(25));
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/mark-renewed/$otherOrder->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    // 越权未生效：他人订单仍 active
+    expect($otherCert->fresh()->status)->toBe('active');
 });

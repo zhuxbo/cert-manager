@@ -134,6 +134,11 @@ export function revokeCancel(id: number): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, any>(`/order/revoke-cancel/${id}`);
 }
 
+/** 标记订单为已续费 */
+export function markRenewed(id: number): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, any>(`/order/mark-renewed/${id}`);
+}
+
 /** 备注订单 */
 export function remark(id: number, remark: string): Promise<BaseResponse> {
   return http.post<BaseResponse<null>, any>(`/order/remark/${id}`, {

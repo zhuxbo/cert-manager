@@ -897,6 +897,51 @@ class Action
     }
 
     /**
+     * 手工标记订单为「已续费」（renewed 终态）
+     *
+     * 用于用户在别处已续费、不想再被本系统自动续费/到期提醒的场景。
+     * renewed 是终态：标记后该订单不再自动续费、不再到期提醒；sync 终态守卫（::577）
+     * 防止上游滞后状态把已 renewed 的订单复活为 active。
+     *
+     * 并发安全：与 commitCancel/cancel/sync 串行化（共用 order 行锁），防止
+     * 「标记 renewed 时订单正被 sync/cancel 改状态」的并发错乱。本路径不涉及资金流水
+     * （不建 Transaction、不改 balance），故无需锁 user 行，仅锁 order/cert。
+     *
+     * 校验全部放在【锁内二次校验】（锁外校验会被并发绕过）：
+     *   - 仅 active 证书可标记；
+     *   - 仅到期前 30 天内且未过期可标记（与前端 gate 对齐，避免点了必报错）。
+     */
+    public function markRenewed(int $id): void
+    {
+        DB::transaction(function () use ($id) {
+            // 锁 order（同 commitCancel 的项目约定：whereHas('latestCert')->lock()）。
+            // UserScope 全局作用域在此生效：User 端非本人订单会被滤掉 → find 返回 null。
+            $order = Order::with(['latestCert'])
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($id);
+
+            if (! $order) {
+                $this->error('订单不存在或无权操作');
+            }
+
+            // 锁内二次校验，拦住并发改状态（sync/cancel）后的窗口竞争
+            $cert = $order->latestCert;
+            $cert->status !== 'active' && $this->error('仅签发成功的证书可标记为已续费');
+
+            $expiresAt = $cert->expires_at;
+            if (! $expiresAt || $expiresAt->isPast() || $expiresAt->gt(now()->addDays(30))) {
+                $this->error('仅到期前 30 天内且未过期的证书可标记为已续费');
+            }
+
+            $cert->update(['status' => 'renewed']);
+        });
+
+        // success 必须在事务闭包之外：它抛 ApiResponseException 会触发回滚
+        $this->success();
+    }
+
+    /**
      * 撤回取消
      *
      * 设计说明：状态统一恢复为 approving，同时创建 sync 任务，

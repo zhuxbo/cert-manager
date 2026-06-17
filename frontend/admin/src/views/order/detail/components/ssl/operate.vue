@@ -36,6 +36,9 @@
           divided
           >{{ "续费" }}</el-dropdown-item
         >
+        <el-dropdown-item v-if="allowMarkRenewed" command="markRenewed">{{
+          "标记已续费"
+        }}</el-dropdown-item>
         <el-dropdown-item
           v-if="['active', 'expired'].includes(cert.status)"
           command="reissue"
@@ -132,6 +135,16 @@ const allowCancel = computed(() => {
   );
 });
 
+// 标记已续费：仅 active 且到期前 30 天内（未过期且 ≤30 天）显示，与后端 gate 对齐
+const allowMarkRenewed = computed(() => {
+  const c = order.latest_cert;
+  if (c.status !== "active" || !c.expires_at) {
+    return false;
+  }
+  const expires = dayjs(c.expires_at);
+  return expires.isAfter(dayjs()) && expires.diff(dayjs(), "day") <= 30;
+});
+
 // 打开操作抽屉
 const { action, openAction } = useOrderAction();
 
@@ -157,6 +170,9 @@ const orderOperate = (command: string) => {
       break;
     case "revokeCancel":
       revokeCancel();
+      break;
+    case "markRenewed":
+      markRenewed();
       break;
     case "renew":
       openAction("renew", order.id);
@@ -222,6 +238,26 @@ const revokeCancel = () => {
     OrderApi.show(order.id).then(res => {
       res.data.sync = buildUUID();
       Object.assign(order, reactive(res.data));
+    });
+  });
+};
+const markRenewed = () => {
+  ElMessageBox.confirm(
+    "标记后该订单将不再自动续费、不再到期提醒，且无法撤回。确认已在别处续费？",
+    "标记已续费",
+    {
+      confirmButtonText: "确定",
+      cancelButtonText: "返回",
+      type: "warning",
+      draggable: true
+    }
+  ).then(() => {
+    OrderApi.markRenewed(order.id).then(() => {
+      message("标记已续费成功", { type: "success" });
+      OrderApi.show(order.id).then(res => {
+        res.data.sync = buildUUID();
+        Object.assign(order, reactive(res.data));
+      });
     });
   });
 };
