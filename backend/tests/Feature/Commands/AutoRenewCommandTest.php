@@ -100,7 +100,7 @@ test('有重签订单时处理重签逻辑', function () {
     $this->artisan('schedule:auto-renew')->assertSuccessful();
 });
 
-test('委托检查失败时跳过订单', function () {
+test('委托检查失败时跳过订单（节点窗口内发失败通知）', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
     $order = Order::factory()->create([
@@ -113,7 +113,7 @@ test('委托检查失败时跳过订单', function () {
 
     $cert = Cert::factory()->active()->create([
         'order_id' => $order->id,
-        'expires_at' => now()->addDays(3),
+        'expires_at' => now()->addDays(3), // 节点窗口 [now+2, now+3] 内
         'amount' => '100.00',
         'channel' => 'web',
     ]);
@@ -122,8 +122,80 @@ test('委托检查失败时跳过订单', function () {
     $this->autoRenewService->shouldReceive('checkDelegationValidity')
         ->andReturn(false);
 
+    // 无委托 + 节点窗口内 → 应发 auto_renew_failed（避免被 ExpireCommand 排除后两头空）
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(function ($intent) {
+            return $intent->code === 'auto_renew_failed'
+                && str_contains($intent->context['reason'] ?? '', '委托');
+        }));
+
     $this->artisan('schedule:auto-renew')
         ->expectsOutputToContain('跳过')
+        ->assertSuccessful();
+});
+
+test('委托检查失败但不在节点窗口 → 不发失败通知（节点 gate，避免每日重复）', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5), // 非节点（节点为 14/7/3/1）
+        'amount' => '100.00',
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')
+        ->andReturn(false);
+
+    // 非节点窗口：不应发任何通知
+    $this->notificationCenter->shouldNotReceive('dispatch');
+
+    $this->artisan('schedule:auto-renew')
+        ->expectsOutputToContain('跳过')
+        ->assertSuccessful();
+});
+
+test('域名含 IP 且在节点窗口 → 发失败通知（含 IP 不漏发，去重铁律 A）', function () {
+    $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(7), // 节点窗口 [now+6, now+7] 内
+        'alternative_names' => '8.8.8.8',
+        'common_name' => '8.8.8.8',
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    // IP 跳过不会调委托检查
+    $this->autoRenewService->shouldNotReceive('checkDelegationValidity');
+
+    // 含 IP 无法自动续签，但在节点窗口 → 应发 auto_renew_failed（reason 提及 IP）
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(function ($intent) {
+            return $intent->code === 'auto_renew_failed'
+                && str_contains($intent->context['reason'] ?? '', 'IP');
+        }));
+
+    $this->artisan('schedule:auto-renew')
+        ->expectsOutputToContain('域名包含 IP 地址')
         ->assertSuccessful();
 });
 

@@ -240,9 +240,28 @@ test('will auto reissue execute falls back to user setting', function () {
     expect($result)->toBeTrue();
 });
 
-test('will auto reissue execute returns false when product disabled', function () {
+test('will auto reissue execute returns true when product disabled but reissue enabled', function () {
+    // 重签不限产品 status：产品禁用（status=0）但 reissue=1 仍应重签，与 getReissueOrders 只查 reissue==1 对齐
     $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
-    $product = $this->createTestProduct(['status' => 0]); // 产品禁用
+    $product = $this->createTestProduct(['status' => 0, 'reissue' => 1]); // 产品禁用但允许重签
+    $order = $this->createTestOrder($user, $product, [
+        'auto_reissue' => true,
+        'period_till' => now()->addDays(30),
+    ]);
+    $this->createTestCert($order, [
+        'channel' => 'api',
+        'expires_at' => now()->addDays(10),
+    ]);
+
+    $order->refresh();
+    $result = $this->service->willAutoReissueExecute($order, $user);
+
+    expect($result)->toBeTrue();
+});
+
+test('will auto reissue execute returns false when product reissue disabled', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'reissue' => 0]); // 产品不支持重签
     $order = $this->createTestOrder($user, $product, [
         'auto_reissue' => true,
         'period_till' => now()->addDays(30),

@@ -99,28 +99,48 @@ test('orders 为空 → 返回 null', function () {
     expect($builder->build($intent, buildMockUser()))->toBeNull();
 });
 
-test('委托有效（自动任务会执行 + 委托 OK）→ 全部 skip 返回 null', function () {
+test('自动续签会执行的非 api 订单 → 全部 skip 返回 null（交由 auto_renew_failed 提醒，去重）', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class);
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
-    $autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
-    $orders = new Collection([buildMockOrder(['common_name' => 'a.com'])]);
+    // channel=web（非 api）+ willAutoRenew=true → 会被 AutoRenewCommand 处理 → 排除
+    $orders = new Collection([buildMockOrder(['common_name' => 'a.com', 'channel' => 'web'])]);
     $builder = buildPartialBuilder($autoRenewService, $orders);
     $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
 
     expect($builder->build($intent, buildMockUser()))->toBeNull();
 });
 
-test('委托无效（自动任务会执行但委托 fail）→ has_delegation_issue=true', function () {
+test('自动续签会执行的非 api 订单即使委托未配置也排除（不再按委托细分，避免与 auto_renew_failed 双发）', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class);
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
-    $autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(false);
+    // checkDelegationValidity 不应再被 builder 调用（去重已不依赖委托判断）
+    $autoRenewService->shouldNotReceive('checkDelegationValidity');
 
     $orders = new Collection([buildMockOrder([
         'common_name' => 'invalid.com',
         'expires_at' => now()->addDays(7),
+        'channel' => 'web',
+    ])]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    // 委托有效性不再影响 builder：会被 AutoRenewCommand 处理的非 api 订单一律排除 → null
+    expect($builder->build($intent, buildMockUser()))->toBeNull();
+});
+
+test('api channel 订单即使 willAutoRenew=true 也不排除（AutoRenewCommand 不处理 api，照常发 cert_expire 防漏发）', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    // 即便判定会执行，api channel 在 AutoRenewCommand getRenewOrders 已被排除，故 ExpireCommand/Builder 不能排除
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+
+    $orders = new Collection([buildMockOrder([
+        'common_name' => 'api-order.com',
+        'expires_at' => now()->addDays(7),
+        'channel' => 'api',
     ])]);
     $builder = buildPartialBuilder($autoRenewService, $orders);
     $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
@@ -128,16 +148,9 @@ test('委托无效（自动任务会执行但委托 fail）→ has_delegation_is
     $result = $builder->build($intent, buildMockUser());
 
     expect($result)->toBeInstanceOf(NotificationPayload::class);
-    expect($result->data['has_delegation_issue'])->toBeTrue();
     expect($result->data['certificates'])->toHaveCount(1);
-    expect($result->data['certificates'][0]['domain'])->toBe('invalid.com');
-    expect($result->data['certificates'][0]['delegation_status'])->toBe('invalid');
-    expect($result->data['site_name'])->toBe('SSL证书管理系统');
-    expect($result->data['email'])->toBe('user@example.com');
-    expect($result->data['username'])->toBe('testuser');
-    // _meta 结构守护：与 FinanceAudit/TaskFailed/CertIssued 对齐，MailChannel 据此读 subject + is_html
-    expect($result->data['_meta']['subject'])->toContain('SSL证书到期提醒');
-    expect($result->data['_meta']['is_html'])->toBeTrue();
+    expect($result->data['certificates'][0]['domain'])->toBe('api-order.com');
+    expect($result->data['certificates'][0]['delegation_status'])->toBe('need_renew');
 });
 
 test('自动任务不会执行 → 加入通知列表，delegation_status=need_renew', function () {
@@ -148,6 +161,7 @@ test('自动任务不会执行 → 加入通知列表，delegation_status=need_r
     $orders = new Collection([buildMockOrder([
         'common_name' => 'manual.com',
         'expires_at' => now()->addDays(3),
+        'channel' => 'web',
     ])]);
     $builder = buildPartialBuilder($autoRenewService, $orders);
     $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
@@ -159,6 +173,12 @@ test('自动任务不会执行 → 加入通知列表，delegation_status=need_r
     expect($result->data['certificates'])->toHaveCount(1);
     expect($result->data['certificates'][0]['domain'])->toBe('manual.com');
     expect($result->data['certificates'][0]['delegation_status'])->toBe('need_renew');
+    expect($result->data['site_name'])->toBe('SSL证书管理系统');
+    expect($result->data['email'])->toBe('user@example.com');
+    expect($result->data['username'])->toBe('testuser');
+    // _meta 结构守护：与 FinanceAudit/TaskFailed/CertIssued 对齐，MailChannel 据此读 subject + is_html
+    expect($result->data['_meta']['subject'])->toContain('SSL证书到期提醒');
+    expect($result->data['_meta']['is_html'])->toBeTrue();
 });
 
 test('intent.context.email 为空时回落 notifiable.email', function () {

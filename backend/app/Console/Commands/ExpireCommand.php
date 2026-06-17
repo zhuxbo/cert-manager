@@ -2,16 +2,20 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Commands\Concerns\ExpireNotifyWindow;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
+use App\Services\Order\AutoRenewService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 class ExpireCommand extends Command
 {
+    use ExpireNotifyWindow;
+
     /**
      * The name and signature of the console command.
      *
@@ -48,23 +52,36 @@ class ExpireCommand extends Command
             ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '<', now()))
             ->update(['status' => 'expired']);
 
-        // 到期通知时间窗口查询条件（第 14/7/3/1 天当天）
-        $expireWindowQuery = function ($query) {
+        // 到期通知时间窗口查询条件（第 14/7/3/1 天当天，节点来自 ExpireNotifyWindow 单一源）
+        $windows = $this->expireNotifyWindows();
+        $expireWindowQuery = function ($query) use ($windows) {
             $query->where('status', 'active')
-                ->where(function ($query) {
-                    $query->whereBetween('expires_at', [now()->addDays(13), now()->addDays(14)])
-                        ->orWhereBetween('expires_at', [now()->addDays(6), now()->addDays(7)])
-                        ->orWhereBetween('expires_at', [now()->addDays(2), now()->addDays(3)])
-                        ->orWhereBetween('expires_at', [now(), now()->addDays(1)]);
+                ->where(function ($query) use ($windows) {
+                    foreach ($windows as $i => [$start, $end]) {
+                        $i === 0
+                            ? $query->whereBetween('expires_at', [$start, $end])
+                            : $query->orWhereBetween('expires_at', [$start, $end]);
+                    }
                 })
                 ->orderBy('expires_at');
         };
 
-        // 传统订单到期用户
-        $user_ids = Order::whereHas('latestCert', $expireWindowQuery)
+        // 取出窗口内订单（预加载防 N+1），PHP filter 排除"会被自动续签/重签妥善处理"的订单 —
+        // 这些订单交由 AutoRenewCommand 提醒（失败时发 auto_renew_failed），避免用户收到两封冗余邮件。
+        // 排除条件须与 AutoRenewCommand 实际处理范围精确对齐（铁律：少排除安全、多排除漏发）：
+        //   - API channel 订单：AutoRenewCommand 不处理（下游控制），故 ExpireCommand 不排除（照常发 cert_expire）
+        //   - 其余 willAutoRenewExecute||willAutoReissueExecute 为真的订单：AutoRenewCommand 会处理并在失败时发通知，排除
+        $autoRenewService = app(AutoRenewService::class);
+        $orders = Order::with(['latestCert', 'user', 'product'])
+            ->whereHas('latestCert', $expireWindowQuery)
+            ->get();
+
+        $user_ids = $orders
+            ->reject(fn (Order $order) => $this->willBeHandledByAutoRenew($order, $autoRenewService))
             ->pluck('user_id')
             ->unique()
-            ->toArray();
+            ->values()
+            ->all();
 
         $this->info(get_system_setting('site', 'name', 'SSL证书管理系统'));
         $notificationCenter = app(NotificationCenter::class);
@@ -87,6 +104,33 @@ class ExpireCommand extends Command
         // 清理终态证书的敏感材料：已到期/吊销/取消/被续期重签/失败的 CSR、私钥、证书串
         // 业务已无保留价值，提前清理可缩小备份脱敏成本与泄露面
         $this->purgeTerminalCertMaterial();
+    }
+
+    /**
+     * 判断订单是否会被 AutoRenewCommand 妥善处理（成功续签/重签 或 失败时发 auto_renew_failed）。
+     *
+     * 为真则 ExpireCommand 不发 cert_expire（交给 AutoRenewCommand 提醒，去重）。
+     * 与 AutoRenewCommand::getRenewOrders/getReissueOrders 处理范围对齐：
+     *   - 关系缺失（无 cert/user/product）：返回 false（不排除，安全兜底）
+     *   - API channel：AutoRenewCommand 跳过，返回 false（不排除，照常发 cert_expire，避免两头空）
+     *   - 其余 willAutoRenewExecute||willAutoReissueExecute：返回其结果
+     */
+    private function willBeHandledByAutoRenew(Order $order, AutoRenewService $autoRenewService): bool
+    {
+        $cert = $order->latestCert;
+        $user = $order->user;
+
+        if ($cert === null || $user === null || $order->product === null) {
+            return false;
+        }
+
+        // API channel 订单由下游系统自行续费/重签，AutoRenewCommand 不处理（getRenewOrders/getReissueOrders 已 channel != api 过滤）
+        if ($cert->channel === 'api') {
+            return false;
+        }
+
+        return $autoRenewService->willAutoRenewExecute($order, $user)
+            || $autoRenewService->willAutoReissueExecute($order, $user);
     }
 
     /**

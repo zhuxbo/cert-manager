@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Commands\Concerns\ExpireNotifyWindow;
 use App\Exceptions\ApiResponseException;
 use App\Models\Order;
 use App\Services\Notification\DTOs\NotificationIntent;
@@ -16,6 +17,8 @@ use Throwable;
 
 class AutoRenewCommand extends Command
 {
+    use ExpireNotifyWindow;
+
     protected $signature = 'schedule:auto-renew';
 
     // 注意：不处理 ACME 订单。ACME 续签由客户端（certbot）主动发起，服务端不主动续费/重签
@@ -151,20 +154,23 @@ class AutoRenewCommand extends Command
         $this->info("处理订单 #{$order->id} ($action): $cert->common_name");
 
         // 域名包含 IP 地址时跳过（IP 证书不支持委托验证，无法自动续签）
+        // 仍发失败通知（节点 gate），与 ExpireCommand 去重对齐：会被本命令处理的订单一律由本命令提醒
         $domains = explode(',', $cert->alternative_names);
         foreach ($domains as $domain) {
             $type = DomainUtil::getType(trim($domain));
             if ($type === 'ipv4' || $type === 'ipv6') {
                 $this->warn("订单 #{$order->id} 跳过：域名包含 IP 地址");
+                $this->sendFailureNotification($order, $action, '域名包含 IP 地址，无法自动续签，请手动续期');
 
                 return;
             }
         }
 
-        // 检查委托有效性，无有效委托则跳过
+        // 检查委托有效性，无有效委托则跳过（同样发失败通知，纳入节点 gate）
         $ca = strtolower($product->ca ?? '');
         if (! $this->checkDelegationValidity($user->id, $cert->alternative_names, $ca)) {
             $this->warn("订单 #{$order->id} 跳过：无有效委托记录");
+            $this->sendFailureNotification($order, $action, '部分域名 CNAME 委托未配置或验证未通过，已跳过');
 
             return;
         }
@@ -253,12 +259,20 @@ class AutoRenewCommand extends Command
 
     /**
      * 发送失败通知
+     *
+     * 节点 gate：仅当订单当前证书 expires_at 落在到期通知节点窗口（14/7/3/1，与 ExpireCommand 同源）才发，
+     * 避免到期前每天重复发送失败邮件。不在节点窗口直接跳过。
      */
     private function sendFailureNotification(Order $order, string $action, string $reason): void
     {
         $user = $order->user;
 
         if (! $user->email) {
+            return;
+        }
+
+        // 仅在到期通知节点发送（与 ExpireCommand 节点窗口一致，防每日重复）
+        if (! $this->isExpireNotifyNode($order->latestCert?->expires_at)) {
             return;
         }
 

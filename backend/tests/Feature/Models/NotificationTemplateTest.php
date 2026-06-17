@@ -2,6 +2,7 @@
 
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
+use Database\Seeders\NotificationTemplateSeeder;
 use Illuminate\Validation\ValidationException;
 
 test('模板渲染 Blade 变量', function () {
@@ -103,6 +104,44 @@ test('同一 code 不允许重复创建', function () {
     expect(fn () => NotificationTemplate::factory()->create([
         'code' => 'duplicate_test',
     ]))->toThrow(ValidationException::class);
+});
+
+test('seeder 创建 auto_renew_failed 模板并能渲染失败通知（续费）', function () {
+    (new NotificationTemplateSeeder)->run();
+
+    $template = NotificationTemplate::where('code', 'auto_renew_failed')->first();
+    expect($template)->not->toBeNull();
+    expect($template->status)->toBe(1);
+    expect($template->variables)->toContain('order_id')
+        ->and($template->variables)->toContain('action')
+        ->and($template->variables)->toContain('reason');
+
+    // 与 AutoRenewCommand::sendFailureNotification 实际 context 一致（DefaultBuilder 直通）
+    $html = $template->render([
+        'order_id' => 12345,
+        'action' => 'renew',
+        'reason' => '余额不足，可用余额: 0.00，预计需要: 100.00',
+    ]);
+
+    expect($html)->toContain('12345')
+        ->and($html)->toContain('续费') // action=renew → 友好标签
+        ->and($html)->toContain('余额不足')
+        ->and($html)->not->toContain('{{'); // Blade 全部渲染，无残留占位符
+});
+
+test('auto_renew_failed 模板对 action=reissue 渲染重签标签', function () {
+    (new NotificationTemplateSeeder)->run();
+
+    $template = NotificationTemplate::where('code', 'auto_renew_failed')->first();
+    $html = $template->render([
+        'order_id' => 999,
+        'action' => 'reissue',
+        'reason' => '部分域名 CNAME 委托未配置或验证未通过，已跳过',
+    ]);
+
+    expect($html)->toContain('重签')
+        ->and($html)->toContain('CNAME 委托')
+        ->and($html)->not->toContain('{{');
 });
 
 test('模板关联通知', function () {

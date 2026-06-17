@@ -232,6 +232,129 @@ test('刚标记为 expired 的证书在同一次执行中也会被清理敏感�
         ->and($cert->cert)->toBeNull();
 });
 
+test('去重：开启自动续费的非 api 订单不发 cert_expire（交给 AutoRenewCommand）', function () {
+    // 开 auto_renew + 非 api + period_till ≤15 天 → willAutoRenewExecute=true → ExpireCommand 排除
+    $user = User::factory()->create(['email' => 'auto@example.com']);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10), // ≤15 走续费
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(7), // 节点窗口内
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    // 被排除 → 不应发 cert_expire
+    $notificationCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
+test('去重：未开自动续费的订单照常发 cert_expire', function () {
+    $user = User::factory()->create([
+        'email' => 'manual@example.com',
+        'auto_settings' => ['auto_renew' => false, 'auto_reissue' => false],
+    ]);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => false,
+        'auto_reissue' => false,
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(7),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    // 未开 auto → 照常发
+    $notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'cert_expire'));
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
+test('去重铁律 B：api channel 即使开 auto 也照常发 cert_expire（AutoRenewCommand 不处理 api，防漏发）', function () {
+    // 开 auto_renew 但 channel=api → AutoRenewCommand getRenewOrders 排除它（不处理）
+    // → ExpireCommand 必须照常发，否则两头空（杀手场景）
+    $user = User::factory()->create(['email' => 'api@example.com']);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(7),
+        'channel' => 'api', // 下游控制
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    // api channel 不被排除 → 照常发 cert_expire
+    $notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'cert_expire'));
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
+test('去重：用户同时有 auto 订单和手动订单 → 仍发一次 cert_expire（手动订单未被排除）', function () {
+    $user = User::factory()->create(['email' => 'mix@example.com']);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+
+    // auto 订单（被排除）
+    $autoOrder = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10),
+    ]);
+    $autoCert = Cert::factory()->active()->create([
+        'order_id' => $autoOrder->id,
+        'expires_at' => now()->addDays(7),
+        'channel' => 'web',
+    ]);
+    $autoOrder->update(['latest_cert_id' => $autoCert->id]);
+
+    // 手动订单（未被排除）
+    $manualOrder = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => false,
+        'auto_reissue' => false,
+        'period_till' => now()->addDays(10),
+    ]);
+    $manualCert = Cert::factory()->active()->create([
+        'order_id' => $manualOrder->id,
+        'expires_at' => now()->addDays(3),
+        'channel' => 'web',
+    ]);
+    $manualOrder->update(['latest_cert_id' => $manualCert->id]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    // 同一用户去重 → 一次（因手动订单存在）
+    $notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'cert_expire' && $intent->notifiableId === $user->id));
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
 test('多个到期时间段的证书都会触发通知', function () {
     $user = User::factory()->create(['email' => 'test@example.com']);
     $product = Product::factory()->create();

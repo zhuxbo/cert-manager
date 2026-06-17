@@ -58,7 +58,7 @@ class AutoRenewService
      *
      * 条件：
      * - auto_reissue = true（订单级或用户级）
-     * - 产品 status=1
+     * - 产品 reissue=1（重签不限产品启用状态，产品禁用仍可重签，与 AutoRenewCommand::getReissueOrders 对齐）
      * - period_till - now() > 15天（订单剩余时间超过15天，走重签）
      */
     public function willAutoReissueExecute(Order $order, User $user): bool
@@ -69,9 +69,9 @@ class AutoRenewService
             return false;
         }
 
-        // 检查产品状态
+        // 检查产品是否支持重签（重签不限产品 status，仅看 reissue；与 getReissueOrders 只查 reissue==1 对齐）
         $product = $order->product;
-        if ($product->status != 1) {
+        if (! $product->reissue) {
             return false;
         }
 
