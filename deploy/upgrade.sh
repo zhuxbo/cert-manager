@@ -1522,6 +1522,19 @@ perform_upgrade() {
         log_info "已替换 web.conf 中的路径占位符"
     fi
 
+    # 确保 pre.conf 占位存在（新版 manager.conf 顶部 include 它；老系统 frontend/web 无此文件，缺失会致 nginx -t 失败 502）
+    if [ ! -f "$INSTALL_DIR/frontend/web/pre.conf" ]; then
+        if mkdir -p "$INSTALL_DIR/frontend/web" && cat >"$INSTALL_DIR/frontend/web/pre.conf" <<'PRE_CONF_EOF'; then
+# 自定义前置 nginx 配置（server 块内，置于默认路由之前）
+# 本文件在系统升级时不会被覆盖，可在此添加自定义 location / rewrite / header 等
+# 留空表示无自定义配置
+PRE_CONF_EOF
+            log_info "已创建 nginx 前置占位 pre.conf"
+        else
+            log_warning "创建 pre.conf 失败，Nginx reload 可能因 include 缺失而报错，请手动创建 $INSTALL_DIR/frontend/web/pre.conf"
+        fi
+    fi
+
     # 复制根目录版本配置（保留用户的 release_url）
     if [ -f "$src_dir/version.json" ]; then
         local old_release_url=""

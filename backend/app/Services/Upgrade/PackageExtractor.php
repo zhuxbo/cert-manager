@@ -459,7 +459,41 @@ class PackageExtractor
             Log::info("已替换 web.conf 中的 __PROJECT_ROOT__ 为 $projectRoot");
         }
 
+        // 确保 pre.conf 占位存在（新版 manager.conf 顶部 include 它；老系统 frontend/web 无此文件，
+        // 缺失会致后续宝塔/手工 nginx reload 因 include 失败而 502）。后台升级不 reload，但必须保证文件存在
+        $this->ensurePreConf();
+
         Log::info('已更新 nginx 配置');
+    }
+
+    /**
+     * 幂等创建 nginx 前置占位 pre.conf（缺失才创建，已存在不覆盖用户自定义）
+     *
+     * 占位注释文本须与 deploy/upgrade.sh、deploy/scripts/bt-install.sh 三处保持一致
+     */
+    protected function ensurePreConf(): void
+    {
+        $preConf = base_path('../frontend/web/pre.conf');
+        if (File::exists($preConf)) {
+            return;
+        }
+
+        $dir = dirname($preConf);
+        if (! File::isDirectory($dir)) {
+            File::makeDirectory($dir, 0755, true);
+        }
+
+        $placeholder = "# 自定义前置 nginx 配置（server 块内，置于默认路由之前）\n"
+            ."# 本文件在系统升级时不会被覆盖，可在此添加自定义 location / rewrite / header 等\n"
+            ."# 留空表示无自定义配置\n";
+
+        if (File::put($preConf, $placeholder) === false) {
+            Log::warning("创建 pre.conf 失败，Nginx reload 可能因 include 缺失而报错: $preConf");
+
+            return;
+        }
+
+        Log::info("已创建 nginx 前置占位 pre.conf: $preConf");
     }
 
     /**

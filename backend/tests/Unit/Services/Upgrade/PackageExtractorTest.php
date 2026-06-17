@@ -437,6 +437,75 @@ test('extract 合法升级包结构（含 Unix 普通文件属性）正常通过
     File::deleteDirectory($extractedPath);
 });
 
+// ==================== nginx 前置占位 pre.conf 幂等创建（防老系统升级后 reload 502） ====================
+
+test('applyNginxUpgrade 在 frontend/web 无 pre.conf 时创建占位（含注释）', function () {
+    // 升级源：仅 nginx/manager.conf 带新 include（不含 frontend/web —— 升级包本就不打包 web，模拟老系统）
+    $sourceDir = "$this->testDir/pkg/nginx";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/manager.conf", "include __PROJECT_ROOT__/frontend/web/pre.conf;\nlocation / { }\n");
+
+    // base_path 指向 $installDir/backend，使 base_path('..') == $installDir（applyNginxUpgrade 写 base_path('../nginx') 与 ../frontend/web）
+    $installDir = "$this->testDir/install";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory("$installDir/frontend/web", 0755, true); // 老系统已有 frontend/web 但无 pre.conf
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyNginxUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        $preConf = "$installDir/frontend/web/pre.conf";
+        expect($preConf)->toBeFile();
+        expect(File::get($preConf))->toContain('自定义前置 nginx 配置');
+        // manager.conf 已同步且占位符已替换为真实根
+        expect(File::get("$installDir/nginx/manager.conf"))->toContain("$installDir/frontend/web/pre.conf");
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('ensurePreConf 父目录缺失时创建目录与占位', function () {
+    // frontend/web 目录都不存在（全新/异常环境）
+    $installDir = "$this->testDir/install_nodir";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('ensurePreConf');
+        $method->invoke($this->extractor);
+
+        $preConf = "$installDir/frontend/web/pre.conf";
+        expect("$installDir/frontend/web")->toBeDirectory();
+        expect($preConf)->toBeFile();
+        expect(File::get($preConf))->toContain('留空表示无自定义配置');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('ensurePreConf 幂等：已存在则不覆盖用户自定义内容', function () {
+    $installDir = "$this->testDir/install_keep";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory("$installDir/frontend/web", 0755, true);
+    $preConf = "$installDir/frontend/web/pre.conf";
+    File::put($preConf, "location /custom { return 204; }\n"); // 用户已写的自定义配置
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('ensurePreConf');
+        $method->invoke($this->extractor);
+
+        // 不被占位注释覆盖
+        expect(File::get($preConf))->toBe("location /custom { return 204; }\n");
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
 /**
  * 创建测试用的有效升级包 ZIP
  */
