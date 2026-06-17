@@ -10,6 +10,7 @@ import {
 import type { FormRules } from "element-plus";
 import { message } from "@shared/utils";
 import ReRemoteSelect from "@shared/components/ReRemoteSelect";
+import { caOptionsAll } from "@/views/system/dictionary";
 import type { CnameGuideOptions } from "@/views/delegation/CnameGuide";
 
 export const useDelegationStore = (
@@ -60,16 +61,12 @@ export const useDelegationStore = (
         })
     },
     {
-      label: "委托前缀",
-      prop: "prefix",
+      label: "CA",
+      prop: "ca",
       valueType: "select",
-      options: [
-        { label: "_certum (Certum)", value: "_certum" },
-        { label: "_pki-validation (Sectigo)", value: "_pki-validation" },
-        { label: "_dnsauth (DigiCert/TrustAsia)", value: "_dnsauth" }
-      ],
+      options: caOptionsAll,
       fieldProps: {
-        placeholder: "请选择委托前缀",
+        placeholder: "请选择 CA",
         selectFirstOption: false
       }
     }
@@ -88,7 +85,7 @@ export const useDelegationStore = (
         trigger: "blur"
       }
     ],
-    prefix: [{ required: true, message: "请选择委托前缀", trigger: "change" }]
+    ca: [{ required: true, message: "请选择 CA", trigger: "change" }]
   };
 
   // 打开表单
@@ -142,7 +139,7 @@ export const useDelegationStore = (
   const batchStoreValues = ref<BatchStoreParams>({
     user_id: undefined,
     zones: "",
-    prefix: ""
+    ca: ""
   });
 
   const batchStoreColumns: PlusColumn[] = [
@@ -189,16 +186,12 @@ export const useDelegationStore = (
         )
     },
     {
-      label: "委托前缀",
-      prop: "prefix",
+      label: "CA",
+      prop: "ca",
       valueType: "select",
-      options: [
-        { label: "_certum (Certum)", value: "_certum" },
-        { label: "_pki-validation (Sectigo)", value: "_pki-validation" },
-        { label: "_dnsauth (DigiCert/TrustAsia)", value: "_dnsauth" }
-      ],
+      options: caOptionsAll,
       fieldProps: {
-        placeholder: "请选择委托前缀"
+        placeholder: "请选择 CA"
       }
     }
   ];
@@ -209,7 +202,7 @@ export const useDelegationStore = (
       { type: "number", min: 1, message: "用户ID必须大于0" }
     ],
     zones: [{ required: true, message: "请输入域名列表", trigger: "blur" }],
-    prefix: [{ required: true, message: "请选择委托前缀", trigger: "change" }]
+    ca: [{ required: true, message: "请选择 CA", trigger: "change" }]
   };
 
   function openBatchStoreForm() {
@@ -217,7 +210,7 @@ export const useDelegationStore = (
     batchStoreValues.value = {
       user_id: undefined,
       zones: "",
-      prefix: "_dnsauth"
+      ca: ""
     };
   }
 

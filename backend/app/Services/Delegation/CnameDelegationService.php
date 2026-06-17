@@ -85,28 +85,59 @@ class CnameDelegationService
     /**
      * 智能匹配委托记录（不检查 valid 状态，用于即时验证场景）
      *
-     * 仅匹配完整 FQDN : _dnsauth
-     * 优先匹配子域，未命中则回落到根域: _certum _pki-validation
+     * 行为完全由 CA 决定（经 ca_map 派生 prefix + exact）：
+     * - exact=true：仅匹配完整 FQDN（不做 www 归一化，拒绝回落根域）
+     * - exact=false：www 归一 + 子域优先 + 回落根域
      *
      * @param  int  $userId  用户ID
      * @param  string  $domain  域名（如 example.com 或 sub.example.com）
-     * @param  string  $prefix  委托前缀
+     * @param  string  $ca  CA 名称（不区分大小写）
      */
-    public function findDelegation(int $userId, string $domain, string $prefix): ?CnameDelegation
+    public function findDelegation(int $userId, string $domain, string $ca): ?CnameDelegation
     {
+        return $this->findByResolution($userId, $domain, $ca, false);
+    }
+
+    /**
+     * 智能匹配有效的委托记录（仅返回 valid=true）
+     *
+     * 行为完全由 CA 决定（经 ca_map 派生 prefix + exact），语义同 findDelegation。
+     *
+     * @param  int  $userId  用户ID
+     * @param  string  $domain  域名（如 example.com 或 sub.example.com）
+     * @param  string  $ca  CA 名称（不区分大小写）
+     */
+    public function findValidDelegation(int $userId, string $domain, string $ca): ?CnameDelegation
+    {
+        return $this->findByResolution($userId, $domain, $ca, true);
+    }
+
+    /**
+     * 按 CA 解析查找委托记录（统一查找内核，全 ca_map 驱动）
+     *
+     * 由 ca 派生 prefix + exact：
+     * - exact=true：只查完整 FQDN（zone=domain，不归一 www、不回落根域）
+     * - exact=false：www 归一 → 子域优先 → 回落根域
+     *
+     * @param  int  $userId  用户ID
+     * @param  string  $domain  域名（如 example.com 或 sub.example.com）
+     * @param  string  $ca  CA 名称（不区分大小写）
+     * @param  bool  $onlyValid  是否仅匹配 valid=true 的记录
+     */
+    private function findByResolution(int $userId, string $domain, string $ca, bool $onlyValid): ?CnameDelegation
+    {
+        $prefix = self::getDelegationPrefixForCa($ca);
+        $exact = $this->isExactForCa($ca);
+
         // 规范化域名，去掉通配符前缀
         $domain = ltrim(strtolower(DomainUtil::convertToUnicode($domain)), '*.');
 
-        // ACME/DigiCert: 仅匹配完整 FQDN（不做 www 归一化，保留精确匹配语义）
-        if ($prefix === '_dnsauth') {
-            return CnameDelegation::where([
-                'user_id' => $userId,
-                'zone' => $domain,
-                'prefix' => $prefix,
-            ])->first();
+        // exact：仅匹配完整 FQDN（不做 www 归一化、不回落根域）
+        if ($exact) {
+            return $this->findExact($userId, $domain, $prefix, $onlyValid);
         }
 
-        // _certum/_pki-validation 等回落前缀：www.根域名 直接去除 www，避免无意义的查询
+        // 非 exact：www.根域名 直接去除 www，避免无意义的查询
         if (str_starts_with($domain, 'www.')) {
             $stripped = substr($domain, 4);
             if (DomainUtil::getRootDomain($stripped) === $stripped) {
@@ -115,12 +146,7 @@ class CnameDelegationService
         }
 
         // 优先匹配子域
-        $delegation = CnameDelegation::where([
-            'user_id' => $userId,
-            'zone' => $domain,
-            'prefix' => $prefix,
-        ])->first();
-
+        $delegation = $this->findExact($userId, $domain, $prefix, $onlyValid);
         if ($delegation) {
             return $delegation;
         }
@@ -128,73 +154,36 @@ class CnameDelegationService
         // 回落到根域
         $rootDomain = DomainUtil::getRootDomain($domain);
         if ($rootDomain && $rootDomain !== $domain) {
-            return CnameDelegation::where([
-                'user_id' => $userId,
-                'zone' => $rootDomain,
-                'prefix' => $prefix,
-            ])->first();
+            return $this->findExact($userId, $rootDomain, $prefix, $onlyValid);
         }
 
         return null;
     }
 
     /**
-     * 智能匹配有效的委托记录
+     * 按精确 (zone, prefix) 对查找委托记录（无任何推断：不归一 www、不回落根域）
      *
-     * 仅匹配完整 FQDN : _dnsauth
-     * 优先匹配子域，未命中则回落到根域: _certum _pki-validation
+     * 用于已从 DCV host 解析出确切 zone+prefix 的场景（AutoDcvTxtService），
+     * 以及 findByResolution 内部按层查询。zone 一律按调用方传入的精确值匹配。
      *
      * @param  int  $userId  用户ID
-     * @param  string  $domain  域名（如 example.com 或 sub.example.com）
+     * @param  string  $zone  委托域（精确值，调用方负责规范化）
      * @param  string  $prefix  委托前缀
+     * @param  bool  $onlyValid  是否仅匹配 valid=true 的记录
      */
-    public function findValidDelegation(int $userId, string $domain, string $prefix): ?CnameDelegation
+    public function findExact(int $userId, string $zone, string $prefix, bool $onlyValid = false): ?CnameDelegation
     {
-        // 规范化域名，去掉通配符前缀
-        $domain = ltrim(strtolower(DomainUtil::convertToUnicode($domain)), '*.');
-
-        // ACME/DigiCert: 仅匹配完整 FQDN（不做 www 归一化，保留精确匹配语义）
-        if ($prefix === '_dnsauth') {
-            return CnameDelegation::where([
-                'user_id' => $userId,
-                'zone' => $domain,
-                'prefix' => $prefix,
-                'valid' => true,
-            ])->first();
-        }
-
-        // _certum/_pki-validation 等回落前缀：www.根域名 直接去除 www，避免无意义的查询
-        if (str_starts_with($domain, 'www.')) {
-            $stripped = substr($domain, 4);
-            if (DomainUtil::getRootDomain($stripped) === $stripped) {
-                $domain = $stripped;
-            }
-        }
-
-        // 优先匹配子域
-        $delegation = CnameDelegation::where([
+        $where = [
             'user_id' => $userId,
-            'zone' => $domain,
+            'zone' => $zone,
             'prefix' => $prefix,
-            'valid' => true,
-        ])->first();
+        ];
 
-        if ($delegation) {
-            return $delegation;
+        if ($onlyValid) {
+            $where['valid'] = true;
         }
 
-        // 回落到根域
-        $rootDomain = DomainUtil::getRootDomain($domain);
-        if ($rootDomain && $rootDomain !== $domain) {
-            return CnameDelegation::where([
-                'user_id' => $userId,
-                'zone' => $rootDomain,
-                'prefix' => $prefix,
-                'valid' => true,
-            ])->first();
-        }
-
-        return null;
+        return CnameDelegation::where($where)->first();
     }
 
     /**
@@ -295,15 +284,78 @@ class CnameDelegationService
     }
 
     /**
-     * 根据 CA 获取委托验证前缀
+     * 委托前缀白名单（从 config 派生：ca_map 全部 prefix + default prefix，去重）
+     *
+     * 单一来源供所有"前缀有效性校验"复用（请求验证、host 解析白名单等），
+     * 避免硬编码 `['_certum', '_pki-validation', '_dnsauth']` 在多处漂移。
+     *
+     * @return string[]
+     */
+    public static function supportedPrefixes(): array
+    {
+        return array_values(array_unique([
+            ...array_column(config('delegation.ca_map'), 'prefix'),
+            config('delegation.default.prefix'),
+        ]));
+    }
+
+    /**
+     * 根据 CA 获取委托验证前缀（config 驱动，未知 CA 回落 default）
+     *
+     * 注意：用 config() 的 dot 访问而非数组下标，避免未知 ca 触发 undefined-key warning。
+     * `false ?? x` 不回落、`null ?? x` 才回落——未知 ca（config 返回 null）才落 default。
      */
     public static function getDelegationPrefixForCa(string $ca): string
     {
-        return match (strtolower($ca)) {
-            'sectigo', 'comodo' => '_pki-validation',
-            'certum' => '_certum',
-            default => '_dnsauth',
-        };
+        return config('delegation.ca_map.'.strtolower($ca).'.prefix')
+            ?? config('delegation.default.prefix');
+    }
+
+    /**
+     * 根据 CA 判断是否精确匹配子域（config 驱动，未知 CA 回落 default）
+     *
+     * exact 是 CA 的属性而非 prefix 的属性：同一 prefix（如 _dnsauth）在不同 CA 下
+     * 要求可能不同（有的拒绝回落、有的允许）。一律以 ca_map 为准，禁止 prefix 推断。
+     *
+     * 注意：`false ?? x` 不回落、`null ?? x` 才回落——已配置的 ca（值为 false）按配置走，
+     * 仅未知 ca（config 返回 null）才落 default。
+     */
+    public function isExactForCa(string $ca): bool
+    {
+        return config('delegation.ca_map.'.strtolower($ca).'.exact')
+            ?? config('delegation.default.exact');
+    }
+
+    /**
+     * 根据 CA 确定创建委托时的 zone（创建期使用，全 ca_map 驱动）
+     *
+     * 规范化（去通配符、转 Unicode 小写）后：
+     * - exact=true：返回精确域名（不归一 www）
+     * - exact=false：www.根域 归一为根域后，返回根域（一条覆盖所有子域）
+     *
+     * @param  string  $domain  域名（如 example.com 或 sub.example.com）
+     * @param  string  $ca  CA 名称（不区分大小写）
+     */
+    public function resolveZone(string $domain, string $ca): string
+    {
+        // 规范化：去通配符前缀，转 Unicode 小写（与 findByResolution 保持一致）
+        $domain = strtolower(DomainUtil::convertToUnicode(ltrim($domain, '*.')));
+
+        // exact：精确域名，直接返回（不归一 www、不取根域）
+        if ($this->isExactForCa($ca)) {
+            return $domain;
+        }
+
+        // 非 exact：www.根域 归一为根域（条件与 findByResolution 完全一致）
+        if (str_starts_with($domain, 'www.')) {
+            $stripped = substr($domain, 4);
+            if (DomainUtil::getRootDomain($stripped) === $stripped) {
+                $domain = $stripped;
+            }
+        }
+
+        // 非 exact：使用根域
+        return DomainUtil::getRootDomain($domain) ?: $domain;
     }
 
     /**

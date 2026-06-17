@@ -380,7 +380,7 @@ test('check delegation validity returns false when verification fails', function
     expect($result)->toBeFalse();
 });
 
-test('check delegation validity uses correct prefix for ca', function () {
+test('check delegation validity uses correct ca for lookup and creation', function () {
     $user = $this->createTestUser();
 
     // 创建 Sectigo 的委托记录（使用 _pki-validation 前缀）
@@ -390,11 +390,15 @@ test('check delegation validity uses correct prefix for ca', function () {
         'valid' => true,
     ]);
 
-    // 使用 ACME CA（需要 _dnsauth 前缀），findDelegation 找不到 → 自动创建 → 验证失败
+    // 使用 letsencrypt（回落 default _dnsauth），findDelegation 找不到 → 自动创建 → 验证失败
+    // 重构后：findDelegation 接收 ca（非 prefix），resolveZone 派生 zone，createOrGet 收 prefix
     $mockDelegationService = Mockery::mock(CnameDelegationService::class)->makePartial();
     $mockDelegationService->shouldReceive('findDelegation')
-        ->with($user->id, 'example.com', '_dnsauth')
+        ->with($user->id, 'example.com', 'letsencrypt')
         ->andReturn(null);
+    $mockDelegationService->shouldReceive('resolveZone')
+        ->with('example.com', 'letsencrypt')
+        ->andReturn('example.com');
     $mockDelegationService->shouldReceive('createOrGet')
         ->with($user->id, 'example.com', '_dnsauth')
         ->once()
@@ -422,14 +426,17 @@ test('check delegation validity handles multiple domains auto creates missing', 
         'prefix' => '_pki-validation',
     ]);
 
-    // mock：findDelegation 对 example.com 返回已有记录，对 other.com 返回 null
+    // mock：findDelegation 对 example.com 返回已有记录，对 other.com 返回 null（均传 ca=sectigo）
     $mockService = Mockery::mock(CnameDelegationService::class)->makePartial();
     $mockService->shouldReceive('findDelegation')
-        ->with($user->id, 'example.com', '_pki-validation')
+        ->with($user->id, 'example.com', 'sectigo')
         ->andReturn($existingDelegation);
     $mockService->shouldReceive('findDelegation')
-        ->with($user->id, 'other.com', '_pki-validation')
+        ->with($user->id, 'other.com', 'sectigo')
         ->andReturn(null);
+    $mockService->shouldReceive('resolveZone')
+        ->with('other.com', 'sectigo')
+        ->andReturn('other.com');
     $mockService->shouldReceive('createOrGet')
         ->with($user->id, 'other.com', '_pki-validation')
         ->once()
@@ -447,12 +454,35 @@ test('check delegation validity handles multiple domains auto creates missing', 
     expect($result)->toBeTrue();
 });
 
-test('check delegation validity auto creates dnsauth with exact domain', function () {
+test('check delegation validity auto creates dnsauth with root domain when not exact', function () {
     $user = $this->createTestUser();
 
+    // 有意语义变更：letsencrypt 回落 default(_dnsauth, exact=false)，子域按根域创建
     $this->service->checkDelegationValidity($user->id, 'sub.example.com', 'letsencrypt');
 
-    // _dnsauth 应按精确域名创建
+    // exact=false → 按根域创建（覆盖所有子域）
+    expect(CnameDelegation::where([
+        'user_id' => $user->id,
+        'zone' => 'example.com',
+        'prefix' => '_dnsauth',
+    ])->exists())->toBeTrue();
+
+    // 不应创建子域级别的记录
+    expect(CnameDelegation::where([
+        'user_id' => $user->id,
+        'zone' => 'sub.example.com',
+        'prefix' => '_dnsauth',
+    ])->exists())->toBeFalse();
+});
+
+test('check delegation validity auto creates dnsauth with exact domain when exact', function () {
+    config(['delegation.ca_map.digicert.exact' => true]);
+
+    $user = $this->createTestUser();
+
+    // exact=true：digicert 按精确域名创建
+    $this->service->checkDelegationValidity($user->id, 'sub.example.com', 'digicert');
+
     expect(CnameDelegation::where([
         'user_id' => $user->id,
         'zone' => 'sub.example.com',

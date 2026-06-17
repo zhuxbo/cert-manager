@@ -427,3 +427,164 @@ test('collect txt records skips when no delegation found', function () {
     expect($hasChanges)->toBeFalse();
     expect($updatedValidation[0])->not->toHaveKey('auto_txt_written');
 });
+
+// ==================== CA 驱动回落（修复退化 bug 的核心）====================
+
+// 核心用例：回落型 CA（sectigo，exact=false）委托记录建在根域 example.com，
+// 证书域名是子域 sub.example.com，DCV host 为 _pki-validation.sub.example.com。
+// splitPrefixAndZone 得到 zone=sub.example.com（子域），必须按 ca 回落到根域委托。
+// 修复前用 findExact(sub.example.com) → 漏匹配 → 静默跳过；
+// 修复后用 findDelegation(sub.example.com, 'sectigo') → 回落根域 → 命中。
+test('collect txt records falls back to root delegation for subdomain (sectigo)', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'sectigo']);
+    $order = $this->createTestOrder($user, $product);
+
+    // 委托记录建在根域（回落型 CA 一条覆盖所有子域）
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_pki-validation',
+        'valid' => true,
+    ]);
+
+    // 证书域名是子域，DCV host 为子域 host
+    $this->createTestCert($order, [
+        'common_name' => 'sub.example.com',
+        'alternative_names' => 'sub.example.com',
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'dns' => ['host' => '_pki-validation']],
+        'validation' => [
+            [
+                'host' => '_pki-validation.sub.example.com',
+                'domain' => 'sub.example.com',
+                'value' => 'token-sub',
+            ],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+
+    $order->refresh();
+    [$txtRecords, $updatedValidation, $hasChanges] = $method->invoke($this->service, $order);
+
+    // 回落命中根域委托
+    expect($txtRecords)->toHaveCount(1);
+    expect($txtRecords[$delegation->id]['delegation']->id)->toBe($delegation->id);
+    expect($updatedValidation[0]['delegation_id'])->toBe($delegation->id);
+    expect($updatedValidation[0]['auto_txt_written'])->toBeTrue();
+    expect($hasChanges)->toBeTrue();
+});
+
+// 同样回落型 CA（certum，_certum 前缀），子域回落根域
+test('collect txt records falls back to root delegation for subdomain (certum)', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'certum']);
+    $order = $this->createTestOrder($user, $product);
+
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_certum',
+        'valid' => true,
+    ]);
+
+    $this->createTestCert($order, [
+        'common_name' => 'sub.example.com',
+        'alternative_names' => 'sub.example.com',
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'dns' => ['host' => '_certum']],
+        'validation' => [
+            [
+                'host' => '_certum.sub.example.com',
+                'domain' => 'sub.example.com',
+                'value' => 'token-certum',
+            ],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+
+    $order->refresh();
+    [$txtRecords, $updatedValidation, $hasChanges] = $method->invoke($this->service, $order);
+
+    expect($txtRecords)->toHaveCount(1);
+    expect($updatedValidation[0]['delegation_id'])->toBe($delegation->id);
+    expect($updatedValidation[0]['auto_txt_written'])->toBeTrue();
+    expect($hasChanges)->toBeTrue();
+});
+
+// 根域证书也能命中（不回落也对，回归保护）
+test('collect txt records matches root delegation for root domain (sectigo)', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'sectigo']);
+    $order = $this->createTestOrder($user, $product);
+
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_pki-validation',
+        'valid' => true,
+    ]);
+
+    $this->createTestCert($order, [
+        'common_name' => 'example.com',
+        'alternative_names' => 'example.com',
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'dns' => ['host' => '_pki-validation']],
+        'validation' => [
+            [
+                'host' => '_pki-validation.example.com',
+                'domain' => 'example.com',
+                'value' => 'token-root',
+            ],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+
+    $order->refresh();
+    [$txtRecords, $updatedValidation, $hasChanges] = $method->invoke($this->service, $order);
+
+    expect($txtRecords)->toHaveCount(1);
+    expect($updatedValidation[0]['delegation_id'])->toBe($delegation->id);
+    expect($hasChanges)->toBeTrue();
+});
+
+// exact=true 的 CA（用 config 覆盖 digicert 为 exact）：子域不回落根域 → miss
+// 证明 CA 驱动语义被正确传导（exact 行为与 findDelegation 一致）
+test('collect txt records does not fall back for exact ca subdomain', function () {
+    config()->set('delegation.ca_map.digicert.exact', true);
+
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'digicert']);
+    $order = $this->createTestOrder($user, $product);
+
+    // 委托建在根域，但 exact CA 不回落
+    $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_dnsauth',
+        'valid' => true,
+    ]);
+
+    $this->createTestCert($order, [
+        'common_name' => 'sub.example.com',
+        'alternative_names' => 'sub.example.com',
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'dns' => ['host' => '_dnsauth']],
+        'validation' => [
+            [
+                'host' => '_dnsauth.sub.example.com',
+                'domain' => 'sub.example.com',
+                'value' => 'token-exact',
+            ],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+
+    $order->refresh();
+    [$txtRecords, $updatedValidation, $hasChanges] = $method->invoke($this->service, $order);
+
+    // exact CA 子域不回落根域委托 → 未命中
+    expect($txtRecords)->toBeEmpty();
+    expect($hasChanges)->toBeFalse();
+    expect($updatedValidation[0])->not->toHaveKey('auto_txt_written');
+});

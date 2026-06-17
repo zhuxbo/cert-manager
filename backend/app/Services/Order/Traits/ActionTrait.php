@@ -596,24 +596,19 @@ trait ActionTrait
             if ($isDelegate) {
                 $validation[$k]['is_delegate'] = true;
 
-                // 查找或创建委托记录
+                // 查找或创建委托记录（全 ca_map 驱动，无 prefix 推断）
                 if ($delegationService) {
+                    $ca = $dcv['ca'] ?? '';
+
                     // 根据 CA 确定委托前缀（不同 CA 使用不同的验证前缀）
-                    $prefix = $this->getDelegationPrefixForCa($dcv['ca'] ?? '');
+                    $prefix = CnameDelegationService::getDelegationPrefixForCa($ca);
 
-                    // 判断是否精确匹配前缀（ACME/DigiCert 需要每个子域单独委托）
-                    $isExactMatch = $prefix === '_dnsauth';
+                    // 查找委托记录（行为由 ca 决定：exact 精确匹配 / 非 exact 子域优先+回落根域）
+                    $delegation = $delegationService->findDelegation($userId, $domain, $ca);
 
-                    // 精确匹配：使用完整域名；模糊匹配：使用根域
-                    $zone = $isExactMatch
-                        ? ltrim($domain, '*.')
-                        : DomainUtil::getRootDomain($domain);
-
-                    // 查找委托记录（不检查 valid 状态，后续即时验证）
-                    $delegation = $delegationService->findDelegation($userId, $domain, $prefix);
-
-                    // 找不到则自动创建
+                    // 找不到则自动创建（zone 由 ca 派生：exact 精确域名 / 非 exact 根域）
                     if (! $delegation) {
+                        $zone = $delegationService->resolveZone($domain, $ca);
                         $delegation = $delegationService->createOrGet($userId, $zone, $prefix);
                     }
 
@@ -751,24 +746,6 @@ trait ActionTrait
         }
 
         return $validation;
-    }
-
-    /**
-     * 根据 CA 获取委托验证前缀
-     *
-     * 不同 CA 使用不同的 DNS TXT 记录前缀：
-     * - Sectigo: _pki-validation
-     * - Certum: _certum
-     * - DigiCert/GeoTrust/Thawte/RapidSSL/TrustAsia: _dnsauth
-     * - 其他: _dnsauth
-     */
-    protected function getDelegationPrefixForCa(string $ca): string
-    {
-        return match (strtolower($ca)) {
-            'sectigo', 'comodo' => '_pki-validation',
-            'certum' => '_certum',
-            default => '_dnsauth',
-        };
     }
 
     /**

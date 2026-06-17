@@ -7,7 +7,6 @@ namespace App\Services\Order;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Delegation\CnameDelegationService;
-use App\Services\Order\Utils\DomainUtil;
 
 /**
  * 自动续费/重签判定服务
@@ -92,7 +91,7 @@ class AutoRenewService
      *
      * 设计目的：尽可能让自动续签成功发起，而非严格拦截。
      * - 缺失委托记录时自动创建（首次创建后 DNS 未配置会验证失败，下次执行时重试）
-     * - 创建策略：_dnsauth 按精确域名；_pki-validation/_certum 按根域（一条覆盖所有子域）
+     * - 创建/查找策略全 ca_map 驱动：exact 按精确域名；非 exact 按根域（一条覆盖所有子域）
      * - DNS 验证采用宽松策略：所有 dnsTools + 本地检测全部尝试，任一匹配即有效
      *
      * @param  int  $userId  用户ID
@@ -111,12 +110,12 @@ class AutoRenewService
                 continue;
             }
 
-            // 查找委托记录（不检查 valid 状态）
-            $delegation = $this->delegationService->findDelegation($userId, $domain, $prefix);
+            // 查找委托记录（不检查 valid 状态，全 ca_map 驱动）
+            $delegation = $this->delegationService->findDelegation($userId, $domain, $ca);
 
-            // 缺失则自动创建
+            // 缺失则自动创建（zone 由 ca 派生：exact 精确域名 / 非 exact 根域）
             if (! $delegation) {
-                $zone = $this->resolveZoneForCreation($domain, $prefix);
+                $zone = $this->delegationService->resolveZone($domain, $ca);
                 $delegation = $this->delegationService->createOrGet($userId, $zone, $prefix);
             }
 
@@ -127,33 +126,6 @@ class AutoRenewService
         }
 
         return true;
-    }
-
-    /**
-     * 根据前缀类型确定自动创建委托的 zone
-     * - _dnsauth：精确域名（去通配符）
-     * - _pki-validation/_certum：根域（一条覆盖所有子域）
-     */
-    private function resolveZoneForCreation(string $domain, string $prefix): string
-    {
-        // 规范化：去通配符前缀，转 Unicode 小写（与 findDelegation 保持一致）
-        $domain = strtolower(DomainUtil::convertToUnicode(ltrim($domain, '*.')));
-
-        // www.根域 归一为根域（条件与 findDelegation 完全一致）
-        if ($prefix !== '_dnsauth' && str_starts_with($domain, 'www.')) {
-            $stripped = substr($domain, 4);
-            if (DomainUtil::getRootDomain($stripped) === $stripped) {
-                $domain = $stripped;
-            }
-        }
-
-        // _dnsauth 精确匹配，直接返回
-        if ($prefix === '_dnsauth') {
-            return $domain;
-        }
-
-        // 回落前缀：使用根域
-        return DomainUtil::getRootDomain($domain) ?: $domain;
     }
 
     /**

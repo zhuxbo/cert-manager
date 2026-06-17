@@ -189,11 +189,14 @@ class AutoDcvTxtService
                 continue;
             }
 
-            // 匹配委托记录（不检查 valid 状态，后续即时验证）
+            // 匹配委托记录（CA 驱动，与 ActionTrait::generateValidation 同口径）：
+            // 回落型 CA（sectigo/certum）委托记录建在根域，证书域名为子域时需回落根域匹配；
+            // 直接传 splitPrefixAndZone 得到的 zone（可能是子域），findDelegation 内部按 ca 回落
+            $ca = strtolower($order->product->ca ?? '');
             $delegation = $this->delegationService->findDelegation(
                 $order->user_id,
                 $zone,
-                $prefix
+                $ca
             );
 
             if (! $delegation) {
@@ -269,10 +272,8 @@ class AutoDcvTxtService
         // 剩余部分作为 zone
         $zone = implode('.', $parts);
 
-        // 验证 prefix 是否为支持的类型
-        // Todo: 暂时硬编码前缀 以后再处理
-        $supportedPrefixes = ['_certum', '_pki-validation', '_dnsauth'];
-        if (! in_array($prefix, $supportedPrefixes, true)) {
+        // 验证 prefix 是否为支持的类型（从 config 派生白名单，全 ca_map 驱动）
+        if (! in_array($prefix, CnameDelegationService::supportedPrefixes(), true)) {
             return [null, null];
         }
 
