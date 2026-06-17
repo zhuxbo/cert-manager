@@ -107,9 +107,11 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 ├── backend/                  # Laravel 后端（含 .env）
 ├── frontend/admin,user,web/  # 前端
 ├── plugins/                  # 插件目录
-├── nginx/manager.conf        # 被网站配置 include
+├── nginx/manager.conf        # 被网站配置 include（顶部 include frontend/web/pre.conf）
 └── backups/                  # 备份和升级包
 ```
+
+> **自定义前置 nginx 配置**：`frontend/web/pre.conf` 在 `manager.conf` server 块顶部被 include（置于默认路由前），可写自定义 `location`/`rewrite`/`header`；该文件**升级保留**（升级包不打 frontend/web）。安装（bt-install.sh）/ 命令行升级（upgrade.sh）/ 后台升级（PackageExtractor::applyNginxUpgrade）三条路径均在缺失时幂等创建空占位，防 manager.conf include 不存在文件致 `nginx -t` 失败 502。
 
 ---
 

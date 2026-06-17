@@ -60,7 +60,8 @@ skills/ # 开发规范（详细文档）
 
 - `delegation` 提交到 CA 时转换为 `txt`，通过 `dcv.is_delegate` 标记区分
 - 产品同步时保留本地的 `delegation` 验证方法
-- **委托前缀**：`_dnsauth`（DigiCert 系，精确匹配子域）、`_pki-validation`（Sectigo，模糊匹配回落根域）、`_certum`（Certum，同 Sectigo）。已移除 `_acme-challenge`（ACME 使用独立体系）
+- **委托前缀（config 驱动）**：`backend/config/delegation.php` 的 `ca_map` 按 CA 映射 `{prefix, exact}` —— `_pki-validation`（Sectigo）、`_certum`（Certum）、`_dnsauth`（DigiCert/GlobalSign/TrustAsia/Sheca/CFCA/Wotrus 及未知 CA 的 default）。已移除 `_acme-challenge`（ACME 使用独立体系）
+- **`exact` 是 CA 属性、非 prefix 属性**：`exact=true` 精确匹配子域且查找拒绝回落根域，`exact=false` 子域优先 + 回落根域；**默认全 false（含 `_dnsauth` 系）**，每家可由 `DELEGATION_<CA>_EXACT` env 覆盖为 true。所有委托创建/查找一律经 ca 派生 prefix+exact，禁止 `prefix === '_dnsauth'` 之类推断
 - 详见 `skills/backend-dev.md` 委托验证章节
 
 ### 插件系统
@@ -173,7 +174,9 @@ skills/ # 开发规范（详细文档）
 - **产品条件**：续费要求 `product.status=1 && renew=1`；重签仅要求 `reissue=1`（产品禁用仍可重签）
 - **参数继承**：从原订单提取 period/contact/organization/domains；CSR 按 `product.reuse_csr` 决定重用或生成
 - **算法继承**（防静默降级）：续费/重签 `reuse_csr=0` 重新生成 CSR 时，`ActionTrait::initParams` 在 `encryption.alg` 缺失时从 `last_cert` 继承 alg/bits/digest（列存大写，`strtolower` 归一），覆盖自动路径（`AutoRenewCommand` 不传 encryption）与 API 省略；前端 `loadOrderInfo` 回填原算法为表单默认（用户仍可改）。**继承值在 `ValidatorUtil::validate` 之后才注入 `$params`**——不让当前产品 `encryption_alg` 菜单校验阻断存量证书续签（显式传入的 encryption 仍照常 validate）；但 SM2 能力 gate `guardSm2Capable` 早触发，国密 openssl 不可用则报错（保持 SM2，绝不静默降级为 RSA）。`CsrUtil::getEncryptionParams` 归一返回小写 alg（修大写算法失配 bug）。前端 ECDSA 密钥长度选项 `512→521` 对齐后端 `secp521r1`。否则原 ECDSA/SM2 证书会在 reuse_csr=0 续签后静默降级为 RSA
-- **委托前置条件**：缺失委托记录时自动创建（`_dnsauth` 精确域名、回落前缀按根域）；DNS 验证采用宽松策略（所有 dnsTools + 本地全部尝试，任一匹配即有效），目的是尽可能发起续签
+- **委托前置条件**：缺失委托记录时自动创建（zone 由 ca 派生：`exact` 精确域名 / 非 exact 根域，见「委托验证」章节）；DNS 验证采用宽松策略（所有 dnsTools + 本地全部尝试，任一匹配即有效），目的是尽可能发起续签
+- **失败通知 + 到期去重**（`auto_renew_failed` 模板，仅 seeder、db:seed 幂等可达）：续费/重签失败（含 IP、无委托等跳过类）按到期节点（14/7/3/1 天）发邮件给订单用户；`ExpireCommand` 反向排除「会被自动续签/重签处理」的订单（`cert.channel≠api 且 willAutoRenew‖willAutoReissue`）避免同节点重复发到期通知；节点常量与 `isExpireNotifyNode` 由 `Console\Commands\Concerns\ExpireNotifyWindow` trait 两命令共用。修复点：`willAutoReissueExecute` 改判 `product.reissue`（重签不限产品状态），与 `getReissueOrders` 对齐
+- **手工标记已续费**（`Order\Action::markRenewed`，admin/user 双端）：到期前 30 天内、仅 active 证书可手工标记 `renewed` 终态（用户在别处已续 → 停止本系统自动续费+到期提醒）；事务+行锁+锁内二次校验，User 端 UserScope 限本人
 
 ### 工商查询与企业-联系人绑定
 

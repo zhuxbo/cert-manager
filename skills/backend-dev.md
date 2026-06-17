@@ -727,13 +727,21 @@ Schema::table('products', function (Blueprint $table) {
 3. `generateValidation()` 查找用户的 CnameDelegation 记录
 4. validation 数组包含 `delegation_id`、`delegation_target`、`delegation_valid`、`delegation_zone`
 
-### 委托前缀
+### 委托前缀与 exact（config 驱动）
 
-| 前缀              | CA                  | 匹配规则           |
-| ----------------- | ------------------- | ------------------ |
-| `_dnsauth`        | DigiCert、TrustAsia | 严格子域匹配       |
-| `_pki-validation` | Sectigo             | 优先子域，回落根域 |
-| `_certum`         | Certum              | 优先子域，回落根域 |
+`backend/config/delegation.php` 的 `ca_map` 按 CA 映射 `{prefix, exact}`，未知 CA 走 `default`。**`exact` 是 CA 属性而非 prefix 属性**——同一 prefix（如 `_dnsauth`）在不同 CA 下可要求不同：
+
+| CA                                              | prefix            | exact 默认 |
+| ----------------------------------------------- | ----------------- | ---------- |
+| Sectigo                                         | `_pki-validation` | false      |
+| Certum                                          | `_certum`         | false      |
+| DigiCert/GlobalSign/TrustAsia/Sheca/CFCA/Wotrus | `_dnsauth`        | false      |
+| 未知 CA（default）                              | `_dnsauth`        | false      |
+
+- `exact=true`：精确匹配完整 FQDN，查找**拒绝回落根域**、创建用精确域名（不归一 www）。
+- `exact=false`：www 归一 + 子域优先 + **回落根域**，创建用根域（一条委托覆盖所有子域）。
+- **默认全 false（含 `_dnsauth` 系，为用户定稿决策）**；每家及 default 可由 `DELEGATION_<CA>_EXACT` env 覆盖为 true。
+- 一律经 `CnameDelegationService::getDelegationPrefixForCa($ca)` / `isExactForCa($ca)` / `resolveZone($domain,$ca)` 派生，**禁止 `prefix === '_dnsauth'` 推断**。手动创建委托（`DelegationController` store/batchStore）入参按 CA、内部派生 prefix+zone；委托记录仍按 `(user_id, zone, prefix)` 存储（无 ca 列，列表按 prefix 筛选）。`AutoDcvTxtService` 从 DCV host 解析 zone 后用 ca 驱动 `findDelegation`（带回落），与 `ActionTrait::generateValidation` 同口径。
 
 > ACME 通道证书由客户端自行验证，不走委托体系，不使用 `_acme-challenge` 前缀。
 
@@ -854,23 +862,24 @@ ValidateCommand 定时验证
 
 ### 委托验证与自动续签
 
-| 文件                                             | 关键方法/位置                 | 说明                                  |
-| ------------------------------------------------ | ----------------------------- | ------------------------------------- |
-| `Services/Order/Traits/ActionTrait.php`          | `generateDcv()`               | delegation→txt 转换，设置 is_delegate |
-| `Services/Order/Traits/ActionTrait.php`          | `generateValidation()`        | 委托记录查找/创建                     |
-| `Services/Order/Traits/ActionTrait.php`          | `writeDelegationTxtRecords()` | 订单创建时写入 TXT                    |
-| `Services/Order/Traits/ActionTrait.php`          | `getDelegationPrefixForCa()`  | CA 前缀映射                           |
-| `Services/Order/Traits/ActionTrait.php`          | `mergeDcv()`                  | API 响应合并保留委托标记              |
-| `Services/Delegation/CnameDelegationService.php` | `findDelegation()`            | 智能匹配委托记录（用于即时验证场景）  |
-| `Services/Delegation/CnameDelegationService.php` | `findValidDelegation()`       | 智能匹配有效委托记录（已弃用）        |
-| `Services/Delegation/CnameDelegationService.php` | `checkAndUpdateValidity()`    | 即时检测 CNAME 并更新有效性           |
-| `Services/Delegation/DelegationDnsService.php`   | `setTxtByLabel()`             | 批量写入 TXT 记录                     |
-| `Services/Delegation/AutoDcvTxtService.php`      | `handleOrder()`               | 订单级 TXT 处理                       |
-| `Console/Commands/AutoRenewCommand.php`          | `checkDelegationValidity()`   | 发起前即时检查委托有效性              |
-| `Console/Commands/AutoRenewCommand.php`          | `processOrder()`              | 自动续费/重签处理                     |
-| `Console/Commands/AutoRenewCommand.php`          | `autoPayAndCommit()`          | 自动支付提交                          |
-| `Console/Commands/ValidateCommand.php`           | `checkDelegationValidity()`   | 验证前即时检测                        |
-| `Console/Commands/DelegationCleanupCommand.php`  | `handle()`                    | 清理非 processing 状态的 DNS 记录     |
+| 文件                                             | 关键方法/位置                                   | 说明                                                            |
+| ------------------------------------------------ | ----------------------------------------------- | --------------------------------------------------------------- |
+| `Services/Order/Traits/ActionTrait.php`          | `generateDcv()`                                 | delegation→txt 转换，设置 is_delegate                           |
+| `Services/Order/Traits/ActionTrait.php`          | `generateValidation()`                          | 委托记录查找/创建                                               |
+| `Services/Order/Traits/ActionTrait.php`          | `writeDelegationTxtRecords()`                   | 订单创建时写入 TXT                                              |
+| `Services/Order/Traits/ActionTrait.php`          | `mergeDcv()`                                    | API 响应合并保留委托标记                                        |
+| `Services/Delegation/CnameDelegationService.php` | `getDelegationPrefixForCa()` / `isExactForCa()` | config 驱动派生 prefix / exact（exact 是 CA 属性）              |
+| `Services/Delegation/CnameDelegationService.php` | `resolveZone($domain,$ca)`                      | 创建期 zone：exact 精确域名 / 非 exact 根域                     |
+| `Services/Delegation/CnameDelegationService.php` | `findDelegation()` / `findValidDelegation()`    | 按 ca 查找委托（内核 `findByResolution`，exact 驱动是否回落）   |
+| `Services/Delegation/CnameDelegationService.php` | `findExact()`                                   | 精确 (zone,prefix) 查找不回落（DCV host 已知 zone+prefix 场景） |
+| `Services/Delegation/CnameDelegationService.php` | `checkAndUpdateValidity()`                      | 即时检测 CNAME 并更新有效性                                     |
+| `Services/Delegation/DelegationDnsService.php`   | `setTxtByLabel()`                               | 批量写入 TXT 记录                                               |
+| `Services/Delegation/AutoDcvTxtService.php`      | `handleOrder()`                                 | 订单级 TXT 处理                                                 |
+| `Console/Commands/AutoRenewCommand.php`          | `checkDelegationValidity()`                     | 发起前即时检查委托有效性                                        |
+| `Console/Commands/AutoRenewCommand.php`          | `processOrder()`                                | 自动续费/重签处理                                               |
+| `Console/Commands/AutoRenewCommand.php`          | `autoPayAndCommit()`                            | 自动支付提交                                                    |
+| `Console/Commands/ValidateCommand.php`           | `checkDelegationValidity()`                     | 验证前即时检测                                                  |
+| `Console/Commands/DelegationCleanupCommand.php`  | `handle()`                                      | 清理非 processing 状态的 DNS 记录                               |
 
 ### 调度配置
 
