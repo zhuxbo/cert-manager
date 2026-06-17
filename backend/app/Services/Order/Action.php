@@ -143,6 +143,10 @@ class Action
                     if (! empty($product->remark)) {
                         unset($item['remark']);
                     }
+                    // 本地权重已人工设置（非默认 0）时，同步不覆盖
+                    if ((int) $product->weight !== 0) {
+                        unset($item['weight']);
+                    }
 
                     $product->update($item);
                 }
