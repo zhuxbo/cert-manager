@@ -319,8 +319,11 @@ trait ActionTrait
 
         if ($productType === 'ssl') {
             // SSL：处理域名、CSR、DCV 验证
-            // 转换域名为Unicode
-            $params['domains'] = DomainUtil::convertToUnicodeDomains($params['domains'] ?? '');
+            $params['domains'] ??= '';
+            // 仅 Certum 产品把 punycode 域名转回中文（Unicode）；其他 CA 保持原样（punycode）
+            if (($params['product']['ca'] ?? '') === 'certum') {
+                $params['domains'] = DomainUtil::convertToUnicodeDomains($params['domains']);
+            }
 
             if ($params['product']['gift_root_domain'] ?? 0) {
                 $cert['alternative_names'] = DomainUtil::addGiftDomain($params['domains']);
