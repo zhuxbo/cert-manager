@@ -354,12 +354,18 @@ class DomainUtil
             } else {
                 $rootDomain = self::getRootDomain($domain);
 
-                if ($domain === $rootDomain) {
-                    $allDomains[] = 'www.'.$rootDomain;
+                // getRootDomain 总是返回 Unicode 形式的根域，而 $domain 可能是 punycode。
+                // 归一到 ASCII 比较，避免 punycode 输入与 Unicode 根域失配；
+                // 补出的 www / 根域保持 $domain 原编码（punycode 输入→punycode 赠送域名）。
+                $asciiDomain = self::convertToAscii($domain);
+                $asciiRoot = self::convertToAscii($rootDomain);
+
+                if ($asciiDomain === $asciiRoot) {
+                    $allDomains[] = 'www.'.$domain;
                 }
 
-                if ($domain === 'www.'.$rootDomain) {
-                    $allDomains[] = $rootDomain;
+                if ($asciiDomain === 'www.'.$asciiRoot) {
+                    $allDomains[] = substr($domain, 4);
                 }
             }
         }

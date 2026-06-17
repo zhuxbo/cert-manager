@@ -48,3 +48,42 @@ test('punycode→中文 转换仅对 product.ca === certum 生效', function (st
     'certum 转中文' => ['certum', 'example.com,中文.com'],
     'digicert 保持 punycode' => ['digicert', 'example.com,xn--fiq228c.com'],
 ]);
+
+// gift_root_domain=1 时，赠送的 www 子域编码必须跟随 ca-gating 后的域名编码：
+// Certum 先转中文、补中文 www；非 Certum 保持 punycode、补 punycode www（赠送域不丢失）。
+// 防止“仅 Certum 转 Unicode”与 addGiftDomain 的交互回归。
+test('gift_root_domain 赠送的 www 编码跟随 ca-gating', function (string $ca, string $expectedAltNames) {
+    $user = User::factory()->create();
+    $product = Product::factory()->create([
+        'product_type' => 'ssl',
+        'validation_type' => 'dv',
+        'ca' => $ca,
+        'validation_methods' => ['txt'],
+        'encryption_alg' => ['rsa'],
+        'signature_digest_alg' => ['sha256'],
+        'reuse_csr' => 0,
+        'gift_root_domain' => 1,
+        'standard_max' => 100,
+        'wildcard_max' => 100,
+        'total_max' => 100,
+    ]);
+
+    $action = app(Action::class);
+    $cert = (new ReflectionMethod($action, 'getCert'))->invoke($action, [
+        'params' => [],
+        'action' => 'new',
+        'channel' => 'admin',
+        'user_id' => $user->id,
+        'product' => $product->toArray(),
+        'domains' => 'example.com,xn--fiq228c.com',
+        'validation_method' => 'txt',
+        'csr_generate' => 1,
+        'encryption' => ['alg' => 'rsa', 'bits' => 2048],
+    ]);
+
+    expect($cert['alternative_names'])->toBe($expectedAltNames);
+    expect($cert['common_name'])->toBe('example.com');
+})->with([
+    'certum 中文 www' => ['certum', 'example.com,www.example.com,中文.com,www.中文.com'],
+    'digicert punycode www' => ['digicert', 'example.com,www.example.com,xn--fiq228c.com,www.xn--fiq228c.com'],
+]);
