@@ -272,7 +272,8 @@ class AutoRenewCommand extends Command
         }
 
         // 仅在到期通知节点发送（与 ExpireCommand 节点窗口一致，防每日重复）
-        if (! $this->isExpireNotifyNode($order->latestCert?->expires_at)) {
+        // $order 来自 getRenewOrders/getReissueOrders，已 whereHas('latestCert')，关系非空
+        if (! $this->isExpireNotifyNode($order->latestCert->expires_at)) {
             return;
         }
 

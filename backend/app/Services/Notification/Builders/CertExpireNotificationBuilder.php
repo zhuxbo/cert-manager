@@ -44,7 +44,7 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
             //   - 其余 willAutoRenewExecute||willAutoReissueExecute 为真 → 排除（交由 auto_renew_failed 提醒）
             // 注意：不再按委托有效性细分。委托未配置/失败的自动订单同样由 AutoRenewCommand 发 auto_renew_failed，
             // 这里若保留则会与 auto_renew_failed 双发，故统一排除。
-            if ($order->latestCert?->channel !== 'api'
+            if ($order->latestCert->channel !== 'api'
                 && ($this->autoRenewService->willAutoRenewExecute($order, $notifiable)
                     || $this->autoRenewService->willAutoReissueExecute($order, $notifiable))) {
                 continue;
