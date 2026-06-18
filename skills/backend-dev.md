@@ -716,6 +716,31 @@ Schema::table('products', function (Blueprint $table) {
 
 ---
 
+## S/MIME 验证字段要求（Certum，防回归）
+
+按 Certum API User Guide 5.18 + **实测**，S/MIME 四种细分字段要求 —— **关键：除 `mailbox` 外都需要联系人（contact → requestorInfo），`organization` 也不例外**：
+
+| 类型（产品 code 含） | email | 联系人 contact | 企业 organization | 证书 CN       |
+| -------------------- | ----- | -------------- | ----------------- | ------------- |
+| `mailbox`            | 必填  | —              | —                 | email（自动） |
+| `individual`         | 必填  | 必填           | —                 | 联系人姓名    |
+| `sponsor`            | 必填  | 必填           | 必填              | 联系人姓名    |
+| `organization`       | 必填  | 必填           | 必填              | 组织名        |
+
+**`requestorInfo`（谁发起申请）≠ 证书主体（subject）**：§3.2.4「organization 仅验证 the organization、不验证 subscriber」说的是**证书主体**——org 证书 CN=组织名、主体里不放个人 givenName/surname；但请求 payload 里的 `requestorInfo`（firstName/lastName/email）是「申请人」信息，Certum 对所有非 mailbox 类型**一律强制**，与证书主体是两码事。
+
+**踩坑（勿重蹈）**：曾误把 §3.2.4「不验证 subscriber」当成「不需要联系人」，去掉 organization 的 contact 收集 → 实测提交被 Certum 拒单（`requestorInfo/email|firstName|lastName` 缺失，错误码 1053/1054/1055），已回退。**organization 必须收联系人**，校验/组装/前端与 sponsor 一致。
+
+落点（非 mailbox 四类一致，都要 contact）：
+
+- 校验：`ValidatorUtil::validateSMIMEParams` 的 `case 'organization'` 校验 contact + organization（与 sponsor 同）
+- 组装：`ActionTrait::getApplyInformation` 的 `$needContact` 含 `['individual','sponsor','organization']`
+- 前端：`OrganizationEditor` 联系人区块对所有 SMIME（非 mailbox）/ OV·EV SSL / codesign / docsign 均显示且必填
+- 上游 gateway 对端：certum `getNewParams` 对所有非 mailbox SMIME `needExtendedParams=true`，从 `contact` 构造 `requestorInfo`（firstName/lastName/email），为空则 Certum 1053/1054/1055 拒单
+- 文档签名（docsign）：Certum 仅 OV 一种（无 individual/sponsor 细分），CN 可个人名或组织名，但组织验证始终必须
+
+---
+
 ## 委托验证
 
 ### 验证方法转换
@@ -901,6 +926,8 @@ php artisan test --parallel                           # 全部测试（需 MySQL
 php artisan test --parallel --exclude-group=database  # 纯单元测试（无需数据库）
 php artisan test --coverage --min=80                  # 覆盖率报告
 ```
+
+> **测试库隔离（双重兜底，勿移除）**：① `phpunit.xml` 的 `<env name="DB_DATABASE" value="ssl_manager_test" force="true"/>` 覆盖 `.env`/`.env.testing` **文件值**——但 `force` **不覆盖 OS 环境变量**（`docker -e DB_DATABASE=...` / shell `export`，实测带 `-e DB_DATABASE=ssl_manager` 仍会连开发库）；② 故 `TestCase::createApplication()` 加运行期物理断言：测试库名不含 `_test` 即 `fwrite(STDERR) + exit(1)`，在 `RefreshDatabase` 清库**之前**硬阻断，杜绝任何跑法（含 `-e` 误传 OS env）清空开发库 `ssl_manager`。`.env.testing`（gitignore、仅本地）DB 应为 `ssl_manager_test`；`make test` 显式 `-e ssl_manager_test`、CI 用 `.env`+sed 同名。注意 `make migrate`（=`migrate:fresh --seed`）走开发库、会清库重建，与测试无关。
 
 > **CI 经验**：本地务必用 `--parallel` 跑测试，与 CI 保持一致。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
 

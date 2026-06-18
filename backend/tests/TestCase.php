@@ -10,6 +10,27 @@ use Tests\Compat\SnapshotListener;
 abstract class TestCase extends BaseTestCase
 {
     /**
+     * 物理阻断：测试库名必须含 '_test'，否则拒绝运行。
+     *
+     * phpunit.xml 的 DB_DATABASE force 只覆盖 .env/.env.testing 文件值，不覆盖 OS
+     * 环境变量（docker -e / shell export）。此处在 createApplication 之后、
+     * RefreshDatabase 清库之前做运行期兜底，杜绝任何跑法把测试跑进开发库 ssl_manager。
+     */
+    public function createApplication()
+    {
+        $app = parent::createApplication();
+
+        $conn = (string) $app['config']->get('database.default');
+        $db = (string) $app['config']->get("database.connections.{$conn}.database");
+        if (! str_contains($db, '_test')) {
+            fwrite(STDERR, "\n[FATAL] 测试库名 \"{$db}\" 不含 '_test'，已拒绝运行以防清空非测试库。\n");
+            exit(1);
+        }
+
+        return $app;
+    }
+
+    /**
      * 启动应用时同时挂 Compat 钩子（仅 capture/compare 模式启用，否则零开销）。
      */
     protected function setUp(): void
