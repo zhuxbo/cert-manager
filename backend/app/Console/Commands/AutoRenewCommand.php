@@ -25,6 +25,13 @@ class AutoRenewCommand extends Command
     protected $description = '自动续费/重签即将到期的证书';
 
     /**
+     * 用户端失败兜底文案：域名含 IP、上游/系统类错误等非用户可控失败统一归一，
+     * 不暴露原始异常细节；仍发通知以堵 ExpireCommand 排除自动续签订单后的静默过期洞。
+     * 用户可行动的失败（余额不足、委托无效）各自给专属清晰文案，不走此兜底。
+     */
+    private const FALLBACK_REASON = '自动续签未成功，请尽快手动续期';
+
+    /**
      * 自动续签窗口：到期前 14 天开始检测
      *
      * 客户端部署说明：
@@ -135,8 +142,9 @@ class AutoRenewCommand extends Command
             try {
                 $this->processOrder($order, $action);
             } catch (Throwable $e) {
+                // 原始异常进 cron 日志供运维排查；用户端归一为兜底文案，不泄露系统细节
                 $this->error("订单 #{$order->id} {$action} 失败: {$e->getMessage()}");
-                $this->sendFailureNotification($order, $action, $e->getMessage());
+                $this->sendFailureNotification($order, $action, self::FALLBACK_REASON);
             }
         }
     }
@@ -160,7 +168,7 @@ class AutoRenewCommand extends Command
             $type = DomainUtil::getType(trim($domain));
             if ($type === 'ipv4' || $type === 'ipv6') {
                 $this->warn("订单 #{$order->id} 跳过：域名包含 IP 地址");
-                $this->sendFailureNotification($order, $action, '域名包含 IP 地址，无法自动续签，请手动续期');
+                $this->sendFailureNotification($order, $action, self::FALLBACK_REASON);
 
                 return;
             }
@@ -175,7 +183,7 @@ class AutoRenewCommand extends Command
             return;
         }
 
-        // 续费需要检查余额（使用当前产品价格实时计算）
+        // 续费需要检查余额（重签不扣费、不检查）。余额不足是用户可行动失败 → 跳过并发清晰文案
         if ($action === 'renew') {
             $availableBalance = bcadd($user->balance, (string) abs((float) $user->credit_limit), 2);
 
@@ -187,7 +195,11 @@ class AutoRenewCommand extends Command
             );
 
             if (bccomp($availableBalance, $estimatedAmount, 2) < 0) {
-                throw new \Exception("余额不足，可用余额: {$availableBalance}，预计需要: $estimatedAmount");
+                // 内部估价数字仅进 cron 日志，用户端只给可行动文案
+                $this->warn("订单 #{$order->id} 跳过：余额不足（可用 {$availableBalance}，需 {$estimatedAmount}）");
+                $this->sendFailureNotification($order, $action, '账户余额不足，请充值后手动续期');
+
+                return;
             }
         }
 
@@ -284,9 +296,11 @@ class AutoRenewCommand extends Command
                 'user',
                 $user->id,
                 [
-                    'order_id' => $order->id,
+                    // 用证书 common_name 标识（用户认得域名），订单 id 仅留 cron 日志给运维
+                    'common_name' => $order->latestCert->common_name,
                     'action' => $action,
                     'reason' => $reason,
+                    // site_url 由 AutoRenewFailedNotificationBuilder 从系统设置注入，此处不传
                     'email' => $user->email,
                 ]
             ));

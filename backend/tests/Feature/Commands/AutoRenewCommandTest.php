@@ -4,6 +4,7 @@ use App\Exceptions\ApiResponseException;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ProductPrice;
 use App\Models\User;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
@@ -116,17 +117,23 @@ test('委托检查失败时跳过订单（节点窗口内发失败通知）', fu
         'expires_at' => now()->addDays(3), // 节点窗口 [now+2, now+3] 内
         'amount' => '100.00',
         'channel' => 'web',
+        'common_name' => 'renew.example.com',
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
     $this->autoRenewService->shouldReceive('checkDelegationValidity')
         ->andReturn(false);
 
-    // 无委托 + 节点窗口内 → 应发 auto_renew_failed（避免被 ExpireCommand 排除后两头空）
+    // 无委托 + 节点窗口内 → 应发 auto_renew_failed（避免被 ExpireCommand 排除后两头空）；
+    // 通知用 common_name 标识证书（非 order_id）
     $this->notificationCenter->shouldReceive('dispatch')->once()
         ->with(Mockery::on(function ($intent) {
             return $intent->code === 'auto_renew_failed'
-                && str_contains($intent->context['reason'] ?? '', '委托');
+                && str_contains($intent->context['reason'] ?? '', '委托')
+                && ($intent->context['common_name'] ?? null) === 'renew.example.com'
+                && ! isset($intent->context['order_id'])
+                // 命令不再传 site_url —— 由 AutoRenewFailedNotificationBuilder 从系统设置注入
+                && ! isset($intent->context['site_url']);
         }));
 
     $this->artisan('schedule:auto-renew')
@@ -164,7 +171,7 @@ test('委托检查失败但不在节点窗口 → 不发失败通知（节点 ga
         ->assertSuccessful();
 });
 
-test('域名含 IP 且在节点窗口 → 发失败通知（含 IP 不漏发，去重铁律 A）', function () {
+test('域名含 IP 且在节点窗口 → 发失败通知（兜底归一文案、不泄露 IP 细节，去重铁律 A）', function () {
     $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
     $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
     $order = Order::factory()->create([
@@ -187,11 +194,13 @@ test('域名含 IP 且在节点窗口 → 发失败通知（含 IP 不漏发，�
     // IP 跳过不会调委托检查
     $this->autoRenewService->shouldNotReceive('checkDelegationValidity');
 
-    // 含 IP 无法自动续签，但在节点窗口 → 应发 auto_renew_failed（reason 提及 IP）
+    // 含 IP 无法自动续签，但在节点窗口 → 应发 auto_renew_failed；
+    // 用户端归一为兜底文案，不泄露 IP/系统细节
     $this->notificationCenter->shouldReceive('dispatch')->once()
         ->with(Mockery::on(function ($intent) {
             return $intent->code === 'auto_renew_failed'
-                && str_contains($intent->context['reason'] ?? '', 'IP');
+                && str_contains($intent->context['reason'] ?? '', '自动续签未成功')
+                && ! str_contains($intent->context['reason'] ?? '', 'IP');
         }));
 
     $this->artisan('schedule:auto-renew')
@@ -204,6 +213,11 @@ test('余额不足时续费失败发送通知', function () {
         'credit_limit' => '0.00',
     ]);
     $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    // 配齐定价（level=standard / period=12 / 价 100），让续费估价 >0 真正触发余额分支
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
@@ -223,11 +237,54 @@ test('余额不足时续费失败发送通知', function () {
     $this->autoRenewService->shouldReceive('checkDelegationValidity')
         ->andReturn(true);
 
-    // 失败时应该发送通知
-    $this->notificationCenter->shouldReceive('dispatch')->once();
+    // 余额不足 → 跳过并发清晰可行动文案（不暴露内部估价数字）
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(function ($intent) {
+            return $intent->code === 'auto_renew_failed'
+                && str_contains($intent->context['reason'] ?? '', '余额不足');
+        }));
 
     $this->artisan('schedule:auto-renew')
-        ->expectsOutputToContain('失败')
+        ->expectsOutputToContain('跳过')
+        ->assertSuccessful();
+});
+
+test('上游/系统错误 → 发失败通知但归一文案、不泄露原始异常（兜底安全网）', function () {
+    $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(3), // 节点窗口内
+        'amount' => '100.00',
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // renew 抛上游错误（无 order_id）→ 命令转 \Exception('上游下单失败xyz')
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('renew')->once()
+        ->andThrow(new ApiResponseException('上游下单失败xyz', null, null, 0));
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    // 用户端只看到归一兜底文案，不泄露原始系统异常；原始异常仍进 cron 日志
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(function ($intent) {
+            return $intent->code === 'auto_renew_failed'
+                && str_contains($intent->context['reason'] ?? '', '自动续签未成功')
+                && ! str_contains($intent->context['reason'] ?? '', '上游下单失败xyz');
+        }));
+
+    $this->artisan('schedule:auto-renew')
+        ->expectsOutputToContain('失败') // 原始异常进 cron 日志供运维排查
         ->assertSuccessful();
 });
 

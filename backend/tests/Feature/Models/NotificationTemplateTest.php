@@ -112,20 +112,26 @@ test('seeder 创建 auto_renew_failed 模板并能渲染失败通知（续费）
     $template = NotificationTemplate::where('code', 'auto_renew_failed')->first();
     expect($template)->not->toBeNull();
     expect($template->status)->toBe(1);
-    expect($template->variables)->toContain('order_id')
+    expect($template->variables)->toContain('common_name')
         ->and($template->variables)->toContain('action')
-        ->and($template->variables)->toContain('reason');
+        ->and($template->variables)->toContain('reason')
+        // site_url 不进 variables（由 AutoRenewFailedNotificationBuilder 注入），测试发送无需手填
+        ->and($template->variables)->not->toContain('site_url');
 
     // 与 AutoRenewCommand::sendFailureNotification 实际 context 一致（DefaultBuilder 直通）
     $html = $template->render([
-        'order_id' => 12345,
+        'common_name' => 'example.com',
         'action' => 'renew',
-        'reason' => '余额不足，可用余额: 0.00，预计需要: 100.00',
+        'reason' => '账户余额不足，请充值后手动续期',
+        'site_url' => 'https://console.example.com',
     ]);
 
-    expect($html)->toContain('12345')
+    expect($html)->toContain('example.com') // 用证书域名标识，非数字订单号
         ->and($html)->toContain('续费') // action=renew → 友好标签
         ->and($html)->toContain('余额不足')
+        ->and($html)->toContain('登录控制台') // 控制台按钮（仿到期通知）
+        ->and($html)->toContain('https://console.example.com') // 按钮 href
+        ->and($html)->toContain('联系客服') // 兜底处理项
         ->and($html)->not->toContain('{{'); // Blade 全部渲染，无残留占位符
 });
 
@@ -134,14 +140,26 @@ test('auto_renew_failed 模板对 action=reissue 渲染重签标签', function (
 
     $template = NotificationTemplate::where('code', 'auto_renew_failed')->first();
     $html = $template->render([
-        'order_id' => 999,
+        'common_name' => 'test.example.com',
         'action' => 'reissue',
         'reason' => '部分域名 CNAME 委托未配置或验证未通过，已跳过',
+        'site_url' => 'https://console.example.com',
     ]);
 
     expect($html)->toContain('重签')
         ->and($html)->toContain('CNAME 委托')
+        ->and($html)->toContain('test.example.com')
+        ->and($html)->toContain('https://console.example.com') // 控制台按钮 href（URL 仅出现在按钮）
         ->and($html)->not->toContain('{{');
+});
+
+test('user_created 模板 variables 不含 site_url（由 UserCreatedNotificationBuilder 注入，测试发送无需手填）', function () {
+    (new NotificationTemplateSeeder)->run();
+
+    $template = NotificationTemplate::where('code', 'user_created')->first();
+    expect($template->variables)->toContain('username')
+        ->and($template->variables)->toContain('password')
+        ->and($template->variables)->not->toContain('site_url');
 });
 
 test('模板关联通知', function () {

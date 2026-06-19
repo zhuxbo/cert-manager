@@ -2,6 +2,7 @@
 
 use App\Models\Admin;
 use App\Models\User;
+use App\Services\Notification\Builders\AutoRenewFailedNotificationBuilder;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
@@ -30,6 +31,9 @@ return [
     */
 
     'builders' => [
+        // 自动续费/重签失败：专用 Builder 注入系统设置 site.url（登录控制台按钮），
+        // 不进模板 variables、测试发送无需手填 site_url（与 cert_expire 一致）
+        'auto_renew_failed' => AutoRenewFailedNotificationBuilder::class,
         'cert_issued' => CertIssuedNotificationBuilder::class,
         'cert_expire' => CertExpireNotificationBuilder::class,
         'task_failed' => TaskFailedNotificationBuilder::class,

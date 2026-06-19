@@ -14,8 +14,9 @@ use Illuminate\Database\Eloquent\Model;
  *   password / token / secret / api_key / private_key 等敏感字段，因为 data 会被持久化
  *   到 notifications.data 列（明文存储），且可能被 channel 转发到外部服务（邮件、IM 等）。
  *
- *   主系统四个内置 code（cert_issued / cert_expire / task_failed / finance_audit）均
- *   显式注册了 Builder，由各自 Builder 控制 data 结构，不走此兜底路径。
+ *   主系统多个内置 code（见 config/notification.builders，如 cert_issued / cert_expire /
+ *   task_failed / finance_audit / security / user_created / auto_renew_failed）均显式
+ *   注册了 Builder，由各自 Builder 控制 data 结构，不走此兜底路径。
  */
 class DefaultNotificationBuilder implements NotificationBuilderInterface
 {

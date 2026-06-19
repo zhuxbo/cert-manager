@@ -39,7 +39,8 @@ class NotificationTemplateSeeder extends Seeder
                 'code' => 'user_created',
                 'name' => '用户创建通知',
                 'content' => '您好，我们为您创建了账号，用户名 {{ $username }}，密码 {{ $password }}，登录地址 {{ $site_url }}',
-                'variables' => ['username', 'password', 'site_url'],
+                // site_url 不列入：由 UserCreatedNotificationBuilder 从系统设置注入，测试发送无需手填
+                'variables' => ['username', 'password'],
                 'example' => '您好，我们为您创建了账号，用户名 test，密码 123456，登录地址 www.example.com',
             ],
             // 自动续费/重签失败提醒（schedule:auto-renew 处理失败时发给订单用户）
@@ -47,8 +48,9 @@ class NotificationTemplateSeeder extends Seeder
                 'code' => 'auto_renew_failed',
                 'name' => '自动续费/重签失败提醒',
                 'content' => $this->getAutoRenewFailedHtml(),
+                // site_url 不列入：由 AutoRenewFailedNotificationBuilder 从系统设置注入，测试发送无需手填
                 'variables' => [
-                    'order_id',
+                    'common_name',
                     'action',
                     'reason',
                 ],
@@ -445,7 +447,7 @@ HTML;
     @php($action_label = ($action ?? '') === 'renew' ? '续费' : (($action ?? '') === 'reissue' ? '重签' : '续期'))
 
     <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
-        订单 {{ $order_id }} 自动{{ $action_label }}失败，请手动处理以免证书到期失效。
+        证书 {{ $common_name }} 自动{{ $action_label }}失败，请尽快处理以免证书到期失效。
     </div>
 
     <center style="width: 100%; background-color: #f4f6f8;">
@@ -467,7 +469,7 @@ HTML;
                                 </h1>
 
                                 <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 26px; color: #555555;">
-                                    您好，系统在为下列订单自动{{ $action_label }}时遇到问题，未能完成。为避免证书到期影响网站访问，请尽快登录控制台手动处理。
+                                    您好，系统在为下列订单自动{{ $action_label }}时遇到问题，未能完成。为避免证书到期影响网站访问，请尽快登录控制台处理。
                                 </p>
 
                                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom: 24px;">
@@ -475,10 +477,10 @@ HTML;
                                         <td class="card-info" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 20px;">
                                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                                                 <tr>
-                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">订单编号</td>
+                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">证书域名</td>
                                                 </tr>
                                                 <tr>
-                                                    <td class="highlight-text" style="padding-bottom: 16px; font-size: 18px; font-weight: 600; color: #333333; font-family: monospace;">{{ $order_id }}</td>
+                                                    <td class="highlight-text" style="padding-bottom: 16px; font-size: 18px; font-weight: 600; color: #333333; font-family: monospace;">{{ $common_name }}</td>
                                                 </tr>
                                                 <tr>
                                                     <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">操作类型</td>
@@ -498,9 +500,31 @@ HTML;
                                     </p>
                                 </div>
 
-                                <p style="margin: 0; font-size: 15px; line-height: 24px; color: #666666;">
-                                    常见处理方式：检查账户余额是否充足、域名 CNAME 委托是否已配置并验证通过；若域名为 IP 地址则需手动续期。处理后系统会在后续检测窗口自动重试。
+                                <p style="margin: 0 0 12px 0; font-size: 15px; line-height: 24px; color: #666666;">
+                                    请按以下情况对照处理，处理后系统会在后续检测窗口自动重试：
                                 </p>
+                                <p style="margin: 0 0 8px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>账户余额不足</strong>：请充值后等待自动重试，或手动续期
+                                </p>
+                                <p style="margin: 0 0 8px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>域名委托无效</strong>：请配置并验证域名 CNAME 委托
+                                </p>
+                                <p style="margin: 0 0 8px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>IP 地址证书</strong>：IP 证书自动续签须由自动部署工具发起，请配置自动部署工具
+                                </p>
+                                <p style="margin: 0 0 28px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>其他情况</strong>：若以上均已确认仍未成功，请联系客服协助处理
+                                </p>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                    <tr>
+                                        <td align="center">
+                                            <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
+                                                登录控制台
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </table>
 
                             </td>
                         </tr>
