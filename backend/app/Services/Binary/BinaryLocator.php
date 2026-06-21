@@ -289,6 +289,33 @@ class BinaryLocator
         return $this->probeWith([$this->php(), $path, '--version'], 'Composer');
     }
 
+    /**
+     * 解析 bash 绝对路径（后台升级经 proc_open 调 nginx/render.sh 用）。
+     */
+    public function bash(): string
+    {
+        if (isset($this->resolved['bash'])) {
+            return $this->resolved['bash'];
+        }
+
+        $candidates = ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash'];
+        foreach ($candidates as $candidate) {
+            if ($this->probeWith([$candidate, '--version'], 'GNU bash')) {
+                return $this->resolved['bash'] = $candidate;
+            }
+        }
+
+        if (($path = $this->probeViaShell('bash', '--version', 'GNU bash')) !== null) {
+            return $this->resolved['bash'] = $path;
+        }
+
+        throw new BinaryNotFoundException(
+            tool: 'bash',
+            triedPaths: array_merge($candidates, ['bash (shell PATH)']),
+            diagnose: $this->diagnose('bash'),
+        );
+    }
+
     public function openssl(): string
     {
         return $this->resolveSoft('openssl');

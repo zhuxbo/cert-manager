@@ -243,6 +243,7 @@ skills/ # 开发规范（详细文档）
 - **vendor 运行时安装（不入库/不打包）**：插件 `backend/vendor/` 约 80M **不入 git 也不进发布 zip**（仅打包 `backend/composer.json` + `backend/composer.lock`）。主系统 `PluginManager` 安装/更新带 `backend/composer.json` 的插件时自动 `composer install --no-dev`（**通用能力**，无 composer.json 的插件如 easy/invoice/notice/api-docs 跳过、零影响）：install 必装、update 仅当 `composer.lock` sha256 较旧版变化才装。复用 `BinaryLocator::composer()` + `UpgradePreflight`（composer/CLI proc_open 探测）+ 阿里云镜像自动切换，逻辑封装在 `App\Services\Plugin\PluginComposerRunner`。**对目标机要求**：composer 可执行 + CLI 未禁 `proc_open`/`exec` + 能访问 packagist（GitHub 不可达时自动切阿里云镜像）；不满足则安装失败并给明确文案（install 清理半装目录、update 回滚备份）。降级：缺 vendor 时 ServiceProvider `loadPluginVendor` is_file 守卫不 fatal、`CloudDeployJob::guardSdk` 把缺 SDK 转 per-target 失败日志，主系统其余零影响
 - **主系统足迹**：backend 仅 `PluginManager` 加通用 composer hook + 新增 `PluginComposerRunner`（其余插件不受影响）；插件功能侧复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`，order 详情 SSL 卡片注入「推送到云平台」按钮 + 目标状态）
 - **详细开发规范见 `plugins/cloud-deploy/skills/development.md`**（核心架构、「新增部署端点」操作模板、其余 provider 任务目录、已知陷阱清单）
+- **nginx 路由自定义（default/enabled/custom 三层）**：`nginx/default/`（系统默认，升级覆盖）/ `nginx/custom/`（用户自定义，升级不覆盖，不进发布包）/ `nginx/enabled/`（渲染产物，不直接编辑）；单一 `nginx/render.sh <安装目录>` 负责合并渲染（custom 同名优先，抑制 duplicate location），`--reload` 附带 `nginx -t` + 回滚；三路径（`bt-install.sh` / `upgrade.sh` / `PackageExtractor`）对称调用；`custom/` 和 `enabled/` 不入发布包。详见 `skills/deploy-ops.md` nginx 路由自定义章节
 
 ## 测试
 

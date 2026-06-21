@@ -2,6 +2,7 @@
 
 namespace App\Services\Upgrade;
 
+use App\Services\Nginx\NginxRenderer;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -149,13 +150,6 @@ class PackageExtractor
             if ($frontendUserDir) {
                 $this->applyFrontendUpgrade($frontendUserDir, 'user');
             }
-
-            // 无条件确保 nginx 前置占位 pre.conf 存在（manager.conf 顶部 include 它）。
-            // 必须独立于"升级包是否带 nginx 目录"：findNginxDir 返回 null 时下面的
-            // applyNginxUpgrade 整个被跳过，若 ensurePreConf 只嵌在其内部，pre.conf 就不会创建，
-            // 导致 reload 因 include 缺失而 502。放在 nginx 覆盖之前，先保证 include 目标就位，
-            // 与 bt-install.sh / upgrade.sh 的无条件创建口径一致。
-            $this->ensurePreConf();
 
             // 应用 nginx 配置更新
             $nginxDir = $this->findNginxDir($extractedPath);
@@ -435,6 +429,8 @@ class PackageExtractor
 
     /**
      * 应用 nginx 配置升级
+     *
+     * default 全受管：覆盖前清空防残留路由（K2），然后 sync，最后调 render.sh 渲染 enabled/。
      */
     protected function applyNginxUpgrade(string $sourceDir): void
     {
@@ -444,63 +440,23 @@ class PackageExtractor
             File::makeDirectory($targetDir, 0755, true);
         }
 
+        // default 全受管，覆盖前清空防残留路由（K2：防已删路由被旧文件复活）
+        File::deleteDirectory("$targetDir/default");
         $this->syncDirectory($sourceDir, $targetDir);
 
-        // 替换 __PROJECT_ROOT__ 占位符
-        $projectRoot = $this->getProjectRoot();
-
-        $managerConf = "$targetDir/manager.conf";
-        if (File::exists($managerConf)) {
-            $content = File::get($managerConf);
-            $content = str_replace('__PROJECT_ROOT__', $projectRoot, $content);
-            File::put($managerConf, $content);
-            Log::info("已替换 manager.conf 中的 __PROJECT_ROOT__ 为 $projectRoot");
-        }
-
-        // 同时处理 frontend/web/web.conf
-        $webConf = base_path('../frontend/web/web.conf');
-        if (File::exists($webConf)) {
-            $content = File::get($webConf);
-            $content = str_replace('__PROJECT_ROOT__', $projectRoot, $content);
-            File::put($webConf, $content);
-            Log::info("已替换 web.conf 中的 __PROJECT_ROOT__ 为 $projectRoot");
-        }
-
-        // 确保 pre.conf 占位存在（新版 manager.conf 顶部 include 它；老系统 frontend/web 无此文件，
-        // 缺失会致后续宝塔/手工 nginx reload 因 include 失败而 502）。后台升级不 reload，但必须保证文件存在
-        $this->ensurePreConf();
+        // 渲染 enabled/（占位替换含 manager.conf + web.conf 播种 + default/custom 解析）；后台不 reload
+        $this->renderNginx($targetDir);
 
         Log::info('已更新 nginx 配置');
     }
 
     /**
-     * 幂等创建 nginx 前置占位 pre.conf（缺失才创建，已存在不覆盖用户自定义）
-     *
-     * 占位注释文本须与 deploy/upgrade.sh、deploy/scripts/bt-install.sh 三处保持一致
+     * 调 nginx/render.sh 渲染 enabled/（纯文件操作；后台不 reload）。
+     * 委托给 NginxRenderer，失败非致命。
      */
-    protected function ensurePreConf(): void
+    protected function renderNginx(string $targetDir): void
     {
-        $preConf = base_path('../frontend/web/pre.conf');
-        if (File::exists($preConf)) {
-            return;
-        }
-
-        $dir = dirname($preConf);
-        if (! File::isDirectory($dir)) {
-            File::makeDirectory($dir, 0755, true);
-        }
-
-        $placeholder = "# 自定义前置 nginx 配置（server 块内，置于默认路由之前）\n"
-            ."# 本文件在系统升级时不会被覆盖，可在此添加自定义 location / rewrite / header 等\n"
-            ."# 留空表示无自定义配置\n";
-
-        if (File::put($preConf, $placeholder) === false) {
-            Log::warning("创建 pre.conf 失败，Nginx reload 可能因 include 缺失而报错: $preConf");
-
-            return;
-        }
-
-        Log::info("已创建 nginx 前置占位 pre.conf: $preConf");
+        app(NginxRenderer::class)->render($this->getProjectRoot());
     }
 
     /**

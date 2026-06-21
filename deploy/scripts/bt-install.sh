@@ -534,32 +534,16 @@ download_application() {
         cp -r "$extract_dir/frontend" "$INSTALL_DIR/"
     fi
 
-    # 复制 Nginx 配置
+    # 复制 Nginx 配置(递归含 default/ 子目录;default 全受管,覆盖前清空防残留路由)
     if [ -d "$extract_dir/nginx" ]; then
         mkdir -p "$INSTALL_DIR/nginx"
-        cp "$extract_dir/nginx"/*.conf "$INSTALL_DIR/nginx/" 2>/dev/null || true
+        rm -rf "$INSTALL_DIR/nginx/default"
+        cp -r "$extract_dir/nginx"/* "$INSTALL_DIR/nginx/"
 
-        # 替换 nginx 配置中的占位符
-        log_info "处理 nginx 配置..."
-        for conf_file in "$INSTALL_DIR/nginx"/*.conf; do
-            if [ -f "$conf_file" ]; then
-                sed -i "s|__PROJECT_ROOT__|$INSTALL_DIR|g" "$conf_file"
-            fi
-        done
+        # 渲染 enabled/(占位替换含 manager.conf + web.conf 播种 + default/custom 解析),纯文件操作不依赖 app
+        log_info "渲染 nginx 路由配置..."
+        bash "$INSTALL_DIR/nginx/render.sh" "$INSTALL_DIR"
         log_success "nginx 配置已更新"
-    fi
-
-    # 确保 pre.conf 占位存在（manager.conf 顶部 include 它；缺失会致 nginx -t 失败 502）
-    if [ ! -f "$INSTALL_DIR/frontend/web/pre.conf" ]; then
-        if mkdir -p "$INSTALL_DIR/frontend/web" && cat >"$INSTALL_DIR/frontend/web/pre.conf" <<'PRE_CONF_EOF'; then
-# 自定义前置 nginx 配置（server 块内，置于默认路由之前）
-# 本文件在系统升级时不会被覆盖，可在此添加自定义 location / rewrite / header 等
-# 留空表示无自定义配置
-PRE_CONF_EOF
-            log_info "已创建 nginx 前置占位 pre.conf"
-        else
-            log_warning "创建 pre.conf 失败，nginx reload 可能因 include 缺失而报错，请手动创建 $INSTALL_DIR/frontend/web/pre.conf"
-        fi
     fi
 
     # 替换 frontend/web 配置中的占位符
