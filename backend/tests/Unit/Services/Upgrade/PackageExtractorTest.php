@@ -506,6 +506,33 @@ test('ensurePreConf 幂等：已存在则不覆盖用户自定义内容', functi
     }
 });
 
+test('applyUpgrade 在升级包无 nginx 目录时仍创建 pre.conf（修复条件性跳过致 reload 502）', function () {
+    // 升级包：含 backend（validatePackage 要求）+ version.json，但【无 nginx 目录】—— 触发 findNginxDir 返回 null
+    $extractedPath = "$this->testDir/pkg_no_nginx";
+    File::makeDirectory("$extractedPath/backend/app", 0755, true);
+    File::makeDirectory("$extractedPath/backend/config", 0755, true);
+    File::put("$extractedPath/backend/app/test.php", '<?php // test');
+    File::put("$extractedPath/version.json", json_encode(['version' => '9.9.9']));
+
+    // base_path 指向 $installDir/backend，使 base_path('..') == $installDir
+    $installDir = "$this->testDir/install_no_nginx";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $result = $this->extractor->applyUpgrade($extractedPath);
+
+        expect($result)->toBeTrue();
+        // 关键：升级包无 nginx 目录时，pre.conf 仍被无条件创建（不再被 if ($nginxDir) 跳过）
+        $preConf = "$installDir/frontend/web/pre.conf";
+        expect($preConf)->toBeFile();
+        expect(File::get($preConf))->toContain('自定义前置 nginx 配置');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
 /**
  * 创建测试用的有效升级包 ZIP
  */

@@ -150,6 +150,13 @@ class PackageExtractor
                 $this->applyFrontendUpgrade($frontendUserDir, 'user');
             }
 
+            // 无条件确保 nginx 前置占位 pre.conf 存在（manager.conf 顶部 include 它）。
+            // 必须独立于"升级包是否带 nginx 目录"：findNginxDir 返回 null 时下面的
+            // applyNginxUpgrade 整个被跳过，若 ensurePreConf 只嵌在其内部，pre.conf 就不会创建，
+            // 导致 reload 因 include 缺失而 502。放在 nginx 覆盖之前，先保证 include 目标就位，
+            // 与 bt-install.sh / upgrade.sh 的无条件创建口径一致。
+            $this->ensurePreConf();
+
             // 应用 nginx 配置更新
             $nginxDir = $this->findNginxDir($extractedPath);
             if ($nginxDir) {
