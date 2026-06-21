@@ -183,7 +183,8 @@ w2_registry_singleton() {
 }
 
 w3_mark_test_skipped() {
-    git grep -n 'markTestSkipped' -- backend/tests || true
+    # 排除注释行（//、*、# 开头）：注释里提到 markTestSkipped 不算实际 skip（与 z2/z5 同口径）
+    git grep -n 'markTestSkipped' -- backend/tests | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|//|#)' || true
 }
 
 w4_faker_semantic_noise() {

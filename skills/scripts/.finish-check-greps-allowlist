@@ -1,3 +1,33 @@
 # finish-check-greps.sh 豁免清单
 # 格式：每行若干空白分隔的子串（建议"文件路径 模式片段"），命中行需同时包含所有子串才豁免；
 # 不用行号防漂移。'#' 后为注释。新增豁免必须附理由。
+
+# ===== 2026-06-21 finish-check W1/W3/W4 逐处人工核对后豁免（均误报，无真 bug）=====
+# 子串锚定"文件 + 当前行特征"，未来新增的不同赋值/skip/faker 仍会重新 WARN（保留保护）。
+
+# --- W1 改密入口：均同方法/命令内调 revokeAllSessions 吊销会话（反模式 17 合规，已逐处亲验）---
+ResetAdminPasswordCommand.php $admin->password = $password   # CLI 重置后调 revokeAllSessions
+Admin/AuthController.php $admin->password = $request->input('newPassword')   # updatePassword 事务内 revokeAllSessions
+User/AuthController.php $user->password = $newPassword   # updatePassword 事务内 revokeAllSessions
+User/AuthController.php $user->password = $password   # resetPassword 事务内 revokeAllSessions
+
+# --- W3 markTestSkipped：均为合理环境门（mysql-only / 缺二进制 / 缺 fixtures），非吞 bug ---
+BackupCommandTest.php mysql-only   # 备份命令仅 mysql 适用
+RestoreBackupJobTest.php 仅 mysql/mariadb 适用   # 非 mysql 守门由 RestoreBackupJobDriverGuardTest 覆盖
+SnapshotTest.php fixtures 目录不存在   # Compat capture 模式 fixtures 缺失
+SnapshotTest.php fixtures 目录为空   # Compat capture 模式 fixtures 空
+BackupServiceTest.php 当前 default 不是 mysql   # 备份服务仅 mysql
+BinaryLocatorTest.php 本机无 composer   # 环境无 composer 二进制时跳过
+BinaryLocatorTest.php 本机无 curl   # 环境无 curl 二进制时跳过
+PfxDownloadTest.php 需要真 OpenSSL CLI   # 环境无 OpenSSL CLI 时跳过
+DatabaseStructureServiceTest.php 数据库连接不可用   # 环境无 DB 连接时跳过
+
+# --- W4 factory faker：均为展示字段，无 unique/业务校验撞风险 ---
+NotificationFactory.php 'title' => fake()->sentence(4)   # 通知标题，可重复
+NotificationFactory.php 'content' => fake()->paragraph()   # 通知内容，可重复
+ProductFactory.php 'name' => fake()->words(3, true)   # products.name 仅 index 非 unique
+SettingFactory.php 'value' => fake()->word()   # 设置值展示字段（含 json_encode 内 word）
+SettingFactory.php 'description' => fake()->sentence()   # 设置描述
+SettingFactory.php $opts = $options   # 选项默认值
+SettingGroupFactory.php 'title' => fake()->words(2, true)   # 分组标题
+SettingGroupFactory.php 'description' => fake()->sentence()   # 分组描述
