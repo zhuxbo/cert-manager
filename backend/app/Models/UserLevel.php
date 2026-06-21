@@ -25,11 +25,16 @@ class UserLevel extends BaseModel
 
     public function users(): HasMany
     {
-        return $this->hasMany(User::class, 'code', 'level_code');
+        return $this->hasMany(User::class, 'level_code', 'code');
+    }
+
+    public function customUsers(): HasMany
+    {
+        return $this->hasMany(User::class, 'custom_level_code', 'code');
     }
 
     public function productPrices(): HasMany
     {
-        return $this->hasMany(ProductPrice::class, 'code', 'level_code');
+        return $this->hasMany(ProductPrice::class, 'level_code', 'code');
     }
 }

@@ -7,6 +7,8 @@ use App\Http\Requests\UserLevel\GetIdsRequest;
 use App\Http\Requests\UserLevel\IndexRequest;
 use App\Http\Requests\UserLevel\StoreRequest;
 use App\Http\Requests\UserLevel\UpdateRequest;
+use App\Models\ProductPrice;
+use App\Models\User;
 use App\Models\UserLevel;
 
 class UserLevelController extends BaseController
@@ -135,7 +137,7 @@ class UserLevelController extends BaseController
     }
 
     /**
-     * 删除用户级别
+     * 删除用户级别（被用户/定制级别/产品价格引用时禁止删除）
      */
     public function destroy($id): void
     {
@@ -144,12 +146,16 @@ class UserLevelController extends BaseController
             $this->error('用户级别不存在');
         }
 
+        if ($refs = $this->referenceSummary($userLevel->code)) {
+            $this->error("无法删除级别「{$userLevel->name}」：仍有 $refs 在使用");
+        }
+
         $userLevel->delete();
         $this->success();
     }
 
     /**
-     * 批量删除用户级别
+     * 批量删除用户级别（任一被引用即整批拒绝，列出被占用级别）
      */
     public function batchDestroy(GetIdsRequest $request): void
     {
@@ -160,7 +166,43 @@ class UserLevelController extends BaseController
             $this->error('用户级别不存在');
         }
 
+        $blocked = [];
+        foreach ($userLevels as $userLevel) {
+            if ($refs = $this->referenceSummary($userLevel->code)) {
+                $blocked[] = "「{$userLevel->name}」($refs)";
+            }
+        }
+        if (! empty($blocked)) {
+            $this->error('以下级别正在使用，无法删除：'.implode('、', $blocked));
+        }
+
         UserLevel::destroy($ids);
         $this->success();
+    }
+
+    /**
+     * 统计某用户级别（按 code）的引用情况，返回可读描述；无引用返回空串。
+     *
+     * 引用来源：users.level_code、users.custom_level_code、product_prices.level_code。
+     * 三者均按 code 关联且无 DB 外键，故删除保护必须在应用层兜底。
+     * OR 条件用闭包包裹，避免与模型全局作用域组合时的优先级问题。
+     */
+    private function referenceSummary(string $code): string
+    {
+        $userCount = User::where(function ($query) use ($code) {
+            $query->where('level_code', $code)
+                ->orWhere('custom_level_code', $code);
+        })->count();
+        $priceCount = ProductPrice::where('level_code', $code)->count();
+
+        $parts = [];
+        if ($userCount > 0) {
+            $parts[] = "$userCount 个用户";
+        }
+        if ($priceCount > 0) {
+            $parts[] = "$priceCount 条产品价格";
+        }
+
+        return implode('、', $parts);
     }
 }
