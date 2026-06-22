@@ -215,6 +215,20 @@ class DomainUtil
     }
 
     /**
+     * 将域名统一小写归一，多个域名以逗号分隔。
+     *
+     * 域名大小写不敏感（RFC 4343）。整串 strtolower 仅转 ASCII A-Z，
+     * 不影响逗号、点分隔符，也不碰多字节 UTF-8（中文）字节与 punycode 解码语义。
+     *
+     * @param  string  $domains  原始域名，多个域名以逗号分隔
+     * @return string 全小写的域名字符串
+     */
+    public static function lowercaseDomains(string $domains): string
+    {
+        return strtolower($domains);
+    }
+
+    /**
      * 移除赠送的域名，返回最少的域名列表
      *
      * - 移除通配符匹配的一级子域名，对所有非通配符的域名处理，不去掉 www

@@ -183,8 +183,9 @@ class UserLevelController extends BaseController
     /**
      * 统计某用户级别（按 code）的引用情况，返回可读描述；无引用返回空串。
      *
-     * 引用来源：users.level_code、users.custom_level_code、product_prices.level_code。
-     * 三者均按 code 关联且无 DB 外键，故删除保护必须在应用层兜底。
+     * 引用来源：users.level_code、users.custom_level_code、product_prices.level_code，
+     * 以及 site.sourceLevel 注册来源映射（注册流程据此给新用户赋 level_code）。
+     * 四者均按 code 关联且无 DB 外键，故删除保护必须在应用层兜底。
      * OR 条件用闭包包裹，避免与模型全局作用域组合时的优先级问题。
      */
     private function referenceSummary(string $code): string
@@ -195,12 +196,21 @@ class UserLevelController extends BaseController
         })->count();
         $priceCount = ProductPrice::where('level_code', $code)->count();
 
+        // site.sourceLevel 是「注册来源 → level_code」映射，AuthController::register /
+        // registerWithMobile 及 easy 插件据此给新注册用户赋 level_code。删除被它引用的级别
+        // 会令后续该来源的新注册用户 level_code 悬空 → getMinPrice 取不到价 → 0 元签发。
+        $sourceLevel = get_system_setting('site', 'sourceLevel', []);
+        $sourceCount = is_array($sourceLevel) ? count(array_keys($sourceLevel, $code, true)) : 0;
+
         $parts = [];
         if ($userCount > 0) {
             $parts[] = "$userCount 个用户";
         }
         if ($priceCount > 0) {
             $parts[] = "$priceCount 条产品价格";
+        }
+        if ($sourceCount > 0) {
+            $parts[] = "$sourceCount 个注册来源映射";
         }
 
         return implode('、', $parts);

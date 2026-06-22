@@ -268,6 +268,14 @@ class Setting extends BaseModel
         $group = SettingGroup::find($groupId);
         if ($group) {
             Cache::forget(self::CACHE_PREFIX.'group_name:'.$group->name);
+
+            // 支付配置（wechat/alipay）另有独立缓存 pay_config_{group}（PaymentConfigTrait，365 天，
+            // 含已注册的微信公钥 / 支付宝证书路径）。保存支付设置时必须同步清掉，否则缓存与 live 设置
+            // 不一致：wechat 公钥轮换后 getPayConfig 命中旧缓存只注册旧公钥，而 wechatSerial 实时读
+            // live 发新 serial 头，微信遂以新公钥签回调、本地却验不了 → 回调验签失败、入账中断。
+            if (in_array($group->name, ['wechat', 'alipay'], true)) {
+                Cache::forget('pay_config_'.$group->name);
+            }
         }
     }
 

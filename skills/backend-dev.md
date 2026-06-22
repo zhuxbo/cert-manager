@@ -444,7 +444,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - 配置项：`system_setting` 的 `wechat.publicKeyId` + `wechat.publicKey`（base64），`PaymentConfigTrait` 注入 `wechat_public_cert_path[publicKeyId]=公钥文件`
 - 切换流程：① 后台发起灰度 → ② 等回调进度 100%（约 7 天）→ ③ 部署带公钥头改动 → ④ 应答进度上升（近 7 天窗口，需几天到 100%）→ ⑤ 后台「确认切换」、停用平台证书
-- 改支付配置后需 `config:clear`（走 `pay_config_*` cache）
+- 保存 `wechat`/`alipay` 设置时 `Setting::clearGroupCache` 自动同步清 `pay_config_*` 应用缓存（避免缓存里旧公钥/证书与 live 设置不一致——公钥轮换后"发新 serial 头但本地仍注册旧公钥"致回调验签失败），无需手动干预；如需手动清，用 `optimize:clear`/`cache:clear`（**非** `config:clear`——后者只清 `bootstrap/cache/config.php` 编译配置，不碰 `cache()` 落的 `pay_config_*` 应用缓存）
 
 ## 安全补强
 

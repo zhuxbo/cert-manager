@@ -2,9 +2,12 @@
 
 use App\Models\Admin;
 use App\Models\ProductPrice;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\User;
 use App\Models\UserLevel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Tests\Traits\ActsAsAdmin;
 
 uses(ActsAsAdmin::class);
@@ -97,4 +100,47 @@ test('batchDestroy 全部无引用则成功删除', function () {
     $resp->assertOk()->assertJson(['code' => 1]);
     expect(UserLevel::find($a->id))->toBeNull();
     expect(UserLevel::find($b->id))->toBeNull();
+});
+
+// ==================== site.sourceLevel 注册来源映射引用（删除保护缺口） ====================
+
+// site.sourceLevel 是「注册来源 → level_code」映射，注册流程（AuthController::register /
+// registerWithMobile、easy 插件）据此给新用户赋 level_code。删除被它引用的级别会令
+// 后续该来源的新注册用户 level_code 悬空 → getMinPrice 取不到价 → 0 元免费签证书。
+test('destroy 拒绝删除被 site.sourceLevel 注册来源映射引用的级别', function () {
+    Cache::flush();
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => 'Site', 'weight' => 0]);
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'sourceLevel'],
+        ['type' => 'array', 'value' => ['promo' => 'vip2']]
+    );
+    // 仅被 sourceLevel 映射引用，无任何 user / product_price 引用
+    $level = UserLevel::factory()->create(['code' => 'vip2', 'name' => 'VIP2会员']);
+
+    $resp = $this->actingAsAdmin($this->admin)->deleteJson("/api/admin/user-level/{$level->id}");
+
+    $resp->assertOk()->assertJson(['code' => 0]);
+    expect($resp->json('msg'))->toContain('VIP2会员');
+    expect($resp->json('msg'))->toContain('注册来源');
+    expect(UserLevel::find($level->id))->not->toBeNull(); // 未被删除
+});
+
+test('batchDestroy 拒绝删除被 site.sourceLevel 引用的级别且整批不删', function () {
+    Cache::flush();
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => 'Site', 'weight' => 0]);
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'sourceLevel'],
+        ['type' => 'array', 'value' => ['promo' => 'vip2']]
+    );
+    $referenced = UserLevel::factory()->create(['code' => 'vip2', 'name' => 'VIP2会员']);
+    $free = UserLevel::factory()->create(['code' => 'free2', 'name' => '空闲级别2']);
+
+    $resp = $this->actingAsAdmin($this->admin)->deleteJson('/api/admin/user-level/batch', [
+        'ids' => [$referenced->id, $free->id],
+    ]);
+
+    $resp->assertOk()->assertJson(['code' => 0]);
+    expect($resp->json('msg'))->toContain('VIP2会员');
+    expect(UserLevel::find($referenced->id))->not->toBeNull();
+    expect(UserLevel::find($free->id))->not->toBeNull();
 });

@@ -320,6 +320,10 @@ trait ActionTrait
         if ($productType === 'ssl') {
             // SSL：处理域名、CSR、DCV 验证
             $params['domains'] ??= '';
+            // 域名大小写不敏感，先 CA 无关地统一小写归一——否则经 API/Deploy 入口提交的
+            // 混合大小写域名会在 replace_san=0 合并时与旧证书小写值 array_unique 去重不掉，
+            // 产生幽灵 SAN 多扣费，并把混合大小写外发上游/CA。
+            $params['domains'] = DomainUtil::lowercaseDomains($params['domains']);
             // 仅 Certum 产品把 punycode 域名转回中文（Unicode）；其他 CA 保持原样（punycode）
             if (($params['product']['ca'] ?? '') === 'certum') {
                 $params['domains'] = DomainUtil::convertToUnicodeDomains($params['domains']);
