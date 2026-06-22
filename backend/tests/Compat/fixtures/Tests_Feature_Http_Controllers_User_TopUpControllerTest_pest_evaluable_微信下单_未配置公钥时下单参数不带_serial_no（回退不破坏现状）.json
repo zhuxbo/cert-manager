@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\TopUpControllerTest::__pest_evaluable_微信下单_未配置公钥时下单参数不带___serial__no（回退不破坏现状）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/top-up/wechat",
+            "request_keys": [
+                "amount"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "code_url": "string",
+                    "fundId": "integer"
+                }
+            }
+        }
+    ]
+}

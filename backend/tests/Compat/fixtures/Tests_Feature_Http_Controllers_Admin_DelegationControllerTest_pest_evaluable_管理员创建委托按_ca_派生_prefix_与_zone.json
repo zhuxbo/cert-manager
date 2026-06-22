@@ -1,12 +1,13 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DelegationControllerTest::__pest_evaluable_创建委托",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DelegationControllerTest::__pest_evaluable_管理员创建委托按_ca_派生_prefix_与_zone",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/delegation",
+            "uri_pattern": "/api/admin/delegation",
             "request_keys": [
                 "ca",
+                "user_id",
                 "zone"
             ],
             "response_status": "2xx",
@@ -24,7 +25,11 @@
                     "updated_at": "string",
                     "created_at": "string",
                     "proxy_zone": "string",
-                    "target_fqdn": "string"
+                    "target_fqdn": "string",
+                    "cname_to": {
+                        "host": "string",
+                        "value": "string"
+                    }
                 }
             }
         }

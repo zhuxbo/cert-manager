@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserControllerTest::__pest_evaluable_非法_sort__prop_被_validation_拒绝",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/user",
+            "request_keys": [
+                "sort_prop"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "sort_prop": "array<string>"
+                }
+            }
+        }
+    ]
+}

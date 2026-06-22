@@ -1,0 +1,15 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_destroy_允许删除无任何引用的级别",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/admin/user-level/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}
