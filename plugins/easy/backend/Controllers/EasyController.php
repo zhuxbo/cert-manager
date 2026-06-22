@@ -575,8 +575,7 @@ class EasyController extends Controller
                         'site_name' => $siteName,
                         'site_url' => $siteDomain,
                         'email' => $email,
-                    ],
-                    ['mail']
+                    ]
                 );
 
                 app(NotificationCenter::class)->dispatch($intent);

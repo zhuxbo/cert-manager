@@ -2,6 +2,7 @@
 
 namespace App\Services\Upgrade;
 
+use App\Services\Nginx\NginxRenderer;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -428,6 +429,8 @@ class PackageExtractor
 
     /**
      * 应用 nginx 配置升级
+     *
+     * default 全受管：覆盖前清空防残留路由（K2），然后 sync，最后调 render.sh 渲染 enabled/。
      */
     protected function applyNginxUpgrade(string $sourceDir): void
     {
@@ -437,29 +440,23 @@ class PackageExtractor
             File::makeDirectory($targetDir, 0755, true);
         }
 
+        // default 全受管，覆盖前清空防残留路由（K2：防已删路由被旧文件复活）
+        File::deleteDirectory("$targetDir/default");
         $this->syncDirectory($sourceDir, $targetDir);
 
-        // 替换 __PROJECT_ROOT__ 占位符
-        $projectRoot = $this->getProjectRoot();
-
-        $managerConf = "$targetDir/manager.conf";
-        if (File::exists($managerConf)) {
-            $content = File::get($managerConf);
-            $content = str_replace('__PROJECT_ROOT__', $projectRoot, $content);
-            File::put($managerConf, $content);
-            Log::info("已替换 manager.conf 中的 __PROJECT_ROOT__ 为 $projectRoot");
-        }
-
-        // 同时处理 frontend/web/web.conf
-        $webConf = base_path('../frontend/web/web.conf');
-        if (File::exists($webConf)) {
-            $content = File::get($webConf);
-            $content = str_replace('__PROJECT_ROOT__', $projectRoot, $content);
-            File::put($webConf, $content);
-            Log::info("已替换 web.conf 中的 __PROJECT_ROOT__ 为 $projectRoot");
-        }
+        // 渲染 enabled/（占位替换含 manager.conf + web.conf 播种 + default/custom 解析）；后台不 reload
+        $this->renderNginx($targetDir);
 
         Log::info('已更新 nginx 配置');
+    }
+
+    /**
+     * 调 nginx/render.sh 渲染 enabled/（纯文件操作；后台不 reload）。
+     * 委托给 NginxRenderer，失败非致命。
+     */
+    protected function renderNginx(string $targetDir): void
+    {
+        app(NginxRenderer::class)->render($this->getProjectRoot());
     }
 
     /**

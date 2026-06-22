@@ -115,9 +115,9 @@ test('channels.api=false 后 v1/v2/acme(api.acme.php) 路由都不再注册', fu
     // v1 / v2 独有路径
     expect($uris)->not->toContain('api/V1/health');
     expect($uris)->not->toContain('api/v2/get-products');
-    // api.acme.php 独有路径（user.php 没有 get-products / cancel；只有 user/admin acme 模块）
-    expect($uris)->not->toContain('api/acme/get-products');
-    expect($uris)->not->toContain('api/acme/cancel');
+    // api.acme.php 独有路径，迁移后挂 /api/v2/acme/*（user.php 没有 get-products / cancel）
+    expect($uris)->not->toContain('api/v2/acme/get-products');
+    expect($uris)->not->toContain('api/v2/acme/cancel');
 
     // admin/user/deploy 仍在
     expect($uris)->toContain('api/admin/login');

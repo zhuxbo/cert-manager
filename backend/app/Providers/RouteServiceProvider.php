@@ -39,15 +39,14 @@ class RouteServiceProvider extends ServiceProvider
      * 不需要重新引导整个应用。boot() 与测试 helper 共用同一段实现，避免漂移。
      *
      * 注册顺序保持与历史 glob('api.*.php') 字母序一致（acme < admin < deploy < health
-     * < meta < user < v1 < v2），以兼容路径冲突时"后注册覆盖前注册"的现有行为。
-     * 例如 /api/acme/new 同时在 api.acme.php（api channel）和 api.user.php
-     * （user channel）声明，历史上 user.php 在 acme.php 之后注册 → User\AcmeController
-     * 覆盖 Acme\ApiController；改为按 channel 分组注册时必须保留同样顺序。
+     * < meta < user < v1 < v2）。历史上对外 acme 曾声明在 /api/acme/* 与 user.php 同路径，
+     * 靠注册顺序让 user 覆盖；现对外 ACME API 已迁至 /api/v2/acme/*（api.acme.php 内 prefix），
+     * 与 user.php 的 /api/acme/* 不再有路径冲突。顺序权重仅作历史兼容保留。
      */
     public static function registerApiRoutes(string $routePath): void
     {
         // channel → routes/api.*.php 文件名映射 + 注册顺序权重（小者先注册）。
-        // 权重对应字母序，确保 /api/acme/new 等冲突路径仍由 user.php 覆盖 api.acme.php。
+        // 权重对应字母序（历史兼容）；对外 acme 迁 /api/v2/acme 后已无同路径冲突。
         $files = [
             // file => [channel, weight]
             'api.acme.php' => ['api', 10],

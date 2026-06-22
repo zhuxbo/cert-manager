@@ -1,13 +1,14 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_acme_new_未传_period_时默认_12",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_v2_acme_new_字段集与上游对齐：refer__id_透传___plus_int_0_1____不含_source",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/acme/new",
+            "uri_pattern": "/api/v2/acme/new",
             "request_keys": [
                 "contact_email",
-                "product_code"
+                "product_code",
+                "refer_id"
             ],
             "response_status": "2xx",
             "response_schema": {

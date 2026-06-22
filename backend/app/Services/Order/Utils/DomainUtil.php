@@ -215,6 +215,20 @@ class DomainUtil
     }
 
     /**
+     * 将域名统一小写归一，多个域名以逗号分隔。
+     *
+     * 域名大小写不敏感（RFC 4343）。整串 strtolower 仅转 ASCII A-Z，
+     * 不影响逗号、点分隔符，也不碰多字节 UTF-8（中文）字节与 punycode 解码语义。
+     *
+     * @param  string  $domains  原始域名，多个域名以逗号分隔
+     * @return string 全小写的域名字符串
+     */
+    public static function lowercaseDomains(string $domains): string
+    {
+        return strtolower($domains);
+    }
+
+    /**
      * 移除赠送的域名，返回最少的域名列表
      *
      * - 移除通配符匹配的一级子域名，对所有非通配符的域名处理，不去掉 www
@@ -354,12 +368,18 @@ class DomainUtil
             } else {
                 $rootDomain = self::getRootDomain($domain);
 
-                if ($domain === $rootDomain) {
-                    $allDomains[] = 'www.'.$rootDomain;
+                // getRootDomain 总是返回 Unicode 形式的根域，而 $domain 可能是 punycode。
+                // 归一到 ASCII 比较，避免 punycode 输入与 Unicode 根域失配；
+                // 补出的 www / 根域保持 $domain 原编码（punycode 输入→punycode 赠送域名）。
+                $asciiDomain = self::convertToAscii($domain);
+                $asciiRoot = self::convertToAscii($rootDomain);
+
+                if ($asciiDomain === $asciiRoot) {
+                    $allDomains[] = 'www.'.$domain;
                 }
 
-                if ($domain === 'www.'.$rootDomain) {
-                    $allDomains[] = $rootDomain;
+                if ($asciiDomain === 'www.'.$asciiRoot) {
+                    $allDomains[] = substr($domain, 4);
                 }
             }
         }

@@ -10,7 +10,7 @@ info:
     - **统一响应**：`{ "code": 1|0, "msg": "", "data": {...} }`。
 
 servers:
-  - url: /api/acme
+  - url: /api/v2/acme
     description: 当前站点
 
 security:

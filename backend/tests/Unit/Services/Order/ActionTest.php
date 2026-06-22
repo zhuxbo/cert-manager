@@ -996,6 +996,56 @@ test('commit 非 pending 状态报错：订单状态不是待提交', function (
     expect($cert->fresh()->status)->toBe('active');
 });
 
+// ==================== importProduct weight 保护 ====================
+
+/**
+ * 构造上游产品 item，注入 Order\Api mock，执行 importProduct(update 分支)
+ */
+function runImportProductUpdate(Action $service, Product $existing, array $upstreamItem): void
+{
+    $upstreamItem['code'] = $existing->api_id;
+
+    $mockApi = Mockery::mock(Api::class);
+    $mockApi->shouldReceive('getProducts')
+        ->andReturn([
+            'code' => 1,
+            'data' => [$upstreamItem],
+        ]);
+
+    $ref = new ReflectionClass($service);
+    $prop = $ref->getProperty('api');
+    $prop->setAccessible(true);
+    $prop->setValue($service, $mockApi);
+
+    try {
+        $service->importProduct('default', '', '', 'update');
+    } catch (ApiResponseException $e) {
+        // importProduct 末尾 success() 会抛，正常
+    }
+}
+
+test('importProduct update：本地 weight 非 0 时上游 weight 不覆盖', function () {
+    $product = Product::factory()->create([
+        'source' => 'default',
+        'weight' => 5,
+    ]);
+
+    runImportProductUpdate($this->service, $product, ['weight' => 10]);
+
+    expect($product->fresh()->weight)->toBe(5);
+});
+
+test('importProduct update：本地 weight 为 0（默认）时上游 weight 可写入', function () {
+    $product = Product::factory()->create([
+        'source' => 'default',
+        'weight' => 0,
+    ]);
+
+    runImportProductUpdate($this->service, $product, ['weight' => 10]);
+
+    expect($product->fresh()->weight)->toBe(10);
+});
+
 test('checkDuplicate 原子占位：首次放行 0，同参数重复返回剩余秒数，不同参数独立', function () {
     $method = new ReflectionMethod($this->service, 'checkDuplicate');
     $method->setAccessible(true);

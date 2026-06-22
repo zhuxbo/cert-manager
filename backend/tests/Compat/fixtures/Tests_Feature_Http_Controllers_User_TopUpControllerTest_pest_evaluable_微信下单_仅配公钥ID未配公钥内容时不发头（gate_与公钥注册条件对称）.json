@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\TopUpControllerTest::__pest_evaluable_微信下单_仅配公钥ID未配公钥内容时不发头（gate_与公钥注册条件对称）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/top-up/wechat",
+            "request_keys": [
+                "amount"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "code_url": "string",
+                    "fundId": "integer"
+                }
+            }
+        }
+    ]
+}

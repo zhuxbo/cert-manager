@@ -556,3 +556,37 @@ test('dry-run 雪花表显示正确的记录数和冲突检测', function () {
 
     expect($output)->toContain('3条')->toContain('0 条冲突');
 });
+
+// ===================== 生成列 dedup_key：导出端不写值 =====================
+
+test('export 不导出生成列 dedup_key', function () {
+    $user = User::factory()->create();
+    Transaction::factory()->create(['user_id' => $user->id, 'type' => 'order']);
+
+    $this->artisan("user:data export {$user->id} --force")->assertSuccessful();
+
+    $files = glob(storage_path("app/private/exports/users/{$user->id}_*.sql"));
+    $content = file_get_contents($files[0]);
+
+    preg_match('/INSERT INTO `transactions` \(([^)]+)\)/', $content, $m);
+    expect($m)->not->toBeEmpty();
+    expect($m[1])->not->toContain('dedup_key');
+});
+
+test('export 导出后 transactions 可导入恢复（生成列不阻断）', function () {
+    $user = User::factory()->create();
+    Transaction::factory()->count(3)->create(['user_id' => $user->id, 'type' => 'order']);
+
+    $this->artisan("user:data export {$user->id} --force")->assertSuccessful();
+    $files = glob(storage_path("app/private/exports/users/{$user->id}_*.sql"));
+    $filePath = $files[0];
+
+    Transaction::where('user_id', $user->id)->delete();
+    $user->delete();
+
+    $this->artisan("user:data import {$user->id} --force --file=$filePath")
+        ->assertSuccessful()
+        ->expectsOutputToContain('导入完成');
+
+    expect(Transaction::where('user_id', $user->id)->count())->toBe(3);
+});

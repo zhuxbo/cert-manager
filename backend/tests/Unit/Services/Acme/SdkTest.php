@@ -156,10 +156,11 @@ test('returns error on http failure', function () {
 });
 
 test('falls back to ca url when acme_url not set', function () {
+    // ca.url = .../api/v2（只配一个 v2 Token），回落 acme baseUrl 应得 .../api/v2/acme
     createAcmeSdkSettings(caUrl: 'https://gateway.test/api/v2', caToken: 'fallback-token');
 
     Http::fake([
-        'gateway.test/api/acme/get-products*' => Http::response(['code' => 1, 'data' => []], 200),
+        'gateway.test/api/v2/acme/get-products*' => Http::response(['code' => 1, 'data' => []], 200),
     ]);
 
     $sdk = new Sdk;
@@ -168,7 +169,7 @@ test('falls back to ca url when acme_url not set', function () {
     expect($result['code'])->toBe(1);
 
     Http::assertSent(function ($request) {
-        return str_contains($request->url(), 'https://gateway.test/api/acme/get-products')
+        return str_contains($request->url(), 'https://gateway.test/api/v2/acme/get-products')
             && $request->hasHeader('Authorization', 'Bearer fallback-token');
     });
 });

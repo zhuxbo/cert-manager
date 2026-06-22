@@ -28,6 +28,12 @@ class TaskJob implements ShouldQueue
 {
     use DetectsConcurrencyErrors, Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * 最大尝试次数：与生产 worker `--tries 3` 一致（重试次数不变），显式声明以便 handle()
+     * 内用 `$this->attempts() < $this->tries` 判断并发错误是否还能自愈重试。
+     */
+    public int $tries = 3;
+
     protected array $data;
 
     /**
@@ -97,8 +103,8 @@ class TaskJob implements ShouldQueue
                     // 并发错误（死锁 1213 / 锁等待超时 1205 / 序列化失败）：MySQL 已回滚整个事务，
                     // 连接已不在事务中。绝不能继续 $task->update() 或让闭包正常返回触发外层 commit
                     // —— 否则抛 PDOException "There is no active transaction" 且 task 状态错乱。
-                    // 抛出 → 外层 DB::transaction 回滚 → queue --tries 重试（--delay 错峰自愈）；
-                    // 重试耗尽后由 failed() 兜底把 task 标记为 failed，避免永久卡 executing。
+                    // 抛出 → 逸出闭包触发外层 DB::transaction 回滚 → 由 handle() 外层 catch 统一处理：
+                    // 未达 tries 上限静默 release 错峰自愈、达上限才冒出由 failed() 兜底标 failed。
                     if ($e instanceof DeadlockException || $this->causedByConcurrencyError($e)) {
                         throw $e;
                     }
@@ -127,6 +133,20 @@ class TaskJob implements ShouldQueue
             if ($failedException) {
                 $this->fail($failedException);
             }
+        } catch (Throwable $e) {
+            // 并发错误（死锁 1213 / 锁等待 1205 / 序列化失败 40001）：MySQL 已回滚整个事务、连接已不在事务中。
+            // 未达 tries 上限时由本 Job 自己 release 错峰重试 —— 关键：不抛出，worker 不进异常上报路径，
+            // 避免每次重试都 report() 把「会自愈的偶发死锁」刷进 error_logs + laravel.log（运维噪音）。
+            // 达上限才冒出：worker report 一次（最终失败记录）+ failJob → failed() 兜底标 task failed。
+            // release 不碰 task（保持 executing 等下次拾取），与 failed() 兜底标记构成完整闭环。
+            if (($e instanceof DeadlockException || $this->causedByConcurrencyError($e))
+                && $this->attempts() < $this->tries) {
+                $this->release(random_int(3, 8)); // 错峰，降低重试又撞同一二级索引间隙的概率
+
+                return;
+            }
+
+            throw $e;
         } finally {
             // 显式 flush：worker 长驻进程不会在请求结束自动 flush，必须 finally 兜底
             LogBuffer::flush();

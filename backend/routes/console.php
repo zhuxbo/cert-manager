@@ -22,6 +22,16 @@ Schedule::command('schedule:validate')
     ->name('validate-certificates')
     ->description('自动验证处理中的证书');
 
+// 无验证信息订单同步 - 每天 9/15/21 点执行
+// 处理 dcv 或 validation 为空的 processing/approving 订单（codesign/docsign/smime 等无 DCV 产品），
+// 这类订单被 schedule:validate 的「dcv 且 validation 都非空」查询排除，需独立兜底同步；与其互为补集不重叠
+Schedule::command('schedule:sync')
+    ->cron('0 9,15,21 * * *')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('sync-no-dcv-orders')
+    ->description('同步无验证信息（dcv/validation 为空）的处理中订单');
+
 // 证书过期通知任务 - 每天上午9点执行
 Schedule::command('schedule:expire')
     ->dailyAt('09:00')

@@ -36,6 +36,18 @@ export const brandOptions = brandOptionsAll.filter(brand =>
   brandConfig.includes(brand.value)
 );
 
+// CA 选项（委托创建按 CA 选择，后端经 ca_map 派生 prefix）
+export const caOptionsAll = [
+  { label: "Sectigo", value: "sectigo" },
+  { label: "Certum", value: "certum" },
+  { label: "DigiCert", value: "digicert" },
+  { label: "GlobalSign", value: "globalsign" },
+  { label: "TrustAsia", value: "trustasia" },
+  { label: "上海CA", value: "sheca" },
+  { label: "CFCA", value: "cfca" },
+  { label: "沃通", value: "wotrus" }
+];
+
 // 保险币种选项
 export const warrantyCurrencyOptions = [
   { label: "USD", value: "$" },

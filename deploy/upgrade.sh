@@ -1497,29 +1497,15 @@ perform_upgrade() {
         fi
     done
 
-    # 复制 nginx 配置目录（路由配置）
+    # 复制 nginx 配置目录(default 全受管,覆盖前清空防残留路由)
     if [ -d "$src_dir/nginx" ]; then
         mkdir -p "$INSTALL_DIR/nginx"
+        rm -rf "$INSTALL_DIR/nginx/default"
         cp -r "$src_dir/nginx"/* "$INSTALL_DIR/nginx/"
+
+        # 渲染 enabled/(占位替换含 manager.conf + web.conf 播种 + default/custom 解析)
+        bash "$INSTALL_DIR/nginx/render.sh" "$INSTALL_DIR"
         log_info "已更新 nginx 配置"
-
-        # 替换 __PROJECT_ROOT__ 占位符
-        local project_root
-        # 宝塔环境使用实际安装目录
-        project_root="$INSTALL_DIR"
-
-        if [ -f "$INSTALL_DIR/nginx/manager.conf" ]; then
-            sed -i "s|__PROJECT_ROOT__|$project_root|g" "$INSTALL_DIR/nginx/manager.conf"
-            log_info "已替换 manager.conf 中的路径占位符"
-        fi
-    fi
-
-    # 替换 web.conf 中的占位符
-    if [ -f "$INSTALL_DIR/frontend/web/web.conf" ]; then
-        local project_root
-        project_root="$INSTALL_DIR"
-        sed -i "s|__PROJECT_ROOT__|$project_root|g" "$INSTALL_DIR/frontend/web/web.conf"
-        log_info "已替换 web.conf 中的路径占位符"
     fi
 
     # 复制根目录版本配置（保留用户的 release_url）

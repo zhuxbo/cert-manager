@@ -44,6 +44,48 @@ test('probeWith 在输出特征不匹配时返回 false', function () {
     expect($reflect->invoke($locator, [PHP_BINARY, '-v'], 'Distrib'))->toBeFalse();
 });
 
+test('probeWith 子进程灌爆 stderr 缓冲区也不死锁（并发排空两管道）', function () {
+    // 回归：probeWith 声明 stdout+stderr 两个管道却只 stream_get_contents 读 stdout。
+    // 子进程向 stderr 写满管道缓冲区（Linux ~64KB / macOS ~16KB）即阻塞写，父进程又卡在
+    // 读 stdout 等 EOF → 双向死锁。stub 先向 stderr 灌 100KB（远超缓冲区）再向 stdout 输出
+    // 预期串，修复后必须并发排空两管道、在合理时间内返回 true（未修则本测试挂起、靠 runner 超时暴露）。
+    $stub = sys_get_temp_dir().'/probe-stderr-flood-'.bin2hex(random_bytes(8)).'.sh';
+    file_put_contents($stub, "#!/bin/sh\nyes | head -c 100000 1>&2\nprintf 'PROBE_OK\\n'\n");
+    chmod($stub, 0700);
+
+    try {
+        $locator = new BinaryLocator;
+        $reflect = new ReflectionMethod($locator, 'probeWith');
+
+        $start = microtime(true);
+        $ok = $reflect->invoke($locator, [$stub], 'PROBE_OK');
+        $elapsed = microtime(true) - $start;
+
+        expect($ok)->toBeTrue();
+        // 排空成功应秒级返回；宽松上界作性能回归信号（真死锁时此断言不可达、由 runner 超时兜底）
+        expect($elapsed)->toBeLessThan(20.0);
+    } finally {
+        @unlink($stub);
+    }
+});
+
+test('probeWith 仅以 stdout 判定，stderr 内容不参与匹配', function () {
+    // 防御：排空 stderr 仅为防死锁，绝不能把 stderr 文本混入匹配。
+    // stub 把预期串只写到 stderr、stdout 留空，probeWith 必须返回 false。
+    $stub = sys_get_temp_dir().'/probe-stderr-only-'.bin2hex(random_bytes(8)).'.sh';
+    file_put_contents($stub, "#!/bin/sh\nprintf 'PROBE_OK\\n' 1>&2\n");
+    chmod($stub, 0700);
+
+    try {
+        $locator = new BinaryLocator;
+        $reflect = new ReflectionMethod($locator, 'probeWith');
+
+        expect($reflect->invoke($locator, [$stub], 'PROBE_OK'))->toBeFalse();
+    } finally {
+        @unlink($stub);
+    }
+});
+
 test('php() 在 CLI 进程内返回 PHP_BINARY 自身', function () {
     // 测试本身就跑在 CLI 进程内，PHP_BINARY 不含 fpm
     $locator = new BinaryLocator;

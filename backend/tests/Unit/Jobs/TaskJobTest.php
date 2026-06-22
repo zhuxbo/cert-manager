@@ -255,11 +255,11 @@ test('内层 Throwable 不向 handle() 外冒泡（不触发 Laravel 自动 roll
 
 // ==================== 并发错误（死锁）分流：冒泡而非吞掉 ====================
 
-test('内层并发错误（死锁）冒出 handle() 不被吞，task 保持 executing 等待重试', function () {
-    // P0-1 杀手场景：死锁回滚整个 InnoDB 事务后，若 catch(Throwable) 像普通异常一样吞掉并继续
-    // $task->update()，外层 commit 会抛 PDOException "There is no active transaction" + queue 无脑
-    // 重试雪崩（线上 2026-06-03 现象）。修复后：并发错误必须冒出 handle()，交 queue --tries --delay
-    // 错峰重试；task 保持 executing，重试耗尽由 failed() 兜底标记。与上面「普通 Throwable 不冒泡」对照。
+test('内层并发错误（死锁）未达上限：handle 自行 release 错峰重试、不冒泡、task 保持 executing', function () {
+    // P0-1 杀手场景延续 + 降噪方案 C：死锁回滚整个 InnoDB 事务后，并发错误必须冒出闭包（绝不在死事务上
+    // $task->update()，否则抛 "There is no active transaction" + 雪崩，线上 2026-06-03 现象）。
+    // 未达 tries 上限时由 handle() 自己 $this->release() 静默错峰重试（不抛 → worker 不进异常上报路径
+    // → 无死锁日志噪音），task 保持 executing 等下次拾取；不再冒出 handle() 交 worker 兜底重试。
     $user = $this->createTestUser();
     $product = $this->createTestProduct(['source' => 'default']);
     $order = $this->createTestOrder($user, $product);
@@ -285,20 +285,58 @@ test('内层并发错误（死锁）冒出 handle() 不被吞，task 保持 exec
         'started_at' => now(),
     ]);
 
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions(); // FakeJob attempts=1 < tries=3
+
+    $job->handle(); // 不冒泡
+
+    $job->assertReleased();  // 静默放回队列错峰重试，worker 不会 report
+    $job->assertNotFailed(); // 自愈中，未 fail
+    // 未在死事务内被标 failed：保持 executing 等下次重试
+    expect($task->fresh()->status)->toBe('executing');
+});
+
+test('内层并发错误（死锁）达 tries 上限：冒泡交 worker failJob + report 一次、不再 release', function () {
+    // 降噪方案 C 边界：attempts 达到 tries 时不再静默 release，而是冒出 handle()，
+    // 让 worker 记一次最终失败（report）+ failJob → failed() 钩子兜底标 task failed。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'processing']);
+
+    $stub = new class extends Api
+    {
+        public function get(int $orderId): array
+        {
+            throw new DeadlockException('SQLSTATE[40001]: 1213 Deadlock found');
+        }
+    };
+    app()->instance(Api::class, $stub);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'sync',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+    $job->job->attempts = 3; // == tries（最后一次执行）
+
     $threw = false;
     try {
-        (new TaskJob(['id' => $task->id]))->handle();
+        $job->handle();
     } catch (DeadlockException $e) {
         $threw = true;
     }
 
-    // 不被吞：并发错误冒出 handle()
-    expect($threw)->toBeTrue();
-    // 未在死事务内被标 failed：保持 executing
-    expect($task->fresh()->status)->toBe('executing');
+    expect($threw)->toBeTrue();                    // 达上限冒泡（worker 据此 report 一次 + failJob）
+    expect($job->job->isReleased())->toBeFalse();  // 不再 release
+    expect($task->fresh()->status)->toBe('executing'); // 未在死事务标 failed，由 failed() 兜底
 });
 
-test('commit 嵌套事务内并发错误干净抛 DeadlockException 不污染连接（回归：禁手写事务）', function () {
+test('commit 嵌套事务内并发错误：未达上限 release + 连接计数复位可复用（回归：禁手写事务）', function () {
     // CRITICAL 回归保护：commit 曾用手写 DB::beginTransaction，经 TaskJob 嵌套调用时 1213 死锁会让
     // catch 内 DB::rollback() 抛 1305「SAVEPOINT does not exist」淹没死锁异常 + 连接事务计数漂移 →
     // 下一个 job「There is (no) active transaction」雪崩。改 DB::transaction(fn,1) 闭包后：嵌套并发错误
@@ -330,14 +368,12 @@ test('commit 嵌套事务内并发错误干净抛 DeadlockException 不污染连
 
     $levelBefore = DB::transactionLevel();
 
-    $threw = false;
-    try {
-        (new TaskJob(['id' => $task->id]))->handle();
-    } catch (DeadlockException $e) {
-        $threw = true;
-    }
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
 
-    expect($threw)->toBeTrue();                          // 干净抛 DeadlockException（非 1305 / no active transaction）
+    $job->handle(); // 未达上限 → release，不冒泡
+
+    $job->assertReleased();                              // 静默错峰重试
     expect($task->fresh()->status)->toBe('executing');   // 未在死事务里标 failed
     expect(DB::transactionLevel())->toBe($levelBefore);  // 连接事务计数复位，无漂移
 

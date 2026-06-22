@@ -73,10 +73,34 @@ test('管理员可以创建委托', function () {
     $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/delegation', [
         'user_id' => $this->user->id,
         'zone' => 'test.com',
-        'prefix' => '_dnsauth',
+        'ca' => 'digicert',
     ]);
 
     $response->assertOk()->assertJson(['code' => 1]);
+
+    // 入参按 ca 选择，内部派生 prefix=_dnsauth
+    expect(CnameDelegation::withoutGlobalScopes()->where([
+        'user_id' => $this->user->id,
+        'zone' => 'test.com',
+        'prefix' => '_dnsauth',
+    ])->exists())->toBeTrue();
+});
+
+test('管理员创建委托按 ca 派生 prefix 与 zone', function () {
+    // sectigo → _pki-validation，子域取根域
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/delegation', [
+        'user_id' => $this->user->id,
+        'zone' => 'sub.example.com',
+        'ca' => 'sectigo',
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+
+    expect(CnameDelegation::withoutGlobalScopes()->where([
+        'user_id' => $this->user->id,
+        'zone' => 'example.com',
+        'prefix' => '_pki-validation',
+    ])->exists())->toBeTrue();
 });
 
 test('管理员可以删除委托', function () {
@@ -104,11 +128,17 @@ test('管理员可以批量创建委托', function () {
     $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/delegation/batch-store', [
         'user_id' => $this->user->id,
         'zones' => "domain1.com\ndomain2.com",
-        'prefix' => '_dnsauth',
+        'ca' => 'digicert',
     ]);
 
     $response->assertOk()->assertJson(['code' => 1]);
     $response->assertJsonStructure(['data' => ['created', 'failed', 'total', 'success_count', 'fail_count']]);
+
+    // 按 ca 派生 prefix=_dnsauth
+    expect(CnameDelegation::withoutGlobalScopes()->where([
+        'user_id' => $this->user->id,
+        'prefix' => '_dnsauth',
+    ])->count())->toBe(2);
 });
 
 test('管理员可以手动检查委托健康状态', function () {

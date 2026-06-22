@@ -281,6 +281,74 @@ test('支付宝回调金额不匹配时不 ACK 且不入账', function () {
     expect(Transaction::where('transaction_id', $fund->id)->exists())->toBeFalse();
 });
 
+test('微信下单-已配置公钥时下单参数带 Wechatpay-Serial 公钥序列号', function () {
+    $user = User::factory()->create();
+    setWechatPublicKeyId('PUB_KEY_ID_TEST_0001');
+
+    $captured = mockPayCapture();
+
+    $this->actingAsUser($user)
+        ->postJson('/api/top-up/wechat', ['amount' => 1])
+        ->assertOk();
+
+    expect($captured->scan)->not->toBeNull();
+    expect($captured->scan['_serial_no'] ?? null)->toBe('PUB_KEY_ID_TEST_0001');
+});
+
+test('微信下单-未配置公钥时下单参数不带 _serial_no（回退不破坏现状）', function () {
+    $user = User::factory()->create();
+
+    $captured = mockPayCapture();
+
+    $this->actingAsUser($user)
+        ->postJson('/api/top-up/wechat', ['amount' => 1])
+        ->assertOk();
+
+    expect($captured->scan)->not->toBeNull();
+    expect(array_key_exists('_serial_no', $captured->scan))->toBeFalse();
+});
+
+test('微信下单-仅配公钥ID未配公钥内容时不发头（gate 与公钥注册条件对称）', function () {
+    $user = User::factory()->create();
+    // 仅配 publicKeyId、未配 publicKey 内容（模拟运维半配）：本地无公钥可验签，
+    // 不应发 Wechatpay-Serial，否则微信用公钥签应答而本地验签失败。
+    $group = SettingGroup::firstOrCreate(['name' => 'wechat'], ['title' => '微信支付设置', 'weight' => 7]);
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'publicKeyId'],
+        ['type' => 'string', 'value' => 'PUB_KEY_ID_TEST_0001']
+    );
+    Setting::clearGroupCache($group->id);
+
+    $captured = mockPayCapture();
+
+    $this->actingAsUser($user)
+        ->postJson('/api/top-up/wechat', ['amount' => 1])
+        ->assertOk();
+
+    expect($captured->scan)->not->toBeNull();
+    expect(array_key_exists('_serial_no', $captured->scan))->toBeFalse();
+});
+
+test('检查充值状态-微信查单参数带 Wechatpay-Serial 公钥序列号', function () {
+    $user = User::factory()->create();
+    setWechatPublicKeyId('PUB_KEY_ID_TEST_0001');
+    $fund = Fund::factory()->create([
+        'user_id' => $user->id,
+        'type' => 'addfunds',
+        'pay_method' => 'wechat',
+        'status' => 0,
+    ]);
+
+    $captured = mockPayCapture();
+
+    $this->actingAsUser($user)
+        ->getJson("/api/top-up/check/$fund->id")
+        ->assertOk();
+
+    expect($captured->query)->not->toBeNull();
+    expect($captured->query['_serial_no'] ?? null)->toBe('PUB_KEY_ID_TEST_0001');
+});
+
 function mockPayCallback(string $driver, array $payload, int $times = 1, bool $shouldAck = true): void
 {
     Pay::clear();

@@ -84,16 +84,22 @@ class DelegationController extends BaseController
 
     /**
      * 创建委托（管理员为用户创建）
+     *
+     * 入参按 CA 选择，内部经 ca_map 派生 prefix + zone（exact 精确域名 / 非 exact 根域）
      */
     public function store(StoreRequest $request): void
     {
         $validated = $request->validated();
+        $ca = $validated['ca'];
 
         try {
+            $prefix = CnameDelegationService::getDelegationPrefixForCa($ca);
+            $zone = $this->delegationService->resolveZone($validated['zone'], $ca);
+
             $delegation = $this->delegationService->createOrGet(
                 $validated['user_id'],
-                $validated['zone'],
-                $validated['prefix']
+                $zone,
+                $prefix
             );
 
             $data = $this->delegationService->withCnameGuide($delegation);
@@ -204,8 +210,12 @@ class DelegationController extends BaseController
         $validated = request()->validate([
             'user_id' => 'required|integer|exists:users,id',
             'zones' => 'required|string',
-            'prefix' => 'required|string|in:_dnsauth,_pki-validation,_certum',
+            // 按 CA 选择，内部经 ca_map 派生 prefix + zone；未知 ca 走 default(_dnsauth)
+            'ca' => 'required|string|max:50',
         ]);
+
+        $ca = $validated['ca'];
+        $prefix = CnameDelegationService::getDelegationPrefixForCa($ca);
 
         // 解析域名列表（支持逗号、换行、空格分隔）
         $zones = preg_split('/[\s,\n]+/', $validated['zones'], -1, PREG_SPLIT_NO_EMPTY);
@@ -226,10 +236,11 @@ class DelegationController extends BaseController
 
         foreach ($zones as $zone) {
             try {
+                $resolvedZone = $this->delegationService->resolveZone($zone, $ca);
                 $delegation = $this->delegationService->createOrGet(
                     $validated['user_id'],
-                    $zone,
-                    $validated['prefix']
+                    $resolvedZone,
+                    $prefix
                 );
                 $created[] = $this->delegationService->withCnameGuide($delegation);
             } catch (Throwable $e) {

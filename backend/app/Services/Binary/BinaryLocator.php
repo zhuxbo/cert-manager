@@ -87,13 +87,63 @@ class BinaryLocator
             return false;
         }
 
-        $stdout = (string) stream_get_contents($pipes[1]);
+        // 并发排空 stdout + stderr：子进程把 stderr 写满管道缓冲区时也不与父进程读 stdout 互锁
+        $stdout = $this->drainPipes($pipes[1], $pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
         $exit = proc_close($proc);
 
         // $expectedOutput 为空：仅校验 exit code（兼容 java -version 输出到 stderr 的情况）
         return $exit === 0 && ($expectedOutput === '' || str_contains($stdout, $expectedOutput));
+    }
+
+    /**
+     * 并发排空子进程的 stdout + stderr 两个管道，返回 stdout 全文（stderr 读出即丢弃）。
+     *
+     * proc_open 声明两个 'pipe','w' 时，若父进程只读 stdout 不读 stderr，子进程一旦向
+     * stderr 写满管道缓冲区（Linux 默认 ~64KB）就阻塞在写，父进程又阻塞在读 stdout 等 EOF
+     * —— 双方互等成经典死锁。这里用 stream_select 轮询两管道、哪个就绪读哪个直到双双 EOF，
+     * 杜绝任一方向写满阻塞。仅 stdout 文本返回参与上层判定，stderr 只为防死锁而排空、内容丢弃。
+     * 调用方负责 fclose 两个管道与 proc_close。
+     *
+     * @param  resource  $stdout
+     * @param  resource  $stderr
+     */
+    private function drainPipes($stdout, $stderr): string
+    {
+        stream_set_blocking($stdout, false);
+        stream_set_blocking($stderr, false);
+
+        $out = '';
+        $open = [1 => $stdout, 2 => $stderr];
+
+        while ($open !== []) {
+            $read = $open;
+            $write = $except = [];
+
+            // null 超时：阻塞等任一管道就绪（不忙等）。被信号打断返回 false 时退出循环，
+            // 由调用方 fclose + proc_close 收尾（关读端令子进程写 stderr 得 EPIPE 自终，不残留死锁）。
+            if (@stream_select($read, $write, $except, null) === false) {
+                break;
+            }
+
+            foreach ($read as $fd => $stream) {
+                $chunk = fread($stream, 8192);
+                if ($chunk === '' || $chunk === false) {
+                    // 非阻塞下「就绪却空读」即 EOF：移出待读集；非 EOF 的偶发空读留待下轮
+                    if (feof($stream)) {
+                        unset($open[$fd]);
+                    }
+
+                    continue;
+                }
+                if ($fd === 1) {
+                    $out .= $chunk;
+                }
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -287,6 +337,33 @@ class BinaryLocator
     private function probeComposerPhar(string $path): bool
     {
         return $this->probeWith([$this->php(), $path, '--version'], 'Composer');
+    }
+
+    /**
+     * 解析 bash 绝对路径（后台升级经 proc_open 调 nginx/render.sh 用）。
+     */
+    public function bash(): string
+    {
+        if (isset($this->resolved['bash'])) {
+            return $this->resolved['bash'];
+        }
+
+        $candidates = ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash'];
+        foreach ($candidates as $candidate) {
+            if ($this->probeWith([$candidate, '--version'], 'GNU bash')) {
+                return $this->resolved['bash'] = $candidate;
+            }
+        }
+
+        if (($path = $this->probeViaShell('bash', '--version', 'GNU bash')) !== null) {
+            return $this->resolved['bash'] = $path;
+        }
+
+        throw new BinaryNotFoundException(
+            tool: 'bash',
+            triedPaths: array_merge($candidates, ['bash (shell PATH)']),
+            diagnose: $this->diagnose('bash'),
+        );
     }
 
     public function openssl(): string
@@ -515,7 +592,8 @@ class BinaryLocator
             ];
         }
 
-        $out = trim((string) stream_get_contents($pipes[1]));
+        // 并发排空两管道（同 probeWith）：防 php -r 子进程 stderr 写满缓冲区与父进程读 stdout 互锁
+        $out = trim($this->drainPipes($pipes[1], $pipes[2]));
         fclose($pipes[1]);
         fclose($pipes[2]);
         proc_close($proc);

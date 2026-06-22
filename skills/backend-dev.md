@@ -164,6 +164,7 @@ php artisan db:structure --export       # 导出标准结构
 
 - 全部走 `proc_open([$path, $flag])` 数组形式校验，**不能用 `is_executable` / `file_exists`**（FPM 下走 `open_basedir` 检查，宝塔白名单外的路径会被误判为不可用）
 - `proc_open` 数组形式调用（execve），不走 shell，天然防注入 + 避开 `open_basedir`
+- **双管道并发排空（防死锁）**：凡声明 stdout+stderr 两个 `pipe` 的 proc_open（`probeWith` / `inspectCliIni`）一律走 `drainPipes()`（`stream_select` 轮询两管道读到双双 EOF），**禁止只 `stream_get_contents($pipes[1])` 读 stdout 不读 stderr** —— 子进程向 stderr 写满管道缓冲区（Linux ~64KB）会阻塞写、父进程又卡在读 stdout 等 EOF，双向死锁。现有调用都是 `--version` 这类小输出不触发，纯防御；stderr 排空后丢弃、不参与判定（仅 stdout 文本判定）。单管道探测（`probeViaShell` / `command -v` 那种 `[1 => ['pipe','w']]` + 命令内 `2>/dev/null`）无此问题，不必改
 - **探测顺序统一两条腿**：候选路径常量（绝对路径列表） → shell PATH 兜底，FPM/CLI 走完全一致路径。**不再用 Symfony `ExecutableFinder`** —— open_basedir 非空时它强制只在 open_basedir 内目录找命令，FPM 下永远 miss、CLI 下被候选路径覆盖，留着只让"开发机能跑、生产挂"的差异被偷偷接住
 - **shell 兜底**（`probeViaShell`）：候选路径全 miss 时跑 `sh -c 'command -v $tool'` 拿绝对路径 + probeWith 二次校验工具行为。**显式传 env `SHELL_FALLBACK_PATH`** 给 sh —— 宝塔 PHP-FPM 默认 `clear_env=yes` 不传 PATH，不显式注入子 sh 拿不到 PATH 必然失败。**返回绝对路径**而非裸名 —— 调用方按绝对路径 exec，不依赖调用方进程 env PATH
 - `SHELL_FALLBACK_PATH` 顺序：`/opt/homebrew/{sbin,bin}` 排在 `/usr/bin` 前面 —— macOS `/usr/bin/openssl` 是 LibreSSL（`openssl version` 输出 "LibreSSL ..." 不含 "OpenSSL"，探测假阳性失败），Homebrew 提前避开；生产 Linux 无 `/opt/homebrew/` 自动跳过
@@ -408,6 +409,43 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 5. 删除已入账 fund 路径必须事务内 `lockForUpdate` + 锁内 status/created_at 二次校验
 6. 上线前先跑 `php artisan finance:audit` 确认现有数据干净，否则改约束之后下一次相关 INSERT 触发"交易记录已存在"误报
 
+## 微信支付公钥验签切换（yansongda）
+
+> 支付走 `yansongda/pay` v3.7.x（`Pay::wechat()`，薄封装 `App\Services\Payment\PaymentGateway`）；验签逻辑全在 SDK，项目不自处理 `Wechatpay-Serial`。
+
+### 背景：平台证书 → 微信支付公钥
+
+微信 v3 验签正从「平台证书」灰度切到「微信支付公钥」，商户后台两条进度：
+
+- **回调**（微信 → 商户）：微信平台控制灰度（约 7 天完成）
+- **应答**（商户调 API 的响应）：**商户请求参数控制** —— 请求头 `Wechatpay-Serial` 带公钥 ID（`PUB_KEY_ID_xxx`），微信才用公钥签应答；「应答使用公钥比例」= 近 7 天带公钥头请求数 / v3 总请求数
+
+### 坑：yansongda 默认不发头，应答比例恒 0%
+
+`AddRadarPlugin`（`vendor/yansongda/pay/src/Plugin/Wechat/AddRadarPlugin.php`）只在 body 有敏感信息加密内容（`_serial_no` 由加密插件设）时才发 `Wechatpay-Serial`。普通充值下单 `scan` / 查单 `query` 不带 → 微信收不到公钥请求 → 应答比例卡 0%、切换无法完成。
+
+### 解法：所有微信 v3 商户请求注入 `_serial_no`
+
+`PaymentConfigTrait::wechatSerial()` 返回 `['_serial_no' => publicKeyId]`，控制器 `array_merge($order, $this->wechatSerial())`：
+
+- yansongda 据 payload 的 `_serial_no` 设 `Wechatpay-Serial` 请求头
+- artful `filter_params` 过滤所有 `_` 前缀 key → `_serial_no` **不进发给微信的 body**，不污染业务参数
+- 调用点：`User/TopUpController`（下单 `scan` + 查单 `query`）、`{Admin,User}/FundController::check`；FundController 统一走 `app(PaymentGateway::class)` 包装（便于测试替换，**勿用 `Pay::` 静态**）
+
+### gate 与本地公钥就绪条件对称（防误配）
+
+`wechatSerial()` 发头 gate = `publicKeyId` + `publicKey` **俱全**，与 `getPayConfig` 注册本地公钥到 `wechat_public_cert_path` 的条件逐字对称。**只填 ID 未填公钥内容时不发头** —— 否则微信用公钥签应答，本地却无公钥、回退下载 `v3/certificates` 只返平台证书（永不含 `PUB_KEY_ID`）→ 验签失败。漏配时不发头 = 应答留平台证书、本地可验、保持可用。
+
+### 验签兼容（平台证书签 + 公钥签都能验）
+
+回调 / 应答验签同源 SDK `verify_wechat_sign`：读响应头 `Wechatpay-Serial` → 在 `wechat_public_cert_path` 找 → 命中公钥直接验 / 找不到回退 `GET v3/certificates` 下载平台证书验。故切换期两种签名都能验，满足微信「兼容验签」要求。
+
+### 配置与运维流程
+
+- 配置项：`system_setting` 的 `wechat.publicKeyId` + `wechat.publicKey`（base64），`PaymentConfigTrait` 注入 `wechat_public_cert_path[publicKeyId]=公钥文件`
+- 切换流程：① 后台发起灰度 → ② 等回调进度 100%（约 7 天）→ ③ 部署带公钥头改动 → ④ 应答进度上升（近 7 天窗口，需几天到 100%）→ ⑤ 后台「确认切换」、停用平台证书
+- 保存 `wechat`/`alipay` 设置时 `Setting::clearGroupCache` 自动同步清 `pay_config_*` 应用缓存（避免缓存里旧公钥/证书与 live 设置不一致——公钥轮换后"发新 serial 头但本地仍注册旧公钥"致回调验签失败），无需手动干预；如需手动清，用 `optimize:clear`/`cache:clear`（**非** `config:clear`——后者只清 `bootstrap/cache/config.php` 编译配置，不碰 `cache()` 落的 `pay_config_*` 应用缓存）
+
 ## 安全补强
 
 ### 邮件验证码防爆破（VerifyCodeRateLimiter）
@@ -436,7 +474,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 **三层修复（缺一不可，对应 `TaskJob` / `Order\Action` / `create_tasks_table` 迁移）**：
 
 1. **复合索引 `tasks(order_id, action, status)`（降频）**：让 `FOR UPDATE` 精确定位，二级索引间隙锁范围从"整个 order_id 区间"收窄到精确区间，消除大部分 sync×commit 跨 action 抢锁的死锁。命中 `sync`/`checkRepeat`/`createTask`/`batchCommitCancel`/`refundForSyncedCancel` 所有 task 查询。
-2. **TaskJob 死锁不可吞（治本）**：`TaskJob::handle` 的 `catch (Throwable)` 对并发错误（`Illuminate\Database\DeadlockException` 或 `DetectsConcurrencyErrors::causedByConcurrencyError`：1213/1205/序列化失败）**重新抛出**，绝不在已被 MySQL 回滚的事务里继续 `$task->update()` 或让闭包正常返回触发 commit。抛出 → 外层事务回滚 → queue `--tries --delay` 错峰重试自愈；重试耗尽由 `failed()` 钩子兜底标记 `task=failed`（守卫 `status==='executing'`，否则普通异常路径重复 update）——不标记会永久卡 executing 被 `checkRepeat` 当"处理中"阻塞该订单后续 commit/sync。
+2. **TaskJob 死锁不可吞 + 自愈重试不刷日志（治本 + 降噪）**：`TaskJob::handle` 对并发错误（`Illuminate\Database\DeadlockException` 或 `DetectsConcurrencyErrors::causedByConcurrencyError`：1213/1205/序列化失败）分两层。内层 `catch (Throwable)` **重新抛出**（绝不在已被 MySQL 回滚的事务里继续 `$task->update()` 或让闭包正常返回触发 commit）→ 逸出闭包触发外层 `DB::transaction` 回滚。**handle() 外层 catch** 再判 `$this->attempts() < $this->tries`（显式 `public int $tries = 3`，与 worker `--tries 3` 一致、重试次数不变）：未达上限时由本 Job 自己 `$this->release(random_int(3,8))` 错峰重试并 `return`——**关键：不抛出**，worker 不进 `Worker::runJob` 的 `$this->exceptions->report()` 路径，避免每次"会自愈的偶发死锁"被刷进 `error_logs`（reportable 回调）+ `laravel.log`（默认 channel fall-through），tries=3 一次死锁最多 6 条噪音 → 降为 0；达上限才冒出 → worker `report()` 记一次最终失败 + `failJob` → `failed()` 钩子兜底标记 `task=failed`（守卫 `status==='executing'`，否则普通异常路径重复 update）——不标记会永久卡 executing 被 `checkRepeat` 当"处理中"阻塞该订单后续 commit/sync。`release` 不碰 task（保持 executing 等下次拾取），与 `failed()` 兜底构成闭环。**freeze release（`SkipWhenUpgradeFrozen`）与死锁 release 共享 `$tries` 预算**，沿用 tries=3 现状不恶化。
 3. **sync 事务死锁自动重试（web 入口自愈）**：`Order\Action::sync` / `refundForSyncedCancel` / `Acme\Action::sync` 的 `DB::transaction(..., 3)` 加 `attempts=3`。controller 直调时本事务为最外层、上游 `get` 在事务外，重试只重跑锁+写回，安全。**`commit` 绝不加重试**——其上游下单 `$this->api->$action()` 在事务内（`Action.php:401`），重试 = 重复下单/重复扣费；且 commit 只锁 order 行、不执行 `tasks FOR UPDATE`，本就不是死锁受害者。
 
 **关键认识**：死锁是 InnoDB 行锁并发写的正常现象，**无法根除，只能降频 + 重试自愈**（MySQL 官方亦要求应用层重试）；把"偶发死锁"放大成"持续雪崩"的是错误的死锁后处理（吞异常 + 死事务上继续写 + 无脑重试），那才是真正的炸点。嵌套事务（TaskJob 包 sync/commit）里 Laravel 对并发错误直接抛 `DeadlockException` 到最外层、不在内层重试（`ManagesTransactions::handleTransactionException` 的 `transactions > 1` 分支）——故 `attempts` 只在 controller 直调（最外层）时生效，TaskJob 路径统一由 job 级重试兜底。**减少多入口并发（如 V2 get 去内联 sync）不是根治方向**：并发不可消除、且会动对外 API 契约。
@@ -679,6 +717,31 @@ Schema::table('products', function (Blueprint $table) {
 
 ---
 
+## S/MIME 验证字段要求（Certum，防回归）
+
+按 Certum API User Guide 5.18 + **实测**，S/MIME 四种细分字段要求 —— **关键：除 `mailbox` 外都需要联系人（contact → requestorInfo），`organization` 也不例外**：
+
+| 类型（产品 code 含） | email | 联系人 contact | 企业 organization | 证书 CN       |
+| -------------------- | ----- | -------------- | ----------------- | ------------- |
+| `mailbox`            | 必填  | —              | —                 | email（自动） |
+| `individual`         | 必填  | 必填           | —                 | 联系人姓名    |
+| `sponsor`            | 必填  | 必填           | 必填              | 联系人姓名    |
+| `organization`       | 必填  | 必填           | 必填              | 组织名        |
+
+**`requestorInfo`（谁发起申请）≠ 证书主体（subject）**：§3.2.4「organization 仅验证 the organization、不验证 subscriber」说的是**证书主体**——org 证书 CN=组织名、主体里不放个人 givenName/surname；但请求 payload 里的 `requestorInfo`（firstName/lastName/email）是「申请人」信息，Certum 对所有非 mailbox 类型**一律强制**，与证书主体是两码事。
+
+**踩坑（勿重蹈）**：曾误把 §3.2.4「不验证 subscriber」当成「不需要联系人」，去掉 organization 的 contact 收集 → 实测提交被 Certum 拒单（`requestorInfo/email|firstName|lastName` 缺失，错误码 1053/1054/1055），已回退。**organization 必须收联系人**，校验/组装/前端与 sponsor 一致。
+
+落点（非 mailbox 四类一致，都要 contact）：
+
+- 校验：`ValidatorUtil::validateSMIMEParams` 的 `case 'organization'` 校验 contact + organization（与 sponsor 同）
+- 组装：`ActionTrait::getApplyInformation` 的 `$needContact` 含 `['individual','sponsor','organization']`
+- 前端：`OrganizationEditor` 联系人区块对所有 SMIME（非 mailbox）/ OV·EV SSL / codesign / docsign 均显示且必填
+- 上游 gateway 对端：certum `getNewParams` 对所有非 mailbox SMIME `needExtendedParams=true`，从 `contact` 构造 `requestorInfo`（firstName/lastName/email），为空则 Certum 1053/1054/1055 拒单
+- 文档签名（docsign）：Certum 仅 OV 一种（无 individual/sponsor 细分），CN 可个人名或组织名，但组织验证始终必须
+
+---
+
 ## 委托验证
 
 ### 验证方法转换
@@ -690,13 +753,21 @@ Schema::table('products', function (Blueprint $table) {
 3. `generateValidation()` 查找用户的 CnameDelegation 记录
 4. validation 数组包含 `delegation_id`、`delegation_target`、`delegation_valid`、`delegation_zone`
 
-### 委托前缀
+### 委托前缀与 exact（config 驱动）
 
-| 前缀              | CA                  | 匹配规则           |
-| ----------------- | ------------------- | ------------------ |
-| `_dnsauth`        | DigiCert、TrustAsia | 严格子域匹配       |
-| `_pki-validation` | Sectigo             | 优先子域，回落根域 |
-| `_certum`         | Certum              | 优先子域，回落根域 |
+`backend/config/delegation.php` 的 `ca_map` 按 CA 映射 `{prefix, exact}`，未知 CA 走 `default`。**`exact` 是 CA 属性而非 prefix 属性**——同一 prefix（如 `_dnsauth`）在不同 CA 下可要求不同：
+
+| CA                                              | prefix            | exact 默认 |
+| ----------------------------------------------- | ----------------- | ---------- |
+| Sectigo                                         | `_pki-validation` | false      |
+| Certum                                          | `_certum`         | false      |
+| DigiCert/GlobalSign/TrustAsia/Sheca/CFCA/Wotrus | `_dnsauth`        | false      |
+| 未知 CA（default）                              | `_dnsauth`        | false      |
+
+- `exact=true`：精确匹配完整 FQDN，查找**拒绝回落根域**、创建用精确域名（不归一 www）。
+- `exact=false`：www 归一 + 子域优先 + **回落根域**，创建用根域（一条委托覆盖所有子域）。
+- **默认全 false（含 `_dnsauth` 系，为用户定稿决策）**；每家及 default 可由 `DELEGATION_<CA>_EXACT` env 覆盖为 true。
+- 一律经 `CnameDelegationService::getDelegationPrefixForCa($ca)` / `isExactForCa($ca)` / `resolveZone($domain,$ca)` 派生，**禁止 `prefix === '_dnsauth'` 推断**。手动创建委托（`DelegationController` store/batchStore）入参按 CA、内部派生 prefix+zone；委托记录仍按 `(user_id, zone, prefix)` 存储（无 ca 列，列表按 prefix 筛选）。`AutoDcvTxtService` 从 DCV host 解析 zone 后用 ca 驱动 `findDelegation`（带回落），与 `ActionTrait::generateValidation` 同口径。
 
 > ACME 通道证书由客户端自行验证，不走委托体系，不使用 `_acme-challenge` 前缀。
 
@@ -817,23 +888,24 @@ ValidateCommand 定时验证
 
 ### 委托验证与自动续签
 
-| 文件                                             | 关键方法/位置                 | 说明                                  |
-| ------------------------------------------------ | ----------------------------- | ------------------------------------- |
-| `Services/Order/Traits/ActionTrait.php`          | `generateDcv()`               | delegation→txt 转换，设置 is_delegate |
-| `Services/Order/Traits/ActionTrait.php`          | `generateValidation()`        | 委托记录查找/创建                     |
-| `Services/Order/Traits/ActionTrait.php`          | `writeDelegationTxtRecords()` | 订单创建时写入 TXT                    |
-| `Services/Order/Traits/ActionTrait.php`          | `getDelegationPrefixForCa()`  | CA 前缀映射                           |
-| `Services/Order/Traits/ActionTrait.php`          | `mergeDcv()`                  | API 响应合并保留委托标记              |
-| `Services/Delegation/CnameDelegationService.php` | `findDelegation()`            | 智能匹配委托记录（用于即时验证场景）  |
-| `Services/Delegation/CnameDelegationService.php` | `findValidDelegation()`       | 智能匹配有效委托记录（已弃用）        |
-| `Services/Delegation/CnameDelegationService.php` | `checkAndUpdateValidity()`    | 即时检测 CNAME 并更新有效性           |
-| `Services/Delegation/DelegationDnsService.php`   | `setTxtByLabel()`             | 批量写入 TXT 记录                     |
-| `Services/Delegation/AutoDcvTxtService.php`      | `handleOrder()`               | 订单级 TXT 处理                       |
-| `Console/Commands/AutoRenewCommand.php`          | `checkDelegationValidity()`   | 发起前即时检查委托有效性              |
-| `Console/Commands/AutoRenewCommand.php`          | `processOrder()`              | 自动续费/重签处理                     |
-| `Console/Commands/AutoRenewCommand.php`          | `autoPayAndCommit()`          | 自动支付提交                          |
-| `Console/Commands/ValidateCommand.php`           | `checkDelegationValidity()`   | 验证前即时检测                        |
-| `Console/Commands/DelegationCleanupCommand.php`  | `handle()`                    | 清理非 processing 状态的 DNS 记录     |
+| 文件                                             | 关键方法/位置                                   | 说明                                                            |
+| ------------------------------------------------ | ----------------------------------------------- | --------------------------------------------------------------- |
+| `Services/Order/Traits/ActionTrait.php`          | `generateDcv()`                                 | delegation→txt 转换，设置 is_delegate                           |
+| `Services/Order/Traits/ActionTrait.php`          | `generateValidation()`                          | 委托记录查找/创建                                               |
+| `Services/Order/Traits/ActionTrait.php`          | `writeDelegationTxtRecords()`                   | 订单创建时写入 TXT                                              |
+| `Services/Order/Traits/ActionTrait.php`          | `mergeDcv()`                                    | API 响应合并保留委托标记                                        |
+| `Services/Delegation/CnameDelegationService.php` | `getDelegationPrefixForCa()` / `isExactForCa()` | config 驱动派生 prefix / exact（exact 是 CA 属性）              |
+| `Services/Delegation/CnameDelegationService.php` | `resolveZone($domain,$ca)`                      | 创建期 zone：exact 精确域名 / 非 exact 根域                     |
+| `Services/Delegation/CnameDelegationService.php` | `findDelegation()` / `findValidDelegation()`    | 按 ca 查找委托（内核 `findByResolution`，exact 驱动是否回落）   |
+| `Services/Delegation/CnameDelegationService.php` | `findExact()`                                   | 精确 (zone,prefix) 查找不回落（DCV host 已知 zone+prefix 场景） |
+| `Services/Delegation/CnameDelegationService.php` | `checkAndUpdateValidity()`                      | 即时检测 CNAME 并更新有效性                                     |
+| `Services/Delegation/DelegationDnsService.php`   | `setTxtByLabel()`                               | 批量写入 TXT 记录                                               |
+| `Services/Delegation/AutoDcvTxtService.php`      | `handleOrder()`                                 | 订单级 TXT 处理                                                 |
+| `Console/Commands/AutoRenewCommand.php`          | `checkDelegationValidity()`                     | 发起前即时检查委托有效性                                        |
+| `Console/Commands/AutoRenewCommand.php`          | `processOrder()`                                | 自动续费/重签处理                                               |
+| `Console/Commands/AutoRenewCommand.php`          | `autoPayAndCommit()`                            | 自动支付提交                                                    |
+| `Console/Commands/ValidateCommand.php`           | `checkDelegationValidity()`                     | 验证前即时检测                                                  |
+| `Console/Commands/DelegationCleanupCommand.php`  | `handle()`                                      | 清理非 processing 状态的 DNS 记录                               |
 
 ### 调度配置
 
@@ -855,6 +927,8 @@ php artisan test --parallel                           # 全部测试（需 MySQL
 php artisan test --parallel --exclude-group=database  # 纯单元测试（无需数据库）
 php artisan test --coverage --min=80                  # 覆盖率报告
 ```
+
+> **测试库隔离（双重兜底，勿移除）**：① `phpunit.xml` 的 `<env name="DB_DATABASE" value="ssl_manager_test" force="true"/>` 覆盖 `.env`/`.env.testing` **文件值**——但 `force` **不覆盖 OS 环境变量**（`docker -e DB_DATABASE=...` / shell `export`，实测带 `-e DB_DATABASE=ssl_manager` 仍会连开发库）；② 故 `TestCase::createApplication()` 加运行期物理断言：测试库名不含 `_test` 即 `fwrite(STDERR) + exit(1)`，在 `RefreshDatabase` 清库**之前**硬阻断，杜绝任何跑法（含 `-e` 误传 OS env）清空开发库 `ssl_manager`。`.env.testing`（gitignore、仅本地）DB 应为 `ssl_manager_test`；`make test` 显式 `-e ssl_manager_test`、CI 用 `.env`+sed 同名。注意 `make migrate`（=`migrate:fresh --seed`）走开发库、会清库重建，与测试无关。
 
 > **CI 经验**：本地务必用 `--parallel` 跑测试，与 CI 保持一致。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
 
@@ -945,6 +1019,8 @@ baseline 不是终点，而是逐步提升的安全网。演进发生在四个�
 
 **首次跑出 baseline**：
 
+> 容器内 pcov 默认 `enabled=0`；直接跑下面的 `./vendor/bin/pest --mutate` 前需临时开 pcov（`printf 'pcov.enabled=1\npcov.directory=%s\n' "$(pwd)" >"$PHP_INI_DIR/conf.d/zzz-pcov-mutate.ini"`，跑完删掉），宿主机用 xdebug 则 `XDEBUG_MODE=coverage` 即生效。日常重算基线直接 `composer test:mutate`（脚本已自动处理 pcov）。
+
 ```bash
 cd backend
 XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
@@ -967,10 +1043,15 @@ composer test:mutate -- --bail        # 遇到第一个 untested 立即停（deb
 composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
 ```
 
-**依赖**：
+**依赖（dev 容器已内置，开箱即跑）**：
 
-- 本机 PHP 必须装 xdebug 或 pcov（变异测试需要 code coverage driver）
-- 本机必须装 jq（`brew install jq` / `apt install jq`）
+- 开发容器（`docker/php/Dockerfile`）已装 **jq + pcov**，`composer test:mutate` 容器内直接跑、无需手动安装。pcov 默认 `pcov.enabled=0`（不拖慢普通 `make test`）；`backend/scripts/test-mutate.sh` 跑变异时临时写 `conf.d/zzz-pcov-mutate.ini` 开启（含 paratest 各 worker——worker 是独立进程，env/`-d` 不生效，只能走 conf.d），结束 `trap` 复原。
+- 容器内必锁测试库：`docker compose exec -T -e DB_DATABASE=ssl_manager_test app composer test:mutate`（否则 RefreshDatabase 清开发库）。
+- **宿主机直跑**才需自备 coverage driver（xdebug/pcov）+ jq；本机无 php/composer 时一律走容器。
+
+**已知 flake（并行 + 覆盖率放大 TOCTOU）**：
+
+- 变异跑 `--parallel` 且开覆盖率时，清缓存类命令测试（`ClearAllCacheCommandTest` / `BackupCommandTest` 等测 `cache:clear-all`/备份）清掉**所有 worker 共享**的 `bootstrap/cache/{packages,services}.php`，pcov/xdebug 放大窗口 → baseline 测试轮偶发 `require(...packages|services.php): Failed to open stream`（1 failed、中断不出 MSI，命中率约 50%+）。测试隔离 flake、**非资金代码 bug**：`bootstrap/cache` 在框架 bootstrap 阶段加载、早于 `TestCase::setUp`，无法像 `isolateWorkerStorage()` 按 worker 隔离，性价比低。**`test-mutate.sh` 已对该签名自动重试（最多 5 次，每轮 `package:discover` 重建 cache），只重试该 TOCTOU、不掩盖真实失败 / MSI 不达标**；极端连挂 5 次再人工重跑即可。
 
 **为什么不入 CI**：
 

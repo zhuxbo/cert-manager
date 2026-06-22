@@ -237,6 +237,42 @@ test('管理员可以提交取消订单', function () {
     $response->assertOk();
 });
 
+test('管理员可以标记订单已续费', function () {
+    [$order] = createOrderWithCert('active');
+
+    $mockAction = Mockery::mock(Action::class);
+    $mockAction->shouldReceive('markRenewed')
+        ->once()
+        ->with($order->id);
+    $this->app->instance(Action::class, $mockAction);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/order/mark-renewed/$order->id");
+
+    $response->assertOk();
+});
+
+test('管理员标记已续费-active + 到期前 25 天真实标记为 renewed', function () {
+    [$order, $cert] = createOrderWithCert('active', [], ['expires_at' => now()->addDays(25)]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($cert->fresh()->status)->toBe('renewed');
+});
+
+test('管理员标记已续费-到期 40 天后被拒（超 30 天），状态不变', function () {
+    [$order, $cert] = createOrderWithCert('active', [], ['expires_at' => now()->addDays(40)]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect($cert->fresh()->status)->toBe('active');
+});
+
 // ==================== 真实接线 happy path（不 mock Action）====================
 //
 // 上面的 pay/commit/sync/commit-cancel 用例 mock 了 Action，只验证「控制器调到了

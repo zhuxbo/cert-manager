@@ -283,3 +283,11 @@ test('纯文本非 2xx 响应仍判失败 status=0', function () {
 
     expect(CallbackLog::query()->first()?->status)->toBe(0);
 });
+
+test('getApiVersion 对 /api/v2/acme/* 返回 acme（优先于 v2）', function () {
+    $m = new ReflectionMethod(LogOperation::class, 'getApiVersion');
+    $m->setAccessible(true);
+
+    expect($m->invoke(new LogOperation, Request::create('/api/v2/acme/get', 'GET')))->toBe('acme');
+    expect($m->invoke(new LogOperation, Request::create('/api/v2/new', 'POST')))->toBe('v2');
+});

@@ -1,12 +1,13 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_acme_new_未传_refer__id_时_manager_兜底生成___未传_plus_时默认_1",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Acme\\ApiControllerTest::__pest_evaluable_POST__api_v2_acme_new_period_入参透传：多年期产品支持显式传_period_落库",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/acme/new",
+            "uri_pattern": "/api/v2/acme/new",
             "request_keys": [
                 "contact_email",
+                "period",
                 "product_code"
             ],
             "response_status": "2xx",

@@ -89,7 +89,11 @@ class UserController extends BaseController
                 'id', 'username', 'email', 'mobile', 'balance', 'credit_limit', 'last_login_at', 'status', 'created_at',
                 'level_code', 'custom_level_code',
             ])
-            ->orderBy('id', 'desc')
+            ->when(
+                ! empty($validated['sort_prop']),
+                fn ($q) => $q->orderBy($validated['sort_prop'], $validated['sort_order'] ?? 'desc'),
+                fn ($q) => $q->orderBy('id', 'desc')
+            )
             ->offset(($currentPage - 1) * $pageSize)
             ->limit($pageSize)
             ->get();

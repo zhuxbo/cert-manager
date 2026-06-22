@@ -32,7 +32,7 @@ class ApiController extends Controller
     /**
      * 创建 ACME 订单（一步到位：创建 + 支付 + 提交）
      *
-     * 入参与上游 /api/acme/new 字段对齐：product_code / contact_email / plus / refer_id
+     * 入参与上游 /api/v2/acme/new 字段对齐：product_code / contact_email / plus / refer_id
      * + period（manager 提前增加，预留 Certum 多年期产品；未传则取产品默认周期 product.periods[0]）
      * 域名额度由 product.standard_max / wildcard_max 自动推断
      */

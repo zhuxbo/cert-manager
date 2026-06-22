@@ -11,6 +11,9 @@ export function useUser(tableRef) {
   const dataList = ref([]);
   const loading = ref(true);
 
+  const sortProp = ref<string>();
+  const sortOrder = ref<string>();
+
   const pagination = reactive<PaginationProps>({
     total: 0,
     pageSize: 10,
@@ -82,6 +85,24 @@ export function useUser(tableRef) {
       });
   };
 
+  function handleSortChange({
+    prop,
+    order
+  }: {
+    prop: string;
+    order: string | null;
+  }) {
+    if (order) {
+      sortProp.value = prop;
+      sortOrder.value = order === "ascending" ? "asc" : "desc";
+    } else {
+      sortProp.value = undefined;
+      sortOrder.value = undefined;
+    }
+    pagination.currentPage = 1;
+    onSearch();
+  }
+
   function onSearch() {
     loading.value = true;
     const params = {
@@ -89,6 +110,11 @@ export function useUser(tableRef) {
       pageSize: pagination.pageSize,
       currentPage: pagination.currentPage
     };
+
+    if (sortProp.value) {
+      params.sort_prop = sortProp.value;
+      params.sort_order = sortOrder.value;
+    }
 
     if (params.created_at) {
       params.created_at = convertDateRangeToISO(params.created_at);
@@ -112,6 +138,9 @@ export function useUser(tableRef) {
   }
 
   const onReset = () => {
+    sortProp.value = undefined;
+    sortOrder.value = undefined;
+    tableRef.value?.getTableRef().clearSort();
     onSearch();
   };
 
@@ -136,6 +165,7 @@ export function useUser(tableRef) {
     handleStore,
     handleDestroy,
     handleBatchDestroy,
-    handleDirectLogin
+    handleDirectLogin,
+    handleSortChange
   };
 }

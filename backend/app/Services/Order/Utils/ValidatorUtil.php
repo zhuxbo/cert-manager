@@ -557,8 +557,8 @@ class ValidatorUtil
      * 根据产品 code 中的标记验证不同字段：
      * - mailbox: 只需要 email
      * - individual: 需要 email + contact
-     * - sponsor: 必须有 email + contact，organization 可选
-     * - organization: 必须有 email + organization
+     * - sponsor: 需要 email + contact + organization
+     * - organization: 需要 email + contact + organization（Certum 对所有非 mailbox 强制 requestorInfo=contact）
      */
     public static function validateSMIMEParams(array $params, array $product): array
     {

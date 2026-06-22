@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Meta\\ApiDocTest::__pest_evaluable_api_doc_非法_surface_返回_404",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/meta/api-doc",
+            "request_keys": [
+                "surface"
+            ],
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

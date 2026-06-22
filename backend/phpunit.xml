@@ -23,6 +23,12 @@
              给 1G 余裕；若测试本身真的内存泄漏，改回小值便于发现。 -->
         <ini name="memory_limit" value="1G"/>
         <env name="APP_ENV" value="testing"/>
+        <!-- 锁定测试库：force=true 覆盖 .env/.env.testing 文件值，但【不覆盖 OS 环境变量】
+             （docker -e / shell export，实测带 -e DB_DATABASE=ssl_manager 仍连开发库）。
+             OS env 这条边界由 make test 显式 -e ssl_manager_test
+             + TestCase::createApplication() 运行期断言"库名须含 _test"兜底。
+             CI 用 .env+sed 同名，无冲突 -->
+        <env name="DB_DATABASE" value="ssl_manager_test" force="true"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_DRIVER" value="array"/>

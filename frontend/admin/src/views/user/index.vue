@@ -42,7 +42,8 @@ const {
   onCollapse,
   handleDestroy,
   handleBatchDestroy,
-  handleDirectLogin
+  handleDirectLogin,
+  handleSortChange
 } = useUser(tableRef);
 
 // 创建搜索列配置
@@ -155,6 +156,7 @@ onMounted(() => {
           }"
           @row-click="handleRowClick"
           @selection-change="handleSelectionChange"
+          @sort-change="handleSortChange"
           @page-size-change="handleSizeChange"
           @page-current-change="handleCurrentChange"
         >

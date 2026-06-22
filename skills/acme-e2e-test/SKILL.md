@@ -8,7 +8,7 @@
 客户端（Deploy Token / Admin / User）
     ↓ POST /api/deploy/acme/new
 Manager backend (:5300)
-    ↓ POST /api/acme/new
+    ↓ POST /api/v2/acme/new
 上游系统 backend (:6300)
     ↓ REST API
 Certum CA
@@ -47,10 +47,10 @@ Certum ACME Server
 
 `system_settings` 表 `group='ca'`：
 
-| key          | 说明                                                                                                |
-| ------------ | --------------------------------------------------------------------------------------------------- |
-| `acme_url`   | 上游系统 ACME API 地址（如 `http://upstream-backend:8000/api/acme`），可回落 `url` 字段自动替换路径 |
-| `acme_token` | 上游系统 API Token（回落 `token` 字段）                                                             |
+| key          | 说明                                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------------ |
+| `acme_url`   | 上游系统 ACME API 地址（如 `http://upstream-backend:8000/api/v2/acme`），可回落 `url` 字段自动替换路径 |
+| `acme_token` | 上游系统 API Token（回落 `token` 字段）                                                                |
 
 Manager 还需要：
 

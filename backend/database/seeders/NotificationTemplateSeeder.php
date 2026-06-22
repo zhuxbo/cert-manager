@@ -39,8 +39,22 @@ class NotificationTemplateSeeder extends Seeder
                 'code' => 'user_created',
                 'name' => '用户创建通知',
                 'content' => '您好，我们为您创建了账号，用户名 {{ $username }}，密码 {{ $password }}，登录地址 {{ $site_url }}',
-                'variables' => ['username', 'password', 'site_url'],
+                // site_url 不列入：由 UserCreatedNotificationBuilder 从系统设置注入，测试发送无需手填
+                'variables' => ['username', 'password'],
                 'example' => '您好，我们为您创建了账号，用户名 test，密码 123456，登录地址 www.example.com',
+            ],
+            // 自动续费/重签失败提醒（schedule:auto-renew 处理失败时发给订单用户）
+            [
+                'code' => 'auto_renew_failed',
+                'name' => '自动续费/重签失败提醒',
+                'content' => $this->getAutoRenewFailedHtml(),
+                // site_url 不列入：由 AutoRenewFailedNotificationBuilder 从系统设置注入，测试发送无需手填
+                'variables' => [
+                    'common_name',
+                    'action',
+                    'reason',
+                ],
+                'example' => null,
             ],
             // 任务失败告警
             [
@@ -379,6 +393,152 @@ HTML;
                     </table>
 
                     </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * @noinspection CssRedundantUnit
+     * @noinspection HtmlDeprecatedTag
+     * @noinspection HtmlDeprecatedAttribute
+     * @noinspection HtmlUnknownTarget
+     * @noinspection XmlDeprecatedElement
+     * @noinspection CssReplaceWithShorthandSafely
+     */
+    private function getAutoRenewFailedHtml(): string
+    {
+        return <<<'HTML'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSL 证书自动续期失败</title>
+    <style>
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+        table { border-collapse: collapse !important; }
+        body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; background-color: #f4f6f8; }
+
+        @media screen and (max-width: 600px) {
+            .email-container { width: 100% !important; margin: auto !important; }
+            .mobile-padding { padding-left: 20px !important; padding-right: 20px !important; }
+            .wrapper-padding { padding-top: 30px !important; padding-bottom: 30px !important; }
+        }
+        @media (prefers-color-scheme: dark) {
+            body, .outer-wrapper { background-color: #2d2d2d !important; }
+            .white-card { background-color: #1f1f1f !important; border: 1px solid #333333 !important; }
+            h1, h2, h3, p, span, div { color: #e1e1e1 !important; }
+            .footer-text { color: #888888 !important; }
+            .highlight-text { color: #f59e0b !important; }
+            .card-info { background-color: #252525 !important; border: 1px solid #333333 !important; }
+            .reason-box { background-color: #332b00 !important; border-left-color: #f59e0b !important; }
+            .reason-text { color: #fbbf24 !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f8;">
+
+    @php($action_label = ($action ?? '') === 'renew' ? '续费' : (($action ?? '') === 'reissue' ? '重签' : '续期'))
+
+    <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
+        证书 {{ $common_name }} 自动{{ $action_label }}失败，请尽快处理以免证书到期失效。
+    </div>
+
+    <center style="width: 100%; background-color: #f4f6f8;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="outer-wrapper" style="background-color: #f4f6f8;">
+            <tr>
+                <td align="center" class="wrapper-padding" style="padding-top: 50px; padding-bottom: 50px; padding-left: 10px; padding-right: 10px;">
+
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="white-card" style="max-width: 600px; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: left;">
+
+                        <tr>
+                            <td style="background-color: #f59e0b; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+
+                                <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
+                                    ⚠️ SSL 证书自动{{ $action_label }}失败
+                                </h1>
+
+                                <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 26px; color: #555555;">
+                                    您好，系统在为下列订单自动{{ $action_label }}时遇到问题，未能完成。为避免证书到期影响网站访问，请尽快登录控制台处理。
+                                </p>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom: 24px;">
+                                    <tr>
+                                        <td class="card-info" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 20px;">
+                                            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                                <tr>
+                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">证书域名</td>
+                                                </tr>
+                                                <tr>
+                                                    <td class="highlight-text" style="padding-bottom: 16px; font-size: 18px; font-weight: 600; color: #333333; font-family: monospace;">{{ $common_name }}</td>
+                                                </tr>
+                                                <tr>
+                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">操作类型</td>
+                                                </tr>
+                                                <tr>
+                                                    <td class="highlight-text" style="font-size: 16px; color: #333333; font-family: sans-serif;">自动{{ $action_label }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <div class="reason-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 24px;">
+                                    <p class="reason-text" style="margin: 0; font-size: 15px; line-height: 24px; color: #92400e;">
+                                        <strong>失败原因：</strong><br>
+                                        {{ $reason }}
+                                    </p>
+                                </div>
+
+                                <p style="margin: 0 0 12px 0; font-size: 15px; line-height: 24px; color: #666666;">
+                                    请按以下情况对照处理，处理后系统会在后续检测窗口自动重试：
+                                </p>
+                                <p style="margin: 0 0 8px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>账户余额不足</strong>：请充值后等待自动重试，或手动续期
+                                </p>
+                                <p style="margin: 0 0 8px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>域名委托无效</strong>：请配置并验证域名 CNAME 委托
+                                </p>
+                                <p style="margin: 0 0 8px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>IP 地址证书</strong>：IP 证书自动续签须由自动部署工具发起，请配置自动部署工具
+                                </p>
+                                <p style="margin: 0 0 28px 0; font-size: 15px; line-height: 24px; color: #555555;">
+                                    • <strong>其他情况</strong>：若以上均已确认仍未成功，请联系客服协助处理
+                                </p>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                    <tr>
+                                        <td align="center">
+                                            <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
+                                                登录控制台
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="background-color: #fafafa; padding: 20px 40px; text-align: center; border-top: 1px solid #eeeeee;">
+                                <p class="footer-text" style="margin: 0; font-size: 13px; line-height: 20px; color: #999999; font-family: sans-serif;">
+                                    本邮件由系统自动发送，请勿直接回复。
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                </td>
             </tr>
         </table>
     </center>

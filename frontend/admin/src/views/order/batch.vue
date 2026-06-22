@@ -73,18 +73,15 @@
         </el-dropdown-menu>
       </template>
     </el-dropdown>
-    <el-popconfirm
+    <el-button
       v-if="canCommitCancel()"
-      title="确定要取消订单吗？"
-      width="160px"
-      @confirm="commitCancel()"
+      type="danger"
+      size="small"
+      class="ml-2"
+      @click="confirmBatchCancel()"
     >
-      <template #reference>
-        <el-button type="danger" size="small" class="ml-2">
-          取消订单
-        </el-button>
-      </template>
-    </el-popconfirm>
+      取消订单
+    </el-button>
     <el-button
       v-if="canRevokeCancel()"
       type="warning"
@@ -98,6 +95,7 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessageBox } from "element-plus";
 import { message } from "@shared/utils";
 import * as OrderApi from "@/api/order";
 import { useDetail } from "./detail";
@@ -488,6 +486,18 @@ const sync = () => {
     });
     emit("refresh");
   });
+};
+
+const confirmBatchCancel = () => {
+  ElMessageBox.prompt('请输入"批量取消"四字以确认此操作', "批量取消确认", {
+    confirmButtonText: "确定",
+    cancelButtonText: "取消",
+    inputValidator: (val: string) =>
+      val === "批量取消" || '请输入"批量取消"四字',
+    inputErrorMessage: '请输入"批量取消"四字'
+  })
+    .then(() => commitCancel())
+    .catch(() => {});
 };
 
 const commitCancel = () => {

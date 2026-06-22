@@ -1,6 +1,11 @@
 <?php
 
 use App\Services\Delegation\AutoDcvTxtService;
+use Tests\TestCase;
+
+// splitPrefixAndZone 现走 config 驱动的 CnameDelegationService::supportedPrefixes()，
+// 需 Laravel 容器（config helper）已 boot；此文件无 DB 依赖故只挂 TestCase（不挂 RefreshDatabase）
+uses(TestCase::class);
 
 beforeEach(function () {
     $this->service = new AutoDcvTxtService;

@@ -1,0 +1,2 @@
+# 豁免 build/.gitignore 中的 release.conf 规则（此处为 nginx 路由文件，非发布配置）
+!release.conf

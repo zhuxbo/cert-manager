@@ -71,7 +71,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 1. **`commitCancel`**（Web 入口，延时流程，保留撤回窗口）：
    - 无 `api_id` 的 pending 订单 → 直接退费 + 标记 cancelled（此时已真实取消，设置 `cancelled_at`）
    - 有 `api_id` 的订单 → 仅标记 cancelling + 创建 Task（action=`cancel_acme`，延迟 120s）+ dispatch `TaskJob`（延迟 123s）——**不写 `cancelled_at`**，实际取消由 `cancel()` 完成
-2. **`cancelNow`**（下游 API 入口 `/api/acme/cancel`，立即取消）：
+2. **`cancelNow`**（下游 API 入口 `/api/v2/acme/cancel`，立即取消）：
    - 不创建 Task、不 dispatch Job；悲观锁后标记 cancelling（不写 `cancelled_at`）并同步调 `cancel()` 完成上游通信与退费
    - 未提交上游的 pending 订单仍走直接退费分支（同 commitCancel）
    - 上游失败时订单保持 cancelling（不退费）——与延时流程一致，等待人工或重试
@@ -94,7 +94,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 | ---------------------------------------------- | ------------- |
 | `/api/user/acme/new`（Web 用户下单）           | `web`（默认） |
 | `/api/admin/acme/new`（管理员代下单）          | `admin`       |
-| `/api/acme/new`（API Token 下单）              | `api`         |
+| `/api/v2/acme/new`（API Token 下单）           | `api`         |
 | `/api/deploy/acme/new`（Deploy Token 下单）    | `deploy`      |
 | `AutoRenewCommand` 自动续费（如未来支持 ACME） | `auto`        |
 
@@ -110,13 +110,13 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 上游系统 端点（RPC 风格，通过 `order_id` 传参）：
 
-- `POST /api/acme/new` — 创建订单
+- `POST /api/v2/acme/new` — 创建订单
   - 字段集（manager 视角完整 schema）：`contact_email` / `product_code` / `period`(int) / `plus`(int 0/1) / `refer_id`
   - `period` 当前 gateway 暂不接收（由 `product.periods[0]` 决定），manager 稳定外发等其升级多年期产品后自然贯通
   - `source` 是 manager 内部 Api 路由参数，作为 `Api::new($data, $source)` 第二个独立参数，不混入 data
-- `GET /api/acme/get?order_id=` — 查询订单（响应含 directory_url）
-- `POST /api/acme/cancel` — 取消订单
-- `GET /api/acme/get-products` — 获取 ACME 产品列表
+- `GET /api/v2/acme/get?order_id=` — 查询订单（响应含 directory_url）
+- `POST /api/v2/acme/cancel` — 取消订单
+- `GET /api/v2/acme/get-products` — 获取 ACME 产品列表
 
 ## ACME directory URL
 
@@ -164,7 +164,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 - `POST /acme/new` — 一步到位：创建 + 支付 + 提交（`plus` 可选；`contact_email` 必填）
 - `GET /acme/{id}` — 获取详情（含 EAB + directory_url）
 
-### API Token（`/api/acme/`，api.v2 guard）
+### API Token（`/api/v2/acme/`，api.v2 guard）
 
 - `POST /acme/new` — 一步到位：创建 + 支付 + 提交（`contact_email` 必填）
 - `GET /acme/get?order_id=` / `POST /acme/cancel` / `GET /acme/get-products`

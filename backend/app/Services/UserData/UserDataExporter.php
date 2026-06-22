@@ -13,6 +13,9 @@ class UserDataExporter
 
     private int $chunkSize;
 
+    /** @var array<string, string[]> 表 => 生成列名（缓存，避免重复 schema introspection） */
+    private array $generatedColumnsCache = [];
+
     public function __construct(OutputInterface $output, int $chunkSize = 1000)
     {
         $this->output = $output;
@@ -251,6 +254,12 @@ class UserDataExporter
 
         $columns = array_keys($rows[0]);
 
+        // 排除生成列：MySQL 不允许向生成列显式写值，写进 INSERT 导入会报 3105
+        $generated = $this->generatedColumns($table);
+        if (! empty($generated)) {
+            $columns = array_values(array_filter($columns, fn ($col) => ! in_array($col, $generated, true)));
+        }
+
         // 自增 ID 表排除 id 列，避免跨系统导入冲突
         if (UserDataTableRegistry::isAutoIncrement($table)) {
             $columns = array_values(array_filter($columns, fn ($col) => $col !== 'id'));
@@ -276,6 +285,23 @@ class UserDataExporter
         }
 
         return "INSERT INTO `$table` ($columnList) VALUES\n".implode(",\n", $valueGroups).';';
+    }
+
+    /**
+     * 表的生成列名（MySQL 生成列不能显式写值，导出时需排除）
+     *
+     * @return string[]
+     */
+    private function generatedColumns(string $table): array
+    {
+        if (! array_key_exists($table, $this->generatedColumnsCache)) {
+            $this->generatedColumnsCache[$table] = collect(DB::getSchemaBuilder()->getColumns($table))
+                ->filter(fn ($c) => ! empty($c['generation']))
+                ->pluck('name')
+                ->all();
+        }
+
+        return $this->generatedColumnsCache[$table];
     }
 
     /**

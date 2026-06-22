@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\Binary\BinaryLocator;
 use App\Services\Upgrade\PackageExtractor;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
@@ -435,6 +436,136 @@ test('extract 合法升级包结构（含 Unix 普通文件属性）正常通过
     expect("$extractedPath/backend/app/test.php")->toBeFile();
 
     File::deleteDirectory($extractedPath);
+});
+
+// ==================== nginx render.sh 集成（Task 5: default 清空 + proc_open 调 render） ====================
+
+test('BinaryLocator::bash 返回可执行的 bash 路径', function () {
+    $locator = app(BinaryLocator::class);
+    $path = $locator->bash();
+
+    expect($path)->toContain('bash');
+    expect(is_executable($path))->toBeTrue();
+});
+
+test('renderNginx wiring: stub render.sh 被 proc_open 正确调用并传入 PROJECT_ROOT', function () {
+    // 搭建最小安装根（base_path → installDir/backend，使 base_path('../nginx') = installDir/nginx）
+    $installDir = "$this->testDir/install_render";
+    File::makeDirectory("$installDir/nginx", 0755, true);
+    File::makeDirectory("$installDir/backend", 0755, true);
+
+    // 最小 stub：仅验证 proc_open 传了正确 $1，产出一个哨兵文件
+    $stub = "#!/usr/bin/env bash\nmkdir -p \"\$1/nginx/enabled/routes\"\nprintf 'ok' > \"\$1/nginx/enabled/routes/admin.conf\"\nexit 0\n";
+    File::put("$installDir/nginx/render.sh", $stub);
+    chmod("$installDir/nginx/render.sh", 0755);
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $extractor = Mockery::mock(PackageExtractor::class)->makePartial();
+        $extractor->shouldAllowMockingProtectedMethods();
+        $extractor->shouldReceive('getProjectRoot')->andReturn($installDir);
+
+        $method = (new ReflectionClass($extractor))->getMethod('renderNginx');
+        $method->invoke($extractor, "$installDir/nginx");
+
+        // stub 写了哨兵文件 → 证明 proc_open 以正确的 PROJECT_ROOT=$installDir 调用了 bash render.sh
+        expect("$installDir/nginx/enabled/routes/admin.conf")->toBeFile();
+        expect(File::get("$installDir/nginx/enabled/routes/admin.conf"))->toBe('ok');
+    } finally {
+        app()->setBasePath($originalBase);
+        Mockery::close();
+    }
+});
+
+test('renderNginx 非致命：stub render.sh 退出非零不抛异常', function () {
+    $installDir = "$this->testDir/install_nonzero";
+    File::makeDirectory("$installDir/nginx", 0755, true);
+    File::makeDirectory("$installDir/backend", 0755, true);
+
+    // stub 直接 exit 1
+    File::put("$installDir/nginx/render.sh", "#!/usr/bin/env bash\nexit 1\n");
+    chmod("$installDir/nginx/render.sh", 0755);
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $extractor = Mockery::mock(PackageExtractor::class)->makePartial();
+        $extractor->shouldAllowMockingProtectedMethods();
+        $extractor->shouldReceive('getProjectRoot')->andReturn($installDir);
+
+        $method = (new ReflectionClass($extractor))->getMethod('renderNginx');
+        // 不应抛异常
+        $method->invoke($extractor, "$installDir/nginx");
+
+        expect(true)->toBeTrue(); // 能执行到此处即为通过
+    } finally {
+        app()->setBasePath($originalBase);
+        Mockery::close();
+    }
+});
+
+test('renderNginx 非致命：render.sh 不存在时不抛异常', function () {
+    $installDir = "$this->testDir/install_missing";
+    File::makeDirectory("$installDir/nginx", 0755, true);
+    File::makeDirectory("$installDir/backend", 0755, true);
+    // 故意不写 render.sh
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $extractor = Mockery::mock(PackageExtractor::class)->makePartial();
+        $extractor->shouldAllowMockingProtectedMethods();
+        $extractor->shouldReceive('getProjectRoot')->andReturn($installDir);
+
+        $method = (new ReflectionClass($extractor))->getMethod('renderNginx');
+        // 不应抛异常
+        $method->invoke($extractor, "$installDir/nginx");
+
+        expect(true)->toBeTrue();
+    } finally {
+        app()->setBasePath($originalBase);
+        Mockery::close();
+    }
+});
+
+test('applyNginxUpgrade 先清 default 再 sync 再调 render（旧残留 zzz_stale.conf 被清除、admin.conf 同步落地）', function () {
+    $installDir = "$this->testDir/install_wipe";
+    File::makeDirectory("$installDir/nginx/default/routes", 0755, true);
+    File::makeDirectory("$installDir/backend", 0755, true);
+
+    // 预置旧残留文件（旧版才有、新包不包含）
+    File::put("$installDir/nginx/default/routes/zzz_stale.conf", "location /stale { return 404; }\n");
+
+    // 升级包 source nginx 目录：含新 admin.conf + stub render.sh（exit 0 即可，不需要真渲染）
+    $sourceDir = "$this->testDir/source_nginx";
+    File::makeDirectory("$sourceDir/default/routes", 0755, true);
+    File::put("$sourceDir/default/routes/admin.conf", "location ^~ /admin { }\n");
+    File::put("$sourceDir/render.sh", "#!/usr/bin/env bash\nexit 0\n");
+    chmod("$sourceDir/render.sh", 0755);
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $extractor = Mockery::mock(PackageExtractor::class)->makePartial();
+        $extractor->shouldAllowMockingProtectedMethods();
+        $extractor->shouldReceive('getProjectRoot')->andReturn($installDir);
+
+        $method = (new ReflectionClass($extractor))->getMethod('applyNginxUpgrade');
+        $method->invoke($extractor, $sourceDir);
+
+        // deleteDirectory(default) 清除旧残留（K2）
+        expect("$installDir/nginx/default/routes/zzz_stale.conf")->not->toBeFile();
+        // sync 把新包 admin.conf 落地
+        expect("$installDir/nginx/default/routes/admin.conf")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+        Mockery::close();
+    }
 });
 
 /**

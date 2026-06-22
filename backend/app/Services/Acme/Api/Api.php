@@ -15,7 +15,7 @@ class Api
      * 下单
      *
      * source 是 manager 内部路由参数（决定走 default/Api 等哪个实现），独立于业务 data；
-     * $data 直接发给上游 /api/acme/new，字段集与 gateway ApiController::new validate 对齐。
+     * $data 直接发给上游 /api/v2/acme/new，字段集与上游 ApiController::new validate 对齐。
      */
     public function new(array $data, string $source): array
     {

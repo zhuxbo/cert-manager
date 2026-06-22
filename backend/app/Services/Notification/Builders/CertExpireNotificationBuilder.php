@@ -37,9 +37,19 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
         $orders = $this->fetchExpiringOrders($notifiable);
 
         $certificates = [];
-        $hasDelegationIssue = false;
 
         foreach ($orders as $order) {
+            // 排除"会被 AutoRenewCommand 妥善处理"的订单（与 ExpireCommand 去重口径完全一致）：
+            //   - API channel 订单 AutoRenewCommand 不处理 → 不排除（照常进汇总邮件）
+            //   - 其余 willAutoRenewExecute||willAutoReissueExecute 为真 → 排除（交由 auto_renew_failed 提醒）
+            // 注意：不再按委托有效性细分。委托未配置/失败的自动订单同样由 AutoRenewCommand 发 auto_renew_failed，
+            // 这里若保留则会与 auto_renew_failed 双发，故统一排除。
+            if ($order->latestCert->channel !== 'api'
+                && ($this->autoRenewService->willAutoRenewExecute($order, $notifiable)
+                    || $this->autoRenewService->willAutoReissueExecute($order, $notifiable))) {
+                continue;
+            }
+
             try {
                 $daysLeft = (int) (new DateTime)->diff(new DateTime((string) $order->latestCert->expires_at))->format('%a');
             } catch (DateMalformedStringException $e) {
@@ -47,38 +57,12 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
                 $daysLeft = 0;
             }
 
-            // 检查自动任务是否会实际执行
-            $willAutoRenew = $this->autoRenewService->willAutoRenewExecute($order, $notifiable);
-            $willAutoReissue = $this->autoRenewService->willAutoReissueExecute($order, $notifiable);
-
-            // 如果自动任务会实际执行，检查委托有效性
-            if ($willAutoRenew || $willAutoReissue) {
-                $ca = strtolower($order->product->ca ?? '');
-                $domains = $order->latestCert->alternative_names;
-                $delegationValid = $this->autoRenewService->checkDelegationValidity($notifiable->id, $domains, $ca);
-
-                if ($delegationValid) {
-                    // 委托有效，完全跳过该证书（不发通知）
-                    continue;
-                }
-
-                // 委托无效，加入通知列表并标记
-                $hasDelegationIssue = true;
-                $certificates[] = [
-                    'domain' => $order->latestCert->common_name,
-                    'expire_at' => $order->latestCert->expires_at->format('Y-m-d'),
-                    'days_left' => $daysLeft,
-                    'delegation_status' => 'invalid',
-                ];
-            } else {
-                // 自动任务不会执行，加入通知列表
-                $certificates[] = [
-                    'domain' => $order->latestCert->common_name,
-                    'expire_at' => $order->latestCert->expires_at->format('Y-m-d'),
-                    'days_left' => $daysLeft,
-                    'delegation_status' => 'need_renew',
-                ];
-            }
+            $certificates[] = [
+                'domain' => $order->latestCert->common_name,
+                'expire_at' => $order->latestCert->expires_at->format('Y-m-d'),
+                'days_left' => $daysLeft,
+                'delegation_status' => 'need_renew',
+            ];
         }
 
         if (empty($certificates)) {
@@ -93,7 +77,8 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
             'site_url' => $siteUrl,
             'certificates' => $certificates,
             'subject' => $subject,
-            'has_delegation_issue' => $hasDelegationIssue,
+            // 保留键以兼容历史模板；去重后到期邮件只列"需手动续期"证书，故恒为 false
+            'has_delegation_issue' => false,
             '_meta' => [
                 'subject' => $subject,
                 'is_html' => true,

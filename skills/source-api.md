@@ -29,7 +29,7 @@ backend/app/Services/
     ├── Api.php                      # 工厂（getSourceApi → error 终止）
     └── default/
         ├── Api.php                  # 实现 AcmeSourceApiInterface
-        └── Sdk.php                  # HTTP 客户端（上游 /api/acme/*）
+        └── Sdk.php                  # HTTP 客户端（上游 /api/v2/acme/*）
 ```
 
 ## 两套 Api.php 的架构差异（设计意图）
@@ -70,7 +70,7 @@ interface AcmeSourceApiInterface
 }
 ```
 
-方法对应上游的 `/api/acme/*` REST 端点。
+方法对应上游的 `/api/v2/acme/*` REST 端点。
 
 ## Order API 接口定义
 
@@ -149,13 +149,17 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 
 `Acme\Api\default\Sdk` 构造函数中，`acmeToken` / `acmeUrl` 仅当值为 `null`（未配置）时回落到 `token` / `url`，空字符串不回落。设计意图：允许管理员显式置空以禁用 ACME 功能。
 
+回落 `acmeUrl` 时按 `ca.url`（形如 `.../api/v2`）追加 `/acme` 得 `.../api/v2/acme`（一个 api v2 Token 同时覆盖 v2 与 acme，无需单独配 `acme_url`/`acme_token`）。
+
 ## 与上游的关系
 
 Manager 是多级代理系统，上游可以是另一个 Manager 或其他 API 服务。两套 Api 通过 HTTP 客户端（Sdk）调上游 REST API，在上游侧完成实际的 CA 对接。
 
 ```
 Manager Order\Api  → 上游 /api/v1/*   → ... → CA
-Manager Acme\Api   → 上游 /api/acme/* → ... → CA（ACME 协议）
+Manager Acme\Api   → 上游 /api/v2/acme/* → ... → CA（ACME 协议）
 ```
 
 新增来源时，Manager 和上游两侧都需要实现对应的 Source API。
+
+**部署顺序依赖（上游优先）**：对外 ACME API 路径与 Sdk 外发均为 `/api/v2/acme/*`。当上游尚未迁到该路径时，default source 的 `get`/`cancel`/`getProducts` 会 404。升级多级链路时必须**自上而下先迁上游、再迁本级**，避免外发 404 窗口。

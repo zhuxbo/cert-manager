@@ -107,9 +107,66 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 ├── backend/                  # Laravel 后端（含 .env）
 ├── frontend/admin,user,web/  # 前端
 ├── plugins/                  # 插件目录
-├── nginx/manager.conf        # 被网站配置 include
+├── nginx/                    # manager.conf + render.sh + default/(受管) + custom/(自定义) + enabled/(渲染产物)，详见「nginx 路由自定义」
 └── backups/                  # 备份和升级包
 ```
+
+---
+
+## nginx 路由自定义
+
+Manager 的 nginx 路由采用三层目录机制，升级永不覆盖用户自定义内容。
+
+### 三层目录
+
+```
+nginx/
+├── default/{routes,snippets}/   # 系统默认，升级覆盖，勿直接编辑
+├── custom/{routes,snippets}/    # 你的自定义，升级不覆盖，不进发布包
+└── enabled/{routes,snippets}/   # 渲染产物，勿直接编辑
+```
+
+`manager.conf` 只 `include enabled/routes/*.conf`。`nginx/render.sh <安装目录>` 将 default + custom 合并渲染到 enabled：同名 conf 以 custom 优先（enabled 写 include 指针指向 custom，默认版被抑制，避免 nginx `duplicate location` 报错）；无同名 custom 则将 default 的占位替换后复制。
+
+首次运行会将 `frontend/web/web.conf`（出厂模板）播种到 `custom/routes/web.conf`，之后由你自行维护。
+
+三条部署路径（`bt-install.sh` / `upgrade.sh` / 后台 `PackageExtractor`）均对称调用 render.sh；后台路径经 `proc_open` 调用、不自动 reload（由管理员或 BT 后续 reload）。
+
+### 常见操作
+
+**覆盖现有路由**（如 `/admin`）：创建 `nginx/custom/routes/admin.conf`（与默认同名），内含完整 `location` 块。同名即抑制默认，无 duplicate location 冲突。
+
+**新增路由**：创建 `nginx/custom/routes/<name>.conf`，内含 `location` 块。
+
+**覆盖静态缓存 snippet**：创建 `nginx/custom/snippets/spa-static-cache.conf`。
+
+**修改已有 custom 文件内容**：直接编辑，然后：
+
+```bash
+nginx -s reload
+```
+
+enabled 中的 include 指针已指向 custom 文件，无需重新渲染。
+
+**增加或删除 custom 文件**（路由数量变化）：需重新渲染再 reload：
+
+```bash
+bash nginx/render.sh /www/wwwroot/ssl-manager --reload
+```
+
+`--reload` 会先 `nginx -t` 测试配置，通过才 reload；失败则回滚 enabled 目录、不执行 reload（站点不受影响）。
+
+**server 级配置**（`rewrite`、`add_header`、`client_max_body_size` 等非 location 块配置）：不属于本机制范畴，在 BT 面板站点自定义 nginx 配置（server 块）中维护。
+
+### 目录 custom/ 和 enabled/ 不进发布包
+
+发布包只含 `default/` 和 `render.sh`，升级时先清空 `default/`（防旧路由残留），再递归复制包内 `default/`，最后调 render.sh 重建 enabled。custom/ 内容全程不动。
+
+### 注意事项
+
+- **覆盖必须用与默认完全相同的文件名**（如覆盖 `/api` → `custom/routes/api.conf`）。用不同文件名却写同一个 `location` 会产生 nginx `duplicate location`，导致下次 nginx 启动失败。
+- **改完 custom/ 后请 `nginx -t` 再 reload**：custom/ 里的语法错误不会被部署流程拦截，会在下次 nginx 重启时让整个站点起不来。
+- **`UPGRADE_AUTO_MIGRATE` 保持开启（默认）**：它关闭时后台升级到本版本不会自动渲染 enabled/；此时需手动 `php artisan migrate`（会执行自愈迁移）或手动 `bash <安装目录>/nginx/render.sh <安装目录>`。
 
 ---
 

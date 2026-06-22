@@ -6,7 +6,7 @@
             "method": "POST",
             "uri_pattern": "/api/delegation/batch-store",
             "request_keys": [
-                "prefix",
+                "ca",
                 "zones"
             ],
             "response_status": "2xx",

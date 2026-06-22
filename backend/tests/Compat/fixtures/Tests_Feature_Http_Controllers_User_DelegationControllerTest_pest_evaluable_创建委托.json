@@ -6,7 +6,7 @@
             "method": "POST",
             "uri_pattern": "/api/delegation",
             "request_keys": [
-                "prefix",
+                "ca",
                 "zone"
             ],
             "response_status": "2xx",

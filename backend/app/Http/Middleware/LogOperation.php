@@ -121,8 +121,12 @@ class LogOperation
                 'user_agent' => $request->userAgent(),
             ];
 
-            // 根据路由前缀记录不同类型的日志
-            if ($request->is(['api/V1/*', 'api/v2/*', 'api/acme/*', 'api/deploy', 'api/deploy/*'])) {
+            // 根据路由前缀记录不同类型的日志。
+            // 对外 ACME API 路径是 api/v2/acme/*（由 api/v2/* 命中），故这里不含 api/acme/*；
+            // user 端 acme 操作走 api/acme/*（无 user 前缀，前端约定 user→/api），由下面 else 分支记
+            // UserLog（取 user guard）。切勿把 api/acme/* 加回此数组——否则 user 端 acme 操作会取
+            // api guard → user_id 为空（曾经的 batch 日志 user 为空即此因）。
+            if ($request->is(['api/V1/*', 'api/v2/*', 'api/deploy', 'api/deploy/*'])) {
                 $this->logApiRequest($request, $logData);
             } elseif ($request->is('api/admin/*')) {
                 $this->logAdminRequest($request, $logData);
@@ -248,10 +252,10 @@ class LogOperation
     {
         if ($request->is('api/V1/*')) {
             return 'v1';
+        } elseif ($request->is('api/v2/acme/*')) {
+            return 'acme';
         } elseif ($request->is('api/v2/*')) {
             return 'v2';
-        } elseif ($request->is('api/acme/*')) {
-            return 'acme';
         } elseif ($request->is(['api/deploy', 'api/deploy/*'])) {
             return 'deploy';
         }

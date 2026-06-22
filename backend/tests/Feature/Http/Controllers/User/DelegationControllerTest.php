@@ -37,6 +37,8 @@ test('创建委托', function () {
 
     $mockService = Mockery::mock(CnameDelegationService::class);
     $delegation = CnameDelegation::factory()->create(['user_id' => $user->id]);
+    // 控制器按 ca 选择：resolveZone 派生 zone、createOrGet 收 prefix
+    $mockService->shouldReceive('resolveZone')->once()->andReturn('example.com');
     $mockService->shouldReceive('createOrGet')->once()->andReturn($delegation);
     $mockService->shouldReceive('withCnameGuide')->once()->andReturn($delegation->toArray());
     app()->instance(CnameDelegationService::class, $mockService);
@@ -44,7 +46,7 @@ test('创建委托', function () {
     $this->actingAsUser($user)
         ->postJson('/api/delegation', [
             'zone' => 'example.com',
-            'prefix' => '_dnsauth',
+            'ca' => 'digicert',
         ])
         ->assertOk()
         ->assertJson(['code' => 1]);
@@ -86,6 +88,8 @@ test('批量创建委托', function () {
 
     $mockService = Mockery::mock(CnameDelegationService::class);
     $delegation = CnameDelegation::factory()->create(['user_id' => $user->id]);
+    // 控制器按 ca 选择：resolveZone 派生每个 zone、createOrGet 收 prefix
+    $mockService->shouldReceive('resolveZone')->andReturn('example.com');
     $mockService->shouldReceive('createOrGet')->andReturn($delegation);
     $mockService->shouldReceive('withCnameGuide')->andReturn($delegation->toArray());
     app()->instance(CnameDelegationService::class, $mockService);
@@ -93,7 +97,7 @@ test('批量创建委托', function () {
     $this->actingAsUser($user)
         ->postJson('/api/delegation/batch-store', [
             'zones' => "example1.com\nexample2.com",
-            'prefix' => '_dnsauth',
+            'ca' => 'digicert',
         ])
         ->assertOk()
         ->assertJson(['code' => 1])

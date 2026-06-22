@@ -43,10 +43,11 @@ export function index(params: IndexParams): Promise<BaseResponse> {
 }
 
 // 定义 FormParams 的默认值对象
+// 委托创建按 CA 选择，后端经 ca_map 派生 prefix + zone
 export const FORM_PARAMS_DEFAULT = {
   user_id: 0,
   zone: "",
-  prefix: ""
+  ca: ""
 };
 
 // 从默认值对象中提取键
@@ -124,7 +125,7 @@ export function batchDestroy(ids: number[]): Promise<BaseResponse> {
 export interface BatchStoreParams {
   user_id: number;
   zones: string;
-  prefix: string;
+  ca: string;
 }
 
 export interface BatchStoreResult {

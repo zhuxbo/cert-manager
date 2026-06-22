@@ -534,18 +534,15 @@ download_application() {
         cp -r "$extract_dir/frontend" "$INSTALL_DIR/"
     fi
 
-    # 复制 Nginx 配置
+    # 复制 Nginx 配置(递归含 default/ 子目录;default 全受管,覆盖前清空防残留路由)
     if [ -d "$extract_dir/nginx" ]; then
         mkdir -p "$INSTALL_DIR/nginx"
-        cp "$extract_dir/nginx"/*.conf "$INSTALL_DIR/nginx/" 2>/dev/null || true
+        rm -rf "$INSTALL_DIR/nginx/default"
+        cp -r "$extract_dir/nginx"/* "$INSTALL_DIR/nginx/"
 
-        # 替换 nginx 配置中的占位符
-        log_info "处理 nginx 配置..."
-        for conf_file in "$INSTALL_DIR/nginx"/*.conf; do
-            if [ -f "$conf_file" ]; then
-                sed -i "s|__PROJECT_ROOT__|$INSTALL_DIR|g" "$conf_file"
-            fi
-        done
+        # 渲染 enabled/(占位替换含 manager.conf + web.conf 播种 + default/custom 解析),纯文件操作不依赖 app
+        log_info "渲染 nginx 路由配置..."
+        bash "$INSTALL_DIR/nginx/render.sh" "$INSTALL_DIR"
         log_success "nginx 配置已更新"
     fi
 

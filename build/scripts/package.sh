@@ -124,11 +124,22 @@ validate_production_dir() {
         "frontend/admin/index.html"
         "frontend/user/index.html"
         "nginx/manager.conf"
+        "nginx/render.sh"
+        "nginx/default/routes/admin.conf"
+        "nginx/default/snippets/spa-static-cache.conf"
     )
 
     for path in "${required_paths[@]}"; do
         if [ ! -e "$PRODUCTION_DIR/$path" ]; then
             log_error "生产代码缺少必需文件: $path"
+            missing=1
+        fi
+    done
+
+    # custom/、enabled/ 是机器本地产物,绝不入包(K5/P3)
+    for forbidden in "nginx/custom" "nginx/enabled"; do
+        if [ -e "$PRODUCTION_DIR/$forbidden" ]; then
+            log_error "发布包不得包含机器本地目录: $forbidden"
             missing=1
         fi
     done
