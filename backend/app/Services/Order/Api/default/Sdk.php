@@ -34,7 +34,8 @@ class Sdk
      */
     public function new(array $params): array
     {
-        return $this->call('new', $params);
+        // 28s：commit() 在 orders 行锁内调用，与反查 10+10 合计 < innodb_lock_wait_timeout(50s)，详见 call() 取值说明
+        return $this->call('new', $params, 'post', 28);
     }
 
     /**
@@ -42,7 +43,7 @@ class Sdk
      */
     public function renew(array $params): array
     {
-        return $this->call('renew', $params);
+        return $this->call('renew', $params, 'post', 28);
     }
 
     /**
@@ -50,7 +51,7 @@ class Sdk
      */
     public function reissue(array $params): array
     {
-        return $this->call('reissue', $params);
+        return $this->call('reissue', $params, 'post', 28);
     }
 
     /**
@@ -58,7 +59,7 @@ class Sdk
      */
     public function cancel(string|int $apiId): array
     {
-        return $this->call('cancel', ['order_id' => $apiId]);
+        return $this->call('cancel', ['order_id' => $apiId], 'post', 28);
     }
 
     /**
@@ -80,9 +81,10 @@ class Sdk
     /**
      * 获取订单信息
      */
-    public function get(string|int $apiId): array
+    public function get(string|int $apiId, ?int $timeout = null): array
     {
-        return $this->call('get', ['order_id' => $apiId], 'get');
+        // $timeout：仅 commit 锁内栈的 refer_id 反查传 10s；sync 等锁外调用不传（不限时）
+        return $this->call('get', ['order_id' => $apiId], 'get', $timeout);
     }
 
     /**
@@ -97,7 +99,7 @@ class Sdk
     /**
      * 提交接口请求
      */
-    protected function call(string $uri, array $data = [], $method = 'post'): array
+    protected function call(string $uri, array $data = [], $method = 'post', ?int $timeout = null): array
     {
         $apiUrl = rtrim(get_system_setting('ca', 'url'), '/');
         $apiToken = get_system_setting('ca', 'token');
@@ -108,7 +110,18 @@ class Sdk
 
         $url = $apiUrl.'/'.$uri;
 
-        $client = new Client;
+        // 锁内调用（commit 下单 / cancel）传入 $timeout，限制持锁时长 < innodb_lock_wait_timeout(默认 50s)，
+        // 否则上游慢/挂时持锁无限，并发访问同一订单行的 for update 会报 1205 锁等待超时。
+        // 取值：主调用 28s + refer_id 反查两跳各 10s，锁内最坏 28+10+10=48 < 50（留 2s 裕度）。
+        // 反查虽仅在 new 快返回（含 "Refer id"）时触发、与 new 超时互斥，但 new 成功耗时理论可逼近 28s，
+        // 故反查总和仍须满足 28+2×10<50；10s 兼顾不误杀正常反查查询。
+        // 锁外调用（uploadDocument 文档上传 / sync 查询 get）$timeout=null 不限时（避免掐断耗时上传）。
+        $clientConfig = [];
+        if ($timeout !== null) {
+            $clientConfig['connect_timeout'] = min(10, $timeout);
+            $clientConfig['timeout'] = $timeout;
+        }
+        $client = $this->makeClient($clientConfig);
         try {
             $options = [
                 'headers' => [
@@ -161,7 +174,7 @@ class Sdk
                 $getApiIdResult = $this->getOrderIdByReferId($data['refer_id']);
 
                 if ($getApiIdResult['code'] === 1 && $getApiIdResult['data']['order_id']) {
-                    $getOrderResult = $this->get($getApiIdResult['data']['order_id']);
+                    $getOrderResult = $this->get($getApiIdResult['data']['order_id'], 10);
 
                     if ($getOrderResult['code'] === 1) {
                         return [
@@ -197,6 +210,15 @@ class Sdk
      */
     protected function getOrderIdByReferId(string $referId): array
     {
-        return $this->call('get-order-id-by-refer-id', ['refer_id' => $referId], 'get');
+        // 反查在 commit() 的 orders 行锁内（new 触发），10s 见 call() 取值说明（28+10+10=48<50s）
+        return $this->call('get-order-id-by-refer-id', ['refer_id' => $referId], 'get', 10);
+    }
+
+    /**
+     * 创建 Guzzle 客户端（注入缝：测试可覆盖以捕获 config / 注入 MockHandler）。
+     */
+    protected function makeClient(array $config = []): Client
+    {
+        return new Client($config);
     }
 }
