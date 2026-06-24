@@ -26,6 +26,7 @@ use App\Services\Order\Traits\ActionTrait;
 use App\Services\Order\Utils\FindUtil;
 use App\Services\Order\Utils\OrderUtil;
 use App\Services\Order\Utils\VerifyUtil;
+use App\Support\MutexLock;
 use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -39,6 +40,7 @@ class Action
     use ActionFileTrait;
     use ActionTrait;
     use ApiResponse;
+    use MutexLock;
 
     protected mixed $api;
 
@@ -358,6 +360,18 @@ class Action
      * @throws Throwable
      */
     public function commit(int $orderId): void
+    {
+        // order 级互斥（方案 C）：同一订单 commit/cancel 串行，抢不到立即抛 MutationBusyException，
+        // 不进 DB 行锁等待队列 —— 把「持锁久 + 并发排队 > innodb_lock_wait_timeout(50s) → 1205」根治
+        $this->withMutex("order_mutate_$orderId", fn () => $this->commitLocked($orderId));
+    }
+
+    /**
+     * 提交（锁内实现）—— 必须经 commit() 持有 order_mutate_{id} 互斥锁后调用
+     *
+     * @throws Throwable
+     */
+    private function commitLocked(int $orderId): void
     {
         $order = null;
         $result = null;
@@ -988,6 +1002,18 @@ class Action
      * @throws Throwable
      */
     public function cancel(int $orderId): void
+    {
+        // order 级互斥（方案 C）：与 commit 共用 order_mutate_{id}，使 commit 执行期 cancel 抢不到
+        // 立即失败、不排队 —— 既根治 1205，又让 commit/cancel 应用层串行（配合锁内原子性防孤儿单）
+        $this->withMutex("order_mutate_$orderId", fn () => $this->cancelLocked($orderId));
+    }
+
+    /**
+     * 取消（锁内实现）—— 必须经 cancel() 持有 order_mutate_{id} 互斥锁后调用
+     *
+     * @throws Throwable
+     */
+    private function cancelLocked(int $orderId): void
     {
         // 同 commit：改 DB::transaction 闭包，避免手写 rollback 在嵌套死锁时抛 1305 淹没死锁异常 / 计数漂移。
         // attempts 固定 1：上游 cancel + 退款 Transaction::create 在事务内，绝不能事务级重试（重复取消/退款）；

@@ -13,6 +13,7 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Acme\Api\Api;
 use App\Services\Order\Utils\OrderUtil;
+use App\Support\MutexLock;
 use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
@@ -21,6 +22,7 @@ use Illuminate\Support\Facades\DB;
 class Action
 {
     use ApiResponse;
+    use MutexLock;
 
     /**
      * 创建 ACME 订单（unpaid 状态）
@@ -42,6 +44,16 @@ class Action
      * 与 newAndCommit（API 入口）的"扣费提交一体事务"语义有意区分。
      */
     public function pay(int $acmeId, bool $autoCommit = true): void
+    {
+        // order 级互斥（方案 C）：ACME pay 走 private commitOrder 下单（不经公共 commit），
+        // 故必须自包 acme_mutate_{id}（与 Order pay 走公共 commit 不同），否则 pay×commit 并发下单无保护
+        $this->withMutex("acme_mutate_$acmeId", fn () => $this->payLocked($acmeId, $autoCommit));
+    }
+
+    /**
+     * 支付（锁内实现）—— 必须经 pay() 持有 acme_mutate_{id} 互斥锁后调用
+     */
+    private function payLocked(int $acmeId, bool $autoCommit = true): void
     {
         $acme = Acme::findOrFail($acmeId);
         $this->payOrder($acme);
@@ -270,6 +282,15 @@ class Action
      */
     public function commit(int $acmeId): void
     {
+        // order 级互斥（方案 C）：与 pay/cancel/cancelNow 共用 acme_mutate_{id}，commit/cancel 串行防 1205
+        $this->withMutex("acme_mutate_$acmeId", fn () => $this->commitLocked($acmeId));
+    }
+
+    /**
+     * 提交（锁内实现）—— 必须经 commit() 持有 acme_mutate_{id} 互斥锁后调用
+     */
+    private function commitLocked(int $acmeId): void
+    {
         $acme = DB::transaction(function () use ($acmeId) {
             $locked = Acme::where('id', $acmeId)->lock()->firstOrFail();
 
@@ -377,6 +398,15 @@ class Action
      */
     public function cancelNow(int $acmeId): void
     {
+        // order 级互斥（方案 C）：下游同步取消，与 commit/pay 共用 acme_mutate_{id} 串行
+        $this->withMutex("acme_mutate_$acmeId", fn () => $this->cancelNowLocked($acmeId));
+    }
+
+    /**
+     * 立即取消（锁内实现）—— 必须经 cancelNow() 持有 acme_mutate_{id} 互斥锁后调用
+     */
+    private function cancelNowLocked(int $acmeId): void
+    {
         DB::transaction(function () use ($acmeId) {
             $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
 
@@ -434,6 +464,15 @@ class Action
      * 导致的资金与状态不一致。
      */
     public function cancel(int $acmeId): void
+    {
+        // order 级互斥（方案 C）：延时任务取消，与 commit/pay 共用 acme_mutate_{id} 串行
+        $this->withMutex("acme_mutate_$acmeId", fn () => $this->cancelLocked($acmeId));
+    }
+
+    /**
+     * 执行取消（锁内实现）—— 必须经 cancel() 持有 acme_mutate_{id} 互斥锁后调用
+     */
+    private function cancelLocked(int $acmeId): void
     {
         DB::transaction(function () use ($acmeId) {
             $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();

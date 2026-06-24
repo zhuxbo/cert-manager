@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use App\Exceptions\ApiResponseException;
+use App\Exceptions\MutationBusyException;
 use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
 use App\Models\Admin;
 use App\Models\Task as TaskModel;
@@ -105,7 +106,11 @@ class TaskJob implements ShouldQueue
                     // —— 否则抛 PDOException "There is no active transaction" 且 task 状态错乱。
                     // 抛出 → 逸出闭包触发外层 DB::transaction 回滚 → 由 handle() 外层 catch 统一处理：
                     // 未达 tries 上限静默 release 错峰自愈、达上限才冒出由 failed() 兜底标 failed。
-                    if ($e instanceof DeadlockException || $this->causedByConcurrencyError($e)) {
+                    // 订单级互斥忙（MutationBusyException，方案 C）与并发错误同等对待：同样抛出 →
+                    // 外层 catch 未达上限 release 错峰、达上限冒泡兜底（异步抢不到互斥锁不是业务失败、绝不标 failed）
+                    if ($e instanceof DeadlockException
+                        || $e instanceof MutationBusyException
+                        || $this->causedByConcurrencyError($e)) {
                         throw $e;
                     }
                     $data['result'] = [
@@ -139,9 +144,11 @@ class TaskJob implements ShouldQueue
             // 避免每次重试都 report() 把「会自愈的偶发死锁」刷进 error_logs + laravel.log（运维噪音）。
             // 达上限才冒出：worker report 一次（最终失败记录）+ failJob → failed() 兜底标 task failed。
             // release 不碰 task（保持 executing 等下次拾取），与 failed() 兜底标记构成完整闭环。
-            if (($e instanceof DeadlockException || $this->causedByConcurrencyError($e))
+            if (($e instanceof DeadlockException
+                || $e instanceof MutationBusyException
+                || $this->causedByConcurrencyError($e))
                 && $this->attempts() < $this->tries) {
-                $this->release(random_int(3, 8)); // 错峰，降低重试又撞同一二级索引间隙的概率
+                $this->release(random_int(3, 8)); // 错峰，降低重试又撞同一二级索引间隙 / 互斥锁的概率
 
                 return;
             }

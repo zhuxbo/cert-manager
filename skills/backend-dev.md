@@ -290,6 +290,63 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ---
 
+## order 级互斥锁（方案 C：根治 3+ 并发 1205）
+
+> **背景**：点 1（Sdk 锁内超时 28/10/10）把单次持锁压到 ≤48s 后，同一订单 **3+ 并发** commit/cancel 仍会在 DB 行锁上**排队累计** >`innodb_lock_wait_timeout`(50s) → 偶发 `1205 Lock wait timeout`。方案 C 在**进 DB 锁之前**加一把按订单 id 的 Cache 互斥锁，把"DB 锁等待 1205"转成"Cache 抢锁立即失败"。
+
+### 核心原语 `App\Support\MutexLock::withMutex`
+
+```php
+withMutex(string $key, Closure $cb, int $ttl = 60): mixed
+// 抢到 → 执行 $cb，finally 原子释放（Cache::lock 带 owner，TTL 过期不误删他人锁）
+// 抢不到（非阻塞 ->get()）→ 抛 MutationBusyException（不进 DB 锁等待队列）
+// Cache 故障 → fail-open 放行（退回 DB 锁串行，由点 1 Sdk 超时兜底，慢但不 1205、不阻塞业务）
+```
+
+- 用 `Cache::lock(...)->get()`（**非阻塞**，不用 `->block()`），抢不到立即返回，绝不在 Cache 层排队。
+- `MutationBusyException`（`App\Exceptions\`，**不继承 `ApiResponseException`**——否则被 TaskJob 内层 `catch(ApiResponseException)` 当业务结果标 failed）。
+
+### Cache driver 兼容性（生产默认 file 可行，不绑定 Redis）
+
+`withMutex` 用 `Cache::lock`（默认 store），各 driver 的锁支持（Laravel 13）：
+
+- **file（`config/cache.php` 默认）**：`FileStore implements LockProvider`，`FileLock::acquire` 走 `FileStore::add` 的 `flock(LOCK_EX)` 临界区——**单机多 PHP-FPM worker 间原子互斥**（宝塔单机部署典型场景，storage 在本地盘 flock 可靠）。
+- **redis / database / array / memcached**：均支持 `Cache::lock`。
+- **多机部署注意**：file lock 基于本地文件系统、**不跨机**；多 app 服务器共享负载时，跨机并发同一订单各自抢到本地锁 → 退回 DB 锁串行（点 1 超时兜底，不 1205、不资金错乱，但失去"立即失败"优化）。多机要跨机互斥又不上 Redis，用 `database` driver（走 cache 表、跨机有效）。
+- **任何不支持 lock 的 driver / Cache 故障** → fail-open 放行退回点 1 兜底，不阻塞业务。
+
+测试 `MutexLockTest` 同时覆盖 array（测试默认）+ file（生产默认）两 driver 实证真互斥。
+
+### 落点表（Order 与 ACME 不对称，源于 pay 的内部调用链）
+
+| 公共方法                                         | 包 withMutex          | 依据                                                                                         |
+| ------------------------------------------------ | --------------------- | -------------------------------------------------------------------------------------------- |
+| `Order\Action::commit`/`cancel`                  | ✅ `order_mutate_$id` | 多入口操作已存在订单；commit/cancel 共用 key 串行                                            |
+| `Order\Action::pay`                              | ❌                    | 单 id 分支调**公共** `commit`（自带锁，再包同 key 自死锁）；多 id 分支走 `createTask` 异步化 |
+| `Acme\Action::commit`/`pay`/`cancel`/`cancelNow` | ✅ `acme_mutate_$id`  | ACME `pay` 走 private `commitOrder`（不带锁）→ **必须自包**，与 Order pay 不对称             |
+| `newAndCommit` / Order 一条龙                    | ❌                    | 新订单 id 事务内生成、无并发同 id；id 事务内才有、不便在事务外抢锁                           |
+
+实现模式：原方法体下移为 `private *Locked()`，public 方法 `$this->withMutex("..._$id", fn () => $this->xxxLocked($id))`，**锁内逻辑零改动**。
+
+### 两路分流（同步 vs 异步）
+
+- **同步入口**（API/网页，经 `ApiExceptions`）：`MutationBusyException` → 503 + "该订单正在处理中，请稍后重试"，且加入 `$dontLogExceptions` 免高频刷 error_logs。
+- **异步 `TaskJob::handle`**：内层 + 外层 catch 把 `MutationBusyException` 与 `DeadlockException‖causedByConcurrencyError` 同等对待 → rethrow + `attempts<tries` 时 `release` 错峰、**不标 failed**（`causedByConcurrencyError` 只匹配 DB SQLSTATE，绝不识别自定义异常，故必须显式纳入）。
+
+### 与点 1 超时的关系（不可删）
+
+互斥锁 = 消掉"3+ 并发抢同一行"**高频主因**（应用层、依赖 Cache）；点 1 超时 = 兜住**残余 + 降级**（DB 层、确定性）。三条互斥盖不到、必须靠点 1：① 互斥只盖 commit×cancel，盖不住 commitCancel/sync 写回/markRenewed 撞 commit 持锁行；② Cache 故障 fail-open 退回 DB 锁串行，靠点 1 保证每个 ≤48s 不 1205；③ 应用层互斥替代不了存储层持锁硬上界。**删点 1 会破坏方案 C 降级安全**。
+
+### 孤儿单（C vs 曾否决的 B）
+
+保持锁内 → 上游建单 `$this->api->$action()` 与本地 `save()` 在同一事务原子，孤儿窗口仅"上游已返回成功、save() 提交前遇死锁回滚"的**毫秒级既有窗口**（`Order/Action.php` commit 注释承认，传统 Order 既有，方案 C 不新增）。曾否决的 B（commit 锁外 + CAS）把窗口放大到整个锁外调上游期（28–48s）且常规并发 cancel 即触发 → C 显著更优，但非"零孤儿单"。
+
+### 测试
+
+`tests/Unit/Support/MutexLockTest`（原语 6 behavior）+ `tests/Unit/Bootstrap/ApiExceptionsMutationBusyTest`（503+免日志）+ `tests/Feature/Services/Concurrency/CommitCancelMutexTest`（占锁→busy，证明 withMutex 在最外层、抢锁早于查 DB）+ `tests/Unit/Jobs/TaskJobMutexBusyTest`（异步 release/达上限冒泡）。
+
+---
+
 ## 资金确定性体系（4 道网）
 
 > **目的**：把资金安全从"LLM 审 + 单测 + 锁/事务"的**抽样**强度，升级为"DB 约束 + 应用层 CAS + 自动不变式校验"的**确定性**强度。当 LLM/审核找不到新问题、单测覆盖不到新路径时，多道独立网仍能拦住资金错账或在小时级被发现。
