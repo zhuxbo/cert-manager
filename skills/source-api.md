@@ -152,13 +152,16 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 **为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求，见主 `CLAUDE.md`「资金/状态变更必须在事务 + 行锁内」）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
 
 **Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(10, $timeout)` + `timeout`）。
+
 - 锁内：`new` / `renew` / `reissue` / `cancel` → 28s
 - refer_id 反查（在 commit 锁内栈内触发，`getOrderIdByReferId` + 反查的 `get($id, 10)`）→ 10s，锁内最坏 `28+10+10=48 < 50`（留 2s 裕度）；反查与 new 超时互斥但 `t_new` 可逼近 28s 故仍受此约束
-- 锁外（`$timeout=null`，不限时，避免掐断耗时操作）：`uploadDocument`（Certum 文档 base64 上传，可能数 MB）、`sync` 的 `get`、`getProducts`/`getOrders`/`revalidate`/`updateDCV`
+- 锁外也设超时上限**防 FPM worker 被上游挂死永久占用**（`max_execution_time` 不计 socket 阻塞、只有 FPM `request_terminate_timeout` 能兜且部署默认未设，不可靠）：
+  - `uploadDocument`（Certum 文档 base64 上传可能数 MB，且除 `SubmitDocumentJob`(queue) 外可能有手工同步入口）→ **120s**
+  - 其他 `sync` 的 `get`（默认 30s）/`getProducts`/`getOrders`/`revalidate`/`updateDCV` → **30s**（非耗时，仅防 hang）
 
 **ACME default Sdk**：无文档上传、无 refer_id 反查，`request()` 全局 `Http::timeout(30)` 即可（30 < 50）。
 
-**新增 source 的 Sdk 必须遵守**：锁内上游调用设 timeout < 50s（多次串联调用时确保总和 < 50s）；含耗时上传的调用单独留无超时通道。`makeClient()` 注入缝便于测试断言 timeout（参考 `tests/Unit/Services/Order/Api/DefaultSdkTimeoutTest.php`：用 array driver 注入 `setting:group_name:ca` 缓存绕过 DB，子类覆盖 `makeClient` 捕获 config + MockHandler 短路 HTTP）。
+**新增 source 的 Sdk 必须遵守**：锁内上游调用设 timeout < 50s（多次串联调用时确保总和 < 50s）；**锁外调用（尤其有 FPM 同步入口的）也须设上限防 worker 被上游 hang 拖死**（耗时上传给宽松值如 120s，普通查询/操作 30s）。`makeClient()` 注入缝便于测试断言 timeout（参考 `tests/Unit/Services/Order/Api/DefaultSdkTimeoutTest.php`：用 array driver 注入 `setting:group_name:ca` 缓存绕过 DB，子类覆盖 `makeClient` 捕获 config + MockHandler 短路 HTTP）。
 
 ## ACME Sdk 配置回落规则
 

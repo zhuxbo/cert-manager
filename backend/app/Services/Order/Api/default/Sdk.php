@@ -18,7 +18,8 @@ class Sdk
      */
     public function getProducts(string $brand = '', string $code = ''): array
     {
-        return $this->call('get-products', ['brand' => $brand, 'code' => $code], 'get');
+        // 30s：FPM 同步入口（Admin 导入产品），防上游挂时 worker 永久 hang
+        return $this->call('get-products', ['brand' => $brand, 'code' => $code], 'get', 30);
     }
 
     /**
@@ -26,7 +27,8 @@ class Sdk
      */
     public function getOrders(int $page = 1, int $pageSize = 100, $status = 'active'): array
     {
-        return $this->call('get-orders', ['page' => $page, 'page_size' => $pageSize, 'status' => $status], 'get');
+        // 30s：防上游挂时 worker 永久 hang
+        return $this->call('get-orders', ['page' => $page, 'page_size' => $pageSize, 'status' => $status], 'get', 30);
     }
 
     /**
@@ -67,7 +69,8 @@ class Sdk
      */
     public function revalidate(string|int $apiId): array
     {
-        return $this->call('revalidate', ['order_id' => $apiId]);
+        // 30s：FPM 同步入口（用户重新验证），防上游挂拖死 worker
+        return $this->call('revalidate', ['order_id' => $apiId], 'post', 30);
     }
 
     /**
@@ -75,15 +78,17 @@ class Sdk
      */
     public function updateDCV(string|int $apiId, string $method): array
     {
-        return $this->call('update-dcv', ['order_id' => $apiId, 'method' => $method]);
+        // 30s：FPM 同步入口（用户改验证方法），防上游挂拖死 worker
+        return $this->call('update-dcv', ['order_id' => $apiId, 'method' => $method], 'post', 30);
     }
 
     /**
      * 获取订单信息
      */
-    public function get(string|int $apiId, ?int $timeout = null): array
+    public function get(string|int $apiId, ?int $timeout = 30): array
     {
-        // $timeout：仅 commit 锁内栈的 refer_id 反查传 10s；sync 等锁外调用不传（不限时）
+        // $timeout：默认 30s（sync 等锁外 FPM 入口，防上游挂拖死 worker）；
+        // refer_id 反查显式传 10s（commit 锁内栈，受 innodb_lock_wait_timeout 约束，见 call() 取值）
         return $this->call('get', ['order_id' => $apiId], 'get', $timeout);
     }
 
@@ -93,7 +98,9 @@ class Sdk
     public function uploadDocument(string|int $apiId, array $data): array
     {
         // 上游按 order_id 定位订单（= 本系统下发给下游的 api_id），线协议字段名不变
-        return $this->call('upload-document', ['order_id' => $apiId] + $data, 'json');
+        // 120s：文档可能数 MB（base64），除 SubmitDocumentJob(queue) 外可能有手工同步入口，
+        // 给足上传时间又防上游挂时 worker 永久 hang（queue 路径另有 --timeout 60 先生效）
+        return $this->call('upload-document', ['order_id' => $apiId] + $data, 'json', 120);
     }
 
     /**
@@ -115,7 +122,9 @@ class Sdk
         // 取值：主调用 28s + refer_id 反查两跳各 10s，锁内最坏 28+10+10=48 < 50（留 2s 裕度）。
         // 反查虽仅在 new 快返回（含 "Refer id"）时触发、与 new 超时互斥，但 new 成功耗时理论可逼近 28s，
         // 故反查总和仍须满足 28+2×10<50；10s 兼顾不误杀正常反查查询。
-        // 锁外调用（uploadDocument 文档上传 / sync 查询 get）$timeout=null 不限时（避免掐断耗时上传）。
+        // 锁外调用也设超时上限防 FPM worker 被上游挂死永久占用（max_execution_time 不计 socket 阻塞）：
+        // 文档上传 120s（耗时 + 手工同步入口）、其他查询/操作（sync get / getProducts / getOrders /
+        // revalidate / updateDCV）30s。$timeout=null 才不限时（当前已无此调用，留作扩展通道）。
         $clientConfig = [];
         if ($timeout !== null) {
             $clientConfig['connect_timeout'] = min(10, $timeout);
