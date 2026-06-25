@@ -922,8 +922,13 @@ class Action
      * （不建 Transaction、不改 balance），故无需锁 user 行，仅锁 order/cert。
      *
      * 校验全部放在【锁内二次校验】（锁外校验会被并发绕过）：
-     *   - 仅 active 证书可标记；
-     *   - 仅到期前 30 天内且未过期可标记（与前端 gate 对齐，避免点了必报错）。
+     *   - 仅 active 证书可标记（须有一张签发成功的当前证书）；
+     *   - 仅【订单】到期前 30 天内且未过期可标记 —— 按 orders.period_till 判定，
+     *     与手工续费 gate（ActionTrait 的 period_till>now+30 报错）及前端 gate 对齐。
+     *     语义：用户另开新订单续了证书 → 标旧订单 renewed 止到期通知；"原订单内重签"
+     *     靠重签后 expires_at 推远自动止通知、无需本操作。不用 cert.expires_at：多年期/
+     *     中途重签订单证书将到期但订单未到期，会被自动重签接管（ExpireCommand 已排除其
+     *     到期通知），不应允许标记。
      */
     public function markRenewed(int $id): void
     {
@@ -943,9 +948,10 @@ class Action
             $cert = $order->latestCert;
             $cert->status !== 'active' && $this->error('仅签发成功的证书可标记为已续费');
 
-            $expiresAt = $cert->expires_at;
-            if (! $expiresAt || $expiresAt->isPast() || $expiresAt->gt(now()->addDays(30))) {
-                $this->error('仅到期前 30 天内且未过期的证书可标记为已续费');
+            // 按【订单】到期时间 period_till 判定（非单张证书 expires_at）：与手工续费窗口一致
+            $periodTill = $order->period_till;
+            if (! $periodTill || $periodTill->isPast() || $periodTill->gt(now()->addDays(30))) {
+                $this->error('仅订单到期前 30 天内且未过期可标记为已续费');
             }
 
             $cert->update(['status' => 'renewed']);
