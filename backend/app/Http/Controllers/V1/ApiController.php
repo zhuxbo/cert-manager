@@ -491,7 +491,7 @@ class ApiController extends Controller
     public function updateDCV(): void
     {
         $order_id = $this->processOrderIdParam('oid');
-        $method = $this->request->input('method', '');
+        $method = (string) $this->request->input('method');
 
         $this->action->updateDCV($order_id, $method);
     }
@@ -502,7 +502,7 @@ class ApiController extends Controller
     public function download(): void
     {
         $order_id = $this->processOrderIdParam('oid');
-        $type = $this->request->input('type', 'all');
+        $type = $this->request->input('type', 'all') ?? 'all';
 
         $this->action->download($order_id, $type);
     }

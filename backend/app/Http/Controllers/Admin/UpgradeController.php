@@ -50,7 +50,7 @@ class UpgradeController extends BaseController
      */
     public function releases(Request $request): void
     {
-        $limit = $request->input('limit', 5);
+        $limit = (int) ($request->input('limit') ?? 5);
         $releases = $this->upgradeService->getReleaseHistory($limit);
 
         $this->success([
@@ -64,7 +64,7 @@ class UpgradeController extends BaseController
      */
     public function execute(Request $request, UpgradePreflight $preflight): ?JsonResponse
     {
-        $version = $request->input('version', 'latest');
+        $version = (string) ($request->input('version') ?? 'latest');
 
         // 检查是否已有升级任务在运行
         if ($this->statusManager->isRunning()) {

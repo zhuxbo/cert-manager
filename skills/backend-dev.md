@@ -560,6 +560,20 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 `App\Http\Controllers\Concerns` 是控制器层去重的统一去处：`ResolvesContactId`（企业-联系人 contact_id 解析）、`HandlesEnterpriseLookup`/`HandlesZipcodeLookup`（工商/邮编查询 admin·user 端逐字相同的方法体）。Admin/User 两端逐字相同的控制器方法优先抽 trait 而非复制（类名/方法名/可路由性不变，路由按类名引用）。阿里云 composer 镜像命令收敛进 `App\Services\Composer\ComposerMirror`（仅命令字符串+网络探测，执行器/`FORCE_CHINA_MIRROR`/日志保留各调用方）。
 
+### 控制器 request 取值：`input($key, $default)` 默认值对显式 null 不生效
+
+`$request->input($key, $default)` 的默认值**只在请求体不含该 key 时生效**；客户端显式传 `{"key": null}`（JSON null）时 key 存在、值为 null，`input()` 返回 **null** 而非 `$default`（底层 `data_get` 仅在 key 缺失时才回落默认）。`query()`/`get()`/`post()`/`Arr::get`/`data_get` 同理。该 null 流入**非 nullable 类型参数**（Action 方法 `string`/`int`、`Hash::make`/`Hash::check(string)` 等）即 `TypeError` → 500。曾致 V2/V1 `updateDCV`·`download`、`login`、`upgrade/releases` 多端点线上 500——**API 入口尤危**，下游把空字段序列化成 `"k":null` 即触发。
+
+**取值后要喂给类型化参数的，一律 cast 或 `??` 兜底**，不能依赖 `input` 第二参：
+
+- string：`(string) $request->input('k')`（null/缺失→`''`）
+- 带字符串默认：`$request->input('k', 'all') ?? 'all'`（与 V2 download 一致）
+- int（**须保默认值**）：`(int) ($request->input('k') ?? 5)`——**不可** `(int) $request->input('k', 5)`：显式 null 时 input 返回 null、`(int) null = 0`，默认值丢失
+
+**无需改的安全情形**：值仅用于 Eloquent `where()`（接受 null）/ 前置有 `! $x && $this->error(...)` 非空守卫 / 方法有 `Validator::make`·FormRequest 的 `required` 在使用前拦截 / 下游形参是 `mixed`·`?string`。内部函数（`trim`/`escapeshellarg`）传 null 在未开 `declare(strict_types=1)` 时仅 deprecation、不 500，但仍应 cast 收口。
+
+**排查**：`grep -rE "\->(input|query|get|post)\('[^']+',\s*[^)?]" app/Http/Controllers/` 列出带默认值取值点，逐个追踪是否「流入非 nullable 用户方法参数 + 中间无守卫/校验」。
+
 ## MySQL 兼容性
 
 - 兼容 MySQL 5.7，不使用 `json` 字段类型

@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UpgradeControllerTest::__pest_evaluable_releases_显式_null_limit_归一为默认_int_5（input_默认值对显式_null_不生效）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/upgrade/releases",
+            "request_keys": [
+                "limit"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "releases": "array<unknown>",
+                    "current_version": "string"
+                }
+            }
+        }
+    ]
+}

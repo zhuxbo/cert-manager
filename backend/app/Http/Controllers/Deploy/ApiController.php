@@ -31,7 +31,7 @@ class ApiController extends Controller
             'page_size' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $order = trim($request->input('order', ''));
+        $order = trim((string) $request->input('order'));
         $field = $request->input('field');
 
         if ($field !== null) {

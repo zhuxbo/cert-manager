@@ -33,6 +33,15 @@ test('用户登录成功', function () {
     expect($user->fresh()->last_login_ip)->not->toBeNull();
 });
 
+test('登录-显式 null 账号或密码不再 500（input 默认值对显式 null 不生效）', function () {
+    $this->postJson('/api/login', [
+        'account' => null,
+        'password' => null,
+    ])
+        ->assertOk()
+        ->assertJson(['code' => 0, 'msg' => '账号或密码不能为空']);
+});
+
 test('用户登录失败-密码错误', function () {
     $user = User::factory()->create([
         'password' => 'password123',

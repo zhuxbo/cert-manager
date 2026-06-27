@@ -604,7 +604,7 @@ class ApiController extends Controller
     public function updateDCV(): void
     {
         $order_id = $this->processOrderIdParam();
-        $method = $this->request->input('method', '');
+        $method = (string) $this->request->input('method');
 
         // API 不支持委托验证方法
         if ($method === 'delegation') {
