@@ -62,37 +62,35 @@
               <Select />
             </el-icon>
           </td>
-          <td class="content">下载证书</td>
+          <td class="content">证书部署</td>
         </tr>
         <tr>
           <td class="label" />
-          <td class="content"><Install /></td>
+          <td class="content">
+            <div class="deploy-block">
+              <div class="deploy-block-title">下载证书</div>
+              <Install />
+            </div>
+            <div v-if="showAutoDeploy && !isGm" class="deploy-block">
+              <div class="deploy-block-title">自动部署</div>
+              <Deploy />
+            </div>
+            <!-- 块3 仅在有 widget（cloud-deploy 插件已安装并注入插槽）时渲染，
+                 否则未装插件的实例每个订单详情会出现空标题「推送到云平台」+ 左竖条（悬空空块） -->
+            <div v-if="sslActionWidgets.length" class="deploy-block">
+              <div class="deploy-block-title">推送到云平台</div>
+              <component
+                :is="w.component"
+                v-for="w in sslActionWidgets"
+                :key="w.name"
+                :order="order"
+                :cert="cert"
+              />
+            </div>
+          </td>
         </tr>
-        <template v-if="showAutoDeploy && !isGm">
-          <tr>
-            <td class="label">
-              <el-icon :size="16" class="icon" :color="issuedColor">
-                <Select />
-              </el-icon>
-            </td>
-            <td class="content">自动部署</td>
-          </tr>
-          <tr>
-            <td class="label" />
-            <td class="content"><Deploy /></td>
-          </tr>
-        </template>
       </tbody>
     </table>
-    <div class="plugin-ssl-actions">
-      <component
-        :is="w.component"
-        v-for="w in sslActionWidgets"
-        :key="w.name"
-        :order="order"
-        :cert="cert"
-      />
-    </div>
   </el-card>
 </template>
 <script setup lang="ts">
@@ -183,6 +181,33 @@ onMounted(() => {
 </script>
 <style scoped lang="scss">
 @import url("../../styles/detail.scss");
+
+.deploy-block {
+  position: relative;
+  padding-left: 12px;
+  margin-bottom: 16px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 0;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--el-color-primary-light-5);
+  }
+}
+
+.deploy-block-title {
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
 
 .label {
   width: 35px;
