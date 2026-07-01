@@ -96,12 +96,12 @@ run_check() {
             echo "FAIL: $name"
         else
             warn=$((warn + 1))
-            echo "WARN: $name（人工核对）"
+            echo "WARN: ${name}（人工核对）"
         fi
         printf '%s\n' "$filtered" | sed 's/^/    /'
     else
         if [[ $exempt -gt 0 ]]; then
-            echo "PASS: $name（豁免 $exempt 处）"
+            echo "PASS: ${name}（豁免 $exempt 处）"
         else
             echo "PASS: $name"
         fi

@@ -347,6 +347,20 @@ withMutex(string $key, Closure $cb, int $ttl = 60): mixed
 
 ---
 
+## API 下单韧性（commit 超时不回滚扣费 + pending 卡单对账）
+
+**背景**：一条龙下单 API（`V1`/`V2` 控制器的 `new`/`renew`/`reissue`）原把「建单 + 扣费 + commit(调上游)」裹进单个外层事务，上游变慢 commit 超时（SDK 压成 `code=0`）冒泡触发整笔 rollback，连**已扣费**一起回滚 →「上游有单、manager 零记录」。修复分层如下（**只改控制器 + `getData`，`Action::new/pay/commit` 本体不动**）：
+
+- **M1 — 拆事务**：外层 `DB::transaction` 只包 `new + pay(commit=false)`（扣费 `charge` 作嵌套 savepoint 落 `pending`，随外层原子提交）。`commit`（调上游）移到 `DB::commit()` **之后**独立调用。commit 超时/失败/抢锁忙不回滚、不报错，订单停 `pending`（`api_id=NULL`）、扣费保留，返回下游既有 `processing` 展示态（`get` 出口的内存转换，DB 仍 pending）。**扣费必须仍嵌套在 new+pay 外层事务内**——不可改独立顶层 tx/独立 connection，否则「扣费独立提交但 new 回滚」→ 孤儿 order transaction。
+- **`getData($action, $params)` 分流**：仅 `$action === 'commit'` 时吞 `code=0`（`return []`）与 `MutationBusyException`（不外抛 503）；`new/renew/reissue/pay` 段保持原样冒泡（建单/扣费失败照常报错）。`get` 出口对 `pending` 的内联 `commit()` 同步 `catch (ApiResponseException|MutationBusyException)`，抢锁忙不冒 503。reissue 的跨用户所有权校验**保留在事务内** `throw`，触发整笔回滚（reissue 建的证书一起撤销）。
+- **M4 — 卡单对账**：`ReconcilePendingCommand`（`schedule:reconcile-pending`，`routes/console.php` 每 5 分钟 `withoutOverlapping`+`skip($skipWhenFrozen)`）扫「`status=pending` 且 `api_id=NULL` 且 `created_at` 超 `reconcile.pending_stale_minutes`」的卡单，`createTask(id,'commit')` 重发（`createTask` 内置 executing 幂等）。带重试上限（`reconcile.max_attempts`，按**失败 commit task 的行数 = 失败对账周期数**判定，**不 sum 单个 task 的 worker 级 `attempts`**——否则单任务被 worker 重试到 attempts≥max 就在约一个周期后误判到顶、过早转人工）+ 退避（`retry_delay_minutes`，倍率随对账周期数增长）+ 超限走 `NotificationCenter` 的 `task_failed` admin 告警（`task.result.reconcile_alerted_at` 去重、不重复告警）。配置 `config/reconcile.php`（env `RECONCILE_*`）。**manager 卡单态是 `pending`（上游是 `processing`）——任何对账/幂等判定严禁照抄上游的 processing。**
+- **M5 — `resolveReferId`（原 `checkReferId`）**：同 `refer_id` 命中订单时不再硬拒，改幂等推进——仅当 `! api_id && status === 'pending'`（manager 卡单态）重提 `commit`，否则直接幂等返回既有 oid（守卫天然排除 cancelled/revoked 等终态、不复活）。并发同 refer_id 由 `certs.refer_id` 唯一索引兜底。**ACME 侧仍走 `Refer id already exists` 硬拒（DB unique 翻译），与 Order 的分歧是有意的**。
+- **`bootstrap/resilient.php`（同批附带）**：`bootstrap/cache` 的 `services.php`/`packages.php` 在多进程并发首次编译 / 升级 optimize 窗口 / VirtioFS 非原子 rename 下偶发 TOCTOU「Failed to open stream」。该错误在框架 bootstrap 极早期（异常处理器未注册），故用兜底重试器包裹启动：仅识别这两个清单的读失败 → 清半态缓存 + 退避重试（≤3 次），其余异常原样抛。落点 `public/index.php` / `artisan` / `tests/TestCase::createApplication`。
+
+**测试**：`tests/Feature/Http/Controllers/{V1,V2}/ApiControllerCommitResilienceTest`（超时保 pending+扣费/崩溃模拟/refer_id 幂等/跨用户回滚/getData 分流单测）、`tests/Feature/Commands/ReconcilePendingCommandTest`、`tests/Unit/Bootstrap/ResilientBootstrapTest`、`tests/Unit/Services/Order/Api/DefaultSdkCatchScrubTest`。SDK 层脱敏见 `skills/source-api.md` 的「Sdk catch 脱敏」章节。
+
+---
+
 ## 资金确定性体系（4 道网）
 
 > **目的**：把资金安全从"LLM 审 + 单测 + 锁/事务"的**抽样**强度，升级为"DB 约束 + 应用层 CAS + 自动不变式校验"的**确定性**强度。当 LLM/审核找不到新问题、单测覆盖不到新路径时，多道独立网仍能拦住资金错账或在小时级被发现。

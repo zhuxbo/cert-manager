@@ -151,10 +151,9 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 
 **为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求，见主 `CLAUDE.md`「资金/状态变更必须在事务 + 行锁内」）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
 
-**Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(10, $timeout)` + `timeout`）。
+**Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(3, $timeout)` + `timeout`；Guzzle `timeout` 含 connect，单次墙钟上限 = `timeout`）。
 
-- 锁内：`new` / `renew` / `reissue` / `cancel` → 28s
-- refer_id 反查（在 commit 锁内栈内触发，`getOrderIdByReferId` + 反查的 `get($id, 10)`）→ 10s，锁内最坏 `28+10+10=48 < 50`（留 2s 裕度）；反查与 new 超时互斥但 `t_new` 可逼近 28s 故仍受此约束
+- 锁内：`new` / `renew` / `reissue` / `cancel` → **45s**。commit 锁内**只有一个**上游调用（下单或 cancel），`45 < 50`（留 5s 裕度 + 锁内 `save()` 开销）。**default 源只对接同构 V2 的上游，上游对已存在 refer_id 一律幂等返回 order_id（code=1），绝不返回含 "Refer id" 的 code=0，故本地不做 refer_id 反查、锁内不会串第二个调用**（对接其它 CA 走独立 source 另行处理，不共用本预算约定）
 - 锁外也设超时上限**防 FPM worker 被上游挂死永久占用**（`max_execution_time` 不计 socket 阻塞、只有 FPM `request_terminate_timeout` 能兜且部署默认未设，不可靠）：
   - `uploadDocument`（Certum 文档 base64 上传可能数 MB，且除 `SubmitDocumentJob`(queue) 外可能有手工同步入口）→ **120s**
   - 其他 `sync` 的 `get`（默认 30s）/`getProducts`/`getOrders`/`revalidate`/`updateDCV` → **30s**（非耗时，仅防 hang）
@@ -162,6 +161,27 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 **ACME default Sdk**：无文档上传、无 refer_id 反查，`request()` 全局 `Http::timeout(30)` 即可（30 < 50）。
 
 **新增 source 的 Sdk 必须遵守**：锁内上游调用设 timeout < 50s（多次串联调用时确保总和 < 50s）；**锁外调用（尤其有 FPM 同步入口的）也须设上限防 worker 被上游 hang 拖死**（耗时上传给宽松值如 120s，普通查询/操作 30s）。`makeClient()` 注入缝便于测试断言 timeout（参考 `tests/Unit/Services/Order/Api/DefaultSdkTimeoutTest.php`：用 array driver 注入 `setting:group_name:ca` 缓存绕过 DB，子类覆盖 `makeClient` 捕获 config + MockHandler 短路 HTTP）。
+
+## Sdk catch 脱敏（异常原文不外泄内部地址）
+
+`Order\Api\default\Sdk::call()` 的 catch 分支**绝不能把 Guzzle 异常原文（含上游内部地址）拼进对外 `msg`**——原文经 `Api → ApiResponseException(status=200) → ApiExceptions` 第一分支会绕过脱敏 match，以 HTTP 200 泄露给下游客户端（2026-06-30 事故：`'Request failed: '.$e->getMessage()` 把 `cURL error 28 ... https://<上游内部地址>/…` 直接返给下游）。约定：
+
+- `catch (ConnectException $e)`（连接失败/超时，含 cURL 28）→ 返 `['code' => 0, 'msg' => '上游连接超时，请稍后重试']`
+- `catch (GuzzleException $e)`（其余）→ 返 `['code' => 0, 'msg' => '上游请求失败，请稍后重试']`
+- **catch 顺序子类先于父类**（`ConnectException` implements `GuzzleException`，写反则超时掉进"请求失败"分支）
+- 两分支都先 `app(ApiExceptions::class)->logException($e)` 把原文（含内部 URL）落 `error_logs` 供排障
+
+契约测试 `tests/Unit/Services/Order/Api/DefaultSdkCatchScrubTest.php` 用 `MockHandler` 注入抛异常客户端，断言对外 msg 不含 host/http/上游内部地址、原文仍被 `logException` 记录。ACME Sdk 走 Laravel `Http` facade，异常文案同理不得回传原文。
+
+## Sdk ca_logs 请求耗时（全路径记录 duration）
+
+`Order\Api\default\Sdk::call()` 全路径（成功 / 超时 / 失败）统一经私有 `logCall()` 写一条 `ca_logs`，含 `duration = round(now - startTime, 3)` 秒（`startTime` 在 `makeClient` 后、发请求前捕获），与 `Acme\Api\default\Sdk` 对齐。要点：
+
+- **duration 必记**：`ca_logs.duration` 列早已存在（`decimal` 默认 0，注释「耗时(秒)」）、`CaLog` fillable/casts 也含 `duration`，但历史上 Order Sdk 从不测量/写入 → Order 侧（占绝大多数）ca_logs 耗时**恒为 0**（ACME Sdk 一直正确，二者不对称）。新增 source 的 Sdk 也须记 duration。
+- **超时/失败也写 ca_logs**：catch 分支不再「提前 return、完全不写 ca_logs」，而是 `logCall(..., status_code=0)` 记一条（`status=0`）—— 上游变慢/挂起正是耗时最该被看见的场景（`error_logs` 存异常原文供排障、`ca_logs` 存请求记录 + 真实耗时，各司其职）。
+- **response 仍脱敏**：ca_logs 的 `response` 走 `LogScrubber::scrubResponse` 存通用文案，**绝不写 `$e->getMessage()`**（含内部 URL）。
+- **不进锁 / 不加持锁时长**：`LogBuffer::add` 仅追加内存缓冲（请求末尾 flush），锁内 commit 的 ca_log 写入不产生 DB IO。
+- 契约测试 `tests/Unit/Services/Order/Api/DefaultSdkDurationLogTest.php`：完成请求 duration>0、超时也写一条 ca_logs 且脱敏。
 
 ## ACME Sdk 配置回落规则
 

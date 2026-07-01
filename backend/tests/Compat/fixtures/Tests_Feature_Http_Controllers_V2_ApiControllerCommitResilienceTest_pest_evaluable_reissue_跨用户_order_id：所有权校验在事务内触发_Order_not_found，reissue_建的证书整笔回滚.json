@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V2\\ApiControllerCommitResilienceTest::__pest_evaluable_reissue_跨用户_order__id：所有权校验在事务内触发_Order_not_found，reissue_建的证书整笔回滚",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/v2/reissue",
+            "request_keys": [
+                "csr_generate",
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

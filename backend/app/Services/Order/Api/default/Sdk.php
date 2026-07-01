@@ -9,6 +9,7 @@ use App\Models\CaLog;
 use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
 
 class Sdk
@@ -36,8 +37,8 @@ class Sdk
      */
     public function new(array $params): array
     {
-        // 28s：commit() 在 orders 行锁内调用，与反查 10+10 合计 < innodb_lock_wait_timeout(50s)，详见 call() 取值说明
-        return $this->call('new', $params, 'post', 28);
+        // 45s：commit() 在 orders 行锁内同步调上游，锁内仅此一个调用，45 < innodb_lock_wait_timeout(50s)，详见 call() 取值说明
+        return $this->call('new', $params, 'post', 45);
     }
 
     /**
@@ -45,7 +46,7 @@ class Sdk
      */
     public function renew(array $params): array
     {
-        return $this->call('renew', $params, 'post', 28);
+        return $this->call('renew', $params, 'post', 45);
     }
 
     /**
@@ -53,7 +54,7 @@ class Sdk
      */
     public function reissue(array $params): array
     {
-        return $this->call('reissue', $params, 'post', 28);
+        return $this->call('reissue', $params, 'post', 45);
     }
 
     /**
@@ -61,7 +62,7 @@ class Sdk
      */
     public function cancel(string|int $apiId): array
     {
-        return $this->call('cancel', ['order_id' => $apiId], 'post', 28);
+        return $this->call('cancel', ['order_id' => $apiId], 'post', 45);
     }
 
     /**
@@ -87,8 +88,7 @@ class Sdk
      */
     public function get(string|int $apiId, ?int $timeout = 30): array
     {
-        // $timeout：默认 30s（sync 等锁外 FPM 入口，防上游挂拖死 worker）；
-        // refer_id 反查显式传 10s（commit 锁内栈，受 innodb_lock_wait_timeout 约束，见 call() 取值）
+        // $timeout：默认 30s（sync 等锁外 FPM 入口，防上游挂拖死 worker；参数保留以备其它锁外调用按需收紧）
         return $this->call('get', ['order_id' => $apiId], 'get', $timeout);
     }
 
@@ -117,20 +117,20 @@ class Sdk
 
         $url = $apiUrl.'/'.$uri;
 
-        // 锁内调用（commit 下单 / cancel）传入 $timeout，限制持锁时长 < innodb_lock_wait_timeout(默认 50s)，
+        // 锁内调用（commit 下单 new/renew/reissue / cancel）传入 $timeout，限制持锁时长 < innodb_lock_wait_timeout(默认 50s)，
         // 否则上游慢/挂时持锁无限，并发访问同一订单行的 for update 会报 1205 锁等待超时。
-        // 取值：主调用 28s + refer_id 反查两跳各 10s，锁内最坏 28+10+10=48 < 50（留 2s 裕度）。
-        // 反查虽仅在 new 快返回（含 "Refer id"）时触发、与 new 超时互斥，但 new 成功耗时理论可逼近 28s，
-        // 故反查总和仍须满足 28+2×10<50；10s 兼顾不误杀正常反查查询。
+        // 取值：commit 锁内**只有一个**上游调用（下单或 cancel），设 45s < 50（留 5s 裕度 + 锁内 save 开销）。
         // 锁外调用也设超时上限防 FPM worker 被上游挂死永久占用（max_execution_time 不计 socket 阻塞）：
         // 文档上传 120s（耗时 + 手工同步入口）、其他查询/操作（sync get / getProducts / getOrders /
         // revalidate / updateDCV）30s。$timeout=null 才不限时（当前已无此调用，留作扩展通道）。
+        // connect_timeout 统一封顶 3s（连接子阶段，快速失败连不上的上游，总时长仍受 $timeout 限）。
         $clientConfig = [];
         if ($timeout !== null) {
-            $clientConfig['connect_timeout'] = min(10, $timeout);
+            $clientConfig['connect_timeout'] = min(3, $timeout);
             $clientConfig['timeout'] = $timeout;
         }
         $client = $this->makeClient($clientConfig);
+        $startTime = microtime(true);
         try {
             $options = [
                 'headers' => [
@@ -148,24 +148,29 @@ class Sdk
                 $options['form_params'] = $data;
             }
             $response = $client->request($method, $url, $options);
-        } catch (GuzzleException $e) {
+        } catch (ConnectException $e) {
+            // 连接失败 / 超时（含 cURL 28）：原文（含内部地址）仅进 error_logs 供排障，对外只给通用文案
             app(ApiExceptions::class)->logException($e);
+            $result = ['code' => 0, 'msg' => '上游连接超时，请稍后重试'];
+            // 超时也记一条 ca_logs（status_code=0）——超时正是「耗时」最有诊断价值的场景，
+            // 否则上游变慢/挂起在 ca_logs 里完全不可见（duration≈timeout 秒）
+            $this->logCall($apiUrl, $uri, $data, $result, 0, $startTime);
 
-            return ['code' => 0, 'msg' => 'Request failed: '.$e->getMessage()];
+            return $result;
+        } catch (GuzzleException $e) {
+            // 其余 Guzzle 异常：同上，原文入 error_logs，对外通用文案（不泄露内部 URL）
+            app(ApiExceptions::class)->logException($e);
+            $result = ['code' => 0, 'msg' => '上游请求失败，请稍后重试'];
+            $this->logCall($apiUrl, $uri, $data, $result, 0, $startTime);
+
+            return $result;
         }
 
         $result = json_decode($response->getBody()->getContents(), true);
 
         $httpStatusCode = $response->getStatusCode();
 
-        LogBuffer::add(CaLog::class, [
-            'url' => $apiUrl,
-            'api' => $uri,
-            'params' => LogScrubber::scrub($data),
-            'response' => LogScrubber::scrubResponse($result),
-            'status_code' => $httpStatusCode,
-            'status' => intval($result['code'] ?? 0) === 1 ? 1 : 0,
-        ]);
+        $this->logCall($apiUrl, $uri, $data, $result, $httpStatusCode, $startTime);
 
         // Http 状态码 200 为成功
         if ($httpStatusCode == 200) {
@@ -176,27 +181,6 @@ class Sdk
             // cancel 时，如果订单已取消，则返回成功
             if ($uri === 'cancel' && isset($result['msg']) && $result['msg'] == '订单已取消') {
                 return ['code' => 1];
-            }
-
-            // new，renew，reissue 时，如果错误信息中包含 Refer id，尝试通过refer_id 获取订单号
-            if ($result['code'] === 0 && in_array($uri, ['new', 'renew', 'reissue']) && str_contains($result['msg'] ?? '', 'Refer id')) {
-                $getApiIdResult = $this->getOrderIdByReferId($data['refer_id']);
-
-                if ($getApiIdResult['code'] === 1 && $getApiIdResult['data']['order_id']) {
-                    $getOrderResult = $this->get($getApiIdResult['data']['order_id'], 10);
-
-                    if ($getOrderResult['code'] === 1) {
-                        return [
-                            'data' => [
-                                'order_id' => $getApiIdResult['data']['order_id'],
-                                'cert_apply_status' => $getOrderResult['data']['cert_apply_status'] ?? 0,
-                                'dcv' => $getOrderResult['data']['dcv'] ?? null,
-                                'validation' => $getOrderResult['data']['validation'] ?? null,
-                            ],
-                            'code' => 1,
-                        ];
-                    }
-                }
             }
 
             // 错误信息为余额不足时，返回系统内部错误
@@ -215,12 +199,20 @@ class Sdk
     }
 
     /**
-     * 根据 refId 获取订单 ID
+     * 写入一条 ca_logs（含请求耗时）。成功 / 超时 / 失败各路径统一经此写入，
+     * duration = now - $startTime（秒，与 ACME Sdk 一致）；params/response 经 LogScrubber 脱敏（不泄露内部 URL）。
      */
-    protected function getOrderIdByReferId(string $referId): array
+    private function logCall(string $apiUrl, string $uri, array $data, ?array $result, int $httpStatusCode, float $startTime): void
     {
-        // 反查在 commit() 的 orders 行锁内（new 触发），10s 见 call() 取值说明（28+10+10=48<50s）
-        return $this->call('get-order-id-by-refer-id', ['refer_id' => $referId], 'get', 10);
+        LogBuffer::add(CaLog::class, [
+            'url' => $apiUrl,
+            'api' => $uri,
+            'params' => LogScrubber::scrub($data),
+            'response' => LogScrubber::scrubResponse($result),
+            'status_code' => $httpStatusCode,
+            'status' => intval($result['code'] ?? 0) === 1 ? 1 : 0,
+            'duration' => round(microtime(true) - $startTime, 3),
+        ]);
     }
 
     /**

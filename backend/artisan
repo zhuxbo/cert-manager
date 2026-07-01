@@ -9,7 +9,11 @@ define('LARAVEL_START', microtime(true));
 require __DIR__.'/vendor/autoload.php';
 
 // Bootstrap Laravel and handle the command...
-$status = (require_once __DIR__.'/bootstrap/app.php')
-    ->handleCommand(new ArgvInput);
+// bootstrap/cache TOCTOU 兜底（CLI / queue worker 冷启动 / cron，详见 bootstrap/resilient.php）
+$resilient = require __DIR__.'/bootstrap/resilient.php';
+$status = $resilient(static function () {
+    return (require __DIR__.'/bootstrap/app.php')
+        ->handleCommand(new ArgvInput);
+}, __DIR__.'/bootstrap/cache');
 
 exit($status);

@@ -1,0 +1,33 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V1\\ApiControllerCommitResilienceTest::__pest_evaluable_V1_同_refer__id_命中终态订单（cancelled_api__id_空）：不重提上游_commit、不复活，幂等返回既有_oid",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/new",
+            "request_keys": [
+                "csr_generate",
+                "domains",
+                "period",
+                "pid",
+                "refer_id",
+                "validation_method"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "oid": "integer",
+                    "application_status": "string",
+                    "dcv": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    },
+                    "validation": "array<unknown>"
+                }
+            }
+        }
+    ]
+}

@@ -80,3 +80,11 @@ Schedule::command('finance:audit')
     ->skip($skipWhenFrozen)
     ->name('finance-audit')
     ->description('资金审计全量对账（4 条 invariant），违反则邮件告警');
+
+// 已扣费但尚未提交上游的 pending 订单对账
+Schedule::command('schedule:reconcile-pending')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('reconcile-pending-orders')
+    ->description('对账并重发卡在 pending 且无 api_id 的订单 commit');

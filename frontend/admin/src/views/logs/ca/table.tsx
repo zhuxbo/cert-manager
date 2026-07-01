@@ -63,10 +63,10 @@ export const tableColumns: TableColumnList = [
     cellRenderer: ({ row, props }) => (
       <el-tag
         size={props.size}
-        type={row.duration < 1000 ? "success" : "warning"}
+        type={row.duration < 5 ? "success" : "warning"}
         effect="plain"
       >
-        {row.duration} ms
+        {row.duration} s
       </el-tag>
     )
   },

@@ -1,0 +1,35 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V1\\ApiControllerCommitResilienceTest::__pest_evaluable_V1_同_refer__id_重试命中_pending_卡单：不硬拒，重提_commit_后返回同一_oid",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/new",
+            "request_keys": [
+                "csr_generate",
+                "domains",
+                "period",
+                "pid",
+                "refer_id",
+                "validation_method"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "oid": "integer",
+                    "application_status": "string",
+                    "dcv": {
+                        "method": "string"
+                    },
+                    "validation": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}
