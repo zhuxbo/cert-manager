@@ -79,7 +79,12 @@
       >
         提交 ({{ unsubmittedCount }})
       </el-button>
-      <el-button size="small" type="primary" @click="showUploadDialog = true">
+      <el-button
+        size="small"
+        type="primary"
+        :disabled="!canUploadDocuments"
+        @click="showUploadDialog = true"
+      >
         上传文档
       </el-button>
     </div>
@@ -254,6 +259,7 @@ import type { UploadFile } from "element-plus";
 import { Upload, Close, Document } from "@element-plus/icons-vue";
 
 const order = inject("order") as any;
+const cert = inject("cert") as any;
 
 const documentTypes: Record<string, string> = {
   APPLICANT: "申请人文档",
@@ -277,6 +283,7 @@ const allTypesSelected = computed(() =>
 const unsubmittedCount = computed(
   () => documents.value.filter(d => !d.submitted).length
 );
+const canUploadDocuments = computed(() => cert.value?.status === "processing");
 
 // 预览相关
 const showPreviewDialog = ref(false);
@@ -383,6 +390,11 @@ const resetUploadForm = () => {
 
 const handleUpload = async () => {
   if (fileList.value.length === 0) return;
+  if (!canUploadDocuments.value) {
+    ElMessage.warning("仅处理中状态可以上传文档");
+    showUploadDialog.value = false;
+    return;
+  }
 
   uploading.value = true;
   try {

@@ -36,7 +36,7 @@
           v-if="
             order.product.validation_type !== 'dv' &&
             order.brand?.toLowerCase() === 'certum' &&
-            cert?.status !== 'active'
+            cert?.status === 'processing'
           "
         >
           <td class="label" />
@@ -191,14 +191,14 @@ onMounted(() => {
   }
 
   &::before {
-    content: "";
     position: absolute;
     top: 2px;
     bottom: 2px;
     left: 0;
     width: 3px;
+    content: "";
+    background: var(--el-border-color);
     border-radius: 2px;
-    background: var(--el-color-primary-light-5);
   }
 }
 

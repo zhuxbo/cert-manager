@@ -265,30 +265,30 @@ test('uploadDocument storeAs 落盘失败时硬报错且不写 DB 行（filesyst
     Queue::assertNotPushed(SubmitDocumentJob::class);
 });
 
-test('uploadDocument 在证书已签发（active）后拒绝上传', function () {
+test('uploadDocument 仅允许 processing 状态上传', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
-    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'pending']);
 
     $file = UploadedFile::fake()->createWithContent('a.pdf', 'BYTES');
     $res = captureDocResponse(fn () => app(Action::class)->uploadDocument($order->id, $file, 'APPLICANT', 'user'));
 
     expect($res['code'])->toBe(0)
-        ->and($res['msg'])->toBe('证书已签发，不能再上传文档');
+        ->and($res['msg'])->toBe('仅处理中状态可以上传文档');
     expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
 });
 
-test('uploadDocumentFromBase64 在证书已签发（active）后拒绝上传（挡 V2 API 入口）', function () {
+test('uploadDocumentFromBase64 仅允许 processing 状态上传（挡 V2 API 入口）', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
-    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'active']);
+    $this->createTestCert($order, ['api_id' => 'UP123', 'status' => 'pending']);
 
     $res = captureDocResponse(fn () => app(Action::class)->uploadDocumentFromBase64(
         $order->id, 'APPLICANT', 'a.pdf', base64_encode('BYTES')
     ));
 
     expect($res['code'])->toBe(0)
-        ->and($res['msg'])->toBe('证书已签发，不能再上传文档');
+        ->and($res['msg'])->toBe('仅处理中状态可以上传文档');
     expect(OrderDocument::where('order_id', $order->id)->count())->toBe(0);
 });
 

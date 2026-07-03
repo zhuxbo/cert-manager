@@ -35,7 +35,7 @@
           v-if="
             order.product.validation_type !== 'dv' &&
             order.brand?.toLowerCase() === 'certum' &&
-            cert?.status !== 'active'
+            cert?.status === 'processing'
           "
         >
           <td class="label" />
