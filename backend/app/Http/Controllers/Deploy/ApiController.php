@@ -116,7 +116,7 @@ class ApiController extends Controller
         }
 
         // 空参数：返回最新 active 订单（数据库级分页）
-        $page = (int) $request->input('page', 1);
+        $page = (int) ($request->input('page') ?? 1);
         $page_size = (int) ($request->input('page_size', 100) ?? 100);
 
         $query = Order::with('latestCert')

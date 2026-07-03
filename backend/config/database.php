@@ -19,7 +19,15 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            // SSL/TLS 连接（连云数据库时才用；本地 / 单机部署留空，不要加 options 配置）
+            // 锁等待超时固化：每次建立 PDO 连接时执行 SET SESSION innodb_lock_wait_timeout=50。
+            // session 值覆盖 global，保证「锁内上游 45s < innodb 50s < worker --timeout 60s」三层递进的
+            // 中间层不受云 RDS / DBA 的 global 配置漂移影响（Cache 故障 fail-open 退回 DB 锁串行时的最后防线）。
+            // 值必须是 50：<45 会让锁内上游正常 45s 误撞 1205；=60 会与 worker 60s 重合成时序竞争。
+            // extension_loaded 守卫：无 pdo_mysql 的环境加载本 config 不引用未定义常量。
+            // SSL/TLS 连云库时，在此 options 数组内追加 PDO::MYSQL_ATTR_SSL_* 选项。
+            'options' => extension_loaded('pdo_mysql') ? [
+                PDO::MYSQL_ATTR_INIT_COMMAND => 'SET SESSION innodb_lock_wait_timeout=50',
+            ] : [],
         ],
     ],
 

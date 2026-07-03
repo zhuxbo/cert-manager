@@ -273,6 +273,24 @@ test('管理员标记已续费-到期 40 天后被拒（超 30 天），状态�
     expect($cert->fresh()->status)->toBe('active');
 });
 
+test('管理员标记已续费-证书将到期但订单未到期（period_till > 30 天）被拒，状态不变', function () {
+    // 多年期/中途重签场景：当前证书 10 天后到期、但订单还有 200 天 —— 会被自动重签接管，
+    // 不应允许标记。锁住「gate 看 orders.period_till 而非 cert.expires_at」的语义。
+    // 与 User 端同名用例对称（Action::markRenewed 是 Admin/User 共用实现，真实执行非 mock）。
+    [$order, $cert] = createOrderWithCert('active', [
+        'period_till' => now()->addDays(200),
+    ], [
+        'expires_at' => now()->addDays(10),
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect($cert->fresh()->status)->toBe('active');
+});
+
 // ==================== 真实接线 happy path（不 mock Action）====================
 //
 // 上面的 pay/commit/sync/commit-cancel 用例 mock 了 Action，只验证「控制器调到了

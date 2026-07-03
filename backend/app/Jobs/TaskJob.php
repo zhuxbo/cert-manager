@@ -29,6 +29,10 @@ class TaskJob implements ShouldQueue
 {
     use DetectsConcurrencyErrors, Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
+    private const MUTATION_BUSY_RELEASE_MIN_SECONDS = 50;
+
+    private const MUTATION_BUSY_RELEASE_MAX_SECONDS = 70;
+
     /**
      * 最大尝试次数：与生产 worker `--tries 3` 一致（重试次数不变），显式声明以便 handle()
      * 内用 `$this->attempts() < $this->tries` 判断并发错误是否还能自愈重试。
@@ -139,16 +143,23 @@ class TaskJob implements ShouldQueue
                 $this->fail($failedException);
             }
         } catch (Throwable $e) {
-            // 并发错误（死锁 1213 / 锁等待 1205 / 序列化失败 40001）：MySQL 已回滚整个事务、连接已不在事务中。
-            // 未达 tries 上限时由本 Job 自己 release 错峰重试 —— 关键：不抛出，worker 不进异常上报路径，
+            // 互斥锁忙不是数据库死锁：另一个请求/任务正在合法持有 order/acme 级业务锁并调上游。
+            // 等待窗口必须覆盖上游调用正常耗时（Order 45s / ACME 30s / 锁 TTL 60s），否则 3 次短重试会在锁释放前耗尽并误标 failed。
+            if ($e instanceof MutationBusyException && $this->attempts() < $this->tries) {
+                $this->release(random_int(self::MUTATION_BUSY_RELEASE_MIN_SECONDS, self::MUTATION_BUSY_RELEASE_MAX_SECONDS));
+
+                return;
+            }
+
+            // 数据库并发错误（死锁 1213 / 锁等待 1205 / 序列化失败 40001）：MySQL 已回滚整个事务、连接已不在事务中。
+            // 未达 tries 上限时由本 Job 自己短 release 错峰重试 —— 关键：不抛出，worker 不进异常上报路径，
             // 避免每次重试都 report() 把「会自愈的偶发死锁」刷进 error_logs + laravel.log（运维噪音）。
             // 达上限才冒出：worker report 一次（最终失败记录）+ failJob → failed() 兜底标 task failed。
             // release 不碰 task（保持 executing 等下次拾取），与 failed() 兜底标记构成完整闭环。
             if (($e instanceof DeadlockException
-                || $e instanceof MutationBusyException
                 || $this->causedByConcurrencyError($e))
                 && $this->attempts() < $this->tries) {
-                $this->release(random_int(3, 8)); // 错峰，降低重试又撞同一二级索引间隙 / 互斥锁的概率
+                $this->release(random_int(3, 8)); // 错峰，降低重试又撞同一二级索引间隙的概率
 
                 return;
             }

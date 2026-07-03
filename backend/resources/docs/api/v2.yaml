@@ -176,7 +176,7 @@ paths:
                 validation_method: { $ref: "#/components/schemas/ValidationMethod" }
                 organization: { $ref: "#/components/schemas/Organization" }
                 issue_verify: { type: integer, enum: [0, 1] }
-                refer_id: { type: string, maxLength: 64 }
+                refer_id: { type: string, maxLength: 64, description: "端到端幂等键；重放相同值幂等返回既有订单的 order_id（详见 /new 说明）" }
       responses:
         "200":
           description: OK

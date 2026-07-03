@@ -98,9 +98,10 @@ class Sdk
     public function uploadDocument(string|int $apiId, array $data): array
     {
         // 上游按 order_id 定位订单（= 本系统下发给下游的 api_id），线协议字段名不变
-        // 120s：文档可能数 MB（base64），除 SubmitDocumentJob(queue) 外可能有手工同步入口，
-        // 给足上传时间又防上游挂时 worker 永久 hang（queue 路径另有 --timeout 60 先生效）
-        return $this->call('upload-document', ['order_id' => $apiId] + $data, 'json', 120);
+        // 55s：单文件 ≤5MB（控制器 max:5120 + base64 硬拒），base64 ~6.7MB 正常网络 <10s，55s 绰绰有余。
+        // 取 55（< worker --timeout 60）：让 Guzzle 自己在 55s 干净断（catch→backoff 重试），
+        // 而非被 worker 的 SIGALRM 在 60s 硬杀进程（靠 retry_after 300s 才复活）。原 120s 永远吃不满、且会误导。
+        return $this->call('upload-document', ['order_id' => $apiId] + $data, 'json', 55);
     }
 
     /**
@@ -121,12 +122,16 @@ class Sdk
         // 否则上游慢/挂时持锁无限，并发访问同一订单行的 for update 会报 1205 锁等待超时。
         // 取值：commit 锁内**只有一个**上游调用（下单或 cancel），设 45s < 50（留 5s 裕度 + 锁内 save 开销）。
         // 锁外调用也设超时上限防 FPM worker 被上游挂死永久占用（max_execution_time 不计 socket 阻塞）：
-        // 文档上传 120s（耗时 + 手工同步入口）、其他查询/操作（sync get / getProducts / getOrders /
-        // revalidate / updateDCV）30s。$timeout=null 才不限时（当前已无此调用，留作扩展通道）。
-        // connect_timeout 统一封顶 3s（连接子阶段，快速失败连不上的上游，总时长仍受 $timeout 限）。
+        // 文档上传 55s（对齐 worker --timeout 60，让 Guzzle 先干净断）、其他查询/操作（sync get / getProducts /
+        // getOrders / revalidate / updateDCV）30s。$timeout=null 才不限时（当前已无此调用，留作扩展通道）。
+        // connect_timeout 统一封顶 10s（连接子阶段，总时长仍受 $timeout 限）。
+        // manager 是多级代理：上游可能是任意深度的另一个 manager，网络路径/DNS/地域全不可控，
+        // 按"不可控上游"处理，从早期 3s 放宽到 10s（对齐 callback 的 connectTimeout(10)）。
+        // 10s < innodb_lock_wait_timeout(50s)，不破坏 1205 防护（总 timeout 45s 封顶不变，connect 不叠加）；
+        // 黑洞上游失败慢一点，换多级链路的连接宽容，是有意取舍。
         $clientConfig = [];
         if ($timeout !== null) {
-            $clientConfig['connect_timeout'] = min(3, $timeout);
+            $clientConfig['connect_timeout'] = min(10, $timeout);
             $clientConfig['timeout'] = $timeout;
         }
         $client = $this->makeClient($clientConfig);

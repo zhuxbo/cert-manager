@@ -122,6 +122,23 @@ test('query 空参数分页', function () {
     expect($response2->json('data.data'))->toHaveCount(1);
 });
 
+// query() 用 (int) $request->input('page', 1) 兜底默认值：客户端显式传 JSON null 时
+// input() 返回 null（key 存在），(int) null = 0 → offset((0-1)*page_size) 负偏移，
+// 响应体 page 字段也回显 0（错误）。正确写法应为 (int) ($request->input('page') ?? 1)。
+test('query page 显式 null 回落默认值（非负 offset，page 回显 1）', function () {
+    [$user, $token] = createDeployAuth();
+    for ($i = 0; $i < 3; $i++) {
+        createDeployOrder($user, 'active');
+    }
+
+    $response = test()->withHeaders(['Authorization' => "Bearer $token->token"])
+        ->json('GET', '/api/deploy/', ['page' => null])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    expect($response->json('data.page'))->toBe(1);
+    expect($response->json('data.data'))->toHaveCount(3);
+});
+
 test('query 空参数 UserScope 隔离', function () {
     [$user, $token] = createDeployAuth();
     $otherUser = User::factory()->create();

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Services\Delegation;
 
 use App\Services\Delegation\Sdk\TencentCloud\Common\Credential;
+use App\Services\Delegation\Sdk\TencentCloud\Common\Profile\ClientProfile;
+use App\Services\Delegation\Sdk\TencentCloud\Common\Profile\HttpProfile;
 use App\Services\Delegation\Sdk\TencentCloud\Dnspod\V20210323\DnspodClient;
 use App\Services\Delegation\Sdk\TencentCloud\Dnspod\V20210323\Models\CreateTXTRecordRequest;
 use App\Services\Delegation\Sdk\TencentCloud\Dnspod\V20210323\Models\DeleteRecordBatchRequest;
@@ -48,7 +50,17 @@ class ProxyDNS
         }
 
         $cred = new Credential($secretId, $secretKey);
-        $this->client = new DnspodClient($cred, $region);
+        // $this->client 是单例，这里设置的 reqTimeout 覆盖 DnspodClient 的所有调用方：
+        // ① 委托写 TXT（下单 FPM 同步路径）② DelegationCleanupCommand（console 定时命令）的
+        // getAllTxtRecords 分页查询。DNSPod SDK 默认 reqTimeout=60s 偏大（对齐工商查询 10s 量级）；
+        // 收紧到 15s：① 场景防腾讯云慢/挂时单条占 FPM worker 最长 60s（仍在 DB 锁外，不引发 1205）；
+        // ② 场景每页独立 15s（对正常腾讯云响应足够），console 场景腾讯云异常慢时可能提前失败导致
+        // 本轮分页遍历中断（漏删，不误删——下轮 cleanup 补删）。
+        $httpProfile = new HttpProfile;
+        $httpProfile->setReqTimeout(15);
+        $clientProfile = new ClientProfile;
+        $clientProfile->setHttpProfile($httpProfile);
+        $this->client = new DnspodClient($cred, $region, $clientProfile);
 
         // 获取代理域名
         $this->domain = $delegation['proxyZone'] ?? null;

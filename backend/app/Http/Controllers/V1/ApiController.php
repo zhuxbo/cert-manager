@@ -291,7 +291,11 @@ class ApiController extends Controller
             // 待验证、待审批、已签发的订单同步（同步失败不影响返回已有数据）
             if (in_array($order->latestCert->status, ['processing', 'approving', 'active'])) {
                 // suppressCallback=true：下游主动 pull，get 末尾已重新查询并同步返回新状态，无需再异步回调（避免冗余触发）
-                $this->action->sync($order_id, true, true);
+                try {
+                    $this->action->sync($order_id, true, true);
+                } catch (ApiResponseException) {
+                    // 上游超时/失败不影响返回本地已有数据，下次 pull 再同步
+                }
             }
 
             // 未支付订单支付

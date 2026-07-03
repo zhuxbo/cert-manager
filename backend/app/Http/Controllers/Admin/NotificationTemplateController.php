@@ -17,8 +17,8 @@ class NotificationTemplateController extends BaseController
 
     public function index(Request $request): void
     {
-        $currentPage = (int) $request->input('currentPage', 1);
-        $pageSize = (int) $request->input('pageSize', 10);
+        $currentPage = (int) ($request->input('currentPage') ?? 1);
+        $pageSize = (int) ($request->input('pageSize') ?? 10);
 
         $query = NotificationTemplate::query();
 

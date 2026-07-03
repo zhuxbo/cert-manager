@@ -147,20 +147,20 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 
 ## Sdk 超时约定（防 1205 锁等待超时）
 
-`Order\Api\default\Sdk::call()` 与 `Acme\Api\default\Sdk` 的上游 HTTP 调用**必须有 timeout 上限**，且**锁内调用的 timeout 必须 < `innodb_lock_wait_timeout`（默认 50s）**。
+`Order\Api\default\Sdk::call()` 与 `Acme\Api\default\Sdk` 的上游 HTTP 调用**必须有 timeout 上限**，且**锁内调用的 timeout 必须 < `innodb_lock_wait_timeout`（已通过 `config/database.php` 的 PDO `MYSQL_ATTR_INIT_COMMAND` 固化为 session=50、覆盖 global 漂移，见 `InnodbLockWaitTimeoutTest`）**。
 
 **为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求，见主 `CLAUDE.md`「资金/状态变更必须在事务 + 行锁内」）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
 
-**Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(3, $timeout)` + `timeout`；Guzzle `timeout` 含 connect，单次墙钟上限 = `timeout`）。
+**Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(10, $timeout)` + `timeout`；Guzzle `timeout` 含 connect，单次墙钟上限 = `timeout`）。connect_timeout 取 10s（早期 3s）：manager 是多级代理，上游可能是任意深度的另一个 manager，网络路径/DNS/地域全不可控，按"不可控上游"处理，对齐 callback 的 `connectTimeout(10)`；10 < 50 不破坏 1205 防护（总 timeout 45s 封顶不变，connect 不叠加），黑洞上游失败慢一点换多级链路的连接宽容，是有意取舍。
 
 - 锁内：`new` / `renew` / `reissue` / `cancel` → **45s**。commit 锁内**只有一个**上游调用（下单或 cancel），`45 < 50`（留 5s 裕度 + 锁内 `save()` 开销）。**default 源只对接同构 V2 的上游，上游对已存在 refer_id 一律幂等返回 order_id（code=1），绝不返回含 "Refer id" 的 code=0，故本地不做 refer_id 反查、锁内不会串第二个调用**（对接其它 CA 走独立 source 另行处理，不共用本预算约定）
 - 锁外也设超时上限**防 FPM worker 被上游挂死永久占用**（`max_execution_time` 不计 socket 阻塞、只有 FPM `request_terminate_timeout` 能兜且部署默认未设，不可靠）：
-  - `uploadDocument`（Certum 文档 base64 上传可能数 MB，且除 `SubmitDocumentJob`(queue) 外可能有手工同步入口）→ **120s**
+  - `uploadDocument`（唯一调用方 `SubmitDocumentJob`(queue)，被 worker `--timeout 60` 的 SIGALRM 硬杀；单文件 ≤5MB，base64 ~6.7MB 正常网络 <10s）→ **55s**（< worker 60，让 Guzzle 自己先干净断，交给 Job 的 backoff 重试，而非被 SIGALRM 硬杀进程）
   - 其他 `sync` 的 `get`（默认 30s）/`getProducts`/`getOrders`/`revalidate`/`updateDCV` → **30s**（非耗时，仅防 hang）
 
-**ACME default Sdk**：无文档上传、无 refer_id 反查，`request()` 全局 `Http::timeout(30)` 即可（30 < 50）。
+**ACME default Sdk**：无文档上传、无 refer_id 反查，`request()` 全局 `Http::timeout(30)->connectTimeout(10)`（对齐 Order Sdk min(10,timeout)，多级代理上游按不可控处理）即可（30 < 50）。
 
-**新增 source 的 Sdk 必须遵守**：锁内上游调用设 timeout < 50s（多次串联调用时确保总和 < 50s）；**锁外调用（尤其有 FPM 同步入口的）也须设上限防 worker 被上游 hang 拖死**（耗时上传给宽松值如 120s，普通查询/操作 30s）。`makeClient()` 注入缝便于测试断言 timeout（参考 `tests/Unit/Services/Order/Api/DefaultSdkTimeoutTest.php`：用 array driver 注入 `setting:group_name:ca` 缓存绕过 DB，子类覆盖 `makeClient` 捕获 config + MockHandler 短路 HTTP）。
+**新增 source 的 Sdk 必须遵守**：锁内上游调用设 timeout < 50s（多次串联调用时确保总和 < 50s）；**锁外调用（尤其有 FPM 同步入口的）也须设上限防 worker 被上游 hang 拖死**（有 queue worker 消费的调用应 < worker `--timeout`，让 Guzzle 先于 SIGALRM 干净断；普通查询/操作 30s）。`makeClient()` 注入缝便于测试断言 timeout（参考 `tests/Unit/Services/Order/Api/DefaultSdkTimeoutTest.php`：用 array driver 注入 `setting:group_name:ca` 缓存绕过 DB，子类覆盖 `makeClient` 捕获 config + MockHandler 短路 HTTP）。
 
 ## Sdk catch 脱敏（异常原文不外泄内部地址）
 

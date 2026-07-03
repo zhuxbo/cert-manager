@@ -9,7 +9,7 @@ use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
 // 方案 C 异步分流：TaskJob 调 Action::commit 抢不到 order 级互斥锁（MutationBusyException）时，
-// 必须与死锁同等对待——未达上限静默 release 错峰重试（不标 failed），达上限才冒泡交 worker。
+// 必须按业务互斥锁忙单独处理——未达上限长 release 等持锁上游调用结束（不标 failed），达上限才冒泡交 worker。
 // MutationBusyException 独立类型不被 causedByConcurrencyError 识别，故需 TaskJob 内外层显式纳入。
 uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
@@ -38,7 +38,9 @@ test('commit 抢不到 order 互斥锁未达上限：release 错峰、不标 fai
 
     $job->assertReleased();   // 静默放回队列错峰重试
     $job->assertNotFailed();  // 自愈中，未 fail
-    expect($task->fresh()->status)->toBe('executing'); // 未标 failed，等下次拾取
+    expect($job->job->releaseDelay)->toBeGreaterThanOrEqual(50)
+        ->and($job->job->releaseDelay)->toBeLessThanOrEqual(70)
+        ->and($task->fresh()->status)->toBe('executing'); // 未标 failed，等下次拾取
 });
 
 test('commit 抢不到 order 互斥锁达 tries 上限：冒泡交 worker failJob、不再 release', function () {
