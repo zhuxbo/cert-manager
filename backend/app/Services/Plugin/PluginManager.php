@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Process;
 use ZipArchive;
 
 class PluginManager
@@ -23,6 +25,13 @@ class PluginManager
     protected string $downloadPath;
 
     protected PluginComposerRunner $composerRunner;
+
+    protected mixed $progressReporter = null;
+
+    /**
+     * @var array<string, string>
+     */
+    protected array $migrationMarkerPaths = [];
 
     /**
      * @param  PluginComposerRunner|null  $composerRunner  运行时 composer 安装器；为兼容存量单测
@@ -40,6 +49,14 @@ class PluginManager
         if (! File::isDirectory($this->downloadPath)) {
             File::makeDirectory($this->downloadPath, 0755, true);
         }
+    }
+
+    public function withProgressReporter(callable $reporter): self
+    {
+        $clone = clone $this;
+        $clone->progressReporter = $reporter;
+
+        return $clone;
     }
 
     /**
@@ -111,7 +128,7 @@ class PluginManager
                     'current_version' => $currentVersion,
                     'latest_version' => null,
                     'has_update' => false,
-                    'error' => $e->getMessage(),
+                    'error' => $this->safeError($e),
                 ];
             }
         }
@@ -141,6 +158,7 @@ class PluginManager
         $this->validateReleaseUrl($resolvedUrl);
 
         // 获取远程版本信息
+        $this->report('fetching_release', '正在获取插件版本信息...');
         $releases = $this->fetchRemoteReleases($resolvedUrl);
         $release = $version
         ? $this->findReleaseByVersion($releases, $version)
@@ -157,13 +175,19 @@ class PluginManager
         $downloadUrl = $this->resolveAssetUrl($release, $resolvedUrl);
         $expectedSha256 = $this->findPluginAssetSha256($release);
         $zipPath = "$this->downloadPath/plugin-$name-{$release['version']}.zip";
+        $this->report('downloading', '正在下载插件包...');
         $this->downloadPlugin($downloadUrl, $zipPath);
+        $this->report('verifying', '正在校验插件包...');
         $this->verifyPluginPackageHash($zipPath, $expectedSha256);
+        $migrationRecordsBefore = [];
+        $migrationAttempted = false;
 
         try {
             // 解压 → 验证 → 安装
+            $this->report('extracting', '正在解压插件包...');
             $extractDir = $this->extractPlugin($zipPath);
             $pluginSourceDir = $this->findPluginDir($extractDir, $name);
+            $this->report('validating', '正在校验插件包...');
             $this->validatePlugin($pluginSourceDir, $name);
 
             // 写入 release_url
@@ -172,19 +196,25 @@ class PluginManager
             }
 
             // 移动到 plugins 目录
+            $this->report('applying', '正在安装插件文件...');
             $this->applyPlugin($pluginSourceDir, $pluginDir);
 
             // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
             $this->installPluginComposerDeps($name, $pluginDir);
 
             // 运行 migrate
+            $this->report('migrating', '正在运行插件迁移...');
+            $migrationRecordsBefore = $this->pluginMigrationRecordNames($name);
+            $migrationAttempted = true;
             $this->runPluginMigrations($name);
+            $this->report('seeding', '正在运行插件初始化数据...');
             $this->runPluginSeeders($name);
 
             // 替换 nginx 占位符
             $this->replaceNginxPlaceholders("$pluginDir/nginx");
 
             // 清理缓存
+            $this->report('clearing_cache', '正在清理系统缓存...');
             $this->clearCaches();
 
             $result = [
@@ -200,11 +230,21 @@ class PluginManager
 
             return $result;
         } catch (\Throwable $e) {
+            $migrationsClean = true;
+            if ($migrationAttempted) {
+                $migrationsClean = $this->rollbackNewPluginMigrations($name, $migrationRecordsBefore);
+            }
+
             // composer install / migrate 等失败：清理本次落地的半装目录。
             // 远程安装的"已安装"前置校验在 try 外，故 try 内 $pluginDir 必为本次新建，
             // 直接删安全——否则残留半装目录会让重装命中"已安装"、更新命中"已是最新"陷入死锁。
-            if (is_dir($pluginDir)) {
+            if ($migrationsClean && is_dir($pluginDir)) {
                 File::deleteDirectory($pluginDir);
+            } elseif (! $migrationsClean) {
+                $recoveryDir = $this->quarantinePluginDirectory($name, $pluginDir);
+                Log::error("[Plugin] 迁移回滚失败，已隔离半装目录供人工恢复: $name", [
+                    'recovery_dir' => $recoveryDir,
+                ]);
             }
 
             throw $e;
@@ -222,6 +262,8 @@ class PluginManager
         $extractDir = $this->extractPlugin($zipPath);
         $applied = false;
         $pluginDir = null;
+        $migrationRecordsBefore = [];
+        $migrationAttempted = false;
 
         try {
             // 查找插件目录（ZIP 内可能有一层根目录）
@@ -244,6 +286,7 @@ class PluginManager
 
             // 移动到 plugins 目录（$applied 标记本次是否落地了目录：仅本次新建才在失败时清理，
             // 不误删"已安装"校验命中的他人目录）
+            $this->report('applying', '正在安装插件文件...');
             $this->applyPlugin($pluginSourceDir, $pluginDir);
             $applied = true;
 
@@ -251,13 +294,18 @@ class PluginManager
             $this->installPluginComposerDeps($name, $pluginDir);
 
             // 运行 migrate
+            $this->report('migrating', '正在运行插件迁移...');
+            $migrationRecordsBefore = $this->pluginMigrationRecordNames($name);
+            $migrationAttempted = true;
             $this->runPluginMigrations($name);
+            $this->report('seeding', '正在运行插件初始化数据...');
             $this->runPluginSeeders($name);
 
             // 替换 nginx 占位符
             $this->replaceNginxPlaceholders("$pluginDir/nginx");
 
             // 清理缓存
+            $this->report('clearing_cache', '正在清理系统缓存...');
             $this->clearCaches();
 
             $version = $manifest['version'] ?? '0.0.0';
@@ -275,10 +323,20 @@ class PluginManager
 
             return $result;
         } catch (\Throwable $e) {
+            $migrationsClean = true;
+            if ($migrationAttempted && $name) {
+                $migrationsClean = $this->rollbackNewPluginMigrations($name, $migrationRecordsBefore);
+            }
+
             // composer install / migrate 等失败：清理本次落地的半装目录（$applied 守卫，
             // 不误删"已安装"校验命中的既有插件），避免死锁循环
-            if ($applied && $pluginDir && is_dir($pluginDir)) {
+            if ($migrationsClean && $applied && $pluginDir && is_dir($pluginDir)) {
                 File::deleteDirectory($pluginDir);
+            } elseif (! $migrationsClean && $pluginDir) {
+                $recoveryDir = $this->quarantinePluginDirectory($name, $pluginDir);
+                Log::error("[Plugin] 迁移回滚失败，已隔离半装目录供人工恢复: $name", [
+                    'recovery_dir' => $recoveryDir,
+                ]);
             }
 
             throw $e;
@@ -309,6 +367,7 @@ class PluginManager
         }
 
         // 获取远程版本
+        $this->report('fetching_release', '正在获取插件版本信息...');
         $releases = $this->fetchRemoteReleases($releaseUrl);
         $release = $version
         ? $this->findReleaseByVersion($releases, $version)
@@ -333,20 +392,26 @@ class PluginManager
 
         // 旧 vendor 暂存路径（删旧目录前移出，lock 未变时移回复用，避免重拉大体量 vendor）
         $vendorStash = null;
+        $migrationRecordsBefore = [];
+        $migrationAttempted = false;
 
         // 下载新版本
         $downloadUrl = $this->resolveAssetUrl($release, $releaseUrl);
         $expectedSha256 = $this->findPluginAssetSha256($release);
         $zipPath = "$this->downloadPath/plugin-$name-{$release['version']}.zip";
+        $this->report('downloading', '正在下载插件包...');
         $this->downloadPlugin($downloadUrl, $zipPath);
 
         try {
             // 完整性校验（有 sha256 则强校验，无则告警放行）；放 try 内使失败时
             // 走下方 catch 恢复备份 + finally 清理临时文件，旧版本不受影响
+            $this->report('verifying', '正在校验插件包...');
             $this->verifyPluginPackageHash($zipPath, $expectedSha256);
 
+            $this->report('extracting', '正在解压插件包...');
             $extractDir = $this->extractPlugin($zipPath);
             $pluginSourceDir = $this->findPluginDir($extractDir, $name);
+            $this->report('validating', '正在校验插件包...');
             $this->validatePlugin($pluginSourceDir, $name);
 
             // 保留原有 release_url
@@ -367,6 +432,7 @@ class PluginManager
             }
 
             File::deleteDirectory($pluginDir);
+            $this->report('applying', '正在更新插件文件...');
             $this->applyPlugin($pluginSourceDir, $pluginDir);
 
             // 安装 composer 依赖：仅当插件自带 composer.json。
@@ -380,16 +446,21 @@ class PluginManager
                     $vendorStash = null;
                 } else {
                     Log::info("[Plugin] 安装依赖（composer.lock 变化或 vendor 缺失）: $name");
-                    $this->composerRunner->install($pluginDir, $name);
+                    $this->installPluginComposerDeps($name, $pluginDir);
                 }
             }
 
             // 运行 migrate（增量迁移）
+            $this->report('migrating', '正在运行插件迁移...');
+            $migrationRecordsBefore = $this->pluginMigrationRecordNames($name);
+            $migrationAttempted = true;
             $this->runPluginMigrations($name);
+            $this->report('seeding', '正在运行插件初始化数据...');
             $this->runPluginSeeders($name);
 
             // 替换 nginx 占位符 + 清理缓存
             $this->replaceNginxPlaceholders("$pluginDir/nginx");
+            $this->report('clearing_cache', '正在清理系统缓存...');
             $this->clearCaches();
 
             // 清理备份
@@ -410,12 +481,37 @@ class PluginManager
             }
 
             return $result;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            $migrationsClean = true;
+            if ($migrationAttempted) {
+                $migrationsClean = $this->rollbackNewPluginMigrations($name, $migrationRecordsBefore);
+            }
+
             // 从备份恢复
             if ($backupDir && is_dir($backupDir)) {
-                Log::warning("[Plugin] 更新失败，恢复备份: $name", ['error' => $e->getMessage()]);
+                if (! $migrationsClean) {
+                    $recoveryDir = $this->quarantinePluginDirectory($name, $pluginDir);
+                    if ($recoveryDir !== null) {
+                        if ($this->restorePluginBackup($backupDir, $pluginDir)) {
+                            $backupDir = null;
+                        }
+                    }
+
+                    Log::error("[Plugin] 更新失败且迁移回滚不干净，已隔离失败新目录并尽量恢复旧目录: $name", [
+                        'error' => $this->safeError($e),
+                        'recovery_dir' => $recoveryDir,
+                        'backup_dir' => $backupDir,
+                    ]);
+
+                    throw $e;
+                }
+
+                Log::warning("[Plugin] 更新失败，恢复备份: $name", [
+                    'error' => $this->safeError($e),
+                    'migrations_clean' => $migrationsClean,
+                ]);
                 File::deleteDirectory($pluginDir);
-                File::moveDirectory($backupDir, $pluginDir);
+                $this->restorePluginBackup($backupDir, $pluginDir);
             }
 
             throw $e;
@@ -530,10 +626,15 @@ class PluginManager
      */
     protected function fetchRemoteReleases(string $baseUrl): array
     {
+        $this->validateReleaseUrl($baseUrl);
         $url = rtrim($baseUrl, '/').'/releases.json';
 
         try {
-            $response = Http::timeout(10)->get($url);
+            $response = Http::timeout(10)
+                ->withOptions([
+                    'allow_redirects' => ['max' => 5, 'protocols' => ['https']],
+                ])
+                ->get($url);
             if ($response->successful()) {
                 return $response->json()['releases'] ?? [];
             }
@@ -542,7 +643,7 @@ class PluginManager
         } catch (RuntimeException $e) {
             throw $e;
         } catch (\Exception $e) {
-            throw new RuntimeException("获取版本信息失败: {$e->getMessage()}");
+            throw new RuntimeException("获取版本信息失败: {$this->safeError($e)}");
         }
     }
 
@@ -557,16 +658,21 @@ class PluginManager
         // 否则合法 https 基址返回的 release 可把下载地址指向 http://169.254.169.254 等内网。
         $this->validateReleaseUrl($url);
 
-        $timeout = Config::get('upgrade.package.download_timeout', 300);
+        $timeout = $this->progressReporter !== null
+            ? (int) Config::get('plugin.download.timeout', 30)
+            : (int) Config::get('upgrade.package.download_timeout', 300);
+        $attemptTimeout = $this->progressReporter !== null
+            ? max(1, intdiv($timeout, 2))
+            : $timeout;
 
         // 优先使用 curl
-        if ($this->downloadWithCurl($url, $savePath, $timeout)) {
+        if ($this->downloadWithCurl($url, $savePath, $attemptTimeout)) {
             return;
         }
 
         // 回退到 PHP HTTP
         try {
-            $response = Http::timeout($timeout)
+            $response = Http::timeout($attemptTimeout)
                 ->withOptions([
                     'sink' => $savePath,
                     // 与 curl 对称：重定向仅允许 https（防降级到 http 内网/元数据 SSRF），限 5 跳
@@ -582,7 +688,7 @@ class PluginManager
         } catch (RuntimeException $e) {
             throw $e;
         } catch (\Exception $e) {
-            throw new RuntimeException("下载失败: {$e->getMessage()}");
+            throw new RuntimeException("下载失败: {$this->safeError($e)}");
         }
     }
 
@@ -607,9 +713,18 @@ class PluginManager
             escapeshellarg($url),
         );
 
-        exec($command, $output, $exitCode);
+        $process = Process::fromShellCommandline($command);
+        $process->setTimeout($timeout);
 
-        return $exitCode === 0 && file_exists($savePath) && filesize($savePath) > 0;
+        try {
+            $process->run();
+        } catch (ProcessTimedOutException) {
+            $process->stop(1, 9);
+
+            throw new RuntimeException('插件包下载超时，请检查服务器网络或调整 PLUGIN_DOWNLOAD_TIMEOUT');
+        }
+
+        return $process->isSuccessful() && file_exists($savePath) && filesize($savePath) > 0;
     }
 
     /**
@@ -772,7 +887,17 @@ class PluginManager
             File::makeDirectory($this->pluginsPath, 0755, true);
         }
 
-        File::moveDirectory($from, $to);
+        if (File::moveDirectory($from, $to)) {
+            return;
+        }
+
+        if (File::copyDirectory($from, $to)) {
+            File::deleteDirectory($from);
+
+            return;
+        }
+
+        throw new RuntimeException("插件文件移动失败: $to");
     }
 
     /**
@@ -789,7 +914,13 @@ class PluginManager
             return;
         }
 
-        $this->composerRunner->install($pluginDir, $name);
+        if ($this->progressReporter === null) {
+            $this->composerRunner->install($pluginDir, $name);
+
+            return;
+        }
+
+        $this->composerRunner->install($pluginDir, $name, $this->progressReporter);
     }
 
     /**
@@ -805,13 +936,17 @@ class PluginManager
         }
 
         try {
-            Artisan::call('migrate', [
-                '--path' => "../$migrationsPath",
-                '--force' => true,
-            ]);
+            $markerPath = $this->createMigrationMarkerPath($name);
+            $this->runArtisanProcess([
+                'plugin:migrate',
+                $name,
+                "--marker=$markerPath",
+            ], '插件迁移');
+            $this->cleanupMigrationMarker($name);
             Log::info("[Plugin] 迁移完成: $name");
-        } catch (\Exception $e) {
-            Log::warning("[Plugin] 迁移失败: $name - {$e->getMessage()}");
+        } catch (\Throwable $e) {
+            Log::warning("[Plugin] 迁移失败: $name - {$this->safeError($e)}");
+            throw new RuntimeException("插件 $name 迁移失败：{$e->getMessage()}");
         }
     }
 
@@ -835,22 +970,160 @@ class PluginManager
             ->all();
 
         try {
-            Artisan::call('migrate:rollback', [
-                '--path' => "../$migrationsPath",
-                '--force' => true,
-            ]);
+            $rolledBack = false;
+            $this->runArtisanProcess([
+                'migrate:rollback',
+                "--path=../$migrationsPath",
+                '--force',
+            ], '插件迁移回滚');
+            $rolledBack = true;
             Log::info("[Plugin] 回滚迁移完成: $name");
         } catch (\Exception $e) {
-            Log::warning("[Plugin] 回滚迁移失败: $name - {$e->getMessage()}");
+            Log::warning("[Plugin] 回滚迁移失败: $name - {$this->safeError($e)}");
         }
 
         // 确保 migrations 表记录被清理（防止 rollback 失败后残留，导致重装跳过迁移）
-        if (! empty($migrationNames)) {
+        if ($rolledBack && ! empty($migrationNames)) {
             $deleted = DB::table('migrations')->whereIn('migration', $migrationNames)->delete();
             if ($deleted > 0) {
                 Log::info("[Plugin] 清理迁移记录: $name ($deleted 条)");
             }
         }
+    }
+
+    /**
+     * 当前已记录的插件迁移名。
+     *
+     * 用于安装/更新失败时只回滚本次新增的迁移，避免 seeder 失败但本次没有新迁移时
+     * 误回滚该插件历史迁移。
+     *
+     * @return array<int, string>
+     */
+    protected function pluginMigrationRecordNames(string $name): array
+    {
+        $migrationNames = $this->pluginMigrationFileNames($name);
+        if ($migrationNames === []) {
+            return [];
+        }
+
+        return DB::table('migrations')
+            ->whereIn('migration', $migrationNames)
+            ->pluck('migration')
+            ->all();
+    }
+
+    /**
+     * 当前插件迁移文件名。
+     *
+     * @return array<int, string>
+     */
+    protected function pluginMigrationFileNames(string $name): array
+    {
+        $migrationsPath = base_path("../plugins/$name/backend/migrations");
+        if (! is_dir($migrationsPath)) {
+            return [];
+        }
+
+        return collect(File::files($migrationsPath))
+            ->filter(fn ($file) => $file->getExtension() === 'php')
+            ->map(fn ($file) => $file->getFilenameWithoutExtension())
+            ->sort()
+            ->values()
+            ->all();
+    }
+
+    protected function createMigrationMarkerPath(string $name): string
+    {
+        $dir = storage_path('app/plugin-migration-markers');
+        File::ensureDirectoryExists($dir);
+
+        $path = $dir.'/'.$name.'-'.Str::uuid().'.json';
+        $this->migrationMarkerPaths[$name] = $path;
+
+        return $path;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function pluginMigrationAttemptedFiles(string $name): array
+    {
+        $path = $this->migrationMarkerPaths[$name] ?? null;
+        if (! is_string($path) || ! is_file($path)) {
+            return [];
+        }
+
+        $data = json_decode((string) file_get_contents($path), true);
+        if (! is_array($data) || ! isset($data['attempted']) || ! is_array($data['attempted'])) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map('strval', $data['attempted']),
+            fn ($migration) => preg_match('/^[A-Za-z0-9_]+$/', $migration)
+        ));
+    }
+
+    protected function cleanupMigrationMarker(string $name): void
+    {
+        $path = $this->migrationMarkerPaths[$name] ?? null;
+        if (is_string($path) && is_file($path)) {
+            @unlink($path);
+        }
+
+        unset($this->migrationMarkerPaths[$name]);
+    }
+
+    /**
+     * 回滚安装/更新过程中本次新增的插件迁移。
+     *
+     * @param  array<int, string>  $before
+     */
+    protected function rollbackNewPluginMigrations(string $name, array $before): bool
+    {
+        $after = $this->pluginMigrationRecordNames($name);
+        $newRecords = array_values(array_diff($after, $before));
+        $attemptedMigrationFiles = $this->pluginMigrationAttemptedFiles($name);
+        $unrecordedMigrationFiles = array_values(array_diff($attemptedMigrationFiles, $before, $newRecords));
+        $rollbackTargets = $this->orderedMigrationRollbackTargets($name, array_merge($newRecords, $unrecordedMigrationFiles));
+        $clean = true;
+
+        if ($rollbackTargets !== []) {
+            Log::warning("[Plugin] 操作失败，精确回滚本次迁移: $name", [
+                'recorded' => $newRecords,
+                'unrecorded' => $unrecordedMigrationFiles,
+            ]);
+
+            try {
+                $this->runArtisanProcess(array_merge(
+                    ['plugin:rollback-unrecorded-migrations', $name],
+                    array_map(fn ($migration) => "--migration=$migration", $rollbackTargets),
+                ), '插件迁移精确回滚');
+            } catch (\Throwable $e) {
+                $clean = false;
+                Log::warning("[Plugin] 精确回滚本次迁移失败: $name - {$this->safeError($e)}");
+            }
+        }
+
+        if ($clean) {
+            $this->cleanupMigrationMarker($name);
+        }
+
+        return $clean;
+    }
+
+    /**
+     * @param  array<int, string>  $migrationNames
+     * @return array<int, string>
+     */
+    protected function orderedMigrationRollbackTargets(string $name, array $migrationNames): array
+    {
+        $targetSet = array_flip(array_unique($migrationNames));
+
+        return array_values(array_filter(
+            $this->pluginMigrationFileNames($name),
+            fn ($migration) => isset($targetSet[$migration])
+        ));
     }
 
     /**
@@ -864,13 +1137,14 @@ class PluginManager
         }
 
         try {
-            Artisan::call('db:seed', [
-                '--class' => $class,
-                '--force' => true,
-            ]);
+            $this->runArtisanProcess([
+                'plugin:seed-transaction',
+                $class,
+            ], '插件 Seed');
             Log::info("[Plugin] Seed 完成: $name ($class)");
-        } catch (\Exception $e) {
-            Log::warning("[Plugin] Seed 失败: $name - {$e->getMessage()}");
+        } catch (\Throwable $e) {
+            Log::warning("[Plugin] Seed 失败: $name - {$this->safeError($e)}");
+            throw new RuntimeException("插件 $name Seed 失败：{$e->getMessage()}");
         }
     }
 
@@ -892,7 +1166,7 @@ class PluginManager
                 Log::info("[Plugin] Seed 清理完成: $name ($class)");
             }
         } catch (\Exception $e) {
-            Log::warning("[Plugin] Seed 清理失败: $name - {$e->getMessage()}");
+            Log::warning("[Plugin] Seed 清理失败: $name - {$this->safeError($e)}");
         }
     }
 
@@ -979,8 +1253,62 @@ class PluginManager
                 opcache_reset();
             }
         } catch (\Exception $e) {
-            Log::warning("[Plugin] 清理缓存部分失败: {$e->getMessage()}");
+            Log::warning("[Plugin] 清理缓存部分失败: {$this->safeError($e)}");
         }
+    }
+
+    protected function report(string $stage, string $message): void
+    {
+        if ($this->progressReporter === null) {
+            return;
+        }
+
+        try {
+            ($this->progressReporter)($stage, $message);
+        } catch (\Throwable $e) {
+            Log::warning('[Plugin] progress reporter 失败', [
+                'stage' => $stage,
+                'error' => $this->safeError($e),
+            ]);
+        }
+    }
+
+    protected function safeError(\Throwable $e): string
+    {
+        return PluginOutputSanitizer::sanitize($e->getMessage(), 1000);
+    }
+
+    /**
+     * 在独立 PHP 子进程中运行插件迁移 / Seeder，避免外层 Job timeout 硬杀 worker 时
+     * 绕过 PluginManager 的 catch/finally 清理路径。
+     *
+     * @param  array<int, string>  $arguments
+     */
+    protected function runArtisanProcess(array $arguments, string $context): string
+    {
+        try {
+            $php = app(BinaryLocator::class)->php();
+        } catch (BinaryNotFoundException $e) {
+            throw new RuntimeException("{$context}失败：未找到可执行的 PHP CLI：{$e->getMessage()}");
+        }
+
+        $process = new Process(array_merge([$php, base_path('artisan')], $arguments), base_path());
+        $process->setTimeout((float) config('plugin.operations.artisan_timeout', 15));
+
+        try {
+            $process->run();
+        } catch (ProcessTimedOutException) {
+            $process->stop(1, 9);
+
+            throw new RuntimeException("{$context}超时，请检查插件迁移/Seeder 或调整 PLUGIN_OPERATION_ARTISAN_TIMEOUT");
+        }
+
+        $output = trim($process->getOutput()."\n".$process->getErrorOutput());
+        if (! $process->isSuccessful()) {
+            throw new RuntimeException($output !== '' ? $output : "{$context}退出码 ".($process->getExitCode() ?? 1));
+        }
+
+        return $output;
     }
 
     /**
@@ -994,10 +1322,61 @@ class PluginManager
         }
 
         $backupDir = "$this->downloadPath/plugin-backup-$name-".date('YmdHis');
-        File::copyDirectory($pluginDir, $backupDir);
+        File::ensureDirectoryExists($backupDir);
+        if (! File::copyDirectory($pluginDir, $backupDir)) {
+            throw new RuntimeException("插件备份失败: $name");
+        }
         Log::info("[Plugin] 备份完成: $name → $backupDir");
 
         return $backupDir;
+    }
+
+    protected function restorePluginBackup(string $backupDir, string $pluginDir): bool
+    {
+        if (File::moveDirectory($backupDir, $pluginDir)) {
+            return true;
+        }
+
+        if (File::copyDirectory($backupDir, $pluginDir)) {
+            File::deleteDirectory($backupDir);
+
+            return true;
+        }
+
+        Log::error('[Plugin] 恢复插件备份失败', [
+            'backup_dir' => $backupDir,
+            'plugin_dir' => $pluginDir,
+        ]);
+
+        return false;
+    }
+
+    protected function quarantinePluginDirectory(string $name, string $pluginDir): ?string
+    {
+        if (! is_dir($pluginDir)) {
+            return null;
+        }
+
+        $baseDir = storage_path('app/plugin-recovery');
+        File::ensureDirectoryExists($baseDir);
+        $recoveryDir = $baseDir.'/'.$name.'-'.date('YmdHis').'-'.Str::random(8);
+
+        if (File::moveDirectory($pluginDir, $recoveryDir)) {
+            return $recoveryDir;
+        }
+
+        if (File::copyDirectory($pluginDir, $recoveryDir)) {
+            File::deleteDirectory($pluginDir);
+
+            return $recoveryDir;
+        }
+
+        Log::error("[Plugin] 隔离失败插件目录失败: $name", [
+            'plugin_dir' => $pluginDir,
+            'recovery_dir' => $recoveryDir,
+        ]);
+
+        return null;
     }
 
     /**

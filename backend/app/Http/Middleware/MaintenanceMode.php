@@ -43,6 +43,10 @@ class MaintenanceMode
         'api/admin/refresh-token',  // 刷新 access token
         'api/admin/me',             // 获取当前 admin 信息（前端守卫探活）
         'api/admin/logout',         // 登出
+
+        // 插件安装/更新异步任务状态只读查询；freeze 期允许观察状态，但不允许写操作
+        ['GET', 'api/admin/plugin/operations'],
+        ['GET', 'api/admin/plugin/operations/*'],
     ];
 
     /**
@@ -79,6 +83,15 @@ class MaintenanceMode
     public function isWhitelisted(Request $request): bool
     {
         foreach ($this->whitelist as $pattern) {
+            if (is_array($pattern)) {
+                [$method, $path] = $pattern;
+                if ($request->isMethod($method) && $request->is($path)) {
+                    return true;
+                }
+
+                continue;
+            }
+
             if ($request->is($pattern)) {
                 return true;
             }

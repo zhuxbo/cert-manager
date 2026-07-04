@@ -135,6 +135,37 @@ test('install composer install 退出码非 0 时抛明确错误', function () {
         ->toThrow(RuntimeException::class, '插件 cloud-deploy 依赖安装失败');
 });
 
+test('install 执行异常时仍还原 composer 镜像', function () {
+    $locator = Mockery::mock(BinaryLocator::class);
+    $locator->shouldReceive('composer')->andReturn("'php' 'composer'");
+
+    $runner = new class($locator, passingPreflight()) extends PluginComposerRunner
+    {
+        public bool $reset = false;
+
+        protected function configureComposerMirror(string $basePath, string $composerCmd): bool
+        {
+            return true;
+        }
+
+        protected function resetComposerMirror(string $basePath, string $composerCmd): void
+        {
+            $this->reset = true;
+        }
+
+        protected function runShell(string $command): array
+        {
+            throw new RuntimeException('process crashed');
+        }
+    };
+
+    $pluginDir = makePluginDir();
+
+    expect(fn () => $runner->install($pluginDir, 'cloud-deploy'))
+        ->toThrow(RuntimeException::class, 'process crashed');
+    expect($runner->reset)->toBeTrue();
+});
+
 // ==================== install — preflight 失败（composer 不可用 / proc_open 禁用）====================
 
 test('install preflight 报 composer_missing 时抛明确错误且不跑命令', function () {

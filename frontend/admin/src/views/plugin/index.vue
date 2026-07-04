@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   getInstalledPlugins,
   checkPluginUpdates,
@@ -7,7 +7,10 @@ import {
   installPluginFromFile,
   updatePlugin,
   uninstallPlugin,
+  getPluginOperations,
+  failStalePluginOperation,
   type PluginInfo,
+  type PluginOperation,
   type PluginUpdateInfo
 } from "@/api/plugin";
 import { message } from "@shared/utils";
@@ -36,6 +39,9 @@ const updates = ref<Record<string, PluginUpdateInfo>>({});
 const loading = ref(false);
 const checkingUpdates = ref(false);
 const operating = ref<string | null>(null);
+const operations = ref<PluginOperation[]>([]);
+const notifiedTerminals = new Set<string>();
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 // 安装弹窗
 const installDialogVisible = ref(false);
@@ -50,6 +56,44 @@ const uninstallTarget = ref<string>("");
 const removeData = ref(false);
 const uninstallLoading = ref(false);
 
+const activeOperationByPlugin = computed<Record<string, PluginOperation>>(
+  () => {
+    const map: Record<string, PluginOperation> = {};
+    for (const op of operations.value) {
+      if (op.status === "queued" || op.status === "running") {
+        map[op.plugin_name] = op;
+      }
+    }
+    return map;
+  }
+);
+
+const activeOperations = computed(() =>
+  operations.value.filter(
+    op => op.status === "queued" || op.status === "running"
+  )
+);
+
+const getActiveOperation = (name: string): PluginOperation | null => {
+  return activeOperationByPlugin.value[name] || null;
+};
+
+const hasActiveOperation = (name: string): boolean => {
+  return !!getActiveOperation(name);
+};
+
+const operationLabel = (op: PluginOperation): string => {
+  if (op.type === "update") return "更新";
+  return "安装";
+};
+
+const operationStatusType = (status: PluginOperation["status"]) => {
+  if (status === "succeeded") return "success";
+  if (status === "failed") return "danger";
+  if (status === "running") return "warning";
+  return "info";
+};
+
 // 加载已安装插件
 const loadPlugins = async () => {
   loading.value = true;
@@ -58,6 +102,53 @@ const loadPlugins = async () => {
     plugins.value = data.plugins || [];
   } finally {
     loading.value = false;
+  }
+};
+
+const loadOperations = async (notifyTerminal = false) => {
+  const { data } = await getPluginOperations();
+  const list = data.operations || [];
+  operations.value = list;
+  for (const op of list) {
+    if (op.status !== "succeeded" && op.status !== "failed") continue;
+    if (!notifyTerminal) {
+      notifiedTerminals.add(op.uuid);
+      continue;
+    }
+    if (notifiedTerminals.has(op.uuid)) continue;
+    notifiedTerminals.add(op.uuid);
+    if (op.status === "succeeded") {
+      message(op.result?.message || op.message || "插件任务已完成", {
+        type: "success"
+      });
+      await loadPlugins();
+      if (op.type === "update" && updates.value[op.plugin_name]) {
+        updates.value[op.plugin_name].has_update = false;
+        updates.value[op.plugin_name].latest_version =
+          op.result?.version || op.version || null;
+      }
+    } else {
+      message(op.error || op.message || "插件任务失败", { type: "error" });
+    }
+  }
+  if (activeOperations.value.length === 0) {
+    stopPolling();
+  }
+};
+
+const startPolling = () => {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => {
+    loadOperations(true).catch(() => {
+      // 状态轮询失败时不打断页面操作；下一轮继续尝试。
+    });
+  }, 2000);
+};
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
 };
 
@@ -99,21 +190,31 @@ const handleInstall = async () => {
         return;
       }
       const { data } = await installPluginFromFile(uploadFile.value);
-      message(data.message, { type: "success" });
+      operations.value.unshift(data.operation);
+      message(data.operation.message || "插件安装任务已创建", {
+        type: "success"
+      });
     } else {
       if (!installForm.value.name) {
         message("请输入插件名称", { type: "warning" });
+        return;
+      }
+      if (hasActiveOperation(installForm.value.name)) {
+        message("该插件已有安装或更新任务正在执行", { type: "warning" });
         return;
       }
       const { data } = await installPlugin({
         name: installForm.value.name,
         release_url: installForm.value.release_url || undefined
       });
-      message(data.message, { type: "success" });
+      operations.value.unshift(data.operation);
+      message(data.operation.message || "插件安装任务已创建", {
+        type: "success"
+      });
     }
     installDialogVisible.value = false;
     resetInstallForm();
-    await loadPlugins();
+    startPolling();
   } finally {
     installLoading.value = false;
   }
@@ -121,16 +222,18 @@ const handleInstall = async () => {
 
 // 更新插件
 const handleUpdate = async (name: string) => {
+  if (hasActiveOperation(name)) {
+    message("该插件已有安装或更新任务正在执行", { type: "warning" });
+    return;
+  }
   operating.value = name;
   try {
     const { data } = await updatePlugin(name);
-    message(data.message, { type: "success" });
-    await loadPlugins();
-    // 清除更新状态
-    if (updates.value[name]) {
-      updates.value[name].has_update = false;
-      updates.value[name].latest_version = data.version || null;
-    }
+    operations.value.unshift(data.operation);
+    message(data.operation.message || "插件更新任务已创建", {
+      type: "success"
+    });
+    startPolling();
   } finally {
     operating.value = null;
   }
@@ -138,6 +241,12 @@ const handleUpdate = async (name: string) => {
 
 // 打开卸载弹窗
 const openUninstallDialog = (name: string) => {
+  if (hasActiveOperation(name)) {
+    message("该插件已有安装或更新任务正在执行，暂不能卸载", {
+      type: "warning"
+    });
+    return;
+  }
   uninstallTarget.value = name;
   removeData.value = false;
   uninstallDialogVisible.value = true;
@@ -159,6 +268,18 @@ const handleUninstall = async () => {
   }
 };
 
+const handleFailStale = async (op: PluginOperation) => {
+  const { data } = await failStalePluginOperation(op.uuid);
+  const index = operations.value.findIndex(item => item.uuid === op.uuid);
+  if (index >= 0) {
+    operations.value.splice(index, 1, data.operation);
+  }
+  if (activeOperations.value.length === 0) {
+    stopPolling();
+  }
+  message(data.operation.message || "插件任务已标记失败", { type: "warning" });
+};
+
 // 重置安装表单
 const resetInstallForm = () => {
   installForm.value = { name: "", release_url: "" };
@@ -178,6 +299,15 @@ const handleFileRemove = () => {
 
 onMounted(() => {
   loadPlugins();
+  loadOperations(false).then(() => {
+    if (activeOperations.value.length > 0) {
+      startPolling();
+    }
+  });
+});
+
+onBeforeUnmount(() => {
+  stopPolling();
 });
 </script>
 
@@ -193,6 +323,47 @@ onMounted(() => {
           </el-button>
           <el-button type="primary" @click="installDialogVisible = true">
             安装插件
+          </el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <el-card v-if="operations.length" class="mb-4">
+      <div class="space-y-3">
+        <div
+          v-for="op in operations"
+          :key="op.uuid"
+          class="flex items-center justify-between gap-4 border-b last:border-b-0 pb-3 last:pb-0"
+        >
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="font-medium">{{ op.plugin_name }}</span>
+              <el-tag size="small">{{ operationLabel(op) }}</el-tag>
+              <el-tag size="small" :type="operationStatusType(op.status)">
+                {{ op.status }}
+              </el-tag>
+              <el-tag v-if="op.is_stale" size="small" type="danger">
+                超时
+              </el-tag>
+            </div>
+            <div class="text-sm text-gray-500 truncate">
+              {{ op.message || op.error || op.stage }}
+            </div>
+            <div class="text-xs text-gray-400 mt-1">
+              {{ op.updated_at || op.created_at }}
+            </div>
+          </div>
+          <el-button
+            v-if="
+              (op.status === 'queued' || op.status === 'running') &&
+              op.is_stale
+            "
+            size="small"
+            type="danger"
+            plain
+            @click="handleFailStale(op)"
+          >
+            标记失败
           </el-button>
         </div>
       </div>
@@ -220,6 +391,13 @@ onMounted(() => {
               >
                 检查更新失败
               </el-tag>
+              <el-tag
+                v-if="getActiveOperation(plugin.name)"
+                type="warning"
+                size="small"
+              >
+                {{ getActiveOperation(plugin.name)?.message || "任务执行中" }}
+              </el-tag>
             </div>
             <div v-if="plugin.description" class="text-gray-500 text-sm mb-2">
               {{ plugin.description }}
@@ -239,7 +417,11 @@ onMounted(() => {
               v-if="getUpdate(plugin.name)?.has_update"
               type="success"
               size="small"
-              :loading="operating === plugin.name"
+              :loading="
+                operating === plugin.name ||
+                getActiveOperation(plugin.name)?.status === 'running'
+              "
+              :disabled="hasActiveOperation(plugin.name)"
               @click="handleUpdate(plugin.name)"
             >
               更新
@@ -248,6 +430,7 @@ onMounted(() => {
               type="danger"
               size="small"
               plain
+              :disabled="hasActiveOperation(plugin.name)"
               @click="openUninstallDialog(plugin.name)"
             >
               卸载

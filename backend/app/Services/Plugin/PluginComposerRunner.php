@@ -8,6 +8,8 @@ use App\Services\Composer\ComposerMirror;
 use App\Services\Upgrade\UpgradePreflight;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Process;
 
 /**
  * 插件运行时 composer 安装器。
@@ -74,11 +76,12 @@ class PluginComposerRunner
      *
      * @throws RuntimeException preflight 不通过 / composer 不可用 / install 失败
      */
-    public function install(string $pluginDir, string $name): void
+    public function install(string $pluginDir, string $name, ?callable $reporter = null): void
     {
         $backendDir = "$pluginDir/backend";
 
         // ① 失败前置探测：composer phar / CLI proc_open 任一不可用 → 明确文案，不静默
+        $this->report($reporter, 'composer_preflight', '正在检查 Composer 环境...');
         $this->assertComposerUsable($name);
 
         try {
@@ -92,6 +95,7 @@ class PluginComposerRunner
         }
 
         // ② 自动检测并切换镜像（GitHub 不可达时切阿里云）
+        $this->report($reporter, 'composer_mirror', '正在检查 Composer 镜像...');
         $mirrorConfigured = $this->configureComposerMirror($backendDir, $composerCmd);
 
         // ③ 安装依赖（命令全字面量 + 已 escape 的路径，无用户输入插值）
@@ -102,15 +106,24 @@ class PluginComposerRunner
         );
 
         Log::info("[Plugin] composer install 开始: $name");
-        [$exitCode, $output] = $this->runShell($command);
-
-        // ④ 恢复镜像配置（无论成败都还原，避免污染插件 composer 配置）
-        if ($mirrorConfigured) {
-            $this->resetComposerMirror($backendDir, $composerCmd);
+        $this->report($reporter, 'composer_install', '正在安装 Composer 依赖...');
+        try {
+            [$exitCode, $output] = $this->runShell($command);
+        } finally {
+            // ④ 恢复镜像配置（无论成败都还原，避免污染插件 composer 配置）
+            if ($mirrorConfigured) {
+                try {
+                    $this->resetComposerMirror($backendDir, $composerCmd);
+                } catch (\Throwable $e) {
+                    Log::warning('[Plugin] 还原 composer 镜像失败', [
+                        'error' => PluginOutputSanitizer::sanitize($e->getMessage(), 1000),
+                    ]);
+                }
+            }
         }
 
         if ($exitCode !== 0) {
-            Log::error("[Plugin] composer install 失败: $name (exit=$exitCode)", ['output' => $output]);
+            Log::error("[Plugin] composer install 失败: $name (exit=$exitCode)", ['output' => $this->sanitizeOutput($output)]);
             throw new RuntimeException(
                 "插件 {$name} 依赖安装失败（composer install 退出码 {$exitCode}）。".
                 '请检查服务器网络连通性与 composer 可用性，详见后端日志。'
@@ -118,6 +131,7 @@ class PluginComposerRunner
         }
 
         Log::info("[Plugin] composer install 完成: $name");
+        $this->report($reporter, 'composer_done', 'Composer 依赖安装完成');
     }
 
     /**
@@ -157,11 +171,18 @@ class PluginComposerRunner
      */
     protected function runShell(string $command): array
     {
-        $output = [];
-        $exitCode = 0;
-        exec($command, $output, $exitCode);
+        $process = Process::fromShellCommandline($command);
+        $process->setTimeout((float) config('plugin.composer.timeout', 210));
 
-        return [$exitCode, implode("\n", $output)];
+        try {
+            $process->run();
+        } catch (ProcessTimedOutException $e) {
+            $process->stop(1, 9);
+
+            throw new RuntimeException('composer install 超时，请检查服务器网络或调整 PLUGIN_COMPOSER_TIMEOUT');
+        }
+
+        return [$process->getExitCode() ?? 1, trim($process->getOutput()."\n".$process->getErrorOutput())];
     }
 
     /**
@@ -223,5 +244,26 @@ class PluginComposerRunner
     protected function checkNetworkAccess(string $url, int $timeout = 3): bool
     {
         return $this->mirror->networkReachable($url, $timeout);
+    }
+
+    private function report(?callable $reporter, string $stage, string $message): void
+    {
+        if ($reporter === null) {
+            return;
+        }
+
+        try {
+            $reporter($stage, $message);
+        } catch (\Throwable $e) {
+            Log::warning('[Plugin] composer reporter 失败', [
+                'stage' => $stage,
+                'error' => PluginOutputSanitizer::sanitize($e->getMessage(), 1000),
+            ]);
+        }
+    }
+
+    private function sanitizeOutput(string $output): string
+    {
+        return PluginOutputSanitizer::sanitize($output);
     }
 }
