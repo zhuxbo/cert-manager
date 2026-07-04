@@ -1,0 +1,7 @@
+# 插件前端独立 workspace 根：让 pnpm 把本目录当独立项目（隔离根 monorepo，
+# 否则在此跑 `pnpm install` 会被根 workspace 劫持，插件依赖不进本地 node_modules）。
+# allowBuilds 显式放行 esbuild/vue-demi 的 build 脚本（pnpm 11 默认禁止，否则 ERR_PNPM_IGNORED_BUILDS）。
+# 入库原因：本插件靠「文件存在」定义独立根（不用 --ignore-workspace），是活文件，须随仓库与发布包。
+allowBuilds:
+  esbuild: true
+  vue-demi: true

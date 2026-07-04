@@ -1,0 +1,105 @@
+# cloud-deploy 插件独立 PHPStan 配置
+#
+# 复用主系统 backend 的 phpstan + larastan + autoloader（解析 App\* 与 Laravel）。
+# 下方 includes 的 `../../../backend/...` 相对路径以「plugins 与 backend 同级」为前提——
+# 在 host / CI 上成立（仓库根下 plugins、backend 平级），CI 里从 backend/ 工作目录直接跑即可：
+#   (CI, working-directory: backend)  vendor/bin/phpstan analyse -c ../plugins/cloud-deploy/backend/phpstan.neon --memory-limit=2G
+#
+# ⚠️ 本地 dev 容器是双挂载（backend→/var/www，plugins→/var/plugins，二者非同级），
+#    故 `../../../backend` 在容器内指不到真实 backend。本地验证前先建一次性符号链接补足同级关系：
+#   docker compose exec -T app sh -c 'ln -sfn /var/www /var/backend'
+#   docker compose exec -T app vendor/bin/phpstan analyse -c /var/plugins/cloud-deploy/backend/phpstan.neon --memory-limit=2G
+#
+# 设计：
+#   - 仅分析「插件自身代码」（Deployers/Services/Jobs/Controllers/Models/Requests/Support）。
+#   - 插件独立 vendor 里的官方云 SDK（阿里/腾讯）是生成代码，不纳入分析；仅 scanDirectories 供类型解析。
+#     其响应模型的乐观类型 / makeClient 注入缝的 fail-fast match / 查询别名等误报，
+#     通过 treatPhpDocTypesAsCertain + 精确 scoped ignoreErrors 消除，绝不改业务代码迎合。
+#   - level 5 与主系统对齐；0 error 边界限定插件自身代码（不奢望覆盖 SDK 类型）。
+
+includes:
+    - ../../../backend/vendor/larastan/larastan/extension.neon
+
+parameters:
+    phpVersion: 80300
+    level: 5
+
+    # 官方云 SDK 的响应模型 PHPDoc 是「乐观类型」（把可能缺省的 API 字段标成 always-set，
+    # 如 UploadUserCertificateResponseBody::certId 标 int 但接口可不返回）。插件对这些字段做的
+    # 防御性判空（?->、is_int/!== '' 等）才是正确的 fail-safe，绝不能为消 error 删掉。
+    # 关闭「PHPDoc 类型即确定真值」即消除这一整类误报（alreadyNarrowedType / always-true-false /
+    # nullsafe.neverNull / nullCoalesce.expr 等），且不改任何业务代码。
+    treatPhpDocTypesAsCertain: false
+
+    # 仅分析插件自身源码目录（相对本配置文件所在 backend/ 目录）
+    paths:
+        - Commands
+        - Controllers
+        - Deployers
+        - Jobs
+        - Models
+        - Notifications
+        - Requests
+        - Services
+        - Support
+        - CloudDeployServiceProvider.php
+
+    # 插件 PSR-4：Plugins\CloudDeploy\ => backend/。phpstan 不跑 PluginServiceProvider 的
+    # 运行时 spl_autoload_register，故把插件 backend 根 + SDK vendor 纳入 scanDirectories，
+    # phpstan 会发现并自动加载其中的类供类型解析（scan 目录默认不分析，只有 paths 被分析）。
+    scanDirectories:
+        - .
+        - vendor
+
+    # 排除 vendor（双保险：即便被 scan 牵入也不分析；analyseAndScan 连扫描带分析都排掉测试夹具）
+    excludePaths:
+        analyse:
+            - vendor/*
+
+    ignoreErrors:
+        # 主系统 classConstant phpDoc 类型（与主系统 phpstan.neon 一致）
+        - identifier: classConstant.phpDocType
+          reportUnmatched: false
+
+        # 注：官方云 SDK 的 API 方法（如腾讯 CdnClient::UpdateDomainConfig）虽走 AbstractClient::__call
+        # 动态分发，但 SDK 客户端类已自带对应方法声明/PHPDoc，phpstan 能解析，无需 method.notFound 放行。
+
+        # SDK 响应模型的属性是 native 类型声明（非 PHPDoc，treatPhpDocTypesAsCertain 管不到），
+        # 把可缺省的 API 字段声明为 non-null。插件统一用 `$resp->body?->field` 防御接口空响应——
+        # 这是正确的 fail-safe，绝不改成 `->`（运行时 body/字段为 null 会致命）。仅在 Deployers 内、
+        # 且报错落在 SDK 命名空间类型上时放行。
+        - identifier: nullsafe.neverNull
+          paths:
+            - Deployers/*
+          message: '#nullsafe property access on non-nullable type (AlibabaCloud|TencentCloud)\\.*#'
+        # VodDeployer:78 等：`$resp->body?->name ?? ''` 中 `?->` 被判「不必要」（同上乐观类型成因）
+        - identifier: nullsafe.neverNull
+          paths:
+            - Deployers/*
+          message: '#nullsafe property access "[^"]+" on left side of \?\? is unnecessary#'
+
+        # CasUploader:75 等：SDK 把 certId 乐观标为 int，使插件的 is_int/is_string/!== ''
+        # 防御判空被判「恒真/已收窄」。删掉这些判空 = 让 (int) null=0 流向 API，是真 bug。仅此文件放行。
+        - identifier: function.alreadyNarrowedType
+          path: Deployers/Aliyun/AliyunCasUploader.php
+        - identifier: notIdentical.alwaysTrue
+          path: Deployers/Aliyun/AliyunCasUploader.php
+
+        # 注入缝 makeClient(string $kind) 的 match 无 default：抽象签名按契约只能是 string（PHP 不允许
+        # 重写时收窄参数），实际调用点全传内部字面量 kind；未知 kind 触发 UnhandledMatchError 正是
+        # 期望的 fail-fast（正确代码永不触达）。属设计而非缺陷，仅在 Deployers 内放行。
+        - identifier: match.unhandled
+          paths:
+            - Deployers/*
+
+        # CloudChainBackfillJob:37：`->select(['... as target_id', '... as cert_id'])` 的查询别名，
+        # 运行时是合法的 aliased 列，但 phpstan 按 CloudDeployTarget 模型类型判属性未定义。
+        # 这是查询专属别名（非模型列），不应污染模型 @property，仅此文件按属性名放行。
+        - identifier: property.notFound
+          path: Jobs/CloudChainBackfillJob.php
+          message: '#Access to an undefined property .*CloudDeployTarget::\$(target_id|cert_id)\.#'
+
+        # CloudDeployReconcileCommand sweep 查询别名（同 CloudChainBackfillJob，aliased 列非模型属性）
+        - identifier: property.notFound
+          path: Commands/CloudDeployReconcileCommand.php
+          message: '#Access to an undefined property .*CloudDeployTarget::\$(target_id|cert_id)\.#'

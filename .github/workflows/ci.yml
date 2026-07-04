@@ -346,6 +346,116 @@ jobs:
         working-directory: backend
         run: php artisan test ../plugins/invoice/backend/tests
 
+  backend-cloud-deploy-plugin-test:
+    name: Backend Cloud-Deploy Plugin Tests (mysql ${{ matrix.mysql }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mysql: '5.7', collation: 'utf8mb4_unicode_520_ci' }
+          - { mysql: '8.4', collation: 'utf8mb4_0900_ai_ci' }
+
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: ssl_manager_test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
+          coverage: none
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get Composer Cache Directory
+        id: composer-cache
+        working-directory: backend
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      # 主系统依赖（Laravel + larastan）。插件 vendor 单独在下方 install（不入库，运行时安装）。
+      - name: Install Composer dependencies
+        working-directory: backend
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Copy .env (mysql)
+        working-directory: backend
+        run: |
+          cp .env.example .env
+          sed -i 's/DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+          sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+          sed -i 's/DB_PORT=.*/DB_PORT=3306/' .env
+          sed -i 's/DB_DATABASE=.*/DB_DATABASE=ssl_manager_test/' .env
+          sed -i 's/DB_USERNAME=.*/DB_USERNAME=root/' .env
+          sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=password/' .env
+          sed -i 's/REDIS_HOST=.*/REDIS_HOST=127.0.0.1/' .env
+          sed -i 's/DB_COLLATION=.*/DB_COLLATION=${{ matrix.collation }}/' .env
+
+      - name: Generate keys
+        working-directory: backend
+        run: |
+          php artisan key:generate
+          php artisan jwt:secret --force
+
+      # 跑迁移校验插件 schema（PluginServiceProvider 运行时扫描 plugins/，加载插件迁移）
+      - name: Run migrations (validate plugin schema on mysql)
+        working-directory: backend
+        run: php artisan migrate --force
+
+      - name: Verify cloud_deploy tables created
+        working-directory: backend
+        run: |
+          php artisan tinker --execute="foreach (['cloud_deploy_accesses','cloud_deploy_targets','cloud_deploy_remote_certs','cloud_deploy_logs'] as \$t) { if (! \Illuminate\Support\Facades\Schema::hasTable(\$t)) { fwrite(STDERR, \$t.' table not created'); exit(1); } } echo 'cloud-deploy schema OK';"
+
+      # 插件 vendor 不入库：安装插件自身 composer 依赖（阿里/腾讯官方 SDK），供 deployer 测试加载。
+      # 独立缓存键按插件 composer.lock 哈希（与主系统 composer 缓存分离，避免互相失效）。
+      - name: Cache Cloud-Deploy plugin Composer dependencies
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-cloud-deploy-${{ hashFiles('plugins/cloud-deploy/backend/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-cloud-deploy-
+
+      - name: Install Cloud-Deploy plugin Composer dependencies
+        working-directory: plugins/cloud-deploy/backend
+        run: composer install --prefer-dist --no-progress --no-interaction --optimize-autoloader
+
+      - name: Run Cloud-Deploy plugin tests
+        working-directory: backend
+        run: php artisan test ../plugins/cloud-deploy/backend/tests
+
+      # 可选：插件静态分析（level 5，0 error 边界限定插件自身代码；SDK vendor 仅供类型解析不分析）。
+      # 复用主系统 backend 的 phpstan + larastan；配置在 plugins/cloud-deploy/backend/phpstan.neon。
+      # CI 上 plugins 与 backend 同级，配置内 `../../../backend/vendor/larastan` 相对路径成立。
+      # 若想纳入门禁，取消注释即可（vendor SDK 较大，建议给足 --memory-limit）。
+      # - name: Run Cloud-Deploy plugin PHPStan
+      #   working-directory: backend
+      #   run: vendor/bin/phpstan analyse -c ../plugins/cloud-deploy/backend/phpstan.neon --no-progress --memory-limit=2G
+
   # API 兼容性快照对照
   # - push to main / release tag 时触发（PR 不阻断，避免功能开发卡住）
   # - 跑前已有 fixture 进 git，直接 compare；如缺 fixture 由维护者手工 capture 并 commit

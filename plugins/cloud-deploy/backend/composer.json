@@ -1,0 +1,52 @@
+{
+    "name": "ssl-manager/cloud-deploy-plugin",
+    "description": "Cloud deploy plugin isolated vendor for official cloud SDKs (Aliyun/Tencent/AWS/Qiniu/Baidu). Loaded at SPL stack tail to coexist with the host; shared deps that conflict across major versions with the host (psr/log, guzzle/guzzle 3.x, symfony/event-dispatcher 2.x — all dragged in by the legacy baidubce SDK) are kept out of the plugin vendor via `replace`, falling back to the host versions at runtime.",
+    "type": "library",
+    "require": {
+        "php": "^8.3",
+        "alibabacloud/alb-20200616": "^1.3",
+        "alibabacloud/apig-20240327": "^7.0",
+        "alibabacloud/cas-20200407": "^3.5",
+        "alibabacloud/cdn-20180510": "^9.0",
+        "alibabacloud/dcdn-20180115": "^3.1",
+        "alibabacloud/ddoscoo-20200101": "^4.0",
+        "alibabacloud/esa-20240910": "^3.0",
+        "alibabacloud/fc-20230330": "^4.7",
+        "alibabacloud/ga-20191120": "^3.0",
+        "alibabacloud/live-20161101": "^3.0",
+        "alibabacloud/nlb-20220430": "^4.1",
+        "alibabacloud/oss-v2": "^0.4.0",
+        "alibabacloud/slb-20140515": "^2.0",
+        "alibabacloud/vod-20170321": "^3.10",
+        "alibabacloud/waf-openapi-20211001": "^7.8",
+        "aws/aws-sdk-php": "^3.0",
+        "baidubce/bce-sdk-php": "^0.8.22",
+        "qiniu/php-sdk": "^7.14",
+        "tencentcloud/cdn": "^3.0",
+        "tencentcloud/clb": "^3.0",
+        "tencentcloud/common": "^3.0",
+        "tencentcloud/gaap": "3.0.1291",
+        "tencentcloud/live": "^3.0",
+        "tencentcloud/scf": "^3.0",
+        "tencentcloud/ssl": "^3.0",
+        "tencentcloud/teo": "^3.0",
+        "tencentcloud/tse": "^3.0",
+        "tencentcloud/vod": "^3.0",
+        "tencentcloud/waf": "^3.0"
+    },
+    "replace": {
+        "psr/log": "*",
+        "guzzle/guzzle": "*",
+        "symfony/event-dispatcher": "*"
+    },
+    "config": {
+        "allow-plugins": false,
+        "sort-packages": true,
+        "policy": {
+            "advisories": {
+                "block": false,
+                "ignore-id": ["PKSA-4t1p-xpk2-nsss", "PKSA-dxyf-6n16-t87m", "PKSA-mnyp-475s-ywph"]
+            }
+        }
+    }
+}

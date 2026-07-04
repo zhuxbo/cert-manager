@@ -1,0 +1,9 @@
+{
+  "name": "cloud-deploy",
+  "requires": ">=0.6.3",
+  "description": "证书自动推送到云平台",
+  "provider": "CloudDeployServiceProvider",
+  "php_ext": [],
+  "user_bundle": "frontend/user/cloud-deploy-plugin.iife.js",
+  "admin_bundle": "frontend/admin/cloud-deploy-plugin.iife.js"
+}

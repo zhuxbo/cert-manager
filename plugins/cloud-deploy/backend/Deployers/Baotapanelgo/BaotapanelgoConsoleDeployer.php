@@ -1,0 +1,65 @@
+<?php
+
+namespace Plugins\CloudDeploy\Deployers\Baotapanelgo;
+
+use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Throwable;
+
+/**
+ * 宝塔面板（Windows Go 版）控制台 SSL（内联型）。
+ *
+ * 对齐 certimate baotapanelgo-console：设置宝塔（Windows）面板自身的 HTTPS 证书。
+ * - config.SetPanelSSL（表单 ssl_status=1 / ssl_key / ssl_pem）。
+ *
+ * 内联型（usesRemoteCertStore=false）：bind 收 {cert,key,chain}，证书用完整链（叶子 + 中间）。
+ * provider key 'baotapanelgo'、product key 'console'。
+ * config：无（面板 SSL 设置无额外参数）。
+ */
+class BaotapanelgoConsoleDeployer extends AbstractDeployer
+{
+    use BuildsBaotapanelgoClient;
+
+    public function provider(): string
+    {
+        return 'baotapanelgo';
+    }
+
+    public function product(): string
+    {
+        return 'console';
+    }
+
+    public function label(): string
+    {
+        return '宝塔面板（Windows）';
+    }
+
+    public function configSchema(): array
+    {
+        return [];
+    }
+
+    /**
+     * @param  array{cert:string,key:string,chain:string}|string  $certRef  内联 PEM 三元组
+     * @param  array{server_url:string,api_key:string,allow_insecure?:mixed}  $credentials
+     * @param  array<string,mixed>  $config
+     */
+    public function bind(string|array $certRef, array $credentials, array $config): void
+    {
+        $serverCertPEM = trim($certRef['cert']);
+        $intermediaPEM = trim($certRef['chain']);
+        $fullChainPEM = $intermediaPEM === '' ? $serverCertPEM : ($serverCertPEM."\n".$intermediaPEM);
+
+        $this->guardSdk(function () use ($credentials, $certRef, $fullChainPEM) {
+            /** @var BaotapanelgoClient $client */
+            $client = $this->makeClient('api', $credentials);
+
+            $client->configSetPanelSSL(1, $fullChainPEM, $certRef['key']);
+        });
+    }
+
+    protected function sanitize(Throwable $e): string
+    {
+        return BaotapanelgoErrorSanitizer::sanitize($e);
+    }
+}

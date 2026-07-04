@@ -1,0 +1,13 @@
+{
+  "name": "cloud-deploy",
+  "include": [
+    "plugin.json",
+    "backend/"
+  ],
+  "exclude": [
+    ".gitignore",
+    "backend/tests/",
+    "backend/phpstan.neon",
+    "backend/vendor/"
+  ]
+}
