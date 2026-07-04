@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Services\Order\Api\default;
 
-use App\Bootstrap\ApiExceptions;
 use App\Models\CaLog;
 use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
@@ -153,18 +152,16 @@ class Sdk
                 $options['form_params'] = $data;
             }
             $response = $client->request($method, $url, $options);
-        } catch (ConnectException $e) {
-            // 连接失败 / 超时（含 cURL 28）：原文（含内部地址）仅进 error_logs 供排障，对外只给通用文案
-            app(ApiExceptions::class)->logException($e);
+        } catch (ConnectException) {
+            // 连接失败 / 超时（含 cURL 28）：写 ca_logs 供排障，对外只给通用文案，避免再刷 error_logs。
             $result = ['code' => 0, 'msg' => '上游连接超时，请稍后重试'];
             // 超时也记一条 ca_logs（status_code=0）——超时正是「耗时」最有诊断价值的场景，
             // 否则上游变慢/挂起在 ca_logs 里完全不可见（duration≈timeout 秒）
             $this->logCall($apiUrl, $uri, $data, $result, 0, $startTime);
 
             return $result;
-        } catch (GuzzleException $e) {
-            // 其余 Guzzle 异常：同上，原文入 error_logs，对外通用文案（不泄露内部 URL）
-            app(ApiExceptions::class)->logException($e);
+        } catch (GuzzleException) {
+            // 其余 Guzzle 异常同样进入 ca_logs，避免同一次上游失败在 error_logs 重复出现。
             $result = ['code' => 0, 'msg' => '上游请求失败，请稍后重试'];
             $this->logCall($apiUrl, $uri, $data, $result, 0, $startTime);
 

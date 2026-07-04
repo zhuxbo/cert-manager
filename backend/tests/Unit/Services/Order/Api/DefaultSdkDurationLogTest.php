@@ -1,7 +1,7 @@
 <?php
 
-use App\Bootstrap\ApiExceptions;
 use App\Models\CaLog;
+use App\Models\ErrorLog;
 use App\Services\LogBuffer;
 use App\Services\Order\Api\default\Sdk;
 use GuzzleHttp\Client;
@@ -69,16 +69,9 @@ test('完成的上游请求：ca_logs 记录非零 duration（不再恒为 0）'
         ->and((float) $log->duration)->toBeGreaterThan(0);
 });
 
-test('上游超时/连接失败：也写一条 ca_logs（status=0、含 duration、response 脱敏不含内部地址）', function () {
-    // 隔离 error_logs：ApiExceptions::logException 置为 no-op，专注断言 ca_logs
-    app()->instance(ApiExceptions::class, new class extends ApiExceptions
-    {
-        public function __construct() {}
-
-        public function logException(Throwable $e): void {}
-    });
-
+test('上游超时/连接失败：只写 ca_logs，不重复写 error_logs', function () {
     $before = CaLog::query()->count();
+    $beforeErrors = ErrorLog::query()->count();
 
     $e = new ConnectException(
         'cURL error 28: Operation timed out (see https://internal.example.test/api/v2/new)',
@@ -91,6 +84,7 @@ test('上游超时/连接失败：也写一条 ca_logs（status=0、含 duration
     expect($result['code'])->toBe(0);
     // 此前超时完全不写 ca_logs；修复后必 +1，且带 duration
     expect(CaLog::query()->count())->toBe($before + 1);
+    expect(ErrorLog::query()->count())->toBe($beforeErrors);
 
     $log = CaLog::query()->latest('id')->first();
     expect($log->api)->toBe('new')

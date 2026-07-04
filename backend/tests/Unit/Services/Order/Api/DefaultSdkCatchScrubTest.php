@@ -19,11 +19,11 @@ uses(TestCase::class);
 // 背景：2026-06-30 生产事故 —— manager 调上游超时（cURL error 28），Guzzle 原文（含内部地址
 // https://upstream.test/...）被 catch 分支原样 `'Request failed: '.$e->getMessage()` 返回，
 // 经 Api→ApiResponseException（status=200）→ ApiExceptions 第一分支绕过脱敏 match → 以 HTTP200 泄露
-// 给下游客户端，暴露内部架构。修复：catch 按异常子类返通用文案，原文只进 error_logs 供排障。
+// 给下游客户端，暴露内部架构。修复：catch 按异常子类返通用文案，由 ca_logs 记录失败请求。
 //
 // Order Sdk 用 Guzzle（非 Laravel Http facade），Http::fake 拦不到；故经 makeClient() 注入缝注入
 // 抛异常的 MockHandler，断言 call() 返回的 msg 已脱敏、不含 URL / http / 上游内部地址；并用 ApiExceptions
-// spy 断言原始异常（含内部 URL）仍被 logException 记录。配置走 setting 缓存注入（array driver），
+// spy 断言这类已进入 ca_logs 的失败不再重复写 error_logs。配置走 setting 缓存注入（array driver），
 // 不碰 DB，无需 RefreshDatabase。
 
 /**
@@ -93,10 +93,10 @@ test('ConnectException（含 cURL 28 内部 URL）→ 通用超时文案，不�
         ->and($result['msg'])->not->toContain(LEAK_HOST)
         ->and($result['msg'])->not->toContain('http');
 
-    // 原文（含内部 URL）仍进 error_logs 供排障
-    expect($ref['captured']['count'])->toBe(1)
-        ->and($ref['captured']['exception'])->toBe($e)
-        ->and($ref['captured']['exception']->getMessage())->toContain(LEAK_HOST);
+    // 已由 ca_logs 记录失败请求，不再重复进入 error_logs。
+    expect($ref['captured']['count'])->toBe(0)
+        ->and($ref['captured']['exception'])->toBeNull()
+        ->and(LogBuffer::count())->toBe(1);
 });
 
 test('普通 GuzzleException（RequestException）→ 通用请求失败文案，不泄露 URL', function () {
@@ -116,10 +116,10 @@ test('普通 GuzzleException（RequestException）→ 通用请求失败文案�
         ->and($result['msg'])->not->toContain(LEAK_HOST)
         ->and($result['msg'])->not->toContain('http');
 
-    // 原文仍被记录
-    expect($ref['captured']['count'])->toBe(1)
-        ->and($ref['captured']['exception'])->toBe($e)
-        ->and($ref['captured']['exception']->getMessage())->toContain(LEAK_HOST);
+    // 已由 ca_logs 记录失败请求，不再重复进入 error_logs。
+    expect($ref['captured']['count'])->toBe(0)
+        ->and($ref['captured']['exception'])->toBeNull()
+        ->and(LogBuffer::count())->toBe(1);
 });
 
 // 边界：ConnectException 继承 RequestException（后者继承 GuzzleException），
