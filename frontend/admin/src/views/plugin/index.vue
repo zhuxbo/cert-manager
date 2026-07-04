@@ -355,8 +355,7 @@ onBeforeUnmount(() => {
           </div>
           <el-button
             v-if="
-              (op.status === 'queued' || op.status === 'running') &&
-              op.is_stale
+              (op.status === 'queued' || op.status === 'running') && op.is_stale
             "
             size="small"
             type="danger"

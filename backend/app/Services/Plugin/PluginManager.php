@@ -262,6 +262,7 @@ class PluginManager
         $extractDir = $this->extractPlugin($zipPath);
         $applied = false;
         $pluginDir = null;
+        $name = null;
         $migrationRecordsBefore = [];
         $migrationAttempted = false;
 
@@ -324,7 +325,7 @@ class PluginManager
             return $result;
         } catch (\Throwable $e) {
             $migrationsClean = true;
-            if ($migrationAttempted && $name) {
+            if ($migrationAttempted && is_string($name) && $name !== '') {
                 $migrationsClean = $this->rollbackNewPluginMigrations($name, $migrationRecordsBefore);
             }
 
@@ -332,7 +333,7 @@ class PluginManager
             // 不误删"已安装"校验命中的既有插件），避免死锁循环
             if ($migrationsClean && $applied && $pluginDir && is_dir($pluginDir)) {
                 File::deleteDirectory($pluginDir);
-            } elseif (! $migrationsClean && $pluginDir) {
+            } elseif (! $migrationsClean && is_string($name) && $name !== '' && $pluginDir) {
                 $recoveryDir = $this->quarantinePluginDirectory($name, $pluginDir);
                 Log::error("[Plugin] 迁移回滚失败，已隔离半装目录供人工恢复: $name", [
                     'recovery_dir' => $recoveryDir,
@@ -1292,7 +1293,11 @@ class PluginManager
             throw new RuntimeException("{$context}失败：未找到可执行的 PHP CLI：{$e->getMessage()}");
         }
 
-        $process = new Process(array_merge([$php, base_path('artisan')], $arguments), base_path());
+        $process = new Process(
+            array_merge([$php, base_path('artisan')], $arguments),
+            base_path(),
+            ['LARAVEL_STORAGE_PATH' => storage_path()],
+        );
         $process->setTimeout((float) config('plugin.operations.artisan_timeout', 15));
 
         try {
