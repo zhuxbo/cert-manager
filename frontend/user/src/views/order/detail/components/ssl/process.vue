@@ -76,9 +76,9 @@
               <Deploy />
             </div>
             <!-- 块3 仅在有 widget（cloud-deploy 插件已安装并注入插槽）时渲染，
-                 否则未装插件的实例每个订单详情会出现空标题「推送到云平台」+ 左竖条（悬空空块） -->
+                 否则未装插件的实例每个订单详情会出现空标题「云部署」+ 左竖条（悬空空块） -->
             <div v-if="sslActionWidgets.length" class="deploy-block">
-              <div class="deploy-block-title">推送到云平台</div>
+              <div class="deploy-block-title">云部署</div>
               <component
                 :is="w.component"
                 v-for="w in sslActionWidgets"

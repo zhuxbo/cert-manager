@@ -344,6 +344,8 @@ const handleRetryOperation = async (op: PluginOperation) => {
   operatingOperation.value = `${op.uuid}:retry`;
   try {
     const { data } = await retryPluginOperation(op.uuid);
+    // 重试复用同一个 operation uuid，需要清掉旧失败终态标记。
+    notifiedTerminals.delete(data.operation.uuid);
     const index = operations.value.findIndex(item => item.uuid === op.uuid);
     if (index >= 0) {
       operations.value.splice(index, 1, data.operation);

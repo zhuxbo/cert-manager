@@ -149,7 +149,7 @@ async function fetchOptionByValue(value: any) {
     loading.value = true;
     // 构建查询路径，支持单个ID或数组ID的情况
     let path = "";
-    let params = {};
+    let params = { ...props.queryParams };
     if (Array.isArray(value)) {
       // 过滤出尚未有选项的值
       const missingValues = value.filter(
@@ -160,11 +160,13 @@ async function fetchOptionByValue(value: any) {
       if (props.valueField === "id") {
         path = `${props.uri}/batch`;
         params = {
+          ...params,
           ids: missingValues
         };
       } else {
         path = `${props.uri}`;
         params = {
+          ...params,
           [props.valueField]: missingValues.join(",")
         };
       }
@@ -174,6 +176,7 @@ async function fetchOptionByValue(value: any) {
       } else {
         path = `${props.uri}`;
         params = {
+          ...params,
           [props.valueField]: value
         };
       }
