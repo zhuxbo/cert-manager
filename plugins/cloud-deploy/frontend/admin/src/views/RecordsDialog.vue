@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { logList } from "@/api/cloud-deploy";
+import { formatDateTime } from "@/utils/time";
 
 // 按 order_id（整单入口）或 target_id（点状态列入口）筛选本订单/本目标推送记录
 const props = defineProps<{
@@ -65,7 +66,11 @@ function onPage(p: number) {
       <el-text size="small" style="margin-left: 6px">显示重试细节</el-text>
     </div>
     <el-table v-loading="loading" :data="rows">
-      <el-table-column prop="deployed_at" label="时间" width="180" />
+      <el-table-column label="时间" width="180">
+        <template #default="{ row }">
+          {{ formatDateTime(row.deployed_at) }}
+        </template>
+      </el-table-column>
       <el-table-column label="目标">
         <template #default="{ row }"
           >{{ row.provider }}·{{ row.product }}·{{

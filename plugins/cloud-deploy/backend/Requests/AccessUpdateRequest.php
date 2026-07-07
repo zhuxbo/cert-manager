@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Requests;
 
 use App\Http\Requests\BaseRequest;
 use Illuminate\Validation\Validator;
+use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
 use Plugins\CloudDeploy\Requests\Concerns\ValidatesAgainstSchema;
 
@@ -14,8 +15,9 @@ class AccessUpdateRequest extends BaseRequest
     public function rules(): array
     {
         return [
+            'user_id' => 'sometimes|integer|min:1',
             'name' => 'sometimes|string|max:100',
-            'provider' => 'sometimes|string|max:30|in:aliyun,tencent',
+            'provider' => 'sometimes|string|max:30',
             'credentials' => 'sometimes|nullable|array',
         ];
     }
@@ -38,6 +40,12 @@ class AccessUpdateRequest extends BaseRequest
             if ($provider === null) {
                 return; // 记录不存在，交给控制器 find 报错
             }
+            if (! app(Registry::class)->hasProvider((string) $provider)) {
+                $validator->errors()->add('provider', "未注册的云平台：$provider");
+
+                return;
+            }
+
             $this->validateCredentialsSchema($validator, (string) $provider, $credentials);
         });
     }

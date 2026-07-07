@@ -14,10 +14,13 @@ use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
 use Plugins\CloudDeploy\Models\CloudDeployLog;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
+use Plugins\CloudDeploy\Requests\AccessStoreRequest;
+use Plugins\CloudDeploy\Requests\AccessUpdateRequest;
 use Plugins\CloudDeploy\Requests\DeployRequest;
 use Plugins\CloudDeploy\Requests\TargetStoreRequest;
+use Plugins\CloudDeploy\Requests\TargetUpdateRequest;
 use Plugins\CloudDeploy\Services\DeployService;
-use Plugins\CloudDeploy\Support\TenantConsistency;
+use Plugins\CloudDeploy\Services\TargetMutationService;
 
 class CloudDeployController extends BaseController
 {
@@ -58,6 +61,86 @@ class CloudDeployController extends BaseController
         }
 
         $this->respondPaginated($request, $query);
+    }
+
+    public function storeAccess(AccessStoreRequest $request): void
+    {
+        $validated = $request->validated();
+        $userId = (int) ($validated['user_id'] ?? 0);
+        if ($userId <= 0) {
+            $this->error('请选择用户');
+        }
+
+        $exists = User::withoutGlobalScopes()->whereKey($userId)->exists();
+        if (! $exists) {
+            $this->error('用户不存在');
+        }
+
+        $validated['user_id'] = $userId;
+        $access = CloudDeployAccess::create($validated);
+        if (! $access->exists) {
+            $this->error('添加失败');
+        }
+
+        $this->success();
+    }
+
+    public function showAccess(int $id): void
+    {
+        $access = CloudDeployAccess::withoutGlobalScopes()
+            ->select(['id', 'user_id', 'name', 'provider', 'created_at'])
+            ->find($id);
+        if (! $access) {
+            $this->error('凭证不存在');
+        }
+
+        $items = collect([$access]);
+        $this->attachUsernames($items);
+
+        $this->success($access->toArray());
+    }
+
+    public function updateAccess(AccessUpdateRequest $request, int $id): void
+    {
+        $access = CloudDeployAccess::withoutGlobalScopes()->find($id);
+        if (! $access) {
+            $this->error('凭证不存在');
+        }
+
+        $validated = $request->validated();
+        if (isset($validated['provider']) && $validated['provider'] !== $access->provider) {
+            $this->error('云平台不可修改');
+        }
+        if (isset($validated['user_id']) && (int) $validated['user_id'] !== (int) $access->user_id) {
+            $this->error('用户不可修改');
+        }
+
+        unset($validated['provider'], $validated['user_id']);
+        if (empty($validated['credentials'])) {
+            unset($validated['credentials']);
+        }
+
+        $access->fill($validated);
+        $access->save();
+
+        $this->success();
+    }
+
+    public function destroyAccess(int $id): void
+    {
+        $access = CloudDeployAccess::withoutGlobalScopes()->find($id);
+        if (! $access) {
+            $this->error('凭证不存在');
+        }
+
+        $inUse = CloudDeployTarget::withoutGlobalScopes()
+            ->where('access_id', $id)->exists();
+        if ($inUse) {
+            $this->error('该凭证仍被部署目标引用，请先删除相关目标');
+        }
+
+        $access->delete();
+        $this->success();
     }
 
     public function targets(Request $request): void
@@ -166,16 +249,54 @@ class CloudDeployController extends BaseController
             $this->error('订单不存在');
         }
 
-        if (! TenantConsistency::check((int) $orderUserId, (int) $validated['access_id'], (int) $validated['order_id'])) {
-            $this->error('凭证与订单不属于同一用户');
-        }
-
-        $validated['user_id'] = (int) $orderUserId;
-        $target = CloudDeployTarget::create($validated);
+        $service = app(TargetMutationService::class);
+        $validated = $service->prepareForCreate($validated, (int) $orderUserId);
+        $target = $service->create($validated);
         if (! $target->exists) {
             $this->error('添加失败');
         }
 
+        $this->success();
+    }
+
+    public function showTarget(int $id): void
+    {
+        $target = CloudDeployTarget::withoutGlobalScopes()
+            ->with('access:id,provider')
+            ->find($id);
+        if (! $target) {
+            $this->error('目标不存在');
+        }
+
+        $target->setAttribute('provider', $target->access?->provider);
+        $items = collect([$target]);
+        $this->attachUsernames($items);
+
+        $this->success($target->toArray());
+    }
+
+    public function updateTarget(TargetUpdateRequest $request, int $id): void
+    {
+        $target = CloudDeployTarget::withoutGlobalScopes()->find($id);
+        if (! $target) {
+            $this->error('目标不存在');
+        }
+
+        $service = app(TargetMutationService::class);
+        $validated = $service->prepareForUpdate($target, $request->validated(), null);
+        $service->update($target, $validated);
+
+        $this->success();
+    }
+
+    public function destroyTarget(int $id): void
+    {
+        $target = CloudDeployTarget::withoutGlobalScopes()->find($id);
+        if (! $target) {
+            $this->error('目标不存在');
+        }
+
+        $target->delete();
         $this->success();
     }
 
@@ -246,13 +367,14 @@ class CloudDeployController extends BaseController
     public function deploy(DeployRequest $request): void
     {
         $validated = $request->validated();
-        // admin 入口：crossUser=true，仅支持 target_ids 直查（withoutGlobalScopes、不加 user_id 过滤）；
+        // admin 入口：系统设置页走 target_ids 跨用户直查；订单详情页可用 order_id + user_id 收敛到单订单。
         // 默认 force=true —— 手动点推=显式重推意图，绕 CloudDeployJob 幂等短路（与 user pushAll 一致）。
         $dispatched = app(DeployService::class)->deploy(
-            null,
+            isset($validated['order_id']) ? (int) $validated['order_id'] : null,
             $validated['target_ids'] ?? [],
             (bool) ($validated['force'] ?? true),
             true,
+            isset($validated['user_id']) ? (int) $validated['user_id'] : null,
         );
 
         $this->success(['dispatched' => $dispatched]);

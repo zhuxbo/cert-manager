@@ -91,6 +91,14 @@ class AccessController extends BaseController
         }
 
         $validated = $request->validated();
+        if (isset($validated['provider']) && $validated['provider'] !== $access->provider) {
+            $this->error('云平台不可修改');
+        }
+        if (isset($validated['user_id']) && (int) $validated['user_id'] !== (int) $access->user_id) {
+            $this->error('用户不可修改');
+        }
+
+        unset($validated['provider'], $validated['user_id']);
         // 编辑留空不覆盖原凭证（反模式 17）
         if (empty($validated['credentials'])) {
             unset($validated['credentials']);

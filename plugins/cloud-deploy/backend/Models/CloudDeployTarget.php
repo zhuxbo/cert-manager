@@ -16,6 +16,7 @@ use Illuminate\Support\Carbon;
  * @property int $order_id
  * @property string $product 云产品: cdn/oss/clb/waf/...
  * @property array $config array cast（资源参数：域名/region/实例ID 等）
+ * @property string $config_hash 规范化 config 的 SHA-256，用于同一推送目标唯一约束
  * @property bool $enabled
  * @property int|null $last_cert_id 最近成功推送的证书ID（幂等键）
  * @property string|null $last_status 最近尝试结果: success/failed
@@ -33,8 +34,12 @@ class CloudDeployTarget extends BaseModel
     protected $table = 'cloud_deploy_targets';
 
     protected $fillable = [
-        'user_id', 'access_id', 'order_id', 'product', 'config',
+        'user_id', 'access_id', 'order_id', 'product', 'config', 'config_hash',
         'enabled', 'last_cert_id', 'last_status', 'last_error', 'last_deployed_at',
+    ];
+
+    protected $hidden = [
+        'config_hash',
     ];
 
     protected $casts = [
@@ -42,6 +47,42 @@ class CloudDeployTarget extends BaseModel
         'enabled' => 'boolean',
         'last_deployed_at' => 'datetime',
     ];
+
+    protected static function booted(): void
+    {
+        static::saving(function (CloudDeployTarget $target): void {
+            if ($target->isDirty('config') || ! $target->config_hash) {
+                $target->config_hash = self::configHash((array) $target->config);
+            }
+        });
+    }
+
+    /** @param array<string,mixed> $config */
+    public static function configHash(array $config): string
+    {
+        return hash('sha256', json_encode(
+            self::normalizeConfig($config),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR,
+        ));
+    }
+
+    private static function normalizeConfig(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $normalized = [];
+        foreach ($value as $key => $item) {
+            $normalized[$key] = self::normalizeConfig($item);
+        }
+
+        if (! array_is_list($normalized)) {
+            ksort($normalized);
+        }
+
+        return $normalized;
+    }
 
     public function access(): BelongsTo
     {

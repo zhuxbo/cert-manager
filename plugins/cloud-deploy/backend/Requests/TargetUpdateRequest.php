@@ -16,6 +16,7 @@ class TargetUpdateRequest extends BaseRequest
     {
         return [
             'access_id' => 'sometimes|integer',
+            'order_id' => 'sometimes|integer',
             'product' => 'sometimes|string|max:30',
             'config' => 'sometimes|array',
             'enabled' => 'sometimes|boolean',
@@ -27,12 +28,11 @@ class TargetUpdateRequest extends BaseRequest
         parent::withValidator($validator);
 
         $validator->after(function (Validator $validator) {
-            if ($validator->errors()->hasAny(['access_id', 'product', 'config'])) {
+            if ($validator->errors()->hasAny(['access_id', 'order_id', 'product', 'config'])) {
                 return;
             }
-            // 仅当本次请求改动 config 才校验 schema —— 仅切 enabled / 改名的请求放行，
-            // 存量 {domain} target 在不重提 config 时不被新 required 字段拦截（向后兼容读取/启停）。
-            if (! $this->has('config')) {
+            // 仅启停不重校验 schema；改 access/product/order/config 任一结构字段时，按最终组合校验。
+            if (! $this->hasAny(['access_id', 'order_id', 'product', 'config'])) {
                 return;
             }
 
@@ -44,12 +44,13 @@ class TargetUpdateRequest extends BaseRequest
 
             $product = (string) ($this->input('product') ?? $target->product);
             $accessId = $this->input('access_id') ?? $target->access_id;
+            $config = $this->has('config') ? (array) $this->input('config', []) : (array) $target->config;
             $provider = CloudDeployAccess::withoutGlobalScopes()->whereKey($accessId)->value('provider');
             if ($provider === null) {
                 return; // 改了 access 但不存在 → 控制器 TenantConsistency 拒绝
             }
 
-            $this->validateConfigSchema($validator, (string) $provider, $product, (array) $this->input('config', []));
+            $this->validateConfigSchema($validator, (string) $provider, $product, $config);
         });
     }
 }

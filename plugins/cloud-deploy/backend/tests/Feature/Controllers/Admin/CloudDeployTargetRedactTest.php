@@ -53,6 +53,28 @@ test('webhook target 的 secret config 键(headers/webhook_data)被打码，非 
     expect($body)->not->toContain('LEAK_ME_123');
 });
 
+test('admin target 编辑详情返回完整 config，列表仍保持脱敏', function () {
+    $target = mkRedactTarget('webhook', 'webhook', [
+        'headers' => 'Authorization: Bearer EDIT_SECRET',
+        'webhook_data' => '{"token":"EDIT_TOKEN"}',
+        'timeout' => 15,
+    ]);
+
+    $list = $this->actingAsAdmin($this->admin)
+        ->getJson('/api/admin/cloud-deploy/target')
+        ->assertOk();
+    expect(json_encode($list->json()))->not->toContain('EDIT_SECRET');
+
+    $detail = $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/cloud-deploy/target/{$target->id}")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($detail->json('data.config.headers'))->toBe('Authorization: Bearer EDIT_SECRET');
+    expect($detail->json('data.config.webhook_data'))->toBe('{"token":"EDIT_TOKEN"}');
+    expect($detail->json('data.provider'))->toBe('webhook');
+});
+
 test('有 domain 的 target（aliyun cdn）domain 保留、不打码（资源列依赖）', function () {
     mkRedactTarget('aliyun', 'cdn', ['domain' => 'cdn.shop.com']);
 

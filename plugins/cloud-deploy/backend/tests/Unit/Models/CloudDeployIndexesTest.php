@@ -1,7 +1,9 @@
 <?php
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Schema;
+use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Tests\TestCase;
 
 uses(TestCase::class, RefreshDatabase::class);
@@ -16,6 +18,25 @@ test('cloud_deploy_targets 有 product / last_status / last_deployed_at 索引',
     expect(Schema::hasIndex('cloud_deploy_targets', ['product']))->toBeTrue();
     expect(Schema::hasIndex('cloud_deploy_targets', ['last_status']))->toBeTrue();
     expect(Schema::hasIndex('cloud_deploy_targets', ['last_deployed_at']))->toBeTrue();
+    expect(Schema::hasIndex('cloud_deploy_targets', ['user_id', 'access_id', 'product', 'config_hash']))->toBeTrue();
+});
+
+test('cloud_deploy_targets 用规范化 config_hash 唯一约束兜底同一推送目标', function () {
+    CloudDeployTarget::create([
+        'user_id' => 1,
+        'access_id' => 10,
+        'order_id' => 100,
+        'product' => 'cdn',
+        'config' => ['b' => 2, 'a' => 1],
+    ]);
+
+    expect(fn () => CloudDeployTarget::create([
+        'user_id' => 1,
+        'access_id' => 10,
+        'order_id' => 101,
+        'product' => 'cdn',
+        'config' => ['a' => 1, 'b' => 2],
+    ]))->toThrow(QueryException::class);
 });
 
 test('cloud_deploy_logs 有 order_id / provider / product / created_at 索引', function () {

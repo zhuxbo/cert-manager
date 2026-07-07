@@ -47,6 +47,29 @@ test('admin 推送默认 force=true（缺省也绕幂等）', function () {
     Queue::assertPushed(CloudDeployJob::class, fn (CloudDeployJob $j) => $j->force === true);
 });
 
+test('admin 可按订单和用户一键推送该订单 enabled targets', function () {
+    Queue::fake();
+    CloudDeployTarget::create([
+        'user_id' => $this->owner->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'disabled.example.com'],
+        'enabled' => false,
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/cloud-deploy/deploy', [
+            'order_id' => $this->order->id,
+            'user_id' => $this->owner->id,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1, 'data' => ['dispatched' => 1]]);
+
+    Queue::assertPushed(CloudDeployJob::class, 1);
+    Queue::assertPushed(CloudDeployJob::class, fn (CloudDeployJob $j) => $j->targetId === $this->target->id && $j->force === true);
+});
+
 test('admin 推送 cert 非 active 的 target 时 dispatched=0、不入队', function () {
     Queue::fake();
     $order2 = Order::factory()->create(['user_id' => $this->owner->id]);

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { logList } from "@/api/cloud-deploy";
+import { formatDateTime } from "@/utils/time";
 
 const rows = ref<any[]>([]);
 const loading = ref(false);
@@ -10,14 +11,8 @@ const total = ref(0);
 const showRetries = ref(false); // 关=默认只显 is_final=true 终态(去噪)
 const q = ref<any>({
   quickSearch: "",
-  username: "",
-  order_id: "",
-  target_id: "",
   status: "",
-  provider: "",
-  product: "",
-  trigger: "",
-  keyword: ""
+  trigger: ""
 });
 
 function buildParams(): Record<string, any> {
@@ -49,14 +44,8 @@ function onSearch() {
 function onReset() {
   q.value = {
     quickSearch: "",
-    username: "",
-    order_id: "",
-    target_id: "",
     status: "",
-    provider: "",
-    product: "",
-    trigger: "",
-    keyword: ""
+    trigger: ""
   };
   onSearch();
 }
@@ -76,41 +65,6 @@ onMounted(load);
           placeholder="订单号/域名/用户名/凭证名"
           clearable
           style="width: 220px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.username"
-          placeholder="用户名"
-          clearable
-          style="width: 140px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model.number="q.order_id"
-          placeholder="订单号"
-          clearable
-          style="width: 120px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.keyword"
-          placeholder="域名"
-          clearable
-          style="width: 160px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.provider"
-          placeholder="云平台"
-          clearable
-          style="width: 120px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.product"
-          placeholder="产品"
-          clearable
-          style="width: 120px"
       /></el-form-item>
       <el-form-item>
         <el-select
@@ -146,7 +100,7 @@ onMounted(load);
 
     <el-table v-loading="loading" :data="rows">
       <el-table-column prop="username" label="用户" width="110" />
-      <el-table-column prop="order_id" label="订单" width="100" />
+      <el-table-column prop="order_id" label="订单" width="150" />
       <el-table-column prop="provider" label="云平台" width="100" />
       <el-table-column prop="product" label="产品" width="90" />
       <el-table-column prop="resource_summary" label="资源" />
@@ -163,7 +117,11 @@ onMounted(load);
         >
       </el-table-column>
       <el-table-column prop="error_code" label="错误码" width="120" />
-      <el-table-column prop="deployed_at" label="时间" width="180" />
+      <el-table-column label="时间" width="180">
+        <template #default="{ row }">
+          {{ formatDateTime(row.deployed_at) }}
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-pagination

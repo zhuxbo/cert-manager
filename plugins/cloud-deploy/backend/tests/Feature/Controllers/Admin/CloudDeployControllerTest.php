@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -68,6 +69,8 @@ test('admin 可为订单所属用户新增部署目标', function () {
         'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'S'],
     ]);
     $order = Order::factory()->create(['user_id' => $owner->id]);
+    $cert = Cert::factory()->active()->create(['order_id' => $order->id, 'common_name' => 'admin-target.example.com']);
+    $order->update(['latest_cert_id' => $cert->id]);
 
     $this->actingAsAdmin($this->admin)
         ->postJson('/api/admin/cloud-deploy/target', [
@@ -85,6 +88,210 @@ test('admin 可为订单所属用户新增部署目标', function () {
     expect((int) $target->user_id)->toBe((int) $owner->id);
     expect((int) $target->order_id)->toBe((int) $order->id);
     expect((int) $target->access_id)->toBe((int) $access->id);
+});
+
+test('admin 可新增纯上传部署目标并允许空 config', function () {
+    $owner = User::factory()->create();
+    $access = CloudDeployAccess::create([
+        'user_id' => $owner->id,
+        'name' => 'aliyun',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'S'],
+    ]);
+    $order = Order::factory()->create(['user_id' => $owner->id]);
+    $cert = Cert::factory()->active()->create(['order_id' => $order->id, 'common_name' => 'admin-cas.example.com']);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/cloud-deploy/target', [
+            'access_id' => $access->id,
+            'order_id' => $order->id,
+            'product' => 'cas',
+            'config' => [],
+            'enabled' => true,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $target = CloudDeployTarget::withoutGlobalScopes()->first();
+    expect($target)->not->toBeNull();
+    expect((int) $target->user_id)->toBe((int) $owner->id);
+    expect($target->product)->toBe('cas');
+    expect($target->config)->toBe([]);
+});
+
+test('admin 新增部署目标时拒绝同一凭证产品配置重复绑定到另一个订单', function () {
+    $owner = User::factory()->create();
+    $access = CloudDeployAccess::create([
+        'user_id' => $owner->id,
+        'name' => 'aliyun',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'S'],
+    ]);
+    $orderA = Order::factory()->create(['user_id' => $owner->id]);
+    $certA = Cert::factory()->active()->create(['order_id' => $orderA->id, 'common_name' => 'admin-dup-a.example.com']);
+    $orderA->update(['latest_cert_id' => $certA->id]);
+    $orderB = Order::factory()->create(['user_id' => $owner->id]);
+    $certB = Cert::factory()->active()->create(['order_id' => $orderB->id, 'common_name' => 'admin-dup-b.example.com']);
+    $orderB->update(['latest_cert_id' => $certB->id]);
+    CloudDeployTarget::create([
+        'user_id' => $owner->id,
+        'access_id' => $access->id,
+        'order_id' => $orderA->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'admin-dup.example.com'],
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/cloud-deploy/target', [
+            'access_id' => $access->id,
+            'order_id' => $orderB->id,
+            'product' => 'cdn',
+            'config' => ['domain' => 'admin-dup.example.com'],
+            'enabled' => true,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->count())->toBe(1);
+});
+
+test('admin 可新增编辑删除云凭证但不能修改 user_id/provider', function () {
+    $owner = User::factory()->create();
+    $other = User::factory()->create();
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/cloud-deploy/access', [
+            'user_id' => $owner->id,
+            'name' => 'owner aliyun',
+            'provider' => 'aliyun',
+            'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'SK'],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $access = CloudDeployAccess::withoutGlobalScopes()->where('user_id', $owner->id)->firstOrFail();
+
+    $this->actingAsAdmin($this->admin)
+        ->putJson("/api/admin/cloud-deploy/access/{$access->id}", ['name' => 'renamed'])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $fresh = CloudDeployAccess::withoutGlobalScopes()->find($access->id);
+    expect($fresh->name)->toBe('renamed');
+    expect((int) $fresh->user_id)->toBe((int) $owner->id);
+    expect($fresh->provider)->toBe('aliyun');
+
+    $this->actingAsAdmin($this->admin)
+        ->putJson("/api/admin/cloud-deploy/access/{$access->id}", ['provider' => 'tencent'])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    $this->actingAsAdmin($this->admin)
+        ->putJson("/api/admin/cloud-deploy/access/{$access->id}", ['user_id' => $other->id])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    $this->actingAsAdmin($this->admin)
+        ->deleteJson("/api/admin/cloud-deploy/access/{$access->id}")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+});
+
+test('admin target update/delete 保持 user access order 一致并支持改绑', function () {
+    $ownerA = User::factory()->create();
+    $ownerB = User::factory()->create();
+    $accessA = CloudDeployAccess::create([
+        'user_id' => $ownerA->id,
+        'name' => 'A',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'SK'],
+    ]);
+    $accessB = CloudDeployAccess::create([
+        'user_id' => $ownerB->id,
+        'name' => 'B',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'BK', 'access_key_secret' => 'BSK'],
+    ]);
+    $orderA = Order::factory()->create(['user_id' => $ownerA->id]);
+    $certA = Cert::factory()->active()->create(['order_id' => $orderA->id, 'common_name' => 'a.example.com']);
+    $orderA->update(['latest_cert_id' => $certA->id]);
+    $orderB = Order::factory()->create(['user_id' => $ownerB->id]);
+    $certB = Cert::factory()->active()->create(['order_id' => $orderB->id, 'common_name' => 'b.example.com']);
+    $orderB->update(['latest_cert_id' => $certB->id]);
+    $target = CloudDeployTarget::create([
+        'user_id' => $ownerA->id,
+        'access_id' => $accessA->id,
+        'order_id' => $orderA->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'a.example.com'],
+        'last_status' => 'success',
+        'last_cert_id' => $certA->id,
+        'last_deployed_at' => now(),
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->putJson("/api/admin/cloud-deploy/target/{$target->id}", [
+            'access_id' => $accessB->id,
+            'order_id' => $orderB->id,
+            'config' => ['domain' => 'b.example.com'],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $fresh = CloudDeployTarget::withoutGlobalScopes()->find($target->id);
+    expect((int) $fresh->user_id)->toBe((int) $ownerB->id);
+    expect((int) $fresh->access_id)->toBe((int) $accessB->id);
+    expect((int) $fresh->order_id)->toBe((int) $orderB->id);
+    expect($fresh->last_status)->toBeNull();
+
+    $this->actingAsAdmin($this->admin)
+        ->deleteJson("/api/admin/cloud-deploy/target/{$target->id}")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->whereKey($target->id)->exists())->toBeFalse();
+});
+
+test('admin 新增和改绑 target 时拒绝非候选订单', function () {
+    $owner = User::factory()->create();
+    $access = CloudDeployAccess::create([
+        'user_id' => $owner->id,
+        'name' => 'owner aliyun',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'SK'],
+    ]);
+
+    $expired = Cert::factory()->expired()->create();
+    $deadOrder = Order::factory()->create(['user_id' => $owner->id, 'latest_cert_id' => $expired->id]);
+    $expired->update(['order_id' => $deadOrder->id]);
+
+    $activeCert = Cert::factory()->active()->create();
+    $activeOrder = Order::factory()->create(['user_id' => $owner->id, 'latest_cert_id' => $activeCert->id]);
+    $activeCert->update(['order_id' => $activeOrder->id]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/cloud-deploy/target', [
+            'access_id' => $access->id,
+            'order_id' => $deadOrder->id,
+            'product' => 'cdn',
+            'config' => ['domain' => 'dead.example.com'],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    $target = CloudDeployTarget::create([
+        'user_id' => $owner->id,
+        'access_id' => $access->id,
+        'order_id' => $activeOrder->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'active.example.com'],
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->putJson("/api/admin/cloud-deploy/target/{$target->id}", ['order_id' => $deadOrder->id])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
 });
 
 test('admin 新增部署目标时拒绝跨用户混绑凭证和订单', function () {

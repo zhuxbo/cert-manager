@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Requests;
 
 use App\Http\Requests\BaseRequest;
 use Illuminate\Validation\Validator;
+use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Requests\Concerns\ValidatesAgainstSchema;
 
 class AccessStoreRequest extends BaseRequest
@@ -13,8 +14,9 @@ class AccessStoreRequest extends BaseRequest
     public function rules(): array
     {
         return [
+            'user_id' => 'sometimes|integer|min:1',
             'name' => 'required|string|max:100',
-            'provider' => 'required|string|max:30|in:aliyun,tencent',
+            'provider' => 'required|string|max:30',
             'credentials' => 'required|array',
         ];
     }
@@ -27,9 +29,16 @@ class AccessStoreRequest extends BaseRequest
             if ($validator->errors()->hasAny(['provider', 'credentials'])) {
                 return; // 基础规则已失败，schema 校验无意义
             }
+            $provider = (string) $this->input('provider');
+            if (! app(Registry::class)->hasProvider($provider)) {
+                $validator->errors()->add('provider', "未注册的云平台：$provider");
+
+                return;
+            }
+
             $this->validateCredentialsSchema(
                 $validator,
-                (string) $this->input('provider'),
+                $provider,
                 (array) $this->input('credentials', []),
             );
         });

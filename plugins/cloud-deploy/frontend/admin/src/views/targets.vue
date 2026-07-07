@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { ElMessage } from "element-plus";
-import { targetList, deploy } from "@/api/cloud-deploy";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { deploy, targetDestroy, targetList, targetUpdate } from "@/api/cloud-deploy";
 import RecordsDialog from "./RecordsDialog.vue";
+import TargetForm from "../components/TargetForm.vue";
 
 const rows = ref<any[]>([]);
 const loading = ref(false);
@@ -10,17 +11,14 @@ const currentPage = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
 const pushing = ref<Record<number, boolean>>({});
+const dialog = ref(false);
+const editingTarget = ref<any | null>(null);
 
 // 搜索条件（key 对齐后端契约 query 名）
 const q = ref<any>({
   quickSearch: "",
-  username: "", // admin LIKE 用户名
-  order_id: "",
-  provider: "",
-  product: "",
   last_status: "", // ''=全部, success/failed, unpushed=未推送(NULL)
   enabled: "", // ''=全部, true/false
-  keyword: "", // 域名(cert.common_name)
   created_at_start: "",
   created_at_end: ""
 });
@@ -57,13 +55,8 @@ function onSearch() {
 function onReset() {
   q.value = {
     quickSearch: "",
-    username: "",
-    order_id: "",
-    provider: "",
-    product: "",
     last_status: "",
     enabled: "",
-    keyword: "",
     created_at_start: "",
     created_at_end: ""
   };
@@ -71,6 +64,32 @@ function onReset() {
 }
 function onPage(p: number) {
   currentPage.value = p;
+  load();
+}
+
+function openCreate() {
+  editingTarget.value = null;
+  dialog.value = true;
+}
+
+function openEdit(row: any) {
+  editingTarget.value = row;
+  dialog.value = true;
+}
+
+async function toggleEnabled(row: any) {
+  try {
+    await targetUpdate(row.id, { enabled: row.enabled });
+  } catch (e) {
+    row.enabled = !row.enabled;
+    throw e;
+  }
+}
+
+async function remove(row: any) {
+  await ElMessageBox.confirm("确认删除该部署目标？", "提示");
+  await targetDestroy(row.id);
+  ElMessage.success("已删除");
   load();
 }
 
@@ -106,6 +125,7 @@ function openRecordsByTarget(row: any) {
 }
 
 onMounted(load);
+defineExpose({ openCreate });
 </script>
 
 <template>
@@ -117,41 +137,6 @@ onMounted(load);
           placeholder="订单号/域名/用户名/凭证名"
           clearable
           style="width: 220px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.username"
-          placeholder="用户名"
-          clearable
-          style="width: 140px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model.number="q.order_id"
-          placeholder="订单号"
-          clearable
-          style="width: 120px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.keyword"
-          placeholder="域名"
-          clearable
-          style="width: 160px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.provider"
-          placeholder="云平台"
-          clearable
-          style="width: 120px"
-      /></el-form-item>
-      <el-form-item
-        ><el-input
-          v-model="q.product"
-          placeholder="产品"
-          clearable
-          style="width: 120px"
       /></el-form-item>
       <el-form-item>
         <el-select
@@ -184,7 +169,7 @@ onMounted(load);
 
     <el-table v-loading="loading" :data="rows">
       <el-table-column prop="username" label="用户" width="110" />
-      <el-table-column prop="order_id" label="订单" width="100" />
+      <el-table-column prop="order_id" label="订单" width="150" />
       <el-table-column prop="provider" label="云平台" width="100" />
       <el-table-column prop="product" label="产品" width="100" />
       <el-table-column label="资源">
@@ -205,14 +190,15 @@ onMounted(load);
         </template>
       </el-table-column>
       <el-table-column label="启用" width="80">
-        <template #default="{ row }"
-          ><el-tag :type="row.enabled ? '' : 'info'">{{
-            row.enabled ? "是" : "否"
-          }}</el-tag></template
-        >
+        <template #default="{ row }">
+          <el-switch
+            v-model="row.enabled"
+            size="small"
+            @change="toggleEnabled(row)"
+          />
+        </template>
       </el-table-column>
-      <!-- admin 仅 推送 + 记录，无绑定/编辑/删除（用户自助操作） -->
-      <el-table-column label="操作" width="150">
+      <el-table-column label="操作" width="230">
         <template #default="{ row }">
           <el-button
             link
@@ -222,6 +208,8 @@ onMounted(load);
             >推送</el-button
           >
           <el-button link @click="openRecordsByTarget(row)">记录</el-button>
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -240,5 +228,6 @@ onMounted(load);
       :order-id="recOrderId"
       :target-id="recTargetId"
     />
+    <TargetForm v-model="dialog" :target="editingTarget" @saved="load" />
   </div>
 </template>

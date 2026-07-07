@@ -5,7 +5,12 @@ import { resolve } from "path";
 
 export default defineConfig({
   plugins: [vue(), vueJsx()],
-  resolve: { alias: { "@": resolve(__dirname, "src") } },
+  resolve: {
+    alias: {
+      "@": resolve(__dirname, "src"),
+      "@cloud-deploy/shared": resolve(__dirname, "../shared")
+    }
+  },
   build: {
     lib: {
       entry: resolve(__dirname, "src/index.ts"),

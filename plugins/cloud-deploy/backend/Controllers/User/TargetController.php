@@ -8,7 +8,7 @@ use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Plugins\CloudDeploy\Requests\IndexRequest;
 use Plugins\CloudDeploy\Requests\TargetStoreRequest;
 use Plugins\CloudDeploy\Requests\TargetUpdateRequest;
-use Plugins\CloudDeploy\Support\TenantConsistency;
+use Plugins\CloudDeploy\Services\TargetMutationService;
 
 class TargetController extends BaseController
 {
@@ -101,15 +101,10 @@ class TargetController extends BaseController
 
     public function store(TargetStoreRequest $request): void
     {
-        $validated = $request->validated();
         $userId = $this->guard->id();
-
-        if (! TenantConsistency::check($userId, (int) $validated['access_id'], (int) $validated['order_id'])) {
-            $this->error('凭证或订单不属于当前用户');
-        }
-
-        $validated['user_id'] = $userId;
-        $target = CloudDeployTarget::create($validated);
+        $service = app(TargetMutationService::class);
+        $validated = $service->prepareForCreate($request->validated(), (int) $userId);
+        $target = $service->create($validated);
         if (! $target->exists) {
             $this->error('添加失败');
         }
@@ -133,15 +128,9 @@ class TargetController extends BaseController
             $this->error('目标不存在');
         }
 
-        $validated = $request->validated();
-        // 改 access 时同样校验归属（order 不可改）
-        if (isset($validated['access_id'])
-            && ! TenantConsistency::check($this->guard->id(), (int) $validated['access_id'], null)) {
-            $this->error('凭证不属于当前用户');
-        }
-
-        $target->fill($validated);
-        $target->save();
+        $service = app(TargetMutationService::class);
+        $validated = $service->prepareForUpdate($target, $request->validated(), (int) $this->guard->id());
+        $service->update($target, $validated);
 
         $this->success();
     }

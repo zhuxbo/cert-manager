@@ -10,14 +10,22 @@ import {
   type ProviderCatalogItem,
   type CredentialField
 } from "@/api/cloud-deploy";
+import { formatDateTime } from "@/utils/time";
+import SchemaFieldLabel from "@cloud-deploy/shared/SchemaFieldLabel.vue";
 
 const rows = ref<any[]>([]);
 const total = ref(0);
 const loading = ref(false);
+const currentPage = ref(1);
+const pageSize = ref(20);
 const dialog = ref(false);
 const editing = ref<any>(null);
 const catalog = ref<ProviderCatalogItem[]>([]);
 const form = ref<any>({ name: "", provider: "aliyun", credentials: {} });
+const q = ref<any>({
+  name: "",
+  provider: ""
+});
 
 // 据选中 provider 的 credentialSchema 渲染凭证字段（secret 脱敏）
 const credFields = computed<CredentialField[]>(() => {
@@ -25,11 +33,22 @@ const credFields = computed<CredentialField[]>(() => {
   return p?.credentialSchema ?? [];
 });
 
+function buildParams(): Record<string, any> {
+  const p: Record<string, any> = {
+    currentPage: currentPage.value,
+    pageSize: pageSize.value
+  };
+  for (const [k, v] of Object.entries(q.value)) {
+    if (v !== "" && v !== null && v !== undefined) p[k] = v;
+  }
+  return p;
+}
+
 async function load() {
   loading.value = true;
   try {
     const [res, cat] = await Promise.all([
-      accessList({ pageSize: 100 }),
+      accessList(buildParams()),
       getProviders()
     ]);
     rows.value = res.data.items;
@@ -38,6 +57,24 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+
+function onSearch() {
+  currentPage.value = 1;
+  load();
+}
+
+function onReset() {
+  q.value = {
+    name: "",
+    provider: ""
+  };
+  onSearch();
+}
+
+function onPage(p: number) {
+  currentPage.value = p;
+  load();
 }
 
 function onProviderChange() {
@@ -92,19 +129,53 @@ const providerLabel = (key: string) =>
   catalog.value.find(c => c.key === key)?.label ?? key;
 
 onMounted(load);
+defineExpose({ openCreate });
 </script>
 
 <template>
   <div>
-    <el-button type="primary" @click="openCreate">新增凭证</el-button>
-    <el-table v-loading="loading" :data="rows" style="margin-top: 12px">
+    <el-form :inline="true" :model="q" style="margin-bottom: 8px">
+      <el-form-item>
+        <el-input
+          v-model="q.name"
+          placeholder="凭证名称"
+          clearable
+          style="width: 160px"
+        />
+      </el-form-item>
+      <el-form-item>
+        <el-select
+          v-model="q.provider"
+          placeholder="云平台"
+          clearable
+          style="width: 160px"
+        >
+          <el-option
+            v-for="p in catalog"
+            :key="p.key"
+            :label="p.label"
+            :value="p.key"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="onSearch">搜索</el-button>
+        <el-button @click="onReset">重置</el-button>
+      </el-form-item>
+    </el-form>
+
+    <el-table v-loading="loading" :data="rows">
       <el-table-column prop="name" label="备注名" />
       <el-table-column label="云厂商">
         <template #default="{ row }">{{
           providerLabel(row.provider)
         }}</template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" />
+      <el-table-column label="创建时间" width="180">
+        <template #default="{ row }">
+          {{ formatDateTime(row.created_at) }}
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="160">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -113,10 +184,19 @@ onMounted(load);
       </el-table-column>
     </el-table>
 
+    <el-pagination
+      style="margin-top: 8px; justify-content: flex-end"
+      layout="prev, pager, next"
+      :total="total"
+      :page-size="pageSize"
+      :current-page="currentPage"
+      @current-change="onPage"
+    />
+
     <el-dialog
       v-model="dialog"
       :title="editing ? '编辑凭证' : '新增凭证'"
-      width="480px"
+      width="640px"
     >
       <el-form label-width="120px">
         <el-form-item label="备注名"
@@ -126,6 +206,7 @@ onMounted(load);
           <el-select
             v-model="form.provider"
             style="width: 100%"
+            :disabled="!!editing"
             @change="onProviderChange"
           >
             <el-option
@@ -140,9 +221,11 @@ onMounted(load);
         <el-form-item
           v-for="f in credFields"
           :key="f.key"
-          :label="f.label"
-          :required="!editing && f.required"
+          :required="false"
         >
+          <template #label>
+            <SchemaFieldLabel :field="f" />
+          </template>
           <el-input
             v-model="form.credentials[f.key]"
             :placeholder="editing ? '留空不修改' : ''"

@@ -115,3 +115,71 @@ test('crossUser=true 用 withoutGlobalScopes 直查、可推他人 target（admi
     expect($dispatched)->toBe(1); // withoutGlobalScopes 直查到他人 target 并推送
     Queue::assertPushed(CloudDeployJob::class, fn (CloudDeployJob $j) => $j->targetId === $otherTarget->id);
 });
+
+test('crossUser=true 可用 order_id 和 user_id 推该订单 enabled target', function () {
+    Queue::fake();
+    $enabled = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'enabled.example.com'],
+        'enabled' => true,
+    ]);
+    CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'disabled.example.com'],
+        'enabled' => false,
+    ]);
+    $other = User::factory()->create();
+    $otherAccess = CloudDeployAccess::create([
+        'user_id' => $other->id,
+        'name' => 'other',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'A', 'access_key_secret' => 'S'],
+    ]);
+    $otherOrder = Order::factory()->create(['user_id' => $other->id]);
+    $otherCert = Cert::factory()->create(['order_id' => $otherOrder->id, 'status' => 'active']);
+    $otherOrder->update(['latest_cert_id' => $otherCert->id]);
+    CloudDeployTarget::create([
+        'user_id' => $other->id,
+        'access_id' => $otherAccess->id,
+        'order_id' => $otherOrder->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'other.example.com'],
+        'enabled' => true,
+    ]);
+
+    $dispatched = app(DeployService::class)->deploy($this->order->id, [], true, true, $this->user->id);
+
+    expect($dispatched)->toBe(1);
+    Queue::assertPushed(CloudDeployJob::class, 1);
+    Queue::assertPushed(CloudDeployJob::class, fn (CloudDeployJob $j) => $j->targetId === $enabled->id && $j->force === true);
+});
+
+test('入队前过滤租户错配 target 且 dispatched 不虚增', function () {
+    Queue::fake();
+    $other = User::factory()->create();
+    $otherAccess = CloudDeployAccess::create([
+        'user_id' => $other->id,
+        'name' => 'other',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'A', 'access_key_secret' => 'S'],
+    ]);
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $otherAccess->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'x'],
+        'enabled' => true,
+    ]);
+
+    $dispatched = app(DeployService::class)->deploy(null, [$target->id], true, true);
+
+    expect($dispatched)->toBe(0);
+    Queue::assertNothingPushed();
+});

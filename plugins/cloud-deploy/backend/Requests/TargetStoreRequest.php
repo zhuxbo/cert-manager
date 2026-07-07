@@ -17,7 +17,7 @@ class TargetStoreRequest extends BaseRequest
             'access_id' => 'required|integer',
             'order_id' => 'required|integer',
             'product' => 'required|string|max:30',
-            'config' => 'required|array',
+            'config' => 'present|array',
             'enabled' => 'sometimes|boolean',
         ];
     }

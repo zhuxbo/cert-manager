@@ -18,6 +18,11 @@ beforeEach(function () {
         'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'S'],
     ]);
     $this->order = Order::factory()->create(['user_id' => $this->user->id]);
+    $this->cert = Cert::factory()->active()->create([
+        'order_id' => $this->order->id,
+        'common_name' => 'target.example.com',
+    ]);
+    $this->order->update(['latest_cert_id' => $this->cert->id]);
 });
 
 test('创建目标成功', function () {
@@ -31,6 +36,54 @@ test('创建目标成功', function () {
         ->assertOk()->assertJson(['code' => 1]);
 
     expect(CloudDeployTarget::withoutGlobalScopes()->where('user_id', $this->user->id)->count())->toBe(1);
+});
+
+test('创建纯上传目标时允许空 config', function () {
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $this->order->id,
+            'product' => 'cas',
+            'config' => [],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $target = CloudDeployTarget::withoutGlobalScopes()
+        ->where('user_id', $this->user->id)
+        ->first();
+
+    expect($target)->not->toBeNull();
+    expect($target->product)->toBe('cas');
+    expect($target->config)->toBe([]);
+});
+
+test('拒绝同一凭证产品配置重复绑定到另一个订单', function () {
+    CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'dup.example.com'],
+    ]);
+    $order2 = Order::factory()->create(['user_id' => $this->user->id]);
+    $cert2 = Cert::factory()->active()->create([
+        'order_id' => $order2->id,
+        'common_name' => 'dup-2.example.com',
+    ]);
+    $order2->update(['latest_cert_id' => $cert2->id]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $order2->id,
+            'product' => 'cdn',
+            'config' => ['domain' => 'dup.example.com'],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->count())->toBe(1);
 });
 
 test('拒绝绑定他人的凭证', function () {
@@ -62,6 +115,27 @@ test('拒绝绑定他人的订单', function () {
             'order_id' => $otherOrder->id,
             'product' => 'cdn',
             'config' => ['domain' => 'x.example.com'],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->count())->toBe(0);
+});
+
+test('拒绝绑定非候选订单', function () {
+    $expired = Cert::factory()->expired()->create(['common_name' => 'expired-bind.example.com']);
+    $expiredOrder = Order::factory()->create([
+        'user_id' => $this->user->id,
+        'latest_cert_id' => $expired->id,
+        'period_till' => now()->addMonth(),
+    ]);
+    $expired->update(['order_id' => $expiredOrder->id]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $expiredOrder->id,
+            'product' => 'cdn',
+            'config' => ['domain' => 'expired-bind.example.com'],
         ])
         ->assertOk()->assertJson(['code' => 0]);
 
@@ -111,6 +185,39 @@ test('更新重提 config 含 schema 外字段被拒（白名单校验）', func
     expect(CloudDeployTarget::withoutGlobalScopes()->find($target->id)->config)->toBe(['domain' => 'a.example.com']);
 });
 
+test('更新时拒绝改成已有推送目标', function () {
+    $order2 = Order::factory()->create(['user_id' => $this->user->id]);
+    $cert2 = Cert::factory()->active()->create([
+        'order_id' => $order2->id,
+        'common_name' => 'update-dup-2.example.com',
+    ]);
+    $order2->update(['latest_cert_id' => $cert2->id]);
+    CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'used.example.com'],
+    ]);
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $order2->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'free.example.com'],
+    ]);
+
+    $this->actingAsUser($this->user)
+        ->putJson("/api/cloud-deploy/target/{$target->id}", [
+            'config' => ['domain' => 'used.example.com'],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->find($target->id)->config)
+        ->toBe(['domain' => 'free.example.com']);
+});
+
 test('product 不属于该凭证的 provider 被拒（aliyun 凭证选腾讯独有 ssl-deploy）', function () {
     $this->actingAsUser($this->user)
         ->postJson('/api/cloud-deploy/target', [
@@ -148,6 +255,98 @@ test('存量 target 仅切 enabled（不重提 config）放行，向后兼容', 
         ->assertOk()->assertJson(['code' => 1]);
 
     expect(CloudDeployTarget::withoutGlobalScopes()->find($target->id)->enabled)->toBeFalse();
+});
+
+test('更新结构字段清空 last 状态', function () {
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'old.example.com'],
+        'last_cert_id' => $this->cert->id,
+        'last_status' => 'success',
+        'last_error' => 'old',
+        'last_deployed_at' => now(),
+    ]);
+
+    $this->actingAsUser($this->user)
+        ->putJson("/api/cloud-deploy/target/{$target->id}", ['config' => ['domain' => 'new.example.com']])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $fresh = CloudDeployTarget::withoutGlobalScopes()->find($target->id);
+    expect($fresh->last_cert_id)->toBeNull();
+    expect($fresh->last_status)->toBeNull();
+    expect($fresh->last_error)->toBeNull();
+    expect($fresh->last_deployed_at)->toBeNull();
+});
+
+test('仅切 enabled 不清空 last 状态', function () {
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'same.example.com'],
+        'enabled' => true,
+        'last_cert_id' => $this->cert->id,
+        'last_status' => 'success',
+        'last_deployed_at' => now(),
+    ]);
+
+    $this->actingAsUser($this->user)
+        ->putJson("/api/cloud-deploy/target/{$target->id}", ['enabled' => false])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $fresh = CloudDeployTarget::withoutGlobalScopes()->find($target->id);
+    expect($fresh->enabled)->toBeFalse();
+    expect($fresh->last_status)->toBe('success');
+    expect((int) $fresh->last_cert_id)->toBe((int) $this->cert->id);
+});
+
+test('更新 order_id 时拒绝非候选订单', function () {
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'active.example.com'],
+    ]);
+    $expired = Cert::factory()->expired()->create(['common_name' => 'expired-update.example.com']);
+    $expiredOrder = Order::factory()->create(['user_id' => $this->user->id, 'latest_cert_id' => $expired->id]);
+    $expired->update(['order_id' => $expiredOrder->id]);
+
+    $this->actingAsUser($this->user)
+        ->putJson("/api/cloud-deploy/target/{$target->id}", ['order_id' => $expiredOrder->id])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect((int) CloudDeployTarget::withoutGlobalScopes()->find($target->id)->order_id)->toBe((int) $this->order->id);
+});
+
+test('更新 access_id 但不带 config 时仍按最终组合校验旧 config', function () {
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'oss',
+        'config' => ['bucket' => 'bucket-a', 'domain' => 'oss.example.com', 'region' => 'cn-hangzhou'],
+    ]);
+    $tencent = CloudDeployAccess::create([
+        'user_id' => $this->user->id,
+        'name' => 'T',
+        'provider' => 'tencent',
+        'credentials' => ['secret_id' => 'SID', 'secret_key' => 'SK'],
+    ]);
+
+    $this->actingAsUser($this->user)
+        ->putJson("/api/cloud-deploy/target/{$target->id}", ['access_id' => $tencent->id])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect((int) CloudDeployTarget::withoutGlobalScopes()->find($target->id)->access_id)->toBe((int) $this->access->id);
 });
 
 test('更新重提 config 时按 schema 校验（缺 domain 被拒）', function () {

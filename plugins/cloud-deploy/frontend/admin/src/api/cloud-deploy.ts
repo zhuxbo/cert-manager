@@ -10,12 +10,18 @@ export interface ConfigField {
   type: "string" | "number" | "select";
   required?: boolean;
   options?: Array<{ label: string; value: string }>;
+  description?: string;
+  help?: string;
+  tip?: string;
 }
 export interface CredentialField {
   key: string;
   label: string;
   required?: boolean;
   secret?: boolean;
+  description?: string;
+  help?: string;
+  tip?: string;
 }
 export interface ProviderProduct {
   product: string;
@@ -51,13 +57,30 @@ export function getProviders(force = false): Promise<ProviderCatalogItem[]> {
 // 返回 item.config 已由后端逐键脱敏（secret 键打码 ******、保留 domain 等非 secret 键）
 export const targetList = (params: Record<string, any>) =>
   http.get(`${base}/target`, { params });
+export const targetShow = (id: number) => http.get(`${base}/target/${id}`);
 export const targetStore = (data: Record<string, any>) =>
   http.post(`${base}/target`, data);
+export const targetUpdate = (id: number, data: Record<string, any>) =>
+  http.put(`${base}/target/${id}`, { data });
+export const targetDestroy = (id: number) =>
+  http.delete(`${base}/target/${id}`);
 
 // 云凭证列表（脱敏，item 不含 credentials；params：
 // currentPage/pageSize/quickSearch/name/provider/user_id/created_at_start/created_at_end）
 export const accessList = (params: Record<string, any>) =>
   http.get(`${base}/access`, { params });
+export const accessShow = (id: number) => http.get(`${base}/access/${id}`);
+export const accessStore = (data: Record<string, any>) =>
+  http.post(`${base}/access`, data);
+export const accessUpdate = (id: number, data: Record<string, any>) =>
+  http.put(`${base}/access/${id}`, { data });
+export const accessDestroy = (id: number) =>
+  http.delete(`${base}/access/${id}`);
+
+export const orderOptionList = (params: Record<string, any>) =>
+  http.get(`${base}/order-options`, { params });
+export const orderOptionShow = (id: number, params?: Record<string, any>) =>
+  http.get(`${base}/order-options/${id}`, { params });
 
 // 部署历史列表（params：currentPage/pageSize/quickSearch/order_id/target_id/status/
 // is_final/provider/product/trigger/keyword/created_at_start/created_at_end/user_id）

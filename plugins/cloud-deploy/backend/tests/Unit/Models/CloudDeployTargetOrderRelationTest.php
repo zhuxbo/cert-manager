@@ -55,7 +55,7 @@ test('whereHas(order.latestCert) 按证书域名可过滤 target（域名搜索�
     $orderHit->update(['latest_cert_id' => $certHit->id]);
     $targetHit = CloudDeployTarget::create([
         'user_id' => $owner->id, 'access_id' => 1, 'order_id' => $orderHit->id,
-        'product' => 'cdn', 'config' => [],
+        'product' => 'cdn', 'config' => ['domain' => 'hit.example.com'],
     ]);
 
     $orderMiss = Order::factory()->create(['user_id' => $owner->id]);
@@ -63,7 +63,7 @@ test('whereHas(order.latestCert) 按证书域名可过滤 target（域名搜索�
     $orderMiss->update(['latest_cert_id' => $certMiss->id]);
     CloudDeployTarget::create([
         'user_id' => $owner->id, 'access_id' => 1, 'order_id' => $orderMiss->id,
-        'product' => 'cdn', 'config' => [],
+        'product' => 'cdn', 'config' => ['domain' => 'other.example.org'],
     ]);
 
     $ids = CloudDeployTarget::whereHas('order.latestCert', function ($q) {

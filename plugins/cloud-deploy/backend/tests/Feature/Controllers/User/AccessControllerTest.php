@@ -72,14 +72,11 @@ test('credentials 含 schema 外字段被拒（白名单校验，防额外字段
     expect(CloudDeployAccess::withoutGlobalScopes()->count())->toBe(0);
 });
 
-test('更新换 provider 时按新 provider schema 校验 credentials', function () {
+test('更新凭证不允许修改 provider', function () {
     $access = CloudDeployAccess::create([...$this->payload, 'user_id' => $this->user->id]); // aliyun
 
-    // 切到腾讯但只给 secret_id（缺 secret_key）→ 拒绝
     $this->actingAsUser($this->user)
-        ->putJson("/api/cloud-deploy/access/{$access->id}", [
-            'provider' => 'tencent', 'credentials' => ['secret_id' => 'SID'],
-        ])
+        ->putJson("/api/cloud-deploy/access/{$access->id}", ['provider' => 'tencent'])
         ->assertOk()->assertJson(['code' => 0]);
 
     expect(CloudDeployAccess::withoutGlobalScopes()->find($access->id)->provider)->toBe('aliyun'); // 未改

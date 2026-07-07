@@ -9,12 +9,18 @@ export interface ConfigField {
   type: "string" | "number" | "select";
   required?: boolean;
   options?: Array<{ label: string; value: string }>;
+  description?: string;
+  help?: string;
+  tip?: string;
 }
 export interface CredentialField {
   key: string;
   label: string;
   required?: boolean;
   secret?: boolean;
+  description?: string;
+  help?: string;
+  tip?: string;
 }
 export interface ProviderProduct {
   product: string;
@@ -90,12 +96,18 @@ export const accessDestroy = (id: number) =>
 
 export const targetList = (params: TargetQuery) =>
   http.get(`${base}/target`, { params });
+export const targetShow = (id: number) => http.get(`${base}/target/${id}`);
 export const targetStore = (data: Record<string, any>) =>
   http.post(`${base}/target`, data);
 export const targetUpdate = (id: number, data: Record<string, any>) =>
   http.put(`${base}/target/${id}`, { data });
 export const targetDestroy = (id: number) =>
   http.delete(`${base}/target/${id}`);
+
+export const orderOptionList = (params: Record<string, any>) =>
+  http.get(`${base}/order-options`, { params });
+export const orderOptionShow = (id: number) =>
+  http.get(`${base}/order-options/${id}`);
 
 export const logList = (params: LogQuery) =>
   http.get(`${base}/log`, { params });

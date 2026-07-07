@@ -52,11 +52,11 @@
 
 ### 数据模型 + Job
 
-4 表：`cloud_deploy_accesses`（云凭证，credentials 加密）/ `cloud_deploy_targets`（部署目标 = order+access+product+config）/ `cloud_deploy_remote_certs`（已上传云端证书去重）/ `cloud_deploy_logs`（部署历史）。`CloudDeployJob`（**onQueue tasks + afterCommit**）负责：freeze 守卫 / 租户隔离 / 缺链回填 / 幂等 / force 重推。续期换 order，target 迁移跟随。
+4 表：`cloud_deploy_accesses`（云凭证，credentials 加密）/ `cloud_deploy_targets`（部署目标 = order+access+product+config，同一用户下相同 access+product+config 只能绑定一个订单）/ `cloud_deploy_remote_certs`（已上传云端证书去重）/ `cloud_deploy_logs`（部署历史）。`CloudDeployJob`（**onQueue tasks + afterCommit**）负责：freeze 守卫 / 租户隔离 / 缺链回填 / 幂等 / force 重推。续期换 order，target 迁移跟随。
 
 ### 主系统足迹
 
-插件功能侧主系统 backend **0 改动**，仅复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`，order 详情 SSL 卡片注入「推送到云平台」按钮 + 目标状态）。schema 驱动 → 新增端点前端零改动。（vendor 运行时安装所需的 `PluginManager` composer hook 是**通用主系统能力**，非本插件专属代码，见上「独立 vendor」节。）
+插件功能侧主系统 backend **0 改动**，仅复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`，order 详情 SSL 卡片显示「云部署」区域 + 当前订单目标状态）。schema 驱动 → 新增端点前端零改动。（vendor 运行时安装所需的 `PluginManager` composer hook 是**通用主系统能力**，非本插件专属代码，见上「独立 vendor」节。）
 
 ---
 
@@ -209,6 +209,7 @@ git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer
 - **SDK Client 多为 final，用泛型 mock**：阿里/腾讯 SDK 的 Client 类常 `final`，Mockery 无法直接 partial mock。测试里走 `makeClient` 注入缝返回 `Mockery::mock()`（泛型 mock，按方法名打桩），而非 mock 具体 final 类。
 - **业务错误别进 `guardSdk`**：`guardSdk` 只包真正的 SDK 网络/API 调用。配置缺失、参数校验等业务错误走 `fail()`（抛业务异常，message 可读不脱敏），别塞进 guardSdk——否则会被当 SDK 异常重建成无 previous 的通用 RuntimeException，丢失可读上下文。
 - **新增 ShouldQueue 别用 `tries=1`**：升级 freeze 中间件 `SkipWhenUpgradeFrozen` 对 Job `release(60)` 会计入 attempts，`tries=1` 被 freeze release 一次即在第二次 pop 被 MaxAttemptsExceeded 误杀、handle 永不执行。编排 Job（`CloudDeployTriggerJob`/`CloudChainBackfillJob`）用 `tries=5` + `maxExceptions=1`（吸收 freeze release，业务异常仍只一次）；`CloudDeployJob` 走 `tries=3`。守门 `tests/Unit/Jobs/CloudJobsFreezeConfigTest`；机理详见主系统 `CLAUDE.md` 升级冻结约定。
+- **纯上传端点允许空 config**：`AliyunCasDeployer`、`TencentSslDeployer` 等 `configSchema()=[]` 的产品无资源配置，新增 target 时 `config` 字段必须存在但允许空数组；`TargetStoreRequest` 用 `present|array`，不要改回 `required|array`，否则 Laravel 会把空数组判成缺失。
 - **schema 新增 required 字段 = 端点 breaking change**：`configSchema` 加 required 字段会让存量 target（未存该字段）部署时 `requireConfig` 失败。新字段尽量 optional + 代码内默认值；确需 required 视为该端点破坏性变更，需迁移存量 config。
 - **云端证书只增不删，会撞配额**：每次续期向 CAS/腾讯 SSL/SLB 上传新证书，`cloud_deploy_remote_certs` 亦只增。腾讯 SSL/阿里 CAS 有证书数量配额，报“超限”时需人工清理云端旧证书（本插件不 GC，与 certimate 同）。
 - **failed() 副作用，测试需 mock NotificationCenter**：`CloudDeployJob::failed()` 重试耗尽会派 `cloud_deploy_failed` 通知。测 `failed()` 落库的用例须在 `beforeEach` 默认 `app()->instance(NotificationCenter::class, Mockery::mock(...)->shouldIgnoreMissing())`，否则 dispatch 真跑会撞被 mock 的 Log facade / 真发邮件。
@@ -230,15 +231,25 @@ git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer
 
 - **共享 action `Services\DeployService::deploy(?int $orderId, array $targetIds, bool $force, bool $crossUser): int`**：user/admin 控制器各自鉴权后调同一底层，返回 dispatched 计数（仅 active cert 的 target 入队）。
   - **两模式**：`order_id` 模式（`$orderId` 非空、`crossUser=false`）按订单查 `enabled=true` 目标；`target_ids` 模式按 id 直查、**不过滤 enabled**（显式选 target）。
-  - **crossUser 语义**：`false`（user）靠调用方 controller 注册的 `CloudDeployTarget` UserScope 收敛本人；`true`（admin）用 `withoutGlobalScopes()` 跨用户直查。
-  - **fail-closed 守卫**（admin 入口）：`crossUser=true` 时若 `orderId!=null` 或 `targetIds` 为空 → 抛 `ApiResponseException`（防 withoutGlobalScopes 无 where 群发全部用户 target）。`ApiResponseException` 的 msg 在 `getApiResponse()['msg']`、不在 `getMessage()`，service 层直接 `throw new ApiResponseException($msg, null, null, 0)`。
-  - user `DeployController` 委派 `crossUser=false`（构造注册 UserScope）；admin `CloudDeployController::deploy` 委派 `null + crossUser=true`、`force` 缺省落 `true`（手动点推=显式重推，与 user `?? false` 不对称，有意）。
+  - **crossUser 语义**：`false`（user）靠调用方 controller 注册的 `CloudDeployTarget` UserScope 收敛本人；`true`（admin）用 `withoutGlobalScopes()` 跨用户直查。admin 系统设置页走 `target_ids`，订单详情页可走 `order_id+user_id` 双键收敛当前订单。
+  - **fail-closed 守卫**（admin 入口）：`crossUser=true` 时必须二选一传 `target_ids` 或 `order_id+user_id`；系统设置页走 `target_ids`，订单详情页走 `order_id+user_id`，两者都缺或只传 `order_id` 都抛 `ApiResponseException`（防 withoutGlobalScopes 无 where 群发全部用户 target）。`ApiResponseException` 的 msg 在 `getApiResponse()['msg']`、不在 `getMessage()`，service 层直接 `throw new ApiResponseException($msg, null, null, 0)`。
+  - user `DeployController` 委派 `crossUser=false`（构造注册 UserScope）；admin `CloudDeployController::deploy` 委派 `crossUser=true`、`force` 缺省落 `true`（手动点推=显式重推，与 user `?? false` 不对称，有意）：`target_ids` 用于系统设置跨用户直推，`order_id+user_id` 用于订单详情一键推送。
+  - 入队前再次用 `TenantConsistency::check(target.user_id, access_id, order_id)` 过滤历史脏 target，`dispatched` 只计真实入队数。
+- **订单候选接口（新增/改绑用）**：
+  - user/admin 分别提供 `GET /cloud-deploy/order-options` 与 `GET /cloud-deploy/order-options/{id}`；admin 必须带 `user_id`，否则 fail-closed。
+  - 列表只返回未取消且 latest cert 状态在 `unpaid/pending/processing/approving/active` 的订单，支持按订单号、主域名和 SAN 搜索。
+  - `show` 允许同用户下存量非候选订单回显；真正创建/改绑由 `OrderOptionService::isSelectable()` 收紧。
+- **target/access 写路径**：
+  - `TargetMutationService` 统一 user/admin create/update：校验 access/order/user 一致，create 必须候选订单，update 改 `order_id` 时重新检查候选。
+  - target 的唯一推送目标由 `CloudDeployTarget::configHash()` 规范化 `config` 后写入 `config_hash`，并由 DB 唯一索引 `(user_id, access_id, product, config_hash)` 兜底；服务层先给友好错误，唯一键负责并发最终防线。
+  - 只要 `access_id/order_id/product/config` 任一结构字段变化，清空 `last_cert_id/last_status/last_error/last_deployed_at`，避免新配置沿用旧推送状态。
+  - access 的 `user_id/provider` 创建后不可修改；编辑凭证时 `credentials` 留空或 null 表示保留原凭证。
 - **admin 三列表搜索（`CloudDeployController` targets/logs/accesses，裸 `$request->input()` 不经 validated）**：
   - **列名差异**：targets 状态列是 `last_status`（特殊值 `unpushed` → `whereNull`）、logs 是 `status`；logs 全为快照列（provider/product/resource_summary/access_name 不 join 主系统）。
   - **provider 经 access join**：targets 表无 provider 列，用 `whereHas('access', fn ($q) => $q->where('provider', $v))`。
   - **域名搜索**：`whereHas('order.latestCert', fn ($q) => $q->where('common_name', 'like', ...))`，依赖 `CloudDeployTarget::order()` 关系；**禁 raw join**（targets/orders 都有 user_id，raw join 报 1052 列名歧义）。logs 域名搜 `resource_summary` 快照（仅 domain 型 deployer 非空）。
   - **username 经 `whereExists` join users**（admin 全量按用户名 LIKE）；user_id 等值带 `cloud_deploy_targets.`/`cloud_deploy_logs.` 表前缀防与子查询歧义。
   - **quickSearch**：`where(fn)` 分组包 orWhere（订单号精确 + 域名 + 凭证名 + 用户名），不破坏外层 AND。
-- **config 逐键脱敏（方案①，`redactConfig(Registry, CloudDeployTarget)`）**：admin 跨用户列 target 会序列化任意用户 config（webhook 含 Authorization 等）。**不能 select 排除整个 config 列**（domain 等资源键会一起丢）。逐键：① `hasDeployer(provider, product)` 守卫先于 `resolveDeployer`（未注册组合 resolveDeployer 抛 `InvalidArgumentException` 会 500 整个列表）；② 命中→按 `configSchema()` 把 `secret=true` 键打 `******`、保留非 secret 键；③ 未命中（陈旧/改名/脏数据）→ fail-safe 打码除 `domain` 外全部键、不抛。`provider` 用 `$target->getAttribute('access')` + `instanceof CloudDeployAccess` 取（绕 larastan「belongsTo 必非 null」乐观推断，保留 access 悬空 → fail-safe 健壮性）。
+- **config 逐键脱敏（方案①，`redactConfig(Registry, CloudDeployTarget)`）**：admin 跨用户列 target 会序列化任意用户 config（webhook 含 Authorization 等）。**不能 select 排除整个 config 列**（domain 等资源键会一起丢）。逐键：① `hasDeployer(provider, product)` 守卫先于 `resolveDeployer`（未注册组合 resolveDeployer 抛 `InvalidArgumentException` 会 500 整个列表）；② 命中→按 `configSchema()` 把 `secret=true` 键打 `******`、保留非 secret 键；③ 未命中（陈旧/改名/脏数据）→ fail-safe 打码除 `domain` 外全部键、不抛。`provider` 用 `$target->getAttribute('access')` + `instanceof CloudDeployAccess` 取（绕 larastan「belongsTo 必非 null」乐观推断，保留 access 悬空 → fail-safe 健壮性）。admin 编辑 target 时走 `GET target/{id}` 取完整 config；不要用列表行的 `******` 回写。
 - **`attachUsernames(Collection $items)`**：targets/logs/accesses 表只存 user_id、模型无 user() 关系，单次 `whereIn` 查 username 拍平为顶层 `username` 字段供前端「用户」列；`User::withoutGlobalScopes()`（admin 跨用户）。`targets()` 因脱敏走内联分页（不经通用 `respondPaginated`），须显式调一次 + 顶层 provider 拍平（`with('access:id,provider')` eager load）。docblock 用 `@template TModel of Model` 避免 `Collection<int,Model>` invariant TValue 协变报错。
-- **前端**：user `DeployActions` 全功能（绑定/编辑弹窗复用 `configSchema` 动态字段 + order 锁定 + 编辑回填用 `suppressReset` 抑制 watch 清空 config；推送记录弹窗 `is_final` 默认传 `1`——非 JS `true`，qs 序列化 `true`→`"true"` 不被 Laravel `boolean` 规则接受会 422）；admin 3 tab 全局只读 + widget 一键推送须前端 `filter(t => t.enabled)` 收敛（target_ids 模式后端不过滤 enabled，否则推上停用目标、与 user 分叉）。插件前端无 prettier/lint，靠 `build.sh {user,admin}` vite 编译为门。
+- **前端**：系统设置 tab 顺序固定为「部署目标 / 云凭证 / 部署历史」。user/admin 订单详情和系统设置都支持部署目标新增、编辑、删除、启停、推送、记录；订单详情表单隐藏订单字段并隐式提交当前订单，admin 订单详情使用订单 `user_id` 限定凭证并对齐 user 订单详情的表格样式/记录弹窗，系统设置表单用 `ReRemoteSelect` 远程搜索订单。admin 系统设置表单先远程选择用户，再按该用户限定凭证和订单；凭证选项显示 `凭证名(云平台) · 用户名`。admin 部署目标列表只展示组合搜索（订单号/域名/用户名/凭证名）以及状态/启用筛选，结构化单项筛选可以保留在接口契约中供外部调用。部署目标表单核心实现统一放在 `plugins/cloud-deploy/frontend/shared/TargetForm.vue`，user/admin 端 `src/components/TargetForm.vue` 只做 API 适配和模式透传，禁止再复制一份表单状态/校验/提交逻辑。推送记录弹窗 `is_final` 默认传 `1`——非 JS `true`，qs 序列化 `true`→`"true"` 不被 Laravel `boolean` 规则接受会 422。插件前端无 prettier/lint，靠 `build.sh {user,admin}` vite 编译为门。

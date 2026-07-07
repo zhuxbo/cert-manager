@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use Plugins\CloudDeploy\Controllers\User\AccessController;
 use Plugins\CloudDeploy\Controllers\User\DeployController;
 use Plugins\CloudDeploy\Controllers\User\LogController;
+use Plugins\CloudDeploy\Controllers\User\OrderOptionController;
 use Plugins\CloudDeploy\Controllers\User\ProviderController;
 use Plugins\CloudDeploy\Controllers\User\TargetController;
 
@@ -24,6 +25,9 @@ Route::prefix('api')->middleware(['global', 'api.user'])->group(function () {
         Route::get('log', [LogController::class, 'index']);
 
         Route::get('providers', [ProviderController::class, 'index']);
+
+        Route::get('order-options', [OrderOptionController::class, 'index']);
+        Route::get('order-options/{order}', [OrderOptionController::class, 'show'])->where('order', '[0-9]+');
 
         Route::post('deploy', [DeployController::class, 'deploy']);
     });
