@@ -9,6 +9,8 @@ import {
   uninstallPlugin,
   getPluginOperations,
   failStalePluginOperation,
+  retryPluginOperation,
+  uninstallFailedPluginOperation,
   type PluginInfo,
   type PluginOperation,
   type PluginUpdateInfo
@@ -39,6 +41,7 @@ const updates = ref<Record<string, PluginUpdateInfo>>({});
 const loading = ref(false);
 const checkingUpdates = ref(false);
 const operating = ref<string | null>(null);
+const operatingOperation = ref<string | null>(null);
 const operations = ref<PluginOperation[]>([]);
 const notifiedTerminals = new Set<string>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -68,9 +71,30 @@ const activeOperationByPlugin = computed<Record<string, PluginOperation>>(
   }
 );
 
+const failedOperationByPlugin = computed<Record<string, PluginOperation>>(
+  () => {
+    const map: Record<string, PluginOperation> = {};
+    for (const op of operations.value) {
+      if (op.status === "failed" && !map[op.plugin_name]) {
+        map[op.plugin_name] = op;
+      }
+    }
+    return map;
+  }
+);
+
 const activeOperations = computed(() =>
   operations.value.filter(
     op => op.status === "queued" || op.status === "running"
+  )
+);
+
+const displayOperations = computed(() =>
+  operations.value.filter(
+    op =>
+      op.status === "queued" ||
+      op.status === "running" ||
+      op.status === "failed"
   )
 );
 
@@ -80,6 +104,14 @@ const getActiveOperation = (name: string): PluginOperation | null => {
 
 const hasActiveOperation = (name: string): boolean => {
   return !!getActiveOperation(name);
+};
+
+const getFailedOperation = (name: string): PluginOperation | null => {
+  return failedOperationByPlugin.value[name] || null;
+};
+
+const hasFailedOperation = (name: string): boolean => {
+  return !!getFailedOperation(name);
 };
 
 const operationLabel = (op: PluginOperation): string => {
@@ -199,6 +231,12 @@ const handleInstall = async () => {
         message("请输入插件名称", { type: "warning" });
         return;
       }
+      if (hasFailedOperation(installForm.value.name)) {
+        message("该插件上次安装或更新失败，请在失败记录中重试或卸载", {
+          type: "warning"
+        });
+        return;
+      }
       if (hasActiveOperation(installForm.value.name)) {
         message("该插件已有安装或更新任务正在执行", { type: "warning" });
         return;
@@ -224,6 +262,12 @@ const handleInstall = async () => {
 const handleUpdate = async (name: string) => {
   if (hasActiveOperation(name)) {
     message("该插件已有安装或更新任务正在执行", { type: "warning" });
+    return;
+  }
+  if (hasFailedOperation(name)) {
+    message("该插件上次安装或更新失败，请在失败记录中重试或卸载", {
+      type: "warning"
+    });
     return;
   }
   operating.value = name;
@@ -280,6 +324,56 @@ const handleFailStale = async (op: PluginOperation) => {
   message(data.operation.message || "插件任务已标记失败", { type: "warning" });
 };
 
+const canRetryOperation = (op: PluginOperation): boolean => {
+  return (
+    op.status === "failed" &&
+    (op.type === "install_remote" || op.type === "update")
+  );
+};
+
+const isFailedInstallOperation = (op: PluginOperation): boolean => {
+  return (
+    op.status === "failed" &&
+    (op.type === "install_remote" || op.type === "install_upload")
+  );
+};
+
+const canUninstallFailedOperation = isFailedInstallOperation;
+
+const handleRetryOperation = async (op: PluginOperation) => {
+  operatingOperation.value = `${op.uuid}:retry`;
+  try {
+    const { data } = await retryPluginOperation(op.uuid);
+    const index = operations.value.findIndex(item => item.uuid === op.uuid);
+    if (index >= 0) {
+      operations.value.splice(index, 1, data.operation);
+    } else {
+      operations.value.unshift(data.operation);
+    }
+    message(data.operation.message || "插件任务已重新加入队列", {
+      type: "success"
+    });
+    startPolling();
+  } finally {
+    operatingOperation.value = null;
+  }
+};
+
+const handleUninstallFailedOperation = async (op: PluginOperation) => {
+  operatingOperation.value = `${op.uuid}:uninstall`;
+  try {
+    const { data } = await uninstallFailedPluginOperation(op.uuid);
+    operations.value = operations.value.filter(
+      item =>
+        item.plugin_name !== op.plugin_name || !isFailedInstallOperation(item)
+    );
+    message(data.message || "插件失败安装记录已清理", { type: "success" });
+    await loadPlugins();
+  } finally {
+    operatingOperation.value = null;
+  }
+};
+
 // 重置安装表单
 const resetInstallForm = () => {
   installForm.value = { name: "", release_url: "" };
@@ -328,14 +422,14 @@ onBeforeUnmount(() => {
       </div>
     </el-card>
 
-    <el-card v-if="operations.length" class="mb-4">
+    <el-card v-if="displayOperations.length" class="mb-4">
       <div class="space-y-3">
         <div
-          v-for="op in operations"
+          v-for="op in displayOperations"
           :key="op.uuid"
           class="flex items-center justify-between gap-4 border-b last:border-b-0 pb-3 last:pb-0"
         >
-          <div class="min-w-0">
+          <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-1">
               <span class="font-medium">{{ op.plugin_name }}</span>
               <el-tag size="small">{{ operationLabel(op) }}</el-tag>
@@ -353,17 +447,48 @@ onBeforeUnmount(() => {
               {{ op.updated_at || op.created_at }}
             </div>
           </div>
-          <el-button
-            v-if="
-              (op.status === 'queued' || op.status === 'running') && op.is_stale
-            "
-            size="small"
-            type="danger"
-            plain
-            @click="handleFailStale(op)"
-          >
-            标记失败
-          </el-button>
+          <div class="flex shrink-0 items-center gap-2">
+            <el-button
+              v-if="canRetryOperation(op)"
+              size="small"
+              type="primary"
+              plain
+              :loading="operatingOperation === `${op.uuid}:retry`"
+              @click="handleRetryOperation(op)"
+            >
+              重试
+            </el-button>
+            <el-popconfirm
+              v-if="canUninstallFailedOperation(op)"
+              title="确定清理该插件的失败安装记录吗？"
+              confirm-button-text="卸载"
+              cancel-button-text="取消"
+              @confirm="handleUninstallFailedOperation(op)"
+            >
+              <template #reference>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :loading="operatingOperation === `${op.uuid}:uninstall`"
+                >
+                  卸载
+                </el-button>
+              </template>
+            </el-popconfirm>
+            <el-button
+              v-if="
+                (op.status === 'queued' || op.status === 'running') &&
+                op.is_stale
+              "
+              size="small"
+              type="danger"
+              plain
+              @click="handleFailStale(op)"
+            >
+              标记失败
+            </el-button>
+          </div>
         </div>
       </div>
     </el-card>
@@ -397,6 +522,13 @@ onBeforeUnmount(() => {
               >
                 {{ getActiveOperation(plugin.name)?.message || "任务执行中" }}
               </el-tag>
+              <el-tag
+                v-if="getFailedOperation(plugin.name)"
+                type="danger"
+                size="small"
+              >
+                上次任务失败
+              </el-tag>
             </div>
             <div v-if="plugin.description" class="text-gray-500 text-sm mb-2">
               {{ plugin.description }}
@@ -420,7 +552,10 @@ onBeforeUnmount(() => {
                 operating === plugin.name ||
                 getActiveOperation(plugin.name)?.status === 'running'
               "
-              :disabled="hasActiveOperation(plugin.name)"
+              :disabled="
+                hasActiveOperation(plugin.name) ||
+                hasFailedOperation(plugin.name)
+              "
               @click="handleUpdate(plugin.name)"
             >
               更新

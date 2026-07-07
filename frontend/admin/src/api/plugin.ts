@@ -120,6 +120,24 @@ export function failStalePluginOperation(
   );
 }
 
+export function retryPluginOperation(
+  uuid: string
+): Promise<BaseResponse<{ operation: PluginOperation }>> {
+  return http.request<BaseResponse<{ operation: PluginOperation }>>(
+    "post",
+    `/plugin/operations/${uuid}/retry`
+  );
+}
+
+export function uninstallFailedPluginOperation(
+  uuid: string
+): Promise<BaseResponse<PluginActionResult>> {
+  return http.request<BaseResponse<PluginActionResult>>(
+    "post",
+    `/plugin/operations/${uuid}/uninstall`
+  );
+}
+
 // 卸载插件
 export function uninstallPlugin(
   name: string,

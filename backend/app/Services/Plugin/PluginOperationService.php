@@ -16,6 +16,11 @@ class PluginOperationService
 {
     private const LOCK_PREFIX = 'plugin_operation:mutex:';
 
+    private const RETRYABLE_TYPES = [
+        PluginOperation::TYPE_INSTALL_REMOTE,
+        PluginOperation::TYPE_UPDATE,
+    ];
+
     public function __construct(
         private PluginZipInspector $zipInspector,
     ) {}
@@ -28,7 +33,7 @@ class PluginOperationService
 
         return $this->withPluginMutex($name, function () use ($adminId, $name, $releaseUrl, $version) {
             return DB::transaction(function () use ($adminId, $name, $releaseUrl, $version) {
-                $this->assertNoActiveOperation($name);
+                $this->assertNoBlockingOperation($name);
 
                 return PluginOperation::create([
                     'uuid' => (string) Str::uuid(),
@@ -69,7 +74,7 @@ class PluginOperationService
 
             return $this->withPluginMutex($name, function () use ($adminId, $name, $meta, $fullPath, &$movedUploadPath) {
                 return DB::transaction(function () use ($adminId, $name, $meta, $fullPath, &$movedUploadPath) {
-                    $this->assertNoActiveOperation($name);
+                    $this->assertNoBlockingOperation($name);
 
                     $uuid = (string) Str::uuid();
                     $dir = storage_path("app/plugin-operations/$uuid");
@@ -112,7 +117,7 @@ class PluginOperationService
 
         return $this->withPluginMutex($name, function () use ($adminId, $name, $version) {
             return DB::transaction(function () use ($adminId, $name, $version) {
-                $this->assertNoActiveOperation($name);
+                $this->assertNoBlockingOperation($name);
 
                 return PluginOperation::create([
                     'uuid' => (string) Str::uuid(),
@@ -133,7 +138,11 @@ class PluginOperationService
         $this->cleanupFinishedUploads();
 
         return PluginOperation::query()
-            ->whereIn('status', [PluginOperation::STATUS_QUEUED, PluginOperation::STATUS_RUNNING])
+            ->whereIn('status', [
+                PluginOperation::STATUS_QUEUED,
+                PluginOperation::STATUS_RUNNING,
+                PluginOperation::STATUS_FAILED,
+            ])
             ->orWhere('created_at', '>=', now()->subDay())
             ->latest('id')
             ->limit(50)
@@ -161,6 +170,80 @@ class PluginOperationService
         if ($active) {
             throw new RuntimeException("插件 $pluginName 已有安装或更新任务正在执行，请稍后再试");
         }
+    }
+
+    public function assertNoBlockingOperation(string $pluginName): void
+    {
+        $blocking = PluginOperation::where('plugin_name', $pluginName)
+            ->whereIn('status', [
+                PluginOperation::STATUS_QUEUED,
+                PluginOperation::STATUS_RUNNING,
+                PluginOperation::STATUS_FAILED,
+            ])
+            ->latest('id')
+            ->first();
+
+        if (! $blocking) {
+            return;
+        }
+
+        if ($blocking->status === PluginOperation::STATUS_FAILED) {
+            throw new RuntimeException("插件 $pluginName 上次安装或更新失败，请先重试或卸载");
+        }
+
+        throw new RuntimeException("插件 $pluginName 已有安装或更新任务正在执行，请稍后再试");
+    }
+
+    public function retryFailed(PluginOperation $operation): PluginOperation
+    {
+        if ($operation->status !== PluginOperation::STATUS_FAILED) {
+            throw new RuntimeException('只能重试失败的插件任务');
+        }
+
+        if (! in_array($operation->type, self::RETRYABLE_TYPES, true)) {
+            throw new RuntimeException('上传安装失败记录不能直接重试，请重新上传 ZIP 文件');
+        }
+
+        $this->assertConfigSafe();
+
+        return $this->withPluginMutex($operation->plugin_name, function () use ($operation) {
+            return DB::transaction(function () use ($operation) {
+                $current = PluginOperation::whereKey($operation->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if ($current->status !== PluginOperation::STATUS_FAILED) {
+                    throw new RuntimeException('只能重试失败的插件任务');
+                }
+
+                $this->assertNoActiveOperation($current->plugin_name);
+
+                $current->forceFill([
+                    'status' => PluginOperation::STATUS_QUEUED,
+                    'stage' => PluginOperation::STAGE_QUEUED,
+                    'message' => '插件任务已重新加入队列',
+                    'error' => null,
+                    'result' => null,
+                    'run_token' => null,
+                    'last_heartbeat_at' => null,
+                    'started_at' => null,
+                    'finished_at' => null,
+                ])->save();
+
+                return $current->refresh();
+            });
+        });
+    }
+
+    public function clearFailedInstallsForPlugin(string $pluginName): int
+    {
+        return PluginOperation::where('plugin_name', $pluginName)
+            ->where('status', PluginOperation::STATUS_FAILED)
+            ->whereIn('type', [
+                PluginOperation::TYPE_INSTALL_REMOTE,
+                PluginOperation::TYPE_INSTALL_UPLOAD,
+            ])
+            ->delete();
     }
 
     public function beginRunning(PluginOperation $operation): ?string

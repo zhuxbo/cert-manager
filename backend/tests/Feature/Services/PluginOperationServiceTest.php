@@ -77,6 +77,27 @@ test('failStale 允许恢复超时 queued 任务', function () {
         ->and($failed->run_token)->toBeNull();
 });
 
+test('listVisible 始终返回失败任务以便用户重试或卸载', function () {
+    $operation = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 依赖安装失败',
+        'error' => '插件 cloud-deploy 依赖安装失败',
+        'finished_at' => now()->subDays(2),
+    ]);
+    $operation->forceFill([
+        'created_at' => now()->subDays(2),
+        'updated_at' => now()->subDays(2),
+    ])->save();
+
+    $visible = app(PluginOperationService::class)->listVisible();
+
+    expect(collect($visible)->pluck('uuid')->all())->toContain($operation->uuid);
+});
+
 test('assertConfigSafe 将 migrate seed rollback 三段 artisan 预算计入 operation timeout', function () {
     config()->set('queue.default', 'database');
     config()->set('queue.connections.database.retry_after', 600);

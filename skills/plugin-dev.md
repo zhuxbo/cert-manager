@@ -418,6 +418,10 @@ bash plugins/release-plugin.sh {name} --remote --server cn
 
 系统管理 → 插件管理页面操作。
 
+页面只展示执行中和失败的插件任务，成功安装/更新只刷新插件列表、不保留成功记录。安装/更新任务失败后，同插件会被失败记录阻塞，避免重复创建安装任务；管理员需在失败记录上选择「重试」重新入队，或选择「卸载」清理失败安装记录。
+
+带 `backend/composer.json` 的插件安装/更新时会在插件 `backend/` 目录内运行 `composer install --no-dev --no-interaction --optimize-autoloader --no-scripts`。`PluginComposerRunner` 会为 Composer 子进程显式设置 `HOME`、`COMPOSER_HOME` 和 `COMPOSER_CACHE_DIR` 到 `storage/app/plugin-composer`，不要依赖队列/FPM 环境自带 HOME。
+
 ### API
 
 | 操作       | 端点                                  | 参数                                                 |

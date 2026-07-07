@@ -233,6 +233,157 @@ test('存在活动插件任务时拒绝重复安装更新和卸载', function ()
     Queue::assertNothingPushed();
 });
 
+test('存在失败插件任务时拒绝普通安装并提示重试或卸载', function () {
+    PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 依赖安装失败',
+        'error' => '插件 cloud-deploy 依赖安装失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/plugin/install', [
+        'name' => 'cloud-deploy',
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($response->json('msg'))->toContain('重试或卸载');
+
+    expect(PluginOperation::where('plugin_name', 'cloud-deploy')->count())->toBe(1);
+    Queue::assertNothingPushed();
+});
+
+test('管理员可以重试失败的远程插件安装任务', function () {
+    $operation = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'version' => '0.1.0',
+        'release_url' => 'https://example.com/plugins/cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 依赖安装失败',
+        'error' => '插件 cloud-deploy 依赖安装失败',
+        'admin_id' => $this->admin->id,
+        'attempts' => 1,
+        'run_token' => 'old-token',
+        'last_heartbeat_at' => now()->subMinute(),
+        'started_at' => now()->subMinutes(2),
+        'finished_at' => now()->subMinute(),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/plugin/operations/$operation->uuid/retry");
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.operation.uuid'))->toBe($operation->uuid)
+        ->and($response->json('data.operation.status'))->toBe(PluginOperation::STATUS_QUEUED);
+
+    $operation->refresh();
+    expect($operation->status)->toBe(PluginOperation::STATUS_QUEUED)
+        ->and($operation->stage)->toBe(PluginOperation::STAGE_QUEUED)
+        ->and($operation->error)->toBeNull()
+        ->and($operation->run_token)->toBeNull()
+        ->and($operation->finished_at)->toBeNull()
+        ->and(PluginOperation::where('plugin_name', 'cloud-deploy')->count())->toBe(1);
+
+    Queue::assertPushed(PluginOperationJob::class, fn (PluginOperationJob $job) => $job->operationUuid === $operation->uuid
+        && $job->queue === config('queue.names.tasks'));
+});
+
+test('管理员可以卸载失败的安装任务并清理同插件失败记录', function () {
+    $first = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 依赖安装失败',
+        'error' => '插件 cloud-deploy 依赖安装失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '该插件要求系统版本 >=0.6.3',
+        'error' => '该插件要求系统版本 >=0.6.3',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/plugin/operations/$first->uuid/uninstall");
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.name'))->toBe('cloud-deploy')
+        ->and($response->json('data.message'))->toContain('已清理');
+
+    expect(PluginOperation::where('plugin_name', 'cloud-deploy')->exists())->toBeFalse();
+});
+
+test('清理失败安装记录时拒绝更新任务并保留更新失败记录', function () {
+    $operation = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_UPDATE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 更新失败',
+        'error' => '插件 cloud-deploy 更新失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/plugin/operations/$operation->uuid/uninstall");
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($response->json('msg'))->toContain('更新失败任务只能重试')
+        ->and(PluginOperation::whereKey($operation->id)->exists())->toBeTrue();
+});
+
+test('清理失败安装记录不会删除同插件更新失败记录', function () {
+    $install = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 依赖安装失败',
+        'error' => '插件 cloud-deploy 依赖安装失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $update = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_UPDATE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 更新失败',
+        'error' => '插件 cloud-deploy 更新失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/plugin/operations/$install->uuid/uninstall");
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect(PluginOperation::whereKey($install->id)->exists())->toBeFalse()
+        ->and(PluginOperation::whereKey($update->id)->exists())->toBeTrue();
+});
+
 test('管理员可以查看插件任务并标记 stale running 为失败', function () {
     config(['plugin.operations.stale_after' => 60]);
 

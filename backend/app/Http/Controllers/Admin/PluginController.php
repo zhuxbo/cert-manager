@@ -146,6 +146,58 @@ class PluginController extends BaseController
         $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
     }
 
+    public function retryOperation(string $uuid): void
+    {
+        $operation = $this->pluginOperations->findVisible($uuid);
+
+        try {
+            $operation = $this->pluginOperations->retryFailed($operation);
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
+
+        $this->dispatchOperation($operation);
+
+        $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
+    }
+
+    public function uninstallFailedOperation(string $uuid): void
+    {
+        $operation = $this->pluginOperations->findVisible($uuid);
+        $pluginName = $operation->plugin_name;
+
+        if ($operation->status !== PluginOperation::STATUS_FAILED) {
+            $this->error('只能卸载失败的插件任务');
+        }
+
+        if (! in_array($operation->type, [
+            PluginOperation::TYPE_INSTALL_REMOTE,
+            PluginOperation::TYPE_INSTALL_UPLOAD,
+        ], true)) {
+            $this->error('更新失败任务只能重试，不能卸载');
+        }
+
+        try {
+            $this->pluginOperations->assertNoActiveOperation($pluginName);
+            $removed = $this->pluginOperations->withPluginMutex(
+                $pluginName,
+                fn () => $this->pluginOperations->clearFailedInstallsForPlugin($pluginName)
+            );
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
+
+        $message = $removed > 0
+            ? "插件 $pluginName 失败安装记录已清理，可重新安装"
+            : "插件 $pluginName 没有需要清理的失败记录";
+
+        $this->success([
+            'name' => $pluginName,
+            'remove_data' => false,
+            'message' => $message,
+        ]);
+    }
+
     private function dispatchOperation(PluginOperation $operation): void
     {
         try {

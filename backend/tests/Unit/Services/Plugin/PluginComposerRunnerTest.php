@@ -14,6 +14,7 @@ afterEach(function () {
     foreach (glob(sys_get_temp_dir().'/pcr-test-*') as $dir) {
         File::deleteDirectory($dir);
     }
+    File::deleteDirectory(storage_path('app/plugin-composer'));
 });
 
 /**
@@ -110,6 +111,34 @@ test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路
     expect($cmd)->toContain(escapeshellarg("$pluginDir/backend"));
     // composer 前缀原样拼入
     expect($cmd)->toContain("'/usr/bin/php' '/usr/local/bin/composer'");
+});
+
+test('runShell 为 composer 子进程提供可写 HOME 和 COMPOSER_HOME', function () {
+    $runner = new class(Mockery::mock(BinaryLocator::class), passingPreflight()) extends PluginComposerRunner
+    {
+        public function exposeRunShell(string $command): array
+        {
+            return $this->runShell($command);
+        }
+    };
+
+    $script = <<<'PHP'
+echo getenv('HOME')."\n";
+echo getenv('COMPOSER_HOME')."\n";
+echo getenv('COMPOSER_CACHE_DIR')."\n";
+PHP;
+
+    [$exitCode, $output] = $runner->exposeRunShell(
+        escapeshellarg(PHP_BINARY).' -r '.escapeshellarg($script)
+    );
+
+    expect($exitCode)->toBe(0);
+    expect(explode("\n", trim($output)))->toBe([
+        storage_path('app/plugin-composer'),
+        storage_path('app/plugin-composer'),
+        storage_path('app/plugin-composer/cache'),
+    ]);
+    expect(is_dir(storage_path('app/plugin-composer/cache')))->toBeTrue();
 });
 
 test('install composer install 退出码非 0 时抛明确错误', function () {

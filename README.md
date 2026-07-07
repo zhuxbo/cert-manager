@@ -175,6 +175,12 @@ certbot certonly --server <directory_url> \
 
 Web 端支持两步创建：先建立订阅（unpaid → pending），再从详情页提交到上游激活（active）。详情页展示 directory URL / EAB KID / EAB HMAC，每项可一键复制。列表页支持批量查看（聚合详情页 v-for 渲染，URL 可分享）、批量支付、提交、同步、取消、撤回取消、复制 EAB 等批量操作。
 
+## 插件管理
+
+管理端「插件管理」支持异步安装、更新、卸载和检查更新。页面仅展示执行中和失败的插件任务；安装/更新成功后刷新插件列表，不保留成功安装记录。安装/更新失败后，同插件不会继续创建重复安装任务，需在失败记录上选择「重试」重新入队，或选择「卸载」清理失败安装记录后再重新安装。
+
+带 `backend/composer.json` 的插件会在安装/更新时自动运行 `composer install --no-dev` 安装运行时依赖；Composer 子进程使用 `storage/app/plugin-composer` 作为 home/cache，避免队列环境缺少 `HOME` 导致安装失败。
+
 ## 文档
 
 | 文档                               | 说明                                                                |

@@ -6,6 +6,7 @@ use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Composer\ComposerMirror;
 use App\Services\Upgrade\UpgradePreflight;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
@@ -171,7 +172,7 @@ class PluginComposerRunner
      */
     protected function runShell(string $command): array
     {
-        $process = Process::fromShellCommandline($command);
+        $process = Process::fromShellCommandline($command, null, $this->composerProcessEnv());
         $process->setTimeout((float) config('plugin.composer.timeout', 210));
 
         try {
@@ -183,6 +184,27 @@ class PluginComposerRunner
         }
 
         return [$process->getExitCode() ?? 1, trim($process->getOutput()."\n".$process->getErrorOutput())];
+    }
+
+    /**
+     * 队列 / FPM 启动环境可能没有 HOME。Composer 没有 HOME/COMPOSER_HOME 会在
+     * Factory 初始化阶段直接退出，连依赖下载都不会开始。
+     */
+    protected function composerProcessEnv(): array
+    {
+        $home = storage_path('app/plugin-composer');
+        $cache = "$home/cache";
+
+        if (! File::isDirectory($cache)) {
+            File::makeDirectory($cache, 0755, true);
+        }
+
+        return [
+            'HOME' => $home,
+            'COMPOSER_HOME' => $home,
+            'COMPOSER_CACHE_DIR' => $cache,
+            'COMPOSER_ALLOW_SUPERUSER' => '1',
+        ];
     }
 
     /**
