@@ -111,6 +111,8 @@ deploy/ # 部署脚本
 | 后端 | Laravel 13, PHP 8.3/8.4/8.5, MySQL, Redis (可选) |
 | 前端 | Vue 3, TypeScript, Element Plus, Vite            |
 
+运行时并发防护：订单/任务状态变更统一遵循 `task→order/acme` 锁顺序；任务锁查询统一经 Task 模型 scope `Task::lockForMutation` 强制走 `tasks(order_id, action, status)` 复合索引（与之同首列的单列 `order_id` 索引已在 schema 层删除，杜绝优化器退回扩大间隙锁），纯本地 task 变更事务（Order 与 ACME 共用重试助手）启用 3 次死锁重试，降低并发取消、同步时 MySQL 1213 对用户请求的影响。CI 同时守住 Task 锁入口收口、tasks 索引最终态和 scope 接线，防止复合索引或 forceIndex 保护回归。
+
 ## 自动化部署
 
 ### CNAME 委托

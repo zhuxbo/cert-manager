@@ -14,6 +14,7 @@ use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
@@ -490,6 +491,37 @@ test('revokeCancel rejects when order not in cancelling status', function () {
         fn () => $this->service->revokeCancel($acme->id),
         '订单不在取消中状态'
     );
+});
+
+test('revokeCancel 锁 cancel_acme task 时强制使用复合索引（与 Order 侧统一）', function () {
+    Queue::fake();
+
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    createAcmeProductPrice($product->id, $user);
+
+    // 先进入 cancelling 并产生 cancel_acme task（revokeCancel 需锁的目标）
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-idx',
+        'amount' => '100.00',
+    ]);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = $query->sql;
+    });
+
+    expectApiSuccess(fn () => $this->service->revokeCancel($acme->id));
+
+    $lockSql = collect($queries)->first(fn (string $sql) => str_contains($sql, 'from `tasks`')
+        && str_contains($sql, 'for update'));
+
+    expect($lockSql)->not->toBeNull();
+    expect($lockSql)->toContain('force index (tasks_order_action_status_index)');
 });
 
 // ==================== cancelNow ====================

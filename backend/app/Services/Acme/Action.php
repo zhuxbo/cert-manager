@@ -15,6 +15,7 @@ use App\Services\Acme\Api\Api;
 use App\Services\Order\Utils\OrderUtil;
 use App\Support\MutexLock;
 use App\Traits\ApiResponse;
+use App\Traits\RunsTaskMutationTransaction;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +24,7 @@ class Action
 {
     use ApiResponse;
     use MutexLock;
+    use RunsTaskMutationTransaction;
 
     /**
      * 创建 ACME 订单（unpaid 状态）
@@ -430,13 +432,10 @@ class Action
      */
     public function revokeCancel(int $acmeId): void
     {
-        DB::transaction(function () use ($acmeId) {
+        $this->runTaskMutationTransaction(function () use ($acmeId) {
             // 锁顺序 1：先锁 task（与 TaskJob 一致，避免 task↔acme 循环等待死锁）
-            Task::where('order_id', $acmeId)
-                ->where('action', 'cancel_acme')
-                ->whereIn('status', ['executing', 'stopped'])
-                ->lockForUpdate()
-                ->get();
+            // Task::lockForMutation 强制复合索引 tasks_order_action_status_index（与 Order 侧统一）
+            Task::lockForMutation($acmeId, ['cancel_acme'])->get();
 
             // 锁顺序 2：再锁 acme
             $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
@@ -554,7 +553,7 @@ class Action
             // 锁内重取 + 终态守卫 + 写回：锁序 task→acme（sync_acme 经 TaskJob 已持 task 锁）。
             // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订阅复活。
             $directoryUrl = (string) ($data['directory_url'] ?? '');
-            $ca = DB::transaction(function () use ($acmeId, $data) {
+            $ca = $this->runTaskMutationTransaction(function () use ($acmeId, $data) {
                 $acme = Acme::where('id', $acmeId)->lock()->first();
                 if (! $acme) {
                     return '';
@@ -591,7 +590,7 @@ class Action
                 }
 
                 return (string) ($acme->product->ca ?? '');
-            }, 3); // attempts=3：与 Order sync 对齐；上游 get 在事务外，重试只重跑锁+写回，不重复调上游
+            }); // runTaskMutationTransaction 统一 attempts=3：与 Order sync 对齐；上游 get 在事务外，重试只重跑锁+写回，不重复调上游
         } catch (\Throwable $e) {
             Cache::forget($cacheKey);
             throw $e;

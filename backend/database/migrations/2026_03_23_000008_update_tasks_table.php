@@ -24,14 +24,7 @@ return new class extends Migration
                 $table->renameColumn('task_id', 'order_id');
             });
 
-            // 添加新的索引
-            try {
-                Schema::table('tasks', function (Blueprint $table) {
-                    $table->index('order_id');
-                });
-            } catch (Throwable) {
-                // ignore duplicated index
-            }
+            // order_id 单列索引已由后续复合索引覆盖；不在 legacy 路径重建它。
         } elseif (! Schema::hasColumn('tasks', 'order_id')) {
             // 如果 order_id 和 task_id 都不存在，则创建 order_id
             Schema::table('tasks', function (Blueprint $table) {
@@ -41,13 +34,7 @@ return new class extends Migration
                     ->comment('订单ID');
             });
 
-            try {
-                Schema::table('tasks', function (Blueprint $table) {
-                    $table->index('order_id');
-                });
-            } catch (Throwable) {
-                // ignore duplicated index
-            }
+            // order_id 单列索引已由后续复合索引覆盖；不在 legacy 路径重建它。
         }
     }
 

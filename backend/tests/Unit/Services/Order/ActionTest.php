@@ -12,8 +12,10 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
+use App\Traits\RunsTaskMutationTransaction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
@@ -384,6 +386,60 @@ test('commitCancel active + refund_period=30：cert.status=cancelling + 创建 c
         ->where('status', 'executing')
         ->first();
     expect($cancelTask)->not->toBeNull();
+});
+
+test('commitCancel active 锁 sync/revalidate task 时强制使用复合索引', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    [$order] = createOrderWithCertForAction('active');
+    Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'sync',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = $query->sql;
+    });
+
+    expectOrderApiSuccess(fn () => $this->service->commitCancel($order->id));
+
+    $lockSql = collect($queries)->first(fn (string $sql) => str_contains($sql, 'from `tasks`')
+        && str_contains($sql, 'for update'));
+
+    expect($lockSql)->not->toBeNull();
+    expect($lockSql)->toContain('force index (tasks_order_action_status_index)');
+});
+
+test('task 变更事务声明三次死锁重试', function () {
+    // 重试助手已下沉为共享 trait RunsTaskMutationTransaction（Order/Acme 共用），直接对 trait 断言 attempts=3 接线
+    $service = new class
+    {
+        use RunsTaskMutationTransaction;
+
+        public function runForTest(Closure $callback): mixed
+        {
+            return $this->runTaskMutationTransaction($callback);
+        }
+    };
+
+    $db = DB::getFacadeRoot();
+
+    DB::shouldReceive('transaction')
+        ->once()
+        ->with(Mockery::type(Closure::class), 3)
+        ->andReturnUsing(fn (Closure $callback, int $attempts) => $callback());
+
+    try {
+        $result = $service->runForTest(fn () => 'ok');
+    } finally {
+        DB::swap($db);
+    }
+
+    expect($result)->toBe('ok');
 });
 
 test('commitCancel active + refund_period=0：报错"订单已超过 0 天不能取消"', function () {

@@ -2,11 +2,16 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Task extends BaseModel
 {
     use HasFactory;
+
+    // 复合索引：(order_id, action, status)，收窄二级索引间隙锁范围，避免优化器退回
+    // 单列 order_id 索引导致的宽 next-key lock → 1213 死锁。锁查询一律强制走它。
+    public const TASK_LOCK_INDEX = 'tasks_order_action_status_index';
 
     protected $fillable = [
         'order_id',
@@ -37,5 +42,23 @@ class Task extends BaseModel
                 $model->update(['weight' => $model->id]);
             }
         });
+    }
+
+    /**
+     * 变更前锁定订单相关任务（FOR UPDATE）—— Order/ACME 变更事务共用
+     *
+     * 强制走复合索引 TASK_LOCK_INDEX 把间隙锁收窄到精确区间，配合统一锁顺序 task→order/acme 防死锁；
+     * select('id') 只取主键，FOR UPDATE 锁的是索引扫描到的记录，与 select 列表无关，避免水合 TEXT result 列。
+     * 调用形如 Task::lockForMutation($orderId, ['commit', 'sync'])->get();
+     */
+    public function scopeLockForMutation(Builder $query, int $orderId, array $actions): Builder
+    {
+        return $query
+            ->forceIndex(self::TASK_LOCK_INDEX)
+            ->where('order_id', $orderId)
+            ->whereIn('action', $actions)
+            ->whereIn('status', ['executing', 'stopped'])
+            ->select('id')
+            ->lockForUpdate();
     }
 }

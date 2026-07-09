@@ -15,6 +15,9 @@
 #     Z9  token_version 直写散落在 Models/{User,Admin}.php 之外   — 反模式 17
 #     Z10 插件后端 query(token|api_key|secret) 凭据进 URL         — 反模式 17
 #     Z11 > /dev/null 2>&1 丢 stderr（静默降级帮凶）              — 反模式 12
+#     Z12 Task 模型 lockForUpdate 逸出 Task/TaskJob 白名单        — 反模式 10
+#     Z13 Task 表索引最终态快照禁止回归                          — 反模式 10
+#     Z14 Task::lockForMutation 索引 hint 接线必须完整            — 反模式 10
 #   WARN（命中只列清单人工核对，不影响退出码）：
 #     W1  ->password = 赋值点（同方法须 revokeAllSessions，创建/注册豁免）— 反模式 17
 #     W2  Services registry 类 register() 未绑 singleton          — 反模式 2
@@ -168,6 +171,162 @@ z11_devnull_discard() {
     git grep -n '> /dev/null 2>&1' -- backend/app || true
 }
 
+z12_task_lockforupdate() {
+    # Task:: 起头的语句聚合到分号，若链中出现 lockForUpdate 即为「Task 模型直接 FOR UPDATE」；
+    # 仅允许 Task 模型 scope 定义（app/Models/Task.php）与 TaskJob 主键锁（app/Jobs/TaskJob.php）两处，
+    # 其余一律走 Task::lockForMutation scope（强制复合索引 + 统一锁顺序，防退回单列索引宽间隙锁 → 1213）。
+    # 触发词是 Task:: 而非 lockForUpdate：其他模型（Order/User/Acme）的 lockForUpdate 不以 Task:: 起头，零误报；
+    # Task::lockForMutation(...) 调用点不含 lockForUpdate 字面量，不误命中。
+    local files
+    files=$(git grep -l 'Task::' -- backend/app || true)
+    files=$(printf '%s\n' "$files" | grep -vE 'app/Models/Task\.php$|app/Jobs/TaskJob\.php$' || true)
+    [[ -z "$files" ]] && return 0
+    # shellcheck disable=SC2086
+    awk '/Task::/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ {
+        stmt = $0; line = FNR
+        while (stmt !~ /;/ && (getline nl) > 0) stmt = stmt nl
+        if (stmt ~ /lockForUpdate/) print FILENAME ":" line
+    }' $files
+}
+
+z13_task_structure_snapshot() {
+    local -a php_runner
+    local output status
+    if command -v php >/dev/null 2>&1; then
+        php_runner=(php)
+    elif command -v docker >/dev/null 2>&1 && docker compose exec -T app php -r 'exit(0);' >/dev/null 2>&1; then
+        php_runner=(docker compose exec -T app php)
+    else
+        echo "backend/database/structure.json: php unavailable; cannot verify tasks indexes"
+        return 0
+    fi
+
+    output="$(
+        "${php_runner[@]}" <<'PHP'
+<?php
+
+$label = 'backend/database/structure.json';
+$path = $label;
+if (! is_file($path) && is_file('database/structure.json')) {
+    $path = 'database/structure.json';
+}
+$target = 'tasks_order_action_status_index';
+$expectedColumns = ['order_id', 'action', 'status'];
+
+function z13_fail(string $message): void
+{
+    echo $message, PHP_EOL;
+}
+
+if (! is_file($path)) {
+    z13_fail("$label: missing file");
+    exit(0);
+}
+
+$json = file_get_contents($path);
+if ($json === false) {
+    z13_fail("$label: cannot read file");
+    exit(0);
+}
+
+$data = json_decode($json, true);
+if (json_last_error() !== JSON_ERROR_NONE) {
+    z13_fail("$label: invalid json: ".json_last_error_msg());
+    exit(0);
+}
+
+$indexes = $data['tables']['tasks']['indexes'] ?? null;
+if (! is_array($indexes)) {
+    z13_fail("$label: missing tables.tasks.indexes");
+    exit(0);
+}
+
+$targetIndex = $indexes[$target] ?? null;
+if (! is_array($targetIndex)) {
+    z13_fail("$label: missing tables.tasks.indexes.$target");
+} else {
+    if (($targetIndex['unique'] ?? null) !== false) {
+        $actual = json_encode($targetIndex['unique'] ?? null, JSON_UNESCAPED_SLASHES);
+        z13_fail("$label: $target must be non-unique, got unique=$actual");
+    }
+
+    $columns = $targetIndex['columns'] ?? null;
+    if ($columns !== $expectedColumns) {
+        $actual = json_encode($columns, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        z13_fail("$label: $target columns must be [order_id,action,status], got $actual");
+    }
+}
+
+foreach ($indexes as $name => $index) {
+    if (! is_array($index)) {
+        z13_fail("$label: tables.tasks.indexes.$name must be an object");
+        continue;
+    }
+
+    $columns = $index['columns'] ?? null;
+    if (! is_array($columns)) {
+        z13_fail("$label: tables.tasks.indexes.$name.columns must be an array");
+        continue;
+    }
+
+    if (($columns[0] ?? null) === 'order_id' && $name !== $target) {
+        $actual = implode(',', $columns);
+        z13_fail("$label: forbidden tasks order_id-leading index $name($actual)");
+    }
+}
+PHP
+    )"
+    status=$?
+    printf '%s\n' "$output"
+
+    if [[ $status -ne 0 ]]; then
+        echo "backend/database/structure.json: php execution failed; cannot verify tasks indexes"
+    fi
+}
+
+z14_task_lock_scope_wiring() {
+    local file="backend/app/Models/Task.php"
+    if [[ ! -f "$file" ]]; then
+        echo "$file: missing file"
+        return 0
+    fi
+
+    if ! grep -Fq "public const TASK_LOCK_INDEX = 'tasks_order_action_status_index';" "$file"; then
+        echo "$file: TASK_LOCK_INDEX must equal tasks_order_action_status_index"
+    fi
+
+    local method
+    method=$(awk '
+        /function scopeLockForMutation\(/ { capture = 1 }
+        capture { print }
+        capture && /^[[:space:]]*}[[:space:]]*$/ { exit }
+    ' "$file")
+
+    if [[ -z "$method" ]]; then
+        echo "$file: missing scopeLockForMutation"
+        return 0
+    fi
+
+    if ! printf '%s\n' "$method" | grep -Fq -- "->forceIndex(self::TASK_LOCK_INDEX)"; then
+        echo "$file: scopeLockForMutation missing forceIndex(self::TASK_LOCK_INDEX)"
+    fi
+    if ! printf '%s\n' "$method" | grep -Fq -- "->where('order_id', \$orderId)"; then
+        echo "$file: scopeLockForMutation missing where('order_id', \$orderId)"
+    fi
+    if ! printf '%s\n' "$method" | grep -Fq -- "->whereIn('action', \$actions)"; then
+        echo "$file: scopeLockForMutation missing whereIn('action', \$actions)"
+    fi
+    if ! printf '%s\n' "$method" | grep -Fq -- "->whereIn('status', ['executing', 'stopped'])"; then
+        echo "$file: scopeLockForMutation missing whereIn('status', ['executing', 'stopped'])"
+    fi
+    if ! printf '%s\n' "$method" | grep -Fq -- "->select('id')"; then
+        echo "$file: scopeLockForMutation missing select('id')"
+    fi
+    if ! printf '%s\n' "$method" | grep -Fq -- "->lockForUpdate()"; then
+        echo "$file: scopeLockForMutation missing lockForUpdate()"
+    fi
+}
+
 # ---------- WARN 项 ----------
 
 w1_password_assign() {
@@ -211,6 +370,9 @@ chk_zero "Z8 Cache::forget 释放 LOCK 常量（反模式 20）" z8_cache_forget
 chk_zero "Z9 token_version 直写在单点之外（反模式 17）" z9_token_version_inline_write
 chk_zero "Z10 插件后端 query(token|api_key|secret)（反模式 17）" z10_plugins_token_query
 chk_zero "Z11 > /dev/null 2>&1 丢 stderr（反模式 12）" z11_devnull_discard
+chk_zero "Z12 Task 模型 lockForUpdate 逸出 Task/TaskJob 白名单（反模式 10）" z12_task_lockforupdate
+chk_zero "Z13 Task 表索引最终态快照禁止回归（反模式 10）" z13_task_structure_snapshot
+chk_zero "Z14 Task::lockForMutation 索引 hint 接线必须完整（反模式 10）" z14_task_lock_scope_wiring
 
 chk_warn "W1 ->password = 赋值点须同方法 revokeAllSessions（反模式 17）" w1_password_assign
 chk_warn "W2 Services registry 类未绑 singleton（反模式 2）" w2_registry_singleton

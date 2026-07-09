@@ -11,7 +11,9 @@ return new class extends Migration
         if (! Schema::hasTable('tasks')) {
             Schema::create('tasks', function (Blueprint $table) {
                 $table->id();
-                $table->unsignedBigInteger('order_id')->index()->comment('订单ID');
+                // order_id 不建单列索引：与下方复合索引同首列（左前缀覆盖），
+                // 单列索引体积更小会被优化器退回、扩大间隙锁范围 → 1213 死锁（见 2026_07_08 drop 迁移）
+                $table->unsignedBigInteger('order_id')->comment('订单ID');
                 $table->string('action', 50)->index()->comment('任务动作');
                 $table->text('result')->nullable()->comment('执行结果');
                 $table->integer('attempts')->default(0)->comment('执行次数');

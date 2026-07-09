@@ -28,6 +28,7 @@ use App\Services\Order\Utils\OrderUtil;
 use App\Services\Order\Utils\VerifyUtil;
 use App\Support\MutexLock;
 use App\Traits\ApiResponse;
+use App\Traits\RunsTaskMutationTransaction;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Throwable;
@@ -41,6 +42,7 @@ class Action
     use ActionTrait;
     use ApiResponse;
     use MutexLock;
+    use RunsTaskMutationTransaction;
 
     protected mixed $api;
 
@@ -564,13 +566,9 @@ class Action
         // 否则与 commitCancel(锁 sync,revalidate→order)/refundForSyncedCancel 反序，task 集合相交触发 InnoDB 死锁。
         // 经 TaskJob 调用时 TaskJob 已先持本 task 行锁（同事务 lockForUpdate 可重入），叠加后整体仍是 task→order，不反序。
         // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订单复活。
-        DB::transaction(function () use ($orderId, $order, $cert, $user, $data, $suppressCallback) {
+        $this->runTaskMutationTransaction(function () use ($orderId, $order, $cert, $user, $data, $suppressCallback) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
-            Task::where('order_id', $orderId)
-                ->whereIn('action', ['commit', 'sync', 'revalidate'])
-                ->whereIn('status', ['executing', 'stopped'])
-                ->lockForUpdate()
-                ->get();
+            Task::lockForMutation($orderId, ['commit', 'sync', 'revalidate'])->get();
 
             // 锁顺序 2：再锁 order。
             $lockedOrder = Order::with(['latestCert'])
@@ -633,7 +631,7 @@ class Action
             // 写回目标 cert A（外层 $cert 即 A 同一行）：终态时上面已 unset $data['status']，
             // 故并发重签下不会复活 A；$cert 在 sync 内未被改动，update 仅写 $data 键，无 stale 回写风险。
             $cert->update($data);
-        }, 3); // attempts=3：controller 直调时本事务为最外层，死锁/锁超时自动重试（上游 get 在事务外，重试只重跑锁+写回，安全）；
+        }); // attempts=3：controller 直调时本事务为最外层，死锁/锁超时自动重试（上游 get 在事务外，重试只重跑锁+写回，安全）；
         // 经 TaskJob 调用时为嵌套事务，Laravel 直接抛 DeadlockException 到外层，由 TaskJob job 级重试兜底
 
         // 强制更新不返回提示（success 抛 ApiResponseException 须在事务闭包外）
@@ -873,13 +871,9 @@ class Action
         $status === 'failed' && $this->error('订单已失败');
 
         if (in_array($status, ['processing', 'approving', 'active'])) {
-            DB::transaction(function () use ($orderId, $product) {
+            $this->runTaskMutationTransaction(function () use ($orderId, $product) {
                 // 锁顺序 1：先锁 sync/revalidate task（与 TaskJob::handle 的 task→order 顺序一致，避免死锁）
-                Task::where('order_id', $orderId)
-                    ->whereIn('action', ['sync', 'revalidate'])
-                    ->whereIn('status', ['executing', 'stopped'])
-                    ->lockForUpdate()
-                    ->get();
+                Task::lockForMutation($orderId, ['sync', 'revalidate'])->get();
 
                 // 锁顺序 2：再锁 order
                 $order = Order::with(['latestCert'])
@@ -974,13 +968,9 @@ class Action
      */
     public function revokeCancel(int $orderId): void
     {
-        DB::transaction(function () use ($orderId) {
+        $this->runTaskMutationTransaction(function () use ($orderId) {
             // 锁顺序 1：先锁 task（与 TaskJob 一致，避免 task↔order 循环等待死锁）
-            Task::where('order_id', $orderId)
-                ->where('action', 'cancel')
-                ->whereIn('status', ['executing', 'stopped'])
-                ->lockForUpdate()
-                ->get();
+            Task::lockForMutation($orderId, ['cancel'])->get();
 
             // 锁顺序 2：再锁 order
             $order = Order::with(['latestCert'])
@@ -1096,13 +1086,9 @@ class Action
      */
     private function refundForSyncedCancel(Order $order, array $certData, bool $suppressCallback = false): void
     {
-        DB::transaction(function () use ($order, $certData, $suppressCallback) {
+        $this->runTaskMutationTransaction(function () use ($order, $certData, $suppressCallback) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
-            Task::where('order_id', $order->id)
-                ->whereIn('action', ['commit', 'sync', 'revalidate'])
-                ->whereIn('status', ['executing', 'stopped'])
-                ->lockForUpdate()
-                ->get();
+            Task::lockForMutation($order->id, ['commit', 'sync', 'revalidate'])->get();
 
             // 锁顺序 2：再锁 order 行（防并发 sync 同时进入）
             $order = Order::with(['latestCert'])
@@ -1164,7 +1150,7 @@ class Action
                 }
             }
             $this->deleteTask($order->id, 'commit,sync,revalidate');
-        }, 3); // attempts=3：与 sync 主事务一致；本事务无上游 HTTP，退款由 transactions 唯一索引保证幂等，重试不双退
+        }); // attempts=3：与 sync 主事务一致；本事务无上游 HTTP，退款由 transactions 唯一索引保证幂等，重试不双退
     }
 
     /**

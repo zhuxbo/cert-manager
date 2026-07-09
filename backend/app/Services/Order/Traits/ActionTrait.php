@@ -1100,15 +1100,13 @@ trait ActionTrait
      */
     public function cancelPending(int $order_id): void
     {
-        DB::beginTransaction();
-        try {
-            // task → order 锁顺序：先锁 commit task 再锁 order 行，与
-            // revokeCancel / commitCancel / TaskJob::handle 的锁顺序统一防死锁
-            Task::where('order_id', $order_id)
-                ->where('action', 'commit')
-                ->whereIn('status', ['executing', 'stopped'])
-                ->lockForUpdate()
-                ->get();
+        // task → order 锁顺序：先锁 commit task 再锁 order 行，与
+        // revokeCancel / commitCancel / TaskJob::handle 的锁顺序统一防死锁。
+        // runTaskMutationTransaction 提供 attempts=3 死锁重试：闭包纯本地 task+order/cert 变更、无上游 HTTP；
+        // 退款 Transaction::create 随回滚消失且有唯一索引兜底，$this->error() 抛 ApiResponseException（非并发错误）
+        // 不被 DB::transaction 重试、直接传播触发回滚，语义与原手写 begin/commit/rollback 等价。
+        $this->runTaskMutationTransaction(function () use ($order_id) {
+            Task::lockForMutation($order_id, ['commit'])->get();
 
             $order = Order::with(['latestCert'])
                 ->whereHas('latestCert')
@@ -1188,12 +1186,7 @@ trait ActionTrait
 
             // 事务内、task 锁保护下 DELETE，避免与 TaskJob::handle 竞争
             $this->deleteTask($order_id, 'commit');
-
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        });
     }
 
     /**

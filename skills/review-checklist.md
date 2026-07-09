@@ -168,7 +168,8 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 `TaskJob::handle` 是 **task → order/acme** 顺序(先锁 task,action 内再锁业务行)。业务路径若反向(先锁 order 再锁 task) = InnoDB 周期性死锁回滚,用户看到随机失败。
 
 **真实案例**:commit `3dd44b84` (fix: 资金/状态变更路径全面加行锁,消除并发竞态)统一所有修改 task 的业务路径(`Order::revokeCancel` / `commitCancel(active)` / `batchCommitCancel` / `Acme::revokeCancel` 等)按 task → 业务行 顺序,并修复 `TaskJob::handle` 整体包事务(否则 `lockForUpdate` 在自动提交模式下是"假锁",SELECT 返回即释放)。
-**修复**:所有 DELETE / 修改 task 的业务路径,必须先 `Task::where(...)->lockForUpdate()->get()` 拿 task 锁,再锁业务行,再做 DELETE。新增涉及 task + order/acme 的事务路径,先 grep 现有路径确认锁顺序与之对齐。
+**修复**:所有 DELETE / 修改 task 的业务路径,必须先 `Task::lockForMutation($orderId, $actions)->get()` 拿 task 锁,再锁业务行,再做 DELETE。新增涉及 task + order/acme 的事务路径,先 grep 现有路径确认锁顺序与之对齐。
+**检查动作**:`finish-check-greps.sh` Z12 禁止业务代码内联 `Task::...->lockForUpdate()` 绕过 scope;Z13 校验 `structure.json` 里 tasks 表只保留 `tasks_order_action_status_index(order_id, action, status)` 这一条 `order_id` 首列索引;Z14 校验 `Task::lockForMutation` 的 forceIndex/where/status/select/lock 接线。涉及 tasks 索引迁移时还要跑 Feature/Database 的 Task 索引最终态测试,由真实测试库 `SHOW INDEX FROM tasks` 兜住 migration add-path。
 
 ---
 
