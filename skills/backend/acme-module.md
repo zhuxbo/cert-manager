@@ -202,3 +202,7 @@ Admin/User `index()` 复用同套过滤器，对齐传统订单搜索：
 ### TaskJob 分发
 
 `commit_acme` / `sync_acme` / `cancel_acme` 三种 action 由 `TaskJob` 统一处理：去掉 `_acme` 后缀后映射到 `Acme\Action::{commit,sync,cancel}`；其余 action 走 `Order\Action`。
+
+## Action 统一封装上游 API 调用
+
+- 所有上游 API 调用（new/get/cancel 等）必须通过 `Services/Acme/Action`，不允许控制器直接调 `Api`。操作方法接收 ID（int），创建方法接收参数数组。内部负责模型查询、参数过滤、返回值校正、重复提交防护、状态入库。控制器仅做请求验证 + 一行调用 Action

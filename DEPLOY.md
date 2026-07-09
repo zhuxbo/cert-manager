@@ -214,6 +214,6 @@ SHA256 校验失败 — 包可能被篡改或下载损坏
 
 ## 详细文档
 
-- [skills/deploy-ops.md](skills/deploy-ops.md) — 部署运维规范
-- [skills/backend-dev.md](skills/backend-dev.md) — 后端开发规范
+- [skills/ops/deploy-ops.md](skills/ops/deploy-ops.md) — 部署运维规范
+- [skills/backend/](skills/backend/) — 后端开发规范（core/order-fund/auth/upgrade/database/delegation）
 - [UPGRADE.md](UPGRADE.md) — 升级回滚演练手册

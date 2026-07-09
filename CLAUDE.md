@@ -28,31 +28,46 @@ skills/ # 开发规范（详细文档）
 - **测试发现 bug 必须修复代码** - 测试的目的是发现 bug 并修复，绝不修改测试去迎合错误的代码
 - **Plan 文档必须含杀手场景 + 对端检查** - 写 `.superpowers/` 下 plan 前先填这两栏（见 `skills/review-checklist.md` 设计期清单）；回答不出来视为设计未完成，不开始写代码
 - **完成检查必跑 reviewer 循环** - `/finish-check` 阶段 8 强制委派 reviewer subagent，每轮报告落盘 `.superpowers/reviews/<run>/round-N.md`，对**落盘文件** `grep -F "REVIEW_PASS:"` 命中前缀签字才算通过（自己写一行再 grep 自己 = 流程未执行）；签字行随 commit/PR body 落库，`review-pass-gate.yml` 在 PR→main 时校验
-- **前端 pnpm 11** - 本地用 `corepack enable` 启用（需 Node ≥22.13；CI 的 `pnpm/action-setup` 自动按 `packageManager` 字段跟随）。pnpm 11 默认开启供应链安全：`minimumReleaseAge`（拒绝 24h 内新发布的包，批量升级遇阻时删 `pnpm-lock.yaml` 重解析即可选到合规版本）+ `allowBuilds`（build 脚本白名单，在 `pnpm-workspace.yaml` 显式列出，已弃用 `onlyBuiltDependencies`）。详见 `skills/frontend-dev.md`
+- **前端 pnpm 11** - 本地用 `corepack enable` 启用（需 Node ≥22.13；CI 的 `pnpm/action-setup` 自动按 `packageManager` 字段跟随）。pnpm 11 默认开启供应链安全：`minimumReleaseAge`（拒绝 24h 内新发布的包，批量升级遇阻时删 `pnpm-lock.yaml` 重解析即可选到合规版本）+ `allowBuilds`（build 脚本白名单，在 `pnpm-workspace.yaml` 显式列出，已弃用 `onlyBuiltDependencies`）。详见 `skills/frontend/frontend-dev.md`
 
 ## 开发规范
 
 详细规范见 `skills/SKILL.md`，按领域组织：
 
-| Skill                        | 内容                                                                    |
-| ---------------------------- | ----------------------------------------------------------------------- |
-| `skills/backend-dev.md`      | Laravel API、升级系统、迁移幂等                                         |
-| `skills/acme-module.md`      | ACME 订阅管理（封装下单 + 交付 EAB 模式）                               |
-| `skills/source-api.md`       | 新增上游来源（Order\\Api / Acme\\Api）                                  |
-| `skills/frontend-dev.md`     | Vue 3、Monorepo、共享组件                                               |
-| `skills/deploy-ops.md`       | 宝塔部署、安全基线                                                      |
-| `skills/build-release.md`    | 版本发布、打包、releases.json 校验链                                    |
-| `skills/plugin-dev.md`       | 插件系统、IIFE 打包、安装/更新/卸载                                     |
-| `skills/acme-e2e-test/`      | certbot 端到端测试（Manager + 上游系统）                                |
-| `skills/review-checklist.md` | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描 |
+| Skill                                 | 内容                                                       |
+| ------------------------------------- | ---------------------------------------------------------- |
+| **backend/**                          | 后端领域                                                   |
+| `skills/backend/core.md`              | 技术栈/架构/代码规范/Artisan/缓存日志/关键文件索引/测试    |
+| `skills/backend/order-fund.md`        | order 级互斥锁、下单韧性、资金四道网、支付验签、退款/Purge |
+| `skills/backend/auth.md`              | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据URL）   |
+| `skills/backend/upgrade.md`           | 升级系统、freeze 冻结契约、BinaryLocator 外部命令          |
+| `skills/backend/database.md`          | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容                 |
+| `skills/backend/delegation.md`        | 委托验证、S/MIME 验证字段                                  |
+| `skills/backend/acme-module.md`       | ACME 订阅管理（封装下单 + 交付 EAB 模式）                  |
+| `skills/backend/source-api.md`        | 新增上游来源（Order\\Api / Acme\\Api）                     |
+| `skills/backend/auto-renew.md`        | 自动续费/重签、算法继承防降级、失败兜底通知                |
+| `skills/backend/sm2-cert.md`          | 国密 SM2 双证书、能力探测、fail-closed、下载包             |
+| `skills/backend/certum-document.md`   | Certum 验证文档上传、异步转发上游、跨级去重                |
+| `skills/backend/enterprise-lookup.md` | 工商查询（阿里云）+ 邮编查询、企业-联系人绑定              |
+| `skills/backend/notification.md`      | 通知体系（主系统 mail、插件通道注入、携密安全）            |
+| **frontend/**                         | 前端领域                                                   |
+| `skills/frontend/frontend-dev.md`     | Vue 3、Monorepo、共享组件                                  |
+| **plugins/**                          | 插件领域                                                   |
+| `skills/plugins/plugin-dev.md`        | 插件系统、IIFE 打包、安装/更新/卸载                        |
+| **ops/**                              | 部署/发布                                                  |
+| `skills/ops/deploy-ops.md`            | 宝塔部署、安全基线                                         |
+| `skills/ops/build-release.md`         | 版本发布、打包、releases.json 校验链                       |
+| **根（跨领域）**                      |                                                            |
+| `skills/review-checklist.md`          | 设计期"杀手场景 + 对端检查" + finish-check 反模式扫描      |
+| `skills/acme-e2e-test/`               | certbot 端到端测试（Manager + 上游系统）                   |
 
-## 知识积累
+## 知识积累与文档分层
 
-开发中确定的信息写入对应 skill 文件：
+新知识按"红线常驻、详情下沉"记录，防止本文件重新臃肿：
 
-- 新的架构约定或设计模式
-- 疑难问题的解决方案
-- 文档中缺失的重要信息
+- **详情只进 skill**：实现细节/坑/复现/示例/完整流程写对应领域 skill（`skills/backend|frontend|plugins|ops/`，跨领域如 review-checklist/acme-e2e-test 放 `skills/` 根，索引见 `skills/SKILL.md`）；CLAUDE.md **绝不复制这些细节**
+- **CLAUDE.md 只留两类常驻内容**：① 全局核心指令/概览；② 安全铁律的**可执行红线一句**（"必须 X / 绝不 Y" + 一句为什么）后接 `详见 skills/<领域>/xxx.md` 指针。判定标准——只有"任何改动都可能踩、不读 skill 就会违规"的资金/死锁/事务/安全禁令才留红线，仅在改到该领域时才需要的说明直接写 skill、不在此留条目
+- **改动后同步**：更新 `skills/SKILL.md` 与本文「开发规范」索引表，对改动的 md 跑 prettier
 
 ## 功能特性
 
@@ -62,203 +77,114 @@ skills/ # 开发规范（详细文档）
 - 产品同步时保留本地的 `delegation` 验证方法
 - **委托前缀（config 驱动）**：`backend/config/delegation.php` 的 `ca_map` 按 CA 映射 `{prefix, exact}` —— `_pki-validation`（Sectigo）、`_certum`（Certum）、`_dnsauth`（DigiCert/GlobalSign/TrustAsia/Sheca/CFCA/Wotrus 及未知 CA 的 default）。已移除 `_acme-challenge`（ACME 使用独立体系）
 - **`exact` 是 CA 属性、非 prefix 属性**：`exact=true` 精确匹配子域且查找拒绝回落根域，`exact=false` 子域优先 + 回落根域；**默认全 false（含 `_dnsauth` 系）**，每家可由 `DELEGATION_<CA>_EXACT` env 覆盖为 true。所有委托创建/查找一律经 ca 派生 prefix+exact，禁止 `prefix === '_dnsauth'` 之类推断
-- 详见 `skills/backend-dev.md` 委托验证章节
+- 详见 `skills/backend/delegation.md` 委托验证章节
 
 ### 插件系统
 
-- **插件目录**：`plugins/` 下按名称组织，每个插件包含 `plugin.json`
-- **动态加载**：`PluginServiceProvider` 自动扫描、注册命名空间和 ServiceProvider
-- **安全机制**：autoload 使用 `realpath()` 防路径遍历；公共端点仅返回 bundle/css 路径
-- **前端加载**：公共 `GET /api/plugins` 返回 bundle 路径，管理端返回完整信息；`plugin-loader.ts`（`@shared/utils/plugin-loader`）统一加载，校验 URL 必须以 `/` 开头
-- **共享依赖**：`exposeSharedDeps()` 暴露 Vue/Router/ElementPlus/Pinia + `getAccessToken()`
-- **Widget 插槽**：`__registerPlugin` 支持 `widgets` 字段，插件可向已有页面注入组件（如 Dashboard 横幅）；已定义插槽：`user-dashboard-top`（用户端 Dashboard 顶部）
-- **版本兼容**：`PluginManager.checkCompatibility()` 通过 `requires` 字段（如 `>=1.0.0`）检查主系统版本
-- **解耦原则**：主系统不硬引用插件代码/表，通过动态扫描（`_logs` 后缀表、`user_id` 字段）兼容插件数据
-- **插件打包**：`plugins/{name}/build.sh` + `release.json` 独立打包
-- **插件管理**：`PluginManager` 提供安装/更新/卸载/检查更新，管理端 `/plugin` 页面操作；页面仅展示执行中和失败的插件任务，成功安装/更新只刷新插件列表、不保留成功记录；异步安装/更新任务失败后会阻止同插件继续普通安装/更新，需在失败记录上点「重试」（复用原 operation 重新入队，重试后的成功/失败按新终态重新提示，成功后刷新插件列表）或「卸载」（清理失败安装记录）后再继续，避免重复堆叠失败任务
-- **插件 vendor 运行时安装**：安装/更新带 `backend/composer.json` 的插件时，`PluginManager` 自动 `composer install --no-dev`（封装在 `App\Services\Plugin\PluginComposerRunner`，复用 `BinaryLocator::composer()` + `UpgradePreflight` + 阿里云镜像）——使重依赖插件（如 cloud-deploy 的云 SDK 80M）vendor **不入 git、不进发布包**。**无 composer.json 的插件跳过**（零影响）；install 必装、update 当 `composer.lock` 变化**或目标 vendor 缺失**才装（update 删旧目录前把运行时 vendor 移出暂存，lock 未变则移回复用，避免重拉 80M 又防 vendor 永久丢失）；composer 子进程显式设置 `HOME`/`COMPOSER_HOME`/`COMPOSER_CACHE_DIR` 到 `storage/app/plugin-composer`，避免队列/FPM 环境缺 HOME 时 Composer 初始化失败；失败给明确文案（install/installFromZip 走 catch 清本次落地的半装目录、用 `$applied` 守卫不误删既有插件 / update 回滚备份）。要求目标机有 composer + CLI proc_open + packagist 可达
-- **更新地址优先级**：`plugin.json.release_url`（第三方）→ `{主系统 release_url}/plugins/{name}`（官方）
-- **插件 API**：`GET /api/admin/plugin/installed`、`GET /api/admin/plugin/check-updates`、`POST /api/admin/plugin/install`、`POST /api/admin/plugin/update`、`POST /api/admin/plugin/uninstall`
-- **数据库约定**：仅支持 MySQL/MariaDB；插件迁移和代码与主系统同等约束（禁用 `->json()` 列，用 `text` + `array` cast；禁用 raw 方言字面量，统一走 Eloquent / Query Builder）。CI 各插件独立 job（`backend-{name}-plugin-test`），无自带 tests 的插件也跑 migrate + schema 检查。详见 `skills/plugin-dev.md`
+- **目录/加载**：`plugins/{name}/plugin.json`，`PluginServiceProvider` 自动扫描注册命名空间 + ServiceProvider；autoload 走 `realpath()` 防路径遍历，公共端点仅返回 bundle/css 路径
+- **前端加载**：公共 `GET /api/plugins` 返回 bundle 路径、管理端返回完整信息；`plugin-loader.ts` 统一加载（URL 必须以 `/` 开头）；`exposeSharedDeps()` 暴露 Vue/Router/ElementPlus/Pinia + `getAccessToken()`；`__registerPlugin.widgets` 向已有页面注入组件（插槽如 `user-dashboard-top`）
+- **管理**：`PluginManager` 安装/更新/卸载/检查更新（`/api/admin/plugin/*`），管理端 `/plugin` 页面操作；仅展示执行中/失败任务，失败需「重试」或「卸载」后再继续，避免堆叠失败任务
+- **vendor 运行时安装**：带 `backend/composer.json` 的插件安装/更新时 `PluginManager` 自动 `composer install --no-dev`（`App\Services\Plugin\PluginComposerRunner`），vendor **不入 git、不进发布包**；无 composer.json 的插件跳过（零影响）
+- **解耦/兼容**：主系统不硬引用插件代码/表，动态扫描（`_logs` 后缀表、`user_id` 字段）兼容；`checkCompatibility()` 按 `requires` 校版本；更新地址 `plugin.json.release_url`（第三方）→ `{release_url}/plugins/{name}`（官方）
+- **数据库约定**：仅 MySQL/MariaDB，禁 `->json()` 列（用 `text`+`array` cast）、禁 raw 方言字面量；各插件 CI 独立 job（`backend-{name}-plugin-test`）
+- 详见 `skills/plugins/plugin-dev.md`
 
 ### ACME 订阅管理
 
-- **模型**：单一 `Acme` 模型（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密存储且默认 hidden；`eab_kid` 建索引；`plus` 列（赠送时间 0/1）；`contact_email` 列（`VARCHAR(254) NULL`，ACME 账号邮箱 — RFC 8555 `contact`）
-- **字段映射**：上游响应 `data.order_id` → 本地 `acmes.api_id` 列（**切勿用 `api_id` 键读上游响应**，老代码踩过坑）
-- **计费流程**：`Action` 三步流程：`new(array $params)`（unpaid/待支付）→ `pay(int $id, bool $autoCommit = true)`（Admin/User 入口默认"先支付独立事务，再单独事务调 commit"——commit 失败 **不回滚扣费**，订单保留 pending 可走 `commit` 接口重试；`$autoCommit=false` 仅置 pending，由 batchPay 统一入队 commit）→ `commit(int $id)`（提交 上游系统 → active）；`newAndCommit(array $params)` 一步完成三步（**单事务原子，失败回滚**，API 入口使用）
-- **上游 `/acme/new` 入参**（manager 视角完整 schema）：`contact_email`（= `acmes.contact_email`，**所有入口必填**：User/Admin 表单 / API Token / Deploy Token；上游正常返回会覆盖回写，缺失则保持本地值）/ `product_code` / `period`(int，预留 Certum 多年期；gateway 当前 validate 暂不接收由 `product.periods[0]` 决定，但 manager 稳定外发) / `plus`(int 0/1，与传统 V2 Order 一致；gateway 端 `(bool)` cast 兼容) / `refer_id`（端到端幂等键，下游传则用之、未传则 manager 生成 32 字符 hex），**不传** `purchased_*count`/`product_type` 等。**字段名与多级代理链路全程对齐**；`source` 是 manager 内部 Api 路由参数，作为 `Api::new($data, $source)` 第二个独立参数，不混入 data；Certum 侧的 `customer` 术语仅存在于 Gateway → Certum SDK 的最后一跳
-- **对外 API 入参契约**（manager 视角）：`/api/v2/acme/new`（API Token）与 `/api/deploy/acme/new`（Deploy Token）入参同构，validate `product_code` required\|string\|max:50 + `contact_email` required\|email\|max:254 + `period` sometimes\|integer（未传则取产品默认周期 `product.periods[0]`，控制器不再硬编码 12）+ `plus` nullable\|integer\|in:0,1（与 V2 Order 风格一致）+ `refer_id` sometimes\|string\|max:64。`refer_id` 由 `App\Traits\AcmeReferIdCheck::checkAcmeReferId` 做应用层防重（按当前 user 范围 + DB `acmes.refer_id` unique 兜底）
-- **directory_url 缓存**：Laravel `Cache::forever("acme_directory_url:{ca}")` 按签发 CA 聚合；commit/sync 刷新、show 缺失时回源一次性回填；不入 system_setting、不落库
-- **取消流程**：Web 入口走延时 — `commitCancel(int $id)`（标记 cancelling + 创建 Task `cancel_acme` + TaskJob 延时 123s）→ `cancel(int $id)`（由 TaskJob 调用，调 Api->cancel() + 退费）；下游 API（`/api/v2/acme/cancel`）走 `cancelNow(int $id)`，不创建 Task、同步调 `cancel()` 立即返回
-- **撤回取消**：`revokeCancel(int $id)` 在 acme.status=cancelling 且延时任务未执行时生效 — 悲观锁回滚 status→active、清空 cancelled_at、删除 executing/stopped 的 `cancel_acme` Task（已 dispatch 的 TaskJob 唤醒后找不到任务直接跳过）
-- **Transaction 类型**：`acme_order`/`acme_cancel`（一对一防重，禁止重复 `transaction_id`；仅传统 `order` 因证书重签增域名场景允许重复）
-- **产品标识**：`products.product_type = 'acme'`
-- **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由，仅 `default` 源（和 Order 一致），`AcmeSourceApiInterface` 统一 `new`/`get`/`cancel`/`getProducts` 接口，`default/Sdk` 通过系统设置 `ca.acme_url`/`ca.acme_token`（回落到 `ca.url`/`ca.token`）调用 上游系统 `/api/v2/acme/*` 端点（`ca.acme_url` 配置值形如 `http://upstream/api/v2/acme`）
-- **产品导入**：`Order\Action::importProduct()` 同时查询 Order 和 ACME 两端产品，合并后按 `api_id` 去重
-- **控制器路由**：
-  - API：`/api/v2/acme/` — new, get, cancel, get-products（对下游代理，与 上游系统 对齐）
-  - Admin：`/api/admin/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（管理员备注）
-  - User：`/api/user/acme/` — index, show, batch（聚合详情）, new, pay, commit, sync, commit-cancel, revoke-cancel, remark（用户自己的备注，限当前用户）
-  - Deploy：`/api/deploy/acme/` — new（一步到位：创建+支付+提交）, get（含 EAB + directory_url）
-- **字段暴露策略**（参考传统 Order）：
-  - User Web `index` 走 select 白名单，`show`/`batchShow` 走 `makeHidden(['user_id','plus','api_id','refer_id','admin_remark','channel'])`；product 关联 select 含 `ca`（`syncDirectoryUrl` 取 cache key 需要）
-  - Deploy/V2 API `get` 走 `makeHidden(['user_id','plus','api_id','admin_remark','channel'])`；**保留 `refer_id`**（客户端关联键，contract 一部分）
-  - Admin 全字段返回，不做 makeHidden
-- **搜索**：Admin/User 控制器 `index` 支持 quickSearch / id / status / brand / period / **eab_kid 前缀匹配（走索引）** / amount 范围 / product_name / created_at / period_till 范围；Admin 额外 user_id/username
-- **产品 API 分离**：`/api/v2/get-products` 排除 ACME 产品，`/api/v2/acme/get-products` 仅返回 ACME 产品；下单页面产品选择器通过 `exclude_product_type=acme` 过滤
-- **传统流程完全隔离**：ACME 通过独立控制器、服务和前端模块处理，与传统订单无交集；V2 API `new` 和 `Order\Action::initParams` 拒绝 ACME 产品
-- **批量操作**：列表页 7 个批量按钮
-  - `GET /api/{admin,user}/acme/batch?ids=1,2,3` — 批量详情聚合（纯读）；URL 可分享，前端 `details.vue` v-for 渲染。返回 `{items: [...]}` 含 directory_url（按 ca 缓存避免重复算）。User 端复用 show 的字段隐藏；Admin 端全字段
-  - `POST /api/{admin,user}/acme/batch-pay` — 同步逐条扣费（pay autoCommit=false），成功的 id 批量入队 `commit_acme`；状态限 unpaid，返回 `{success_count, commit_count, errors}`
-  - `POST /api/{admin,user}/acme/batch-commit` — 创建 `commit_acme` Task 立即入队，状态限 pending；`checkRepeat` 存在 executing 任务时整体报错
-  - `POST /api/{admin,user}/acme/batch-sync` — 创建 `sync_acme` Task 立即入队，状态限 active/cancelling（必须有 api_id），pending/unpaid 无 api_id 无法同步
-  - `POST /api/{admin,user}/acme/batch-commit-cancel` — 同步逐条调单体 commitCancel（混合直接退费 + 延时 Task），状态限 unpaid/pending/active；单体 commitCancel 已扩展支持 unpaid（未扣费无需 refund）
-  - `POST /api/{admin,user}/acme/batch-revoke-cancel` — 同步逐条调单体 revokeCancel，状态限 cancelling
-  - `POST /api/{admin,user}/acme/batch-copy-eab` — 纯读返回 EAB 文本（`directory_url\ncontact_email\neab_kid\neab_hmac`，条目间空行），**Admin 端跨用户拒绝**；User 端 UserScope 自动限制
-- **TaskJob 分发**：`commit_acme / sync_acme / cancel_acme` 统一去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`；其余 action 走 `Order\Action`
-- **User 端同步**：`POST /api/user/acme/sync/{id}`（与 Admin 对齐）
-- **checkRepeat 并发限制**：与 Order 相同，`checkRepeat` 和 `createTasks` 之间无事务锁，并发情况下可能产生双份 executing Task；沿用 Order 设计，属已知限制
-- **createTasks 逐条幂等**：`Acme\Action::createTasks` 与 `Order` 的 `createTask` 一致，foreach 内创建前查已存在 executing 同 `order_id+action` task 则 continue（防重复 task）；`cancel_acme` 走独立 `Task::create` 路径、自带同款幂等查询
-- **批量上限（`config/batch.php`）**：`max_ids=100`（所有 batch 接口 ids 数量上限，21 个 `GetIdsRequest` + `BaseRequest::messages` 统一校验）、`max_upstream=20`（batchPay/batchCommitCancel 等"逐条调上游"循环的硬上限，防单请求打爆上游）
+- **模型**：单一 `Acme`（`App\Models\Acme`，表 `acmes`），`eab_hmac` 加密+默认 hidden，`eab_kid` 索引，`plus` 列，`contact_email`(VARCHAR 254)；上游响应 `data.order_id` → 本地 `api_id` 列（**勿用 `api_id` 键读上游响应**，老坑）
+- **计费流程**：`Action` 三步 `new`(unpaid)→`pay`(pending，commit 失败 **不回滚扣费**、留 pending 可走 `commit` 重试)→`commit`(→active)；`newAndCommit` 单事务原子（API 入口，失败回滚）；`contact_email` 所有入口必填、`refer_id` 端到端幂等键
+- **控制器路由**：API `/api/v2/acme/`、Admin `/api/admin/acme/`、User `/api/user/acme/`（均含 index/show/batch/new/pay/commit/sync/commit-cancel/revoke-cancel/remark）、Deploy `/api/deploy/acme/new`（一步到位）+ `get`（含 EAB + directory_url）
+- **取消/撤回**：Web 走延时 `commitCancel`→Task `cancel_acme`(123s)→`cancel`(退费)；下游 API 走 `cancelNow` 同步；`revokeCancel` 在 cancelling 且延时任务未执行时悲观锁回滚
+- **字段暴露**：User show/batchShow 与 Deploy/V2 get 走 `makeHidden`（Deploy/V2 **保留 `refer_id`**，contract 一部分），Admin 全字段；搜索支持 `eab_kid` 前缀匹配（走索引）
+- **批量操作**：7 个批量按钮（batch 详情/pay/commit/sync/commit-cancel/revoke-cancel/copy-eab）；上限 `config/batch.php`（`max_ids=100` / `max_upstream=20`）；`TaskJob` 去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`
+- **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由（仅 `default` 源），经 `ca.acme_url`/`ca.acme_token`（回落 `ca.url`/`ca.token`）调上游 `/api/v2/acme/*`；`directory_url` 按 CA `Cache::forever` 聚合、不落库
+- **隔离**：`products.product_type='acme'`；产品 API 分离（`/api/v2/get-products` 排除 acme、`/api/v2/acme/get-products` 仅 acme）；ACME 与传统订单完全隔离，V2 `new`/`Order\Action::initParams` 拒 ACME 产品；`Transaction` 类型 `acme_order`/`acme_cancel`（一对一防重）
+- 详见 `skills/backend/acme-module.md`、`skills/backend/source-api.md`
 
 ## 系统架构约定
 
-- **`$order->latestCert` 非空保证**：由系统架构保证 latestCert 关系非空，查询时加 `with('latestCert')` 预加载即可，无需额外空值判断
-- **`$this->error()` 方法**：来自 `ApiResponse` trait，调用后抛出异常终止执行，不会继续后续代码
 - **取消/吊销不静默成功**：上游接口未返回明确成功时，一律返回失败；不允许跳过上游调用直接标记本地状态
-- **sync 终态守卫（防复活）**：`Order\Action::sync`/`Acme\Action::sync` 在锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，不让上游旧状态把已取消/已吊销的订单"复活"回 active（与 commitCancel 串行化配合，防资金错乱）。**守卫与写回必须按"写回目标 cert（外层 `$cert`）自身"判定**：上游 get 是事务外慢 IO，期间并发重签会把 `order.latest_cert_id` 切到新 cert B，若用 `lockedOrder->latestCert`(=B) 判定会漏判旧 cert A 已终态 → 复活 A + 误删 B 的延时 commit task。Order sync 锁内按 `$cert->id` 重读写回目标自身状态做守卫/`hasStatusChanged`，写回 `($targetCert ?? $cert)->update()` 确保判定对象===写回对象（即"读=写同一行"）
-- **无验证信息订单的定时同步**：`schedule:validate`（每分钟，`ValidateCommand`）只纳入 dcv **且** validation 都非空的 processing/approving 订单；dcv 或 validation 为 **NULL** 的订单（codesign/docsign/smime 等无 DCV 产品，验证靠 CA 人工审核/邮件）被其查询排除、无法自动同步，由独立的 `schedule:sync`（每天 9/15/21 点 `0 9,15,21 * * *`，`SyncCommand`）兜底——查 dcv 或 validation 为 NULL 的 processing/approving 订单并 `createTask(id,'sync')`。两查询条件互为补集、同一订单只被其一处理；频率低因无 DCV 产品订单量小（空数组 `[]` 非 NULL、仍归 validate）
-- **ACME 计费流程**：`Action` 三步流程 `new→pay→commit` 详见"ACME 订阅管理"章节
-- **ACME 取消策略**：未提交上游（无 api_id）的 pending 订单直接退费取消；已提交上游的订单通过延时任务调 Api->cancel() 后退费
-- **Action 无 userId 构造参数**：`Acme\Action` 和 `Order\Action` 均无 `userId` 构造参数，通过 `app(Action::class)` 获取实例。用户隔离由 UserScope 全局作用域保证（`Authenticate`/`ApiAuthenticate` 中间件注册 Acme、ApiToken、Callback、CnameDelegation、Order、Fund、Transaction、Organization、Contact、OrderDocument），控制器在创建方法的 params 中传入 `user_id`。UserScope `apply()` 无条件执行 `where('user_id', ...)`，不做零值跳过
-- **ACME Action 统一封装上游 API 调用**：所有上游 API 调用（new/get/cancel 等）必须通过 `Services/Acme/Action`，不允许控制器直接调 `Api`。操作方法接收 ID（int），创建方法接收参数数组。内部负责模型查询、参数过滤、返回值校正、重复提交防护、状态入库。控制器仅做请求验证 + 一行调用 Action
-- **资金/状态变更必须在事务 + 行锁内**：任何涉及 `Transaction::create`/余额变动/状态机变更的路径都要 `DB::transaction` + 目标行 `lock()`/`lockForUpdate()`，且**状态检查放在锁内**（锁外校验会被并发绕过）。Order 走 `Order::with(['latestCert'])->whereHas('latestCert')->lock()` 约定锁 + 所有变更走 `$order->latestCert->update()` 路径；ACME 走 `Acme::lock()` 直接锁 status 所在行。`$this->success()` 必须放在事务闭包**外**（它抛 `ApiResponseException` 会触发回滚）；`$this->error()` 放闭包内正好触发回滚。unpaid 等无资金流水的状态清理路径可免锁（双击第二次自然报错无资金损害）。TaskJob::handle 必须整体包 `DB::transaction`，否则 `lockForUpdate` 在自动提交模式下是"假锁"（SELECT 返回即释放）。**支付路径必须同时锁 user 行**（否则同一用户跨订单并发支付会绕过 credit*limit 校验）：ACME `User::lockForUpdate()`，Order `with(['user' => fn ($q) => $q->lockForUpdate(), 'latestCert'])`。**ACME commit 也需要锁内调用上游**：与 commitCancel 串行化防止"上游已建单 + 本地被改 cancelled 后又被 commit 覆盖回 active"的资金错乱。**锁内的上游 HTTP 调用必须设 timeout < `innodb_lock_wait_timeout`(已通过 `config/database.php` 的 PDO `MYSQL_ATTR_INIT_COMMAND` 固化为 session=50、覆盖 global 漂移，见 `InnodbLockWaitTimeoutTest`)**：无 timeout（Guzzle `new Client` 默认无限）时上游慢/挂会让持锁事务无限阻塞 → 并发访问同一订单行的 `for update` 报 `1205 Lock wait timeout`。Order default Sdk（`call()` 经 `makeClient()` 注入缝传 timeout，`connect_timeout=min(10,timeout)`——manager 是多级代理，上游可能是任意深度的另一个 manager，网络路径/DNS/地域全不可控，按"不可控上游"处理，从早期 3s 放宽到 10s，对齐 callback 的 `connectTimeout(10)`；10<50 不破坏 1205 防护，总 timeout 45s 封顶不变、connect 不叠加）仅给锁内的 `new/renew/reissue/cancel` 加 45s（commit 锁内**只有一个**上游调用，45<50s 留 5s 裕度；default 源只对接同构 V2 上游、上游对已存在 refer_id 幂等返 order_id 故**本地无 refer_id 反查**、锁内不串第二调用），锁外也设超时**防 FPM worker 被上游挂死永久占用**（`max_execution_time` 不计 socket 阻塞，只有 FPM `request_terminate_timeout` 能兜、部署默认未设）：`uploadDocument` 55s（唯一调用方 `SubmitDocumentJob` 被 worker `--timeout 60` 硬杀，取 55 让 Guzzle 先干净断、交给 Job backoff 重试）、其他（`sync` get/`getProducts`/`getOrders`/`revalidate`/`updateDCV`）30s；ACME Sdk 无文档上传、无反查，`request()` 全局 30s（`connectTimeout(10)` 同理对齐）。详见 `skills/source-api.md` Sdk 超时约定章节。**进 DB 锁前先抢 order 级 Cache 互斥锁（方案 C，根治 3+ 并发 1205）**：`App\Support\MutexLock::withMutex` 在 commit/cancel 进 `DB::transaction` 前抢 `Cache::lock`（Order `order_mutate*{id}`/ ACME`acme*mutate*{id}`，commit/cancel 共用同 key 串行），抢不到立即抛 `MutationBusyException`（同步入口 `ApiExceptions`→503 友好文案 + `dontLogExceptions`免日志、异步`TaskJob`识别为可重试 release 不标 failed），不进 DB 锁等待队列 → 把"DB 锁等待 1205"转成"Cache 抢锁立即失败"，且保持锁内原子性（孤儿窗口仅传统既有的毫秒级`save()`死锁区间，非 B 方案的整个锁外期）。落点：Order`commit`/`cancel`（**`pay`不包**，内部调公共 commit 自带锁，否则同 key 自死锁）；ACME`commit`/`pay`/`cancel`/`cancelNow`（**ACME `pay`走 private`commitOrder` 须自包**，与 Order pay 不对称；`newAndCommit`/一条龙新 id 不包）。Cache 故障 fail-open 退回 DB 锁串行。**上面的「锁内 Sdk 超时」是本互斥的兜底前提、不可删**（互斥盖不到 commitCancel/sync 写回等非互斥路径 + Cache 降级，靠超时限持锁 ≤48s）。详见 `skills/backend-dev.md` order 级互斥锁章节。
-- **API 一条龙下单韧性（commit 超时不回滚扣费 + 卡单对账）**：V1/V2 控制器的 `new`/`renew`/`reissue` 外层事务只包 `new + pay(commit=false)`（扣费落 `pending`，原子），`commit`（调上游）移到 `DB::commit()` 之后独立调用；commit 超时（SDK `code=0`）/失败/抢锁忙由 `getData('commit')` 吞掉（**仅 `action==='commit'` 段吞 `code=0`+`MutationBusyException`，其它段照常冒泡**），不回滚已扣费，订单停 `pending`（`api_id=NULL`）返回既有 `processing` 展示态，靠 M4 对账 + 下游 pull `get` 自愈。**扣费必须仍嵌套 new+pay 外层事务内**（不可独立顶层 tx，否则孤儿 order transaction）。配套：① `schedule:reconcile-pending`（`ReconcilePendingCommand`，每 5 分钟）扫 pending+`api_id` 空+超时的卡单重发 `commit`（重试上限+退避+超限 `task_failed` admin 告警去重，`config/reconcile.php`）；② `resolveReferId`（原 `checkReferId`）同 `refer_id` 命中卡单幂等重提、命中终态/已提交直接幂等返回同一 oid，不再硬拒（**Order 幂等、ACME 仍 `Refer id already exists` 硬拒，有意分歧**；并发靠 `certs.refer_id` 唯一索引兜底）；③ `bootstrap/resilient.php` 包裹 `public/index.php`/`artisan`/`TestCase` 兜底 `bootstrap/cache`（services/packages.php）TOCTOU 读失败（清半态+退避重试 ≤3）；④ Order Sdk catch 按异常子类返通用文案、原文只进 `error_logs`（防内部地址泄露），且全路径（成功/超时/失败）统一 `logCall()` 写 `ca_logs` 含 `duration`（修 Order 侧耗时恒 0 + 超时此前完全不写 ca_logs，对齐 ACME Sdk）。**manager 卡单态是 `pending`（上游是 `processing`），对账/幂等判定严禁照抄上游的 processing**。详见 `skills/backend-dev.md` API 下单韧性章节 + `skills/source-api.md` Sdk catch 脱敏章节。
-- **资金安全四道网（确定性体系）**：分两类 — **物理阻断**（INSERT/UPDATE 之前挡住错账发生）：(1) DB 唯一索引（`funds(pay_method, pay_sn)` / `transactions(type, transaction_id) WHERE type != 'order'`，旧 3 列 `funds_type_pay_method_pay_sn_unique` 已被替换为 2 列）；(2) `Fund::transitionToSuccessful` 完整 5 字段 WHERE（id + amount + type + pay_method + status=0）的 CAS UPDATE 替代 SELECT-then-UPDATE，CAS WHERE 不能简化为 status 单一条件，否则金额/支付方式不匹配的回调也会把本地 fund 标成功；(3) 事务 + 锁 + 锁内二次校验（destroy/batchDestroy 等"删除已入账"路径无法被 CAS 或唯一索引拦截，删除 SQL 本身合法）；(4) `Transaction.php` 防重豁免列表仅 `'order'`（ACME 一对一交付 EAB，不存在重签增域名）。**事后发现**（不阻止发生但保证发现）：(5) `tests/Pest.php` afterEach hook 自动跑 `App\Services\FundAudit\FundInvariants::all()` 4 条 SQL（L1 账目恒等 / L2 事件唯一 / L3 状态-事件配对 / L4 金额配对），动了 funds/transactions/users.balance 的测试自动守门；(6) 每天 03:00 `finance:audit` cron 全量对账，违反走 `NotificationCenter` 邮件告警 + `Log::error` 兜底，可选 `--freeze-on-violation` 自动禁用涉事用户。**关键**：物理阻断不能被替代为事后发现 — 已删除的 fund 即便 invariant 报 orphan transaction，钱已入账、订单已消失，损失已发生。新增资金路径必须保证：状态转换走 CAS 而非 SELECT-then-UPDATE；写 transaction 不依赖应用层 `exists` 防重，靠 DB 唯一索引兜底；修改 user.balance 必须在 `DB::transaction(fn)` 内同事务创建 transaction；CI tearDown invariant 自动校验，新测试无需手写资金断言。详见 `skills/backend-dev.md` 资金确定性体系章节。
-- **外部命令调用统一走 BinaryLocator**：所有 `exec("php ...")` / `exec("composer ...")` / `exec("openssl ...")` / `exec("mysqldump ...")` / `exec("curl ...")` 必须通过 `app(\App\Services\Binary\BinaryLocator::class)` 解析二进制路径，拼命令统一用 `escapeshellarg($path).' arg1 arg2'`，不允许变量插值或裸命令（如 `exec('openssl pkcs12 ...')`）—— 多版本 PHP 系统下会走错 CLI / open_basedir 限制下 `is_executable` 会误判（探测必须走 `proc_open` 子进程，不能用 `is_executable`/`file_exists`）。失败抛 `BinaryNotFoundException`，失败处理分两档：**用户显式请求的产物/格式/算法**（type=iis/tomcat、alg=sm2）失败必须硬报错 + `Log::error`，绝不静默给残缺产物；仅 **best-effort 聚合路径**（type=all、DCV 单点）可静默跳过且须 returnCode+file_exists 双判 + Log 留痕、不 `> /dev/null` 丢 stderr；升级流程内 PHP/composer 失败应向上抛阻塞。详见 `skills/backend-dev.md` BinaryLocator 章节。
-- **后台升级 binary preflight**：`POST /api/admin/upgrade/execute` 入口（isRunning 短路后）先跑 `UpgradePreflight::check()` 4 项检查 —— ① FPM `disable_functions`、② PHP CLI 可探、③ composer phar 可探、④ CLI `disable_functions`（CLI 和 FPM 用各自独立 ini，必须起子进程读 CLI 的 `ini_get`，不能只查 FPM 进程的 `ini_get('disable_functions')`）。任一阻塞返回 503 + `{blocking: [], items: [], ini: {fpm, cli}}`，fix 文案统一"使用 upgrade.sh 升级"。独立健康检查端点：`GET /api/admin/upgrade/binary-health`（不阻塞，纯展示 8 个工具状态供前端升级页面参考）。**注意：preflight 只负责 binary，完整 PHP 环境校验（PHP 版本 / extensions.required / functions.required）在升级流程内的 `EnvironmentChecker::check()` —— 解包后、applyUpgrade 前跑，不通过抛 `PhpEnvironmentException` 中断升级（代码原样未动），引导用 upgrade.sh 修复**。
-- **redis 扩展动态必装**：`php-requirements.json` 中 `redis` 默认在 `recommended`；但当 `backend/.env` 的 `CACHE_DRIVER` / `CACHE_STORE` / `QUEUE_CONNECTION` 任一为 `redis` 时，`EnvironmentChecker` 和 `deploy/upgrade.sh::_redis_required_from_env` 同步把 redis 升级为必装（避免装好后 cache/queue 运行时崩）。两侧解析逻辑必须对称：处理引号、行内注释、CRLF、前后空白；.env 缺失时 fail-safe 返回 false。修改任一侧记得同步另一侧。
-- **`TaskJob::dispatch` 一律加 `->afterCommit()`**：`config/queue.php` 所有连接默认 `after_commit=false`，事务内 dispatch 的 Job 会立即入队，worker 可能在事务提交前消费 Job，读不到事务内新建的行/状态导致任务静默丢失。统一"一律加"口径（Laravel 无活动事务时 afterCommit 立即派发，语义等价），免去"是否在事务内"的语义判定，使 `skills/scripts/finish-check-greps.sh` 的硬零断言可机械执行；新增 Job dispatch 点同步跟进。
-- **异步 Job 必须显式 `->onQueue(config('queue.names.tasks'))` 或 `notifications`**：生产部署的 supervisor worker 只监听 `tasks,notifications` 两个队列（`deploy/scripts/bt-install.sh` 自动写入 `queue:work --queue tasks,notifications`、`skills/deploy-ops.md` 文档同），**不监听 connection 默认的 `default` 队列**。漏写 `onQueue` 的 Job 会落到 `default` 永远没人消费（`SubmitDocumentJob` 曾踩此坑：文档静默不上传上游）。约定：业务 Job → `tasks`、通知 → `notifications`，新增 Job 的 dispatch 必须 onQueue 到二者之一；**gateway 侧同此约定**（其 worker 同样只监听这俩，镜像的 `SubmitDocumentJob` 也需 onQueue）。
-- **升级冻结 release 计入 attempts，幂等 ShouldQueue 不可 `tries=1`**：freeze 期 `SkipWhenUpgradeFrozen` 中间件对 Job 调 `$job->release(60)` 且不执行 handle；Laravel `release()` 下次 pop 由驱动把 attempts +1，`Worker::markJobAsFailedIfAlreadyExceedsMaxAttempts` 在 `fire()` 前判 `attempts > tries` 即 MaxAttemptsExceeded、handle 永不执行。故 `tries=1` 的 Job 被 freeze release **一次**后第二次 pop 即被误杀（freeze 中间件是进程内唯一兜底——UPGRADE.md 文档化的"停 worker"（宝塔 Supervisor 面板停队列进程，程序名为站点域名、非 `manager-queue`）运维步骤当前未接入 `UpgradeService::performUpgradeWithStatus`/`upgrade.sh` 自动升级流程，freeze 也仅由 `/upgrade/freeze` 端点 / `upgrade:freeze` 命令手动激活；激活后 worker 不停则逐次 release），备份/恢复恰最可能在升级窗口附近运行。约定：**handle 幂等的 ShouldQueue 用 `tries=5`（吸收数次 freeze release，覆盖 ~5×60s 短窗；更长的手动 freeze 仍会耗尽 attempts，需配合停 worker 或 `retryUntil()`）+ `maxExceptions=1`（业务异常仍只一次；handle 自吞全部 Throwable 的备份类则作防御性封顶）**，已应用于 `CreateBackupJob`/`RestoreBackupJob`。无显式 `$tries` 的 Job 走 worker `--tries 3`（吸收 2 次 release）。`maxExceptions` 仅 handle 真抛时累加，freeze release 不触发它。复现见 `tests/Feature/Jobs/UpgradeFreezeReleaseAttemptsTest`。
-- **统一锁顺序 task→order/acme 防死锁**：`TaskJob::handle` 是 task→order/acme 顺序（先锁 task，action 内再锁业务行）；所有 DELETE/修改 task 的业务路径（Order `revokeCancel`/`commitCancel(active)`/`batchCommitCancel`/`refundForSyncedCancel`/`cancelPending`、ACME `revokeCancel` 等）都必须按同一顺序先锁 task，再锁业务行，再做 DELETE/状态变更。task 锁查询统一经 Task 模型 scope `Task::lockForMutation($orderId, $actions)->get()`（Order/ACME 共用，`scopeLockForMutation` 内强制 `tasks_order_action_status_index` + `select('id')` + `lockForUpdate`），避免 MySQL 退回 `tasks_order_id_index` 扩大 next-key lock 范围。**该孪生单列索引已在 schema 层删除**（迁移 `2026_07_08_000001` + `create_tasks_table` 去掉 `order_id` 单列 index，`structure.json` 已同步），根治优化器退回目标并覆盖 `deleteTask` 的 DELETE 路径（单表 DELETE 无法 `FORCE INDEX`）；CI `finish-check-greps.sh` 守卫分三层：Z12 禁止 Task 模型（Task.php scope / TaskJob 主键锁之外）直写内联 `lockForUpdate` 绕过 scope，Z13 校验 `structure.json` 中 tasks 索引最终态，Z14 校验 `scopeLockForMutation` 的 forceIndex/where/status/select/lock 接线。后端 DB 测试还会在真实迁移后的测试库用 `SHOW INDEX FROM tasks` 断言无其它 `order_id` 首列竞争索引。**孪生索引已删后 `forceIndex` 仍保留**：唯一价值是 MySQL 版本矩阵（5.7/8.x/MariaDB）升级时执行计划稳定性——优化器代价模型这条轴不能只靠代码形态或 schema 形态守卫覆盖，必须由查询 hint 本身提供确定性，Z14 负责防 hint 断线；成本极低（收口单处一行 + 索引名迁移/`structure.json` 双钉、失配 `1176` 响亮失败），是廉价确定性层非必要层，删它须先接受版本升级计划漂移风险。
-- **tasks 并发错误自愈边界**：纯本地 task→order/acme 变更事务用共享 trait `App\Traits\RunsTaskMutationTransaction` 的 `runTaskMutationTransaction()`（`DB::transaction(..., 3)`）做 1213/1205 重试，Order/ACME 共用，覆盖 Order `sync`/`commitCancel(active)`/`batchCommitCancel(active)`/`revokeCancel`/`refundForSyncedCancel`/`cancelPending` + ACME `revokeCancel`/`sync`；含上游副作用的 Order `commit`/`cancel` 与 ACME `commitCancel` 不允许事务级重试。`TaskJob` 内并发错误必须重新抛出并由 job 级 release/最终 failed 处理，禁止在已被 MySQL 回滚的死事务上继续 `$task->update()`。**自愈不刷日志三层原则**：会自愈的重试期零错误日志——web `DB::transaction(...,3)` 框架静默（`ManagesTransactions` 无 report）、TaskJob 未达 tries `release(3~8s)` 不 report、`MutationBusyException` 走 `dontLogExceptions`；**边界**是最终耗尽（web 3 次全败的 `DeadlockException` / TaskJob 达 tries）必须照常记录（真实故障非噪音，`DeadlockException` 与 `causedByConcurrencyError` 均不入 `dontLogExceptions`），新增自愈路径遵守同一原则。详见 `skills/backend-dev.md` tasks 死锁防护章节。
+- **sync 终态守卫（防复活）**：`Order/Acme\Action::sync` 锁内回写前，本地已是终态（`cancelled/revoked/renewed/reissued/failed`）则 `unset($data['status'])`，不让上游旧状态复活订单；**守卫与写回必须按"写回目标 cert（外层 `$cert`）自身"判定（读=写同一行）**——并发重签会切 `latest_cert_id`，用 `lockedOrder->latestCert` 判定会漏判旧 cert 终态。详见 `skills/backend/auth.md`
+- **资金/状态变更必须在事务 + 行锁内**：涉及 `Transaction::create`/余额/状态机的路径都要 `DB::transaction` + 目标行 `lockForUpdate()`，**状态检查放锁内**（锁外会被并发绕过）；`$this->success()` 放事务闭包**外**、`$this->error()` 放**内**；`TaskJob::handle` 整体包 `DB::transaction`（否则 lockForUpdate 是假锁）；**支付路径同时锁 user 行**（防跨订单并发绕过 credit_limit）；**锁内上游 HTTP 必须设 timeout < `innodb_lock_wait_timeout`(=50)**（否则挂起持锁事务 → 1205）；**进 DB 锁前先抢 `MutexLock` order 级 Cache 互斥锁**（方案 C，抢不到抛 `MutationBusyException`，根治 3+ 并发 1205）。详见 `skills/backend/order-fund.md`、`skills/backend/source-api.md`（Sdk 超时）
+- **API 一条龙下单韧性（commit 超时不回滚扣费 + 卡单对账）**：V1/V2 `new/renew/reissue` 外层事务只包 `new + pay(commit=false)`（扣费落 `pending` 原子），`commit` 移到 `DB::commit()` 后独立调用；commit 超时/失败/抢锁忙只吞不回滚扣费（仅 `action==='commit'` 段吞 `code=0`+`MutationBusyException`），订单停 `pending`，靠 `schedule:reconcile-pending` cron + 下游 pull `get` 自愈；**扣费必须仍嵌套 new+pay 外层事务内**；**manager 卡单态是 `pending`（≠上游 `processing`），对账/幂等严禁照抄上游 processing**。详见 `skills/backend/order-fund.md`
+- **资金安全四道网（确定性体系）**：**物理阻断**（挡在错账发生前）= DB 唯一索引 + `Fund::transitionToSuccessful` 5 字段 CAS UPDATE（非 SELECT-then-UPDATE）+ 事务锁内二次校验 + Transaction 防重豁免仅 `'order'`；**事后发现** = Pest afterEach 跑 `FundInvariants` 4 条 SQL + 每天 `finance:audit` cron。**物理阻断不可被事后发现替代**（钱已入账损失已发生）；新增资金路径必须：CAS 转换、DB 唯一索引兜底、改 `user.balance` 必须同事务建 transaction。详见 `skills/backend/order-fund.md`
+- **外部命令统一走 BinaryLocator**：所有 `exec(php/composer/openssl/mysqldump/curl …)` 必须经 `app(BinaryLocator::class)` 解析路径 + `escapeshellarg`，禁变量插值/裸命令（多版本 PHP 会走错 CLI，探测须 `proc_open` 非 `is_executable`）；失败分档：**用户显式请求的产物/算法（iis/tomcat/sm2）硬报错 + `Log::error`**，best-effort 聚合路径（type=all/DCV）可静默跳过但须双判 + Log。详见 `skills/backend/upgrade.md`
+- **后台升级 binary preflight**：`upgrade/execute` 入口先跑 `UpgradePreflight::check()` 4 项（FPM/CLI `disable_functions`、PHP CLI 可探、composer phar 可探；CLI/FPM 各读独立 ini 须起子进程），阻塞返回 503；完整 PHP 环境校验（版本/extensions/functions）由升级流程内 `EnvironmentChecker::check()` 负责。详见 `skills/backend/upgrade.md`
+- **redis 扩展动态必装**：`CACHE_DRIVER`/`CACHE_STORE`/`QUEUE_CONNECTION` 任一为 `redis` 时，`EnvironmentChecker` 与 `upgrade.sh` 同步把 redis 从 `recommended` 升为必装（两侧 .env 解析逻辑必须对称）。详见 `skills/backend/upgrade.md`
+- **`TaskJob::dispatch` 一律加 `->afterCommit()`**：queue 默认 `after_commit=false`，事务内 dispatch 会立即入队致 worker 读不到未提交的行 → 任务静默丢失；统一"一律加"口径（无事务时立即派发、语义等价）。详见 `skills/backend/core.md`
+- **异步 Job 必须显式 `->onQueue('tasks')` 或 `'notifications'`**：生产 worker 只监听 `tasks,notifications`，漏写 onQueue 的 Job 落 `default` 永无人消费（`SubmitDocumentJob` 曾踩坑：文档静默不上传）；业务 Job→`tasks`、通知→`notifications`，gateway 侧同。详见 `skills/backend/core.md`
+- **升级冻结 release 计入 attempts，幂等 ShouldQueue 不可 `tries=1`**：freeze 期 `SkipWhenUpgradeFrozen` 对 Job `release(60)` 且不执行 handle，Laravel `release()` 把 attempts+1，`tries=1` 被 release 一次即 MaxAttemptsExceeded 误杀；约定 **handle 幂等的 ShouldQueue 用 `tries=5` + `maxExceptions=1`**（已用于 Create/RestoreBackupJob），无显式 tries 的走 worker `--tries 3`。详见 `skills/backend/upgrade.md`
+- **统一锁顺序 task→order/acme 防死锁**：`TaskJob::handle` 及所有 DELETE/改 task 的路径（`revokeCancel`/`commitCancel(active)`/`refundForSyncedCancel`/`cancelPending` 等）必须**先锁 task 再锁业务行**；task 锁统一经 `Task::lockForMutation($orderId, $actions)`（强制复合索引 `tasks_order_action_status_index` + `select('id')` + `lockForUpdate`），孪生单列索引 `tasks_order_id_index` 已 schema 删除（防优化器退回扩大 next-key lock）；CI `finish-check-greps.sh` Z12/Z13/Z14 三层守卫。详见 `skills/backend/order-fund.md`
+- **tasks 并发错误自愈边界**：纯本地 task→order/acme 变更用 `runTaskMutationTransaction()`（`DB::transaction(..,3)`）做 1213/1205 重试；**含上游副作用的 commit/cancel 不允许事务级重试**；`TaskJob` 并发错误必须重抛由 job 级 release/failed 处理，**禁在已回滚的死事务上继续 `$task->update()`**；**自愈重试期零日志、最终耗尽才记录**。详见 `skills/backend/order-fund.md`
 - **Transaction::create 必须在 DB::transaction 内调用**：Transaction::creating 钩子内不再开自己的嵌套事务/savepoint——直接使用外层事务保证 balance 修改与 INSERT 的原子性。非事务内调用会抛异常提示。Fund::updating 同理。
 - **资金事务优先用 `DB::transaction(fn)` 闭包**：Laravel 自动管 commit/rollback，避免"$row=null 控制流穿透"导致的事务计数器漂移。如必须手写 `DB::beginTransaction` + try/catch（如需在 catch 内捕获 `ApiResponseException` 后再写任务状态等场景），**所有控制流分支必须 commit 或 rollback**（含 no-row、early-return、异常路径），并补单元测试覆盖这些分支——禁止控制流穿透到方法末尾。
 
 ### Certum 验证文档上传
 
-- **独立表**：`order_documents`（本地上传的文档）
-- **不改 Cert.documents**：该字段仅存 Certum 同步回来的审核状态（只读），职责不同
-- **多级代理传递**：用户/Admin 上传 → `order_documents` 表 → 提交到上游（base64 via V2 API）→ 逐级到 上游系统 → Certum SOAP
-- **V2 端点**：`POST /api/v2/upload-document`（接收下游 base64）
-- **显示条件**：`brand.toLowerCase() === 'certum'` 且 `validation_type !== 'dv'`
-- **文件限制**：单文件 5MB，类型 PDF/JPG/JPEG/PNG/XADES，控制器层 `mimes` 验证
-- **提交权限**：Admin 和 User 均可提交文档到上游
-- **签发后禁止上传**：证书 `latestCert.status === 'active'` 后不再接受文档上传——`ActionDocumentTrait::uploadDocument`/`uploadDocumentFromBase64` 单点拦截（覆盖 Admin/User UI + V2 API 三入口，全仓写 `order_documents` 仅此二方法），前端 admin/user 的 process.vue 均在 active 态隐藏上传入口
-- **提交上游异步化 + 重试**：`submitDocuments` 不再同步阻塞，改为每个未提交文档派发 `App\Jobs\SubmitDocumentJob`（`tries=3`、`backoff=[60,300]` 指数退避、`->afterCommit()`）。Job 调 `ActionDocumentTrait::submitDocument(int $docId)`：成功标 `submitted`+`submitted_at`、永久失败（文件缺失）记 `submit_error` 不重试、可重试失败（订单未提交/上游错误）抛异常退避重试；`failed()` 兜底记错 + `Log::error`。前端 `documentUpload.vue` 状态列展示 submitted/失败(submit_error)+轮询
-- **跨级去重（content_hash）**：`order_documents` 加 `content_hash`(sha256) + 唯一索引 `(order_id, content_hash)`。**纯接收端**实现 —— `uploadDocumentFromBase64` 对解码字节算 hash，同 order 同内容已存在则跳过（重试/重复推送幂等），唯一索引兜底并发竞态（catch `QueryException` errorInfo 1062）。**发送端/线协议不变**，旧版下游推到新接收端也能去重。Gateway 侧 `V2/ApiController::uploadDocument` 镜像同一逻辑（对端对称）。防止 Job 重试在上游产生重复行 → Certum 重复提交
-- **上传即自动转发上游**：`uploadDocument`（UI 文件上传）与 `uploadDocumentFromBase64`（V2 接收下游）存档后**都**自动派发 `SubmitDocumentJob` 往上游转（含 dedup-hit 补转），多级链全自动、免手动点提交。前端「提交」按钮降级为兜底（仅 `unsubmittedCount>0` 时显示、全部 submitted 后隐藏；上传后前端轮询刷新状态）。**注意：自动转发仍依赖 queue worker 常驻**——无 worker 则 Job 滞留 `jobs` 表、文档不会真正到达上游
-- **新增列**：`submitted_at` / `submit_attempts` / `submit_error` / `content_hash`（迁移 `2026_05_31_100000_*`，幂等 `hasColumn` 守护）
+- **独立表**：`order_documents`（本地上传文档）；`Cert.documents` 只存 Certum 同步回的审核状态（只读、职责不同）；多级代理 base64 经 `POST /api/v2/upload-document` 逐级到上游 → Certum SOAP
+- **显示/限制**：`brand==='certum'` 且 `validation_type!=='dv'`；单文件 5MB，类型 PDF/JPG/PNG/XADES；Admin/User 均可提交
+- **安全·签发后禁止上传**：`latestCert.status==='active'` 后 `ActionDocumentTrait::uploadDocument`/`uploadDocumentFromBase64` 单点拦截（覆盖 UI + V2 三入口、全仓写 `order_documents` 仅此二方法），前端 active 态隐藏入口
+- **上传即自动异步转发上游**：存档后自动派发 `SubmitDocumentJob`（`tries=3`、`backoff=[60,300]`、`->afterCommit()`），`content_hash`(sha256) + 唯一索引 `(order_id, content_hash)` 跨级去重（纯接收端、对端对称）；**依赖 queue worker 常驻**，无 worker 则文档不到上游
+- 详见 `skills/backend/certum-document.md`
 
 ### 对外 API 接口文档
 
 - **源**：`backend/resources/docs/api/{v2,acme,deploy}.yaml`（OpenAPI 3.1，单一来源，随版本发布打包）；编辑时逐端点对照控制器实际校验/返回核对，枚举值对系统字典（如 `validation_method` 对 `validationMethodOptions`）
 - **后端端点**：`GET /api/meta/api-doc?surface=v2|acme|deploy`（公开无鉴权，返回 `application/yaml` 原文，供 curl / Scalar 渲染）；surface 白名单，非法 404。spec 描述主系统 v2/acme/deploy 契约、跟随主系统版本，**留主系统未拆进插件**
-- **展示**：由 `api-docs` 插件（**纯前端、仅 user 端**）提供 —— 外壳 IIFE（~1KB，external vue）向「系统设置」注入「接口文档」菜单，页面用 **iframe(srcdoc)** 内嵌 Scalar 官方 standalone bundle（`scalar-standalone.js`，自带 Vue）渲染三套。iframe 隔离使 Scalar 的 ~1MB JS / 236KB CSS 仅在打开文档页时加载、不污染主系统、布局为 Scalar 原生。主系统**不再内置**渲染（已拆 `apiDocs.vue`×2 + `unplugin-vue-markdown` + `@apidoc`）。接入要点见 `skills/plugin-dev.md`
+- **展示**：由 `api-docs` 插件（**纯前端、仅 user 端**）提供 —— 外壳 IIFE（~1KB，external vue）向「系统设置」注入「接口文档」菜单，页面用 **iframe(srcdoc)** 内嵌 Scalar 官方 standalone bundle（`scalar-standalone.js`，自带 Vue）渲染三套。iframe 隔离使 Scalar 的 ~1MB JS / 236KB CSS 仅在打开文档页时加载、不污染主系统、布局为 Scalar 原生。主系统**不再内置**渲染（已拆 `apiDocs.vue`×2 + `unplugin-vue-markdown` + `@apidoc`）。接入要点见 `skills/plugins/plugin-dev.md`
 
 ### 自动续费/重签
 
-- `orders.auto_renew`: 订单级自动续费开关（null 时回落到用户设置）
-- `orders.auto_reissue`: 订单级自动重签开关（null 时回落到用户设置）
-- `users.auto_settings`: 用户级默认设置 `{"auto_renew": false, "auto_reissue": false}`
-- `AutoRenewCommand` 每天 00:00 执行：证书到期前 14 天触发，订单剩余 ≤15 天续费、>15 天重签；API channel 订单由下游控制，不处理
-- **延时提交**：Command 创建续费/重签 + 支付后不立即 commit，通过 Task 表创建延时 commit 任务（随机 0~8 小时），分散上游压力，8 点后人工可检查状态
-- **产品条件**：续费要求 `product.status=1 && renew=1`；重签仅要求 `reissue=1`（产品禁用仍可重签）
-- **参数继承**：从原订单提取 period/contact/organization/domains；CSR 按 `product.reuse_csr` 决定重用或生成
-- **算法继承**（防静默降级）：续费/重签 `reuse_csr=0` 重新生成 CSR 时，`ActionTrait::initParams` 在 `encryption.alg` 缺失时从 `last_cert` 继承 alg/bits/digest（列存大写，`strtolower` 归一），覆盖自动路径（`AutoRenewCommand` 不传 encryption）与 API 省略；前端 `loadOrderInfo` 回填原算法为表单默认（用户仍可改）。**继承值在 `ValidatorUtil::validate` 之后才注入 `$params`**——不让当前产品 `encryption_alg` 菜单校验阻断存量证书续签（显式传入的 encryption 仍照常 validate）；但 SM2 能力 gate `guardSm2Capable` 早触发，国密 openssl 不可用则报错（保持 SM2，绝不静默降级为 RSA）。`CsrUtil::getEncryptionParams` 归一返回小写 alg（修大写算法失配 bug）。前端 ECDSA 密钥长度选项 `512→521` 对齐后端 `secp521r1`。否则原 ECDSA/SM2 证书会在 reuse_csr=0 续签后静默降级为 RSA
-- **委托前置条件**：缺失委托记录时自动创建（zone 由 ca 派生：`exact` 精确域名 / 非 exact 根域，见「委托验证」章节）；DNS 验证采用宽松策略（所有 dnsTools + 本地全部尝试，任一匹配即有效），目的是尽可能发起续签
-- **失败通知 + 到期去重**（`auto_renew_failed` 模板，仅 seeder、db:seed 幂等可达）：续费/重签失败（含 IP、无委托等跳过类）按到期节点（14/7/3/1 天）发邮件给订单用户。**失败文案归一**：仅「余额不足」「委托无效」两类用户可行动失败给专属清晰文案，IP/上游系统类错误统一走兜底常量 `FALLBACK_REASON`「自动续签未成功，请尽快手动续期」（原始异常仅进 cron 日志、不泄露给用户）；邮件用证书 `common_name` 标识（非 order_id），处理方式按失败类型逐条列出 + 联系客服兜底 + 「登录控制台」按钮（`site_url` 由专用 `AutoRenewFailedNotificationBuilder` 从系统设置注入，**不进模板 variables、Admin 测试发送无需手填**）；**余额检查仅 renew**（reissue 不扣费、不检查余额）；**兜底必发**——任何失败都发通知以堵 `ExpireCommand` 排除自动续签订单后的静默过期洞。`ExpireCommand` 反向排除「会被自动续签/重签处理」的订单（`cert.channel≠api 且 willAutoRenew‖willAutoReissue`）避免同节点重复发到期通知；节点常量与 `isExpireNotifyNode` 由 `Console\Commands\Concerns\ExpireNotifyWindow` trait 两命令共用。修复点：`willAutoReissueExecute` 改判 `product.reissue`（重签不限产品状态），与 `getReissueOrders` 对齐
-- **手工标记已续费**（`Order\Action::markRenewed`，admin/user 双端）：**订单到期前 30 天内**（按 `orders.period_till` 判定、非单张 `cert.expires_at`，与手工续费 gate 的 `period_till>now+30` 一致）、仅 active 证书可手工标记 `renewed` 终态。场景：用户**另开新订单**续了证书 → 标旧订单 `renewed` 止住到期通知+自动续费；"原订单内重签"靠重签后 expires_at 推远自动止通知、无需本操作。不用 cert.expires_at：多年期/中途重签订单证书将到期但订单未到期，会被自动重签接管（ExpireCommand 的 willBeHandledByAutoRenew 已排除其到期通知），不应允许标记。事务+行锁+锁内二次校验，User 端 UserScope 限本人
+- **开关/触发**：`orders.auto_renew`/`auto_reissue`（null 回落 `users.auto_settings`）；`AutoRenewCommand` 每天 00:00，证书到期前 14 天触发（订单剩余 ≤15 天续费 / >15 天重签），API channel 不处理；延时 commit（随机 0~8h）分散上游；续费要求 `product.status=1 && renew=1`、重签仅 `reissue=1`
+- **安全·算法继承防静默降级**：`reuse_csr=0` 重生成 CSR 时 `ActionTrait::initParams` 在 `encryption.alg` 缺失时从 `last_cert` 继承 alg/bits/digest（**在 `ValidatorUtil::validate` 之后注入**，不被当前产品菜单校验阻断存量续签）；SM2 走 `guardSm2Capable` 保持国密、绝不降级 RSA。否则原 ECDSA/SM2 会在续签后静默降级 RSA
+- **安全·兜底必发**：任何失败都发 `auto_renew_failed` 通知（按 14/7/3/1 天节点），堵 `ExpireCommand` 排除自动续签订单后的静默过期洞；用户可行动失败（余额不足/委托无效）给专属文案，其余走兜底常量 `FALLBACK_REASON`、原始异常仅进 cron 日志；**余额检查仅 renew**；`ExpireCommand` 反向排除会被自动续签/重签处理的订单避免重复通知
+- **手工标记已续费**：`Order\Action::markRenewed`（按 `orders.period_till` 到期前 30 天内、仅 active，事务+行锁+锁内二次校验），用于用户另开新订单续证后止住旧订单到期通知+自动续费
+- 详见 `skills/backend/auto-renew.md`
 
 ### 工商查询与企业-联系人绑定
 
-- **多对一模型**：`organizations.contact_id` 关联 `contacts.id`（应用层校验，无 DB 外键 — 避免误删 Contact 时连锁清空企业绑定）；删除 Contact 前校验是否被任何 Organization 引用
-- **嵌套 upsert**：`POST/PUT /api/{role}/organization` 请求体支持嵌套 `contact_id + contact`，单事务原子；User/Admin OrganizationController 复用 `Concerns\ResolvesContactId` trait
-- **update 保留原绑定**：PUT `/api/{role}/organization/{id}` 未传 `contact_id` 也未传 `contact` 时 **保留原 contact_id**（避免部分字段更新意外清空绑定）；显式传 `contact_id: null` 才清空。Admin/User 端一致
-- **订单自动反查**：`Order\ActionTrait::initParams` 当传 organization 但缺 contact 时，从 `organization.contact_id` 自动取；contact_id 为空报错"请先为该企业绑定联系人"
-- **工商查询服务**：`Services/EnterpriseLookup`（`LookupInterface` + `AliyunDriver` + `LookupManager`），仅对接阿里云市场（AppCode 鉴权，HTTP timeout 固定 10s）；Redis 缓存 24h 成功 / 1h 失败，**cacheKey 含 fieldMap 指纹**（配置变更后旧缓存自动失效，避免"改完 fieldMap 但 24h 缓存仍返回旧 schema"的字段缺失）；`fieldMap` 吸收响应结构差异（dot path），`queryField` 吸收请求参数名差异（极速工商 `name`/`company`、其他接入商 `keyword` 等），切接入商不改代码
-- **配置项**（`system_setting.enterprise.*`，setting 顶层 key 采用小驼峰）：`url` / `appCode`（base64 编码存储，非加密；真加密为待评估项）/ `queryField`（默认 `name`）/ `fieldMap`（内部标准 key **对齐 organization/contact 入库字段名**，前端可直接消费无需二次映射：`name` / `registration_number` / `address` / `state` / `city` / `regionname` / `legal_person`）/ `dailyLimit`（全局每日上限，默认 100，0 视为无限制）
-- **启用判定**：去掉了独立的 `enabled` 开关，`LookupManager::enabled()` 改为校验 `url` + `appCode` + `queryField` 非空且 `fieldMap` 至少配齐 `name`/`registration_number`/`address` 三个标准字段；任一缺失即视为未启用
-- **全局每日上限**：`AliyunDriver::enforceAndIncrementDailyQuota()` 在 cache miss 后、HTTP 请求前 `Cache::add + Cache::increment` 原子计数，key `enterprise:daily:{YYYY-MM-DD}` TTL 至当日 23:59:59；**缓存命中不计数、超限抛 LookupException(429) 不写失败缓存**（否则次日重置后仍命中失败缓存）。30/min IP 节流保留作为前置防刷
-- **标准 key 命名约定**：直接对应入库字段（`organizations.name` / `organizations.registration_number` / `organizations.address` / `organizations.state` / `organizations.city`），加 2 个中间值 `regionname`（供邮编查询使用，不入库）和 `legal_person`（拆分后入 `contacts.first_name/last_name`）；移除了未消费的 `status` 字段
-- **端点**：`POST /api/{role}/enterprise-lookup`（节流 30/min）+ `GET /api/{role}/enterprise-lookup/status`（前端探活）
-- **查询按钮可见性**：User 端 `enabled()=false` → 隐藏；Admin 端 `enabled()=false` → 禁用+tooltip
-- **前端组件**：`shared/components/OrganizationEditor` — 单弹窗内两个 select（企业/联系人）+ 工商查询按钮；User/Admin 共用，按 `role` prop 切换按钮可见性策略（http baseURL 已含 /api/admin，URI 不重复前缀）；`countryOptions` 必填 prop 由调用方注入（admin/user 各自 `@/views/system/country` 维护，shared 组件不硬编码项目数据）
-- **法人姓名拆分**：`splitChineseName()` 仅在 contact 未选且 last/first 都为空时回填 — 含空格 → 按空格切；含 `·` 中点（少数民族姓名）→ 按 `·` 切；其他 → 第一个字符为姓、其余为名（复姓需手动调整）。回填成功且 `contact.title` 为空时同步填"法定代表人"（用户可改）
+- **多对一模型**：`organizations.contact_id` → `contacts.id`（应用层校验、无 DB 外键，避免误删 Contact 连锁清空绑定）；删 Contact 前校验引用；`POST/PUT organization` 支持嵌套 `contact_id + contact` 单事务 upsert；PUT 未传 contact 时保留原绑定（显式传 null 才清空）；订单缺 contact 时从 `organization.contact_id` 自动反查
+- **工商查询服务**：`Services/EnterpriseLookup`（`LookupManager` + `AliyunDriver`，仅阿里云市场 AppCode 鉴权，timeout 10s）；`fieldMap`(dot path)/`queryField` 吸收接入商差异切商不改代码；Redis 缓存 24h 成功/1h 失败、cacheKey 含 fieldMap 指纹；全局每日上限（`enterprise:daily:*` 原子计数、超限 429）+ 30/min IP 节流
+- **配置/启用判定**：`system_setting.enterprise.*`（`url`/`appCode`(base64 存)/`queryField`/`fieldMap`(标准 key 对齐入库字段)/`dailyLimit`）；`LookupManager::enabled()` 校验 url+appCode+queryField 非空且 fieldMap 配齐 `name`/`registration_number`/`address`；User 端未启用隐藏按钮、Admin 端禁用+tooltip
+- **端点/前端**：`POST /api/{role}/enterprise-lookup`(30/min) + `GET .../status`；共享组件 `shared/components/OrganizationEditor`（企业/联系人 select + 查询按钮，`countryOptions` 由调用方注入）；`splitChineseName()` 法人姓名拆分回填
+- 详见 `skills/backend/enterprise-lookup.md`
 
 ### 邮编查询（本地数据 + 县级市识别）
 
-- **数据来源**：基于 [tombcato/china-zipcode-data](https://github.com/tombcato/china-zipcode-data) MIT 全量 2879 条省/市/区/县/县级市邮编。字段裁剪至 `province / city / name / zipcode`；4 个直辖市 city 字段规范化为 province 名（重庆数据源用"重庆城区/重庆郊县"，统一改"重庆市"以对齐阿里云 `regionname` 输出）。文件 `backend/resources/data/china_city_zipcode.json` 约 273 KB（gzip ~30 KB），自托管零外部依赖
-- **服务**：`App\Services\ZipcodeLookup\ZipcodeLookup`，进程内 `static` 缓存全量数据 + 预计算"每地级市最小 zipcode 代表"；测试用 `ZipcodeLookup::resetCache()` 重置
-- **匹配策略**：`find(regionname, companyName = null)` 三步走 —
-  1. **最长 fullPath 匹配**：遍历数据找最长的 `province+city+name` 子串命中 `regionname`（直辖市同时尝试 `city+name` 两段拼接，兼容阿里云"北京市朝阳区"风格）。命中即返回区/县/县级市精度
-  2. **公司名兜底县级市**：若 regionname 仅到地级市未命中区/县，扫县级市候选 — 只要 regionname 含 province **或** city 任一（兼容工商响应字段不全的县级市公司，常见只给 city 不给 province），公司名是否包含县级市名（去/不去"市"后缀），命中则用县级市覆盖 `city` 字段
-  3. **市级回落**：以上都未命中时，按优先级遍历地级市代表（① province+city 都命中 → ② 仅 city 命中 → ③ 仅 province 命中），返回该地级市最小 zipcode
-- **返回 shape**：`{zipcode, province, city, district}` — 命中县级市时 `city` 填县级市名、`district` 留空；命中普通区县时 `district` 填区县名
-- **端点**：`POST /api/{role}/zipcode-lookup`（节流 60/min，IP 维度），入参 `{regionname, name?}`，未匹配返回 `code: 0`
-- **前端集成**：`OrganizationEditor.onLookup()` 工商查询成功后用 `d.regionname || d.province+d.city` 当 regionname、`d.name`（公司名）当 companyName 调邮编接口；回填 `postcode`（仅在空时），并用返回的 `city` **覆盖**已填 city（zipcode 服务的 city 比工商更精确，如县级市识别）。失败静默
-- **fieldMap 联动**：`enterprise.fieldMap` 加入 `regionname` 标准字段（默认 `result.basic.regionname`），让工商响应带出完整行政区划路径供邮编查询使用
-- **跨省误判防护**：第 2 步要求县级市的 province/city 必须在 regionname 里出现，避免"重庆某义乌商品城"被误判为浙江义乌
+- **本地数据**：`backend/resources/data/china_city_zipcode.json`（2879 条省/市/区/县/县级市，自托管零依赖，直辖市 city 规范化为 province 名）；`ZipcodeLookup` 进程内 static 缓存 + 预计算每地级市最小 zipcode 代表
+- **匹配策略**：`find(regionname, companyName)` 三步（最长 fullPath 匹配 → 公司名兜底县级市 → 市级回落），返回 `{zipcode,province,city,district}`；跨省误判防护（县级市 province/city 须现于 regionname）
+- **端点/联动**：`POST /api/{role}/zipcode-lookup`(60/min)；`OrganizationEditor.onLookup()` 工商成功后联动回填 postcode（仅空时）+ 用返回 city 覆盖（县级市更精确）；`enterprise.fieldMap` 含 `regionname` 供路径
+- 详见 `skills/backend/enterprise-lookup.md`
 
 ### 通知体系（主系统仅 mail，其他通道由插件注入）
 
-- **业务事件归主系统、通道实现归插件**：主系统在 `Order/Action`/`AutoRenewCommand`/`ExpireCommand`/`TaskJob`/`FundAuditCommand`/`User\AuthController`（改密/重置成功 → `security`）触发 `NotificationCenter::dispatch(NotificationIntent)`，`ChannelManager` 分发到所有已注册可用且通过 `shouldSend()` 的 channel
-- **`ChannelManager` 必须绑 singleton**（`AppServiceProvider::register`）：否则容器对未绑定类每次 make 新实例，插件 ServiceProvider 里 `app(ChannelManager::class)->register(...)` 注册的通道随实例丢弃、NotificationCenter/Job 解析到只含 mail 的新实例，插件通道端到端静默失效
-- **主系统内置 mail，无 channel 抽象冗余层**：已删 `Guards/` 整目录（4 Guard + Manager）和 `TemplateSelection.channelTemplates`；`notification_templates.channels` 字段已移除（每个 code 对应单一模板，**`code` 唯一**）；`notifications` 表无 channel 字段
-- **用户偏好扁平按 code**：`users.notification_settings = {cert_issued: true, cert_expire: true, security: true}`；`User::allowsNotification(code)` 替代旧 `allowsNotificationChannel(channel, type)`；`User::normalizeNotificationSettings` 兼容老的嵌套 `{mail: {x}}` 数据（自动提升 mail 子树）
-- **Builder 注册按 code 单维度**：`config/notification.builders = ['cert_issued' => CertIssuedNotificationBuilder::class, ...]`，不再 `code.channel` 复合 key；4 个内置 Builder 已去 `Mail` 后缀（`CertIssuedNotificationBuilder` 等）。Builder 输出 `NotificationPayload($data)`，`data` 对所有 channel 通用，mail-specific 数据放 `data._meta`；敏感字段（如初始密码）走第二参 `NotificationPayload($data, $transient)`——`transient` 由 `NotificationJob` 发送前合入内存供渲染、发送后还原，**绝不入库**
-- **插件接入主系统的全部触点**（**主系统对插件的承诺仅此**）：
-  1. ServiceProvider 里 `app(ChannelManager::class)->register('feishu', new FeishuChannel)`
-  2. 实现 `ChannelInterface`：`send(Notification): array` + `isAvailable(): bool` + `shouldSend(Model $notifiable, string $code): bool`
-  3. 用户偏好/UI/模板全部由插件自治：自己加表/字段读偏好，主系统不预留 schema/UI/API 钩子，不加 widget 插槽
-- **MailChannel::shouldSend 内联逻辑**：检查 `notifiable->email` 非空 + 调 `allowsNotification($code)`；Admin 等无此方法的 notifiable 默认 true
-- **取消/重发等 Admin 操作**：测试通知 `/api/admin/notification/test-send` 和重发 `/api/admin/notification/{id}/resend` 不再传 `channels` 入参（已删 sanitizeChannels）；发送会广播到所有已注册可用 channel
-- **携密/附件安全（job 边界）**：① `NotificationJob implements ShouldBeEncrypted`——携密 context（如 user_created 密码经 `NotificationIntent.context` → Job 构造参数序列化）用 APP_KEY 加密整个 job payload，防明文落 `jobs`（执行前窗口）/`failed_jobs`（长期）表；`transient` 只防 `notifications.data`，二者互补。② 多通道临时附件：Builder 按通道各 build 一次，附件类 payload（CertIssued 含私钥证书 ZIP）每通道各生成一份，`NotificationJob::handle` 末尾统一清理 `data._meta.cleanup_paths`（覆盖所有通道 + 发送失败路径、与 MailChannel 内清理幂等），防非 mail 通道（插件注入）临时文件泄漏
-- **`DefaultNotificationBuilder` 兜底安全约定**：未配置 builder 的 code（Admin 测试通知 / 插件自定义 code）走 `DefaultNotificationBuilder`，**直通 `$intent->context` 入库**，不做敏感字段过滤。调用方需自律 — context 不传 password/token/secret/api_key/private_key 等字段，否则会明文存入 `notifications.data` 列并随通道转发外部。**例外**：`user_created`（携初始密码）已注册专用 `UserCreatedNotificationBuilder`，把密码走 `NotificationPayload.transient`（仅渲染入邮件、不入库），不回落 Default；新增携密 code 同样必须走专用 Builder + transient，不可依赖 Default。**`security`**（账号改密/重置提醒，`User\AuthController::updatePassword`/`resetPassword` 事务提交后触发）虽不携密，也用专用 `SecurityNotificationBuilder` 白名单 `username`/`event`/`email` 入库（纯文本 `is_html=false`），避免调用方误把敏感字段塞进 context 被 Default 直通；`event` 仅传安全事件可读描述，不含凭据
+- **业务事件归主系统、通道实现归插件**：主系统在 `Order/Action`/`AutoRenewCommand`/`ExpireCommand`/`TaskJob`/`FundAuditCommand`/`AuthController` 触发 `NotificationCenter::dispatch(NotificationIntent)`，`ChannelManager` 分发到所有已注册可用且 `shouldSend()` 的 channel；主系统仅内置 mail（无 channel 抽象冗余层，`code` 唯一）
+- **安全·`ChannelManager` 必须绑 singleton**（`AppServiceProvider::register`）：否则插件 ServiceProvider 里 `register(...)` 的通道随新实例丢弃、NotificationCenter/Job 解析到只含 mail 的实例，插件通道端到端静默失效
+- **用户偏好扁平按 code**：`users.notification_settings = {code: bool}`，`User::allowsNotification(code)`；Builder 按 code 单维度注册（`config/notification.builders`），输出 `NotificationPayload($data)`、mail-specific 放 `data._meta`
+- **安全·携密不入库**：`DefaultNotificationBuilder` 直通 `$intent->context` 入库、不过滤敏感字段；携密 code（如 `user_created`）必须走专用 Builder + `NotificationPayload` 第二参 `transient`（仅渲染入邮件、**绝不入库**）；`NotificationJob implements ShouldBeEncrypted` 防明文落 jobs/failed_jobs；`security` 走专用 `SecurityNotificationBuilder` 白名单入库；多通道临时附件 `handle` 末尾统一清理 `cleanup_paths`
+- **插件接入触点**（主系统承诺仅此）：ServiceProvider `register('feishu', new FeishuChannel)` + 实现 `ChannelInterface`（send/isAvailable/shouldSend）+ 偏好/UI/模板插件自治（主系统不预留 schema/UI/钩子）
+- 详见 `skills/backend/notification.md`
 
 ### 国密 (SM2) 证书
 
-- **能力 gate（探测，非开关）**：下单 `Order\ActionTrait::initParams` 的 `guardSm2Capable` 对 `alg=sm2` 探测 `BinaryLocator::gmOpenssl()`，不可用即事务前拒绝（后端兜底防绕过、统一拦所有 SM2 含 reuse_csr=1、不留半残环境）。已移除 `site.gmEnabled` 业务开关与 `site.gmOpensslPath` 设置项——能否签 SM2 由本机 openssl 能力决定，不靠人工开关
-- **国密 openssl（须签 id-ecPublicKey 标准编码，运维下限 OpenSSL 3.0.13）**：PHP openssl 扩展不支持 SM2，CSR 生成走 `BinaryLocator::gmOpenssl()`。**`probeSm2` 探测不只验「能签 SM2」，还实签一张 CSR 校验 SPKI 是 id-ecPublicKey 标准编码**——OpenSSL 3.0.0~3.0.12 能签 SM2 但把公钥 algorithm 写成 SM2 曲线 OID（dual-sm2），被国密 CA（如 Keeptrust）拒为「csr 解析失败」；官方 **3.0.13 / 3.2.1 起 restore** 回 id-ecPublicKey（commit `f2db052` 在 3.0 引入 dual-sm2）。**功能探测而非版本号比较**——3.1.0~3.2.0 版本号高于 3.0.13 但仍 dual-sm2 且已 EOL，数字比较会误放行；`csrUsesStandardEcPublicKey` 校验 CSR DER 含 id-ecPublicKey OID（`2a8648ce3d0201`）。`gmOpenssl()` 与系统 `openssl()` 同源（共用候选 + shell 兜底），不接独立国密二进制；不达标即 fail-closed 拒下单、绝不静默降级 RSA。RSA/ECDSA 走 PHP openssl 扩展不受影响。运维下限 **OpenSSL ≥3.0.13**（Ubuntu 24.04 自带；22.04 升 3.0.14；或 3.2.1+），**已彻底移除独立国密二进制的硬编码候选与镜像编译**（勿再加回）
-- **双证书 + 存储**：签名证书（用户密钥对，manager 本地 `CsrUtil::generateSM2` 生成 SM2 CSR，临时文件 finally 强清不留盘）+ 加密证书（CA/KGC 托管下发）。`enc_cert`/`enc_key`/`enc_key2` 存 `certs` 表真实列（**每张证书独立**，不入按 issuer 聚合的 `chains` 表，否则同 CA 多证书互相覆盖加密私钥），跟随 `private_key` 暴露策略
-- **多级代理透传**：manager 走 `default` source 调上游 `{ca.url}/get`（=对端 V2 get），CA 对接在 gateway（不在主系统）。上游 `get` 响应须带 `enc_cert`/`enc_key`/`enc_key2`（契约，键名=列名），sync 的 `$data=$result['data']` 透传 + `$cert->update($data)` 靠 fillable 自动写入（**sync 并发零改动**）。**manager 作上游时其 `V2 get` 也须透传 enc**（latestCertFields 加 enc + 非空透传/空 unset，同 `private_key` 策略；Deploy get 亦透传），否则多级 manager 链路下游写不进 enc。**sync 终态守卫**：本地终态时连同 status 一并 unset enc，拒上游滞后 enc 回写已终结证书。**中间证书入 chains**：sync 写回前先 `! empty($data['issuer']) && $cert->issuer = $data['issuer']` 落位，确保 `$cert->update($data)` 触发 `setIntermediateCertAttribute` 时 issuer 已就位、非空 `intermediate_cert` 在签发轮即入 chains（Eloquent fill 顺序不保证 issuer 早于 intermediate_cert；国密因 enc 短路 retrieved 钩子尤需确定性入库，与上游 gateway 对称）
-- **证书解析**：`ActionTrait::parseCert` 对 SM2 用 PHP `openssl_x509_parse`（OpenSSL ≥1.1.1 原生识别 `signatureTypeSN=SM2-SM3`、公钥 256 位）+ `isSM2Cert` DER OID 兜底，固定 `encryption_alg=SM2`/`signature_digest_alg=SM3`/`encryption_bits=256`；`isSM2Cert` 对已明确解析出非 SM2 算法（signatureTypeSN 非 UNDEF/空）短路、不对每张 RSA/ECDSA 跑 DER
-- **下载**：国密只出 nginx 双证书包（`_sign.crt`/`_sign.key`/`_enc.crt`/`_enc.key`/`_enc_gmt0009.key`/`_enc_gmt0016.key`/`_sign_ca.crt` + 说明.txt），`ActionFileTrait::addCertToZip` 按 `encryption_alg='sm2'` 走 `addSm2CertToZip`（**与前端 isSM2/Deploy gate 同口径、不按 enc_cert**——enc 空的 SM2 也强制国密包，不掉进普通 PKCS12 逻辑丢签名私钥/iis 报错）；**加密文件需 enc_cert + enc_key 成对才出**（三列独立 nullable、无成对到达约束，缺任一即整组降级仅签名 + 提示，杜绝"有证书无私钥/有私钥无证书"残缺包）
-- **前端 gate**：`install.vue` 两端国密只显 Nginx + `enc_cert`/`enc_key` 任一空即置灰（`encMissing` 与后端成对守卫对齐）；`process.vue` 两端隐藏自动部署；算法字典 `dictionary.ts` 已含 sm2/sm3（无需改）；申请表单 `action.vue` 两端选产品自动校正加密选项（**不兼容才切**：当前算法不在产品 `encryption_alg` 菜单内才切到首选并复用 `handleAlgChange` 联动 bits，摘要同理校正到 `signature_digest_alg` 菜单内，SM2 强制 256+SM3、`keyBitsOptions` 增 SM2 分支只显 256；**仅 apply/batchApply**，续费/重签由 `loadOrderInfo` 回填原算法、不在此覆盖以防静默降级）
-- **Deploy API gate**：`query` 的 `field=certificate|private_key` 拉取拒绝国密（防 certimate 单证书残缺自动部署）；`getOrderData` 国密 active 附 `enc_certificate`/`enc_private_key`/`enc_private_key_gmt0009` + `encryption_alg=sm2` 标记
+- **能力 gate（探测，非开关）**：`guardSm2Capable` 对 `alg=sm2` 探测 `BinaryLocator::gmOpenssl()`，不可用即事务前拒绝（后端兜底防绕过、含 reuse_csr=1）；已移除 `site.gmEnabled` 人工开关——能否签由本机 openssl 能力决定
+- **安全·fail-closed 绝不降级**：`probeSm2` 实签 CSR 校验 SPKI 为 id-ecPublicKey 标准编码（**功能探测非版本号比较**，防 OpenSSL 3.0.0~3.0.12 及 3.1~3.2.0 的 dual-sm2 被国密 CA 如 Keeptrust 拒）；不达标即 fail-closed 拒下单、绝不静默降级 RSA。运维下限 **OpenSSL ≥3.0.13**（已移除独立国密二进制硬编码候选与镜像编译，勿再加回）
+- **双证书 + 存储**：签名证书（本地 `CsrUtil::generateSM2` 生成、临时文件强清）+ 加密证书（CA/KGC 下发）；`enc_cert`/`enc_key`/`enc_key2` 存 `certs` 表独立列（不入按 issuer 聚合的 `chains`）、跟随 `private_key` 暴露；**加密文件 enc_cert+enc_key 成对才出**，缺任一降级仅签名（杜绝残缺包）
+- **透传/解析/下载/gate**：manager 走 `default` source 透传 enc（V2/Deploy get 均透传，**sync 终态守卫**本地终态时 unset enc）；`parseCert` 固定 SM2/SM3/256；下载走 `addSm2CertToZip` nginx 双证书包（不按 enc_cert、enc 空也强制国密包）；前端 install 只显 Nginx、Deploy API `field=certificate|private_key` 拒国密单证书拉取
+- 详见 `skills/backend/sm2-cert.md`
 
 ### cloud-deploy 插件（证书自动推送云平台）
 
-- **用途**：证书签发/续期 `latestCert.status=active` 后，自动把证书推送到各大云平台资源（CDN/负载均衡/WAF/对象存储/函数计算等）。`plugins/cloud-deploy`，独立 PHP 插件，命名空间 `Plugins\CloudDeploy`
-- **架构**：certimate 式封装（每个 `(provider, product)` 一个 deployer，`AbstractDeployer` + `makeClient` 注入缝 + schema 驱动前后端校验 + guardSdk 凭证脱敏 + 4 类 uploader/`RemoteCertStore` 去重）；依赖阿里/腾讯/AWS 等官方 SDK + 大量手写 REST 薄客户端（vendor 不 scoping，ClassLoader 挂 SPL 栈尾；**跨大版本冲突古董——如 baidubce 拖的 psr/log 1.x、guzzle 3.x、event-dispatcher 2.x——改用 composer `replace` 挡在插件 vendor 外：挂栈尾对跨大版本不可靠，0.0.1 曾因 psr/log 1.x 污染主系统 Monolog 致全站 500，详见 development.md**）。**已对齐 certimate 全部部署端点：149 端点 / 55 provider**（certimate 共 152，其中 ssh/ftp/local 经产品决策不实现——管理端已有本地证书安装工具，且 phpseclib 公告/ext-ftp 缺失/多租户 RCE 风险）。官方 SDK：aliyun/tencent/aws/qiniu/baidu；其余 provider 经各自 `<Provider>RestClient` 手写签名（HMAC/JWT/OAuth2/OCI 等）调 REST，详见 `plugins/cloud-deploy/skills/development.md`
-- **vendor 运行时安装（不入库/不打包）**：插件 `backend/vendor/` 约 80M **不入 git 也不进发布 zip**（仅打包 `backend/composer.json` + `backend/composer.lock`）。主系统 `PluginManager` 安装/更新带 `backend/composer.json` 的插件时自动 `composer install --no-dev`（**通用能力**，无 composer.json 的插件如 easy/invoice/notice/api-docs 跳过、零影响）：install 必装、update 仅当 `composer.lock` sha256 较旧版变化才装。复用 `BinaryLocator::composer()` + `UpgradePreflight`（composer/CLI proc_open 探测）+ 阿里云镜像自动切换，逻辑封装在 `App\Services\Plugin\PluginComposerRunner`；composer 子进程固定使用 `storage/app/plugin-composer` 作为 HOME/COMPOSER_HOME/cache，队列环境不需要预置 HOME。**对目标机要求**：composer 可执行 + CLI 未禁 `proc_open`/`exec` + 能访问 packagist（GitHub 不可达时自动切阿里云镜像）；不满足则安装失败并给明确文案（install 清理半装目录、update 回滚备份）。降级：缺 vendor 时 ServiceProvider `loadPluginVendor` is_file 守卫不 fatal、`CloudDeployJob::guardSdk` 把缺 SDK 转 per-target 失败日志，主系统其余零影响
-- **主系统足迹**：backend 仅 `PluginManager` 加通用 composer hook + 新增 `PluginComposerRunner`（其余插件不受影响）；插件功能侧复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`），order 详情 SSL 卡片标题为「云部署」，显示当前订单部署目标和状态
-- **双端管理 + 共享推送 action**：① user/admin 各自鉴权后调共享 `Services\DeployService`（`order_id` 模式按订单推 enabled 目标 / `target_ids` 模式直查不过滤 enabled，两语义；admin `crossUser=true` 走 `withoutGlobalScopes` 跨用户，系统设置页用 `target_ids`，订单详情页可用 `order_id+user_id` 收敛到当前订单；空筛选 fail-closed，入队前再次用 `TenantConsistency` 过滤历史脏 target）；② user/admin 都有 `order-options` 远程订单候选接口，新增/改绑只允许未取消且 latest cert 状态在 unpaid/pending/processing/approving/active 的订单，show 仅用于存量回显，同一用户下相同 `access_id+product+config` 的推送目标只允许绑定一个订单，最终由 `config_hash` + DB 唯一索引 `(user_id, access_id, product, config_hash)` 兜底并发；③ admin 端点 `GET /api/admin/cloud-deploy/{target,access,log}` 全功能搜索（quickSearch/结构化筛选/`order_id`·`target_id`·`is_final` 精确）+ `POST .../deploy` 跨用户手动推送（`force` 默认 true），access/target 都支持新增、编辑、删除，access 的 `user_id/provider` 创建后不可改；④ **admin targets 列表 `config` 逐键脱敏，详情接口返回完整 config 供编辑**：按 `Deployers\Registry` schema 打码 `secret=true` 键、未注册组合先 `hasDeployer` 守卫再 fail-safe（除 `domain` 外全打码、不调 `resolveDeployer`、不 500），纯上传产品 `configSchema=[]` 时 `config` 可为空数组但字段仍需存在，`attachUsernames` 把 user_id 拍平为顶层 `username` 供 admin「用户」列；⑤ `CloudDeployTarget::order()` BelongsTo(`withoutGlobalScopes`) 支撑域名搜索 `whereHas('order.latestCert')`（禁 raw join 防 1052 列名歧义）；⑥ 前端：订单详情「云部署」和系统设置都支持部署目标新增/编辑/删除/启停/推送/记录，订单详情表单隐藏订单字段并隐式使用当前订单，admin 订单详情使用订单 `user_id` 限定凭证并与 user 详情保持同款表格样式；系统设置 tab 顺序为「部署目标 / 云凭证 / 部署历史」，admin 表单先远程选择用户再限定凭证和订单，部署目标列表展示组合搜索 + 状态/启用筛选；部署目标表单核心实现位于 `plugins/cloud-deploy/frontend/shared/TargetForm.vue`，user/admin 端只保留 API 适配薄包装；⑦ `plugin.json` `requires>=0.6.3`（**占位**，发布前按含 process.vue 重构的主系统版本回填）。开发细节见 development.md
-- **详细开发规范见 `plugins/cloud-deploy/skills/development.md`**（核心架构、「新增部署端点」操作模板、其余 provider 任务目录、已知陷阱清单）
-- **nginx 路由自定义（default/enabled/custom 三层）**：`nginx/default/`（系统默认，升级覆盖）/ `nginx/custom/`（用户自定义，升级不覆盖，不进发布包）/ `nginx/enabled/`（渲染产物，不直接编辑）；单一 `nginx/render.sh <安装目录>` 负责合并渲染（custom 同名优先，抑制 duplicate location），`--reload` 附带 `nginx -t` + 回滚；三路径（`bt-install.sh` / `upgrade.sh` / `PackageExtractor`）对称调用；`custom/` 和 `enabled/` 不入发布包。详见 `skills/deploy-ops.md` nginx 路由自定义章节
+- **用途/架构**：证书 `latestCert.status=active` 后自动推送到各云平台资源（CDN/负载均衡/WAF/对象存储/函数计算等）。`plugins/cloud-deploy`（命名空间 `Plugins\CloudDeploy`），certimate 式封装（每 `(provider, product)` 一个 deployer，`AbstractDeployer` + `makeClient` 注入缝 + schema 驱动校验 + guardSdk 脱敏 + uploader 去重），**已对齐 certimate 149 端点 / 55 provider**（ssh/ftp/local 产品决策不做）；官方 SDK aliyun/tencent/aws/qiniu/baidu + 手写 `<Provider>RestClient` 签名（HMAC/JWT/OAuth2/OCI），古董依赖用 composer `replace` 挡在 vendor 外（0.0.1 曾因 psr/log 1.x 污染 Monolog 全站 500）
+- **vendor 运行时安装**：`backend/vendor/`（云 SDK ~80M）**不入 git、不进发布 zip**（仅打包 composer.json/lock）；`PluginManager` 通用 composer hook 安装（见「插件系统」），缺 vendor 时 `loadPluginVendor`/`guardSdk` 降级不 fatal
+- **主系统足迹**：backend 仅 `PluginManager` composer hook + `PluginComposerRunner`；功能侧复用既有 widget 插槽 `{admin,user}-order-detail-ssl-actions`（order 详情「云部署」卡片）
+- **双端管理**：user/admin 共享 `Services\DeployService` 推送（`order_id` 按订单推 enabled / `target_ids` 直查两模式，admin `crossUser` 跨用户、空筛选 fail-closed）；target/access 双端增删改 + 启停 + 手动推送 + 部署历史；同用户同 `access_id+product+config_hash` 唯一（DB 唯一索引兜底）；admin targets 列表按 schema 逐键脱敏 `secret=true`、详情返回完整 config 供编辑
+- **nginx 路由自定义**：`nginx/{default,custom,enabled}/` 三层，`render.sh` 合并渲染（custom 同名优先、抑制 duplicate location、`--reload` 带 `nginx -t`+回滚）；`custom/`+`enabled/` 不入发布包
+- 详见 `plugins/cloud-deploy/skills/development.md`、`skills/ops/deploy-ops.md`（nginx）
 
 ## 测试
 
 - 本地开发环境用容器（`compose.yaml` + `Makefile`，详见 `docker/README.md`）：后端 PHP 8.4 + MySQL 8.4 + Redis 7，`make test` 容器内并行跑（隔离库 `ssl_manager_test`，`--processes` 防 OOM）
 - **MySQL 5.7 与 8.x 双版本**：生产二者都有，CI core 跑 `5.7×{8.3,8.4}` + `8.4×{8.4,8.5}` 矩阵、各 plugin 跑 5.7+8.4；本地默认 8.4（ARM 原生），复现 5.7 用内网实例或看 CI
 - **collation 按版本自动选择**（三处统一：`bt-install.sh` 的 `_detect_db_collation` / 容器 `entrypoint.sh` / CI `matrix.collation`）：8.x→`utf8mb4_0900_ai_ci`、5.7→`utf8mb4_unicode_520_ci`、MariaDB→`utf8mb4_unicode_ci`；`structure.json` 以 8.4 为基准。新迁移/SQL 避开 8.0+ 保留字（`rank`/`groups`/`system`）与 5.7 不支持的语法
-- 详见 `skills/backend-dev.md` 测试章节
-
-### M4 测试覆盖
-
-- **Commands**（55+ 用例）：AutoRenew、Expire、DelegationCheck、DelegationCleanup、Validate、Purge、ResetAdminPassword、ClearAllCache、UserData
-- **Models**（14 文件）：Order、User、Cert、Admin、Product、Notification、NotificationTemplate、Contact、Organization、Fund、Transaction、CnameDelegation、ApiToken、Task
-- **Middleware**（8 文件）：AdminAuthenticate、UserAuthenticate、ApiAuthenticate、DeployAuthenticate、LogOperation、RateLimiter、LoginRateLimiter、FlushLogs
-- **ACME**：Unit/Services/Acme/ActionTest（32 用例）、Feature/Controllers/Admin/AcmeControllerTest（13 用例）、Feature/Controllers/User/AcmeControllerTest（11 用例）、Feature/Controllers/Deploy/AcmeControllerTest（5 用例）
-- **Deploy**：Feature/Controllers/Deploy/OrderControllerTest（39 用例）：query（21）、callback（7）、update（8）、认证（2）、数据结构（1）
+- 详见 `skills/backend/core.md` 测试章节

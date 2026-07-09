@@ -172,7 +172,7 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 
 ### 2.5 Laravel 专项检查
 
-> 详见 [skills/backend-dev.md](../../skills/backend-dev.md)（Laravel 架构、迁移规范、自动续费/重签等章节）+ [skills/acme-module.md](../../skills/acme-module.md)（ACME 三步流程）
+> 详见 [skills/backend/](../../skills/backend/)（core Laravel 架构、database 迁移规范、auto-renew 自动续费等）+ [skills/backend/acme-module.md](../../skills/backend/acme-module.md)（ACME 三步流程）
 
 - [ ] 迁移幂等（`Schema::hasColumn`/`Schema::hasTable`/索引存在性 守卫），不写 down
 - [ ] Model 的 `$fillable`、`$casts`、`$hidden` 是否需要更新
@@ -186,7 +186,7 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 
 ### 2.6 资金路径专项（涉及 funds/transactions/users.balance 时）
 
-> 详见 [skills/backend-dev.md](../../skills/backend-dev.md) "资金确定性体系（4 道网）" 章节
+> 详见 [skills/backend/order-fund.md](../../skills/backend/order-fund.md) "资金确定性体系（4 道网）" 章节
 
 - [ ] 状态转换走 CAS UPDATE（`Fund::transitionToSuccessful`），CAS WHERE 必须完整字段匹配（不能简化为单一 status）
 - [ ] 写 transaction 不依赖应用层 `exists` 防重 — 靠 DB 唯一索引兜底

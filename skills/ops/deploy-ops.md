@@ -319,7 +319,7 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 - **无需再手动配置**：不用在 `my.cnf` / 云 RDS 参数组里另设 `innodb_lock_wait_timeout`，代码层已保证生效值为 50s
 - **隐性行为变更**：若生产此前手动把 global `innodb_lock_wait_timeout` 调得比 50 更小（如 10s、20s），升级后业务连接的 session 值会被覆盖为 50s——行为从"锁等待更快失败"变为"固定等待 50s 才报 `1205`"。依赖更短锁等待超时做快速失败的场景（如有）需重新评估
-- 详见 `skills/backend-dev.md` order 级互斥锁章节、`skills/source-api.md` Sdk 超时约定章节
+- 详见 `skills/backend/order-fund.md` order 级互斥锁章节、`skills/backend/source-api.md` Sdk 超时约定章节
 
 ## 常见问题
 

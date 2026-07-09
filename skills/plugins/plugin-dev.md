@@ -90,7 +90,7 @@ class {Name}ServiceProvider extends ServiceProvider
 
 ### MySQL 兼容性（与主系统同等约束）
 
-插件作为生产代码，跟主系统执行同一套 MySQL 5.7+ 兼容规则。详见 `skills/backend-dev.md` "MySQL 兼容性" 章节，插件特定要点：
+插件作为生产代码，跟主系统执行同一套 MySQL 5.7+ 兼容规则。详见 `skills/backend/database.md` "MySQL 兼容性" 章节，插件特定要点：
 
 - **迁移禁用 `->json()` 列类型**：用 `->text()` 列 + Model `protected $casts = ['col' => 'array']`。理由：MySQL 5.7 对 `->json()` 索引和默认值支持有限，统一走 text + array cast 最稳妥。Model 不要用 `'json'` cast，统一用 `'array'`
 - **优先 Eloquent / Query Builder**：避免 `DB::raw` / `DB::statement` / `whereRaw`。仅 mysql 函数表达式（如 `DATE_SUB(NOW(), INTERVAL N DAY)`、`JSON_EXTRACT()`）允许 whereRaw
