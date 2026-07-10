@@ -235,7 +235,15 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - yansongda 据 payload 的 `_serial_no` 设 `Wechatpay-Serial` 请求头
 - artful `filter_params` 过滤所有 `_` 前缀 key → `_serial_no` **不进发给微信的 body**，不污染业务参数
-- 调用点：`User/TopUpController`（下单 `scan` + 查单 `query`）、`{Admin,User}/FundController::check`；FundController 统一走 `app(PaymentGateway::class)` 包装（便于测试替换，**勿用 `Pay::` 静态**）
+- 调用点：`User/TopUpController`（下单 `scan` + 查单 `wechatQuery`）、`{Admin,User}/FundController::check`；FundController 统一走 `app(PaymentGateway::class)` 包装（便于测试替换，**勿用 `Pay::` 静态**）
+
+### 坑 2：查单 `query` 管线二次抹掉 `_serial_no`，须走 `PaymentGateway::wechatQuery`
+
+**只在调用点合入 `_serial_no` 不够**——下单 `scan`（`Native\PayPlugin` 用 `mergePayload`）能保住，但查单 `query` 的 `Jsapi\QueryPlugin` 用 `setPayload([...])` **整体重建 payload、只留 `_method/_url/_service_url`**，把 `StartPlugin` 合入的 `_serial_no` 抹掉 → `AddRadarPlugin` 读 payload 读不到 → **查单请求不发头**。而 `query` 在每次前端轮询 + 后台 check 都调，量远大于 `scan`，故应答比例被稀释卡在极低值（现网实测 ~1.5%，≈ 下单请求占比）。v3.7.20（`~3.7.0` 下最新稳定）与 v3.8.0-beta.2 均未修，**升级无解**。
+
+修法：`PaymentGateway::wechatQuery(array $order)` 不走 `->wechat()->query()` 快捷方式，改取 `QueryShortcut::getPlugins()` 的原始插件列表（跟随 vendor 升级漂移），在 `AddRadarPlugin` **前**插入 `App\Services\Payment\Plugin\InjectWechatSerialPlugin`（从全程存活的 `params` 把 `_serial_no` 回灌 payload），再走 `Pay::wechat()->pay($plugins, $order)`。所有查单调用点改 `->wechatQuery(...)`；`scan` 不变。
+
+**测试须在 HTTP 层断言**（`tests/Feature/Services/Payment/WechatSerialPipelineTest`）：绑定假 PSR-18 client（`Yansongda\Artful\Contract\HttpClientInterface`）捕获出站 Request、断言 `Wechatpay-Serial` 头。**不能只 mock 整个 `PaymentGateway` 验「参数到达 wrapper」**——原 7 个测试正因此假绿：参数确实到了 wrapper，却被 vendor 管线抹掉、头从未发出，测试全绿而现网比例不动。`mockPayCapture` 的查单捕获仅作调用点契约（断言按 gate 合入 `_serial_no`），头真的发出由 HTTP 层管线测试保证。
 
 ### gate 与本地公钥就绪条件对称（防误配）
 

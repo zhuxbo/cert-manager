@@ -186,7 +186,7 @@ class TopUpController extends BaseController
 
         if ($fund->wasRecentlyCreated === false) {
             try {
-                $order = $this->pay()->wechat()->query(array_merge(['out_trade_no' => (string) $fund->id], $this->wechatSerial()));
+                $order = $this->pay()->wechatQuery(array_merge(['out_trade_no' => (string) $fund->id], $this->wechatSerial()));
             } catch (Throwable $e) {
                 app(ApiExceptions::class)->logException($e);
                 $this->clearWechatCache();
@@ -309,7 +309,7 @@ class TopUpController extends BaseController
 
         if ($fund->pay_method === 'wechat') {
             $this->getPayConfig('wechat');
-            $order = $this->pay()->wechat()->query(array_merge(['out_trade_no' => $fund->id], $this->wechatSerial()));
+            $order = $this->pay()->wechatQuery(array_merge(['out_trade_no' => $fund->id], $this->wechatSerial()));
             if ($order['trade_state'] === 'SUCCESS') {
                 $pay_sn = $order['transaction_id'];
             }

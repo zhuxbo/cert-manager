@@ -186,11 +186,6 @@ function mockPayCapture(): object
 
         return new Collection(['code_url' => 'weixin://wxpay/test']);
     });
-    $wechat->shouldReceive('query')->andReturnUsing(function ($order) use ($captured) {
-        $captured->query = $order;
-
-        return new Collection(['trade_state' => 'NOTPAY']);
-    });
 
     $alipay = Mockery::mock();
     $alipay->shouldReceive('query')->andReturnUsing(function ($order) use ($captured) {
@@ -202,6 +197,14 @@ function mockPayCapture(): object
     $gateway = Mockery::mock(PaymentGateway::class);
     $gateway->shouldReceive('wechat')->andReturn($wechat);
     $gateway->shouldReceive('alipay')->andReturn($alipay);
+    // 查单走 PaymentGateway::wechatQuery（内部自定义插件列表注入 Wechatpay-Serial 头，
+    // 见 InjectWechatSerialPlugin）。此处捕获参数断言调用方按 gate 合入 _serial_no；
+    // 「头真的发出」由 WechatSerialPipelineTest 在 HTTP 层断言。
+    $gateway->shouldReceive('wechatQuery')->andReturnUsing(function ($order) use ($captured) {
+        $captured->query = $order;
+
+        return new Collection(['trade_state' => 'NOTPAY']);
+    });
     app()->instance(PaymentGateway::class, $gateway);
 
     return $captured;
