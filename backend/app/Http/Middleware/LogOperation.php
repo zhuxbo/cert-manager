@@ -111,7 +111,7 @@ class LogOperation
             // 基础日志数据
             $logData = [
                 'method' => $request->method(),
-                'url' => $request->fullUrl(),
+                'url' => LogScrubber::scrubUrl($request->fullUrl()),
                 'params' => LogScrubber::scrub($request->all()),
                 'response' => $sanitizedResponse ?? null,
                 'status_code' => $response->getStatusCode(),

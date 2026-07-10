@@ -72,7 +72,8 @@ class ApiExceptions
             } else {
                 $request = Request::instance();
                 $method = $request->method();
-                $url = $request->fullUrl();
+                // 先脱敏（?token=/?access_token= 等凭据串传）再截断，避免截断切坏脱敏后的 URL
+                $url = LogScrubber::scrubUrl($request->fullUrl());
                 $ip = $request->ip();
             }
 

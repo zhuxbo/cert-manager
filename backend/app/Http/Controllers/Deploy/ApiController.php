@@ -5,16 +5,23 @@ namespace App\Http\Controllers\Deploy;
 use App\Exceptions\ApiResponseException;
 use App\Http\Controllers\Controller;
 use App\Models\Cert;
+use App\Models\ErrorLog;
 use App\Models\Order;
+use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
+use App\Support\MutexLock;
+use App\Utils\LogScrubber;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class ApiController extends Controller
 {
+    use MutexLock;
+
     /**
      * 查询订单列表
      * 统一使用 order 参数：纯数字为 ID，字符串为域名，含逗号为批量查询
@@ -162,6 +169,14 @@ class ApiController extends Controller
         $orderId = $order->id;
         $reQuery = false;
 
+        // 在途订单（unpaid/pending，签发进行中）CSR/域名已在建单时定型、无法再变更：
+        // 客户端携带非空 csr 或 domains 时显式报错，不静默丢弃新 CSR 后签发出与新私钥错配的证书。
+        // 仅传 order_id 的推进（pay/commit 自愈）不带 csr/domains，不触发此守卫。
+        if (in_array($cert->status, ['unpaid', 'pending'], true)
+            && (! empty($params['csr']) || ! empty($params['domains']))) {
+            $this->error("订单处于{$cert->status}状态（签发进行中），无法变更 CSR 或域名；请等待当前签发完成后再重签，或联系管理员处理卡单");
+        }
+
         $action = new Action;
 
         // 证书状态如果是 unpaid 则支付
@@ -220,7 +235,9 @@ class ApiController extends Controller
             }
 
             // 如果订单到期时间小于 15 天则续费，否则重签
-            if ($order->period_till?->lt(now()->addDays(15))) {
+            // 产品校验 / auto_renew 校验放互斥锁之前（行为不变，早失败不进临界区）
+            $isRenew = $order->period_till?->lt(now()->addDays(15));
+            if ($isRenew) {
                 // 续费需要检查 auto_renew 设置
                 $autoRenewEnabled = app(AutoRenewService::class)->isAutoRenewEnabled($order, $order->user);
                 if (! $autoRenewEnabled) {
@@ -229,13 +246,49 @@ class ApiController extends Controller
 
                 $updateParams['action'] = 'renew';
                 $updateParams['period'] = $order->period;
-                $result = $this->getData($action, 'renew', [$updateParams]);
-                $orderId = $result['data']['order_id'] ?? $orderId;
             } else {
                 $updateParams['action'] = 'reissue';
-                $this->getData($action, 'reissue', [$updateParams]);
             }
 
+            // order 级互斥 + 订单行锁：把本地 renew/reissue（终态化旧证书 + 建新单，纯本地零上游）
+            // 串行，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
+            // 关键设计约束：
+            //  1) 与 Action::commit/cancel 共用 order_mutate_{id} 键（下划线格式），撞进行中
+            //     commit/cancel 抢不到抛 MutationBusyException→503（与 V1/V2 同步入口语义一致）；
+            //  2) pay 必须留在互斥锁「外」——reissue 复用同一 orderId，pay→commit 自带同键互斥锁，
+            //     若在锁内则二次 ->get() 必失败自死锁；且 pay→commit 含上游 HTTP，锁内不做上游调用（红线）。
+            $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew) {
+                $resolved = $orderId;
+
+                DB::transaction(function () use (&$resolved, $orderId, $action, $updateParams, $isRenew) {
+                    // 【不变量：本行 ->lock()->find 必须是本事务闭包的第一条 DB 语句，其前不得有任何一致读】
+                    // REPEATABLE READ 下 read view 由首个非锁定一致读建立；FOR UPDATE 是锁定读、不建 view。
+                    // 首语句即 ->lock()->find：第二请求在 orders 行锁上阻塞至先到者提交，随后 latestCert
+                    // eager-load（独立非锁定 SELECT）在提交后才建 view → 读到 renewed/unpaid 新值被守卫挡下。
+                    // 若在其前插入任何一致读（含 get_system_setting 触发的 DB 读），view 前移 → 再读见旧
+                    // active → 双开复活。与既有 commitLocked（Action.php:396-402）同构。
+                    $locked = Order::with('latestCert')->whereHas('latestCert')->lock()->find($orderId);
+
+                    // 【load-bearing：真正串行主体是上面 orders 行 FOR UPDATE。下面守卫与 new()/reissue()
+                    //  内 initParams 的 active 校验都是行锁之上的再读（冗余防御 + 友好文案 + 早失败省一次
+                    //  CSR 生成）。三者中 ->lock() 不可删——删锁只留守卫会退回 racy（非锁定读见并发前旧值）。】
+                    (! $locked || $locked->latestCert->status !== 'active')
+                        && $this->error('订单状态已变更（可能正在被其他请求续费），请重新查询');
+
+                    if ($isRenew) {
+                        // 本地：建新订单 + 旧证书翻 renewed（无上游）；code=1 成功由 getData 吸收返回 data
+                        $result = $this->getData($action, 'renew', [$updateParams]);
+                        $resolved = $result['data']['order_id'] ?? $orderId;
+                    } else {
+                        // 本地：旧证书翻 reissued + 建新 cert（无上游）
+                        $this->getData($action, 'reissue', [$updateParams]);
+                    }
+                });
+
+                return $resolved;
+            });
+
+            // pay 留在互斥锁外：autoCommit=true 不变（pay→commit 自带 order_mutate_ 锁，顺序获取不自死锁）
             $this->getData($action, 'pay', [$orderId]);
 
             $reQuery = true;
@@ -290,6 +343,9 @@ class ApiController extends Controller
             'order_id' => ['required', 'integer'],
             'status' => ['required', 'in:success,failure'],
             'deployed_at' => ['nullable', 'string'],
+            // message 为前向兼容可选字段：当前下游四仓均不上送，供后续版本携失败原因说明；
+            // 服务端转义 + 截断后记录（见 recordCallbackFailure）。
+            'message' => ['nullable', 'string', 'max:500'],
         ]);
 
         // 通过 Order 查询（Order 已被 UserScope 限制）
@@ -318,6 +374,9 @@ class ApiController extends Controller
 
             $cert->auto_deploy_at = $deployTime;
             $cert->save();
+        } elseif ($params['status'] === 'failure') {
+            // 部署失败：服务端留痕（error_logs）+ 按 order 7 天滑窗聚合告警（旁路，不改响应封套）
+            $this->recordCallbackFailure($request, $order, $params['message'] ?? null);
         }
 
         $this->success([
@@ -326,6 +385,66 @@ class ApiController extends Controller
             'recorded' => $params['status'] === 'success',
             'renew_before_days' => (int) get_system_setting('site', 'renewBeforeDays', 14),
         ]);
+    }
+
+    /**
+     * 记录下游部署失败回调 + 7 天滑窗聚合告警
+     *
+     * 下游 spec「每天执行一次续签检查」→ 单证书每天至多 1 次 failure 回调、200 ack 不重试，
+     * 故用「7 天滑窗计数 ≥ threshold」而非 24h tumbling（后者日频节奏下恒不可达）。
+     */
+    private function recordCallbackFailure(Request $request, Order $order, ?string $message): void
+    {
+        // message 是任意 deploy-token 持有者可控自由文本，且告警走 SystemAlert 模板渲染：
+        // 调用侧 strip_tags + 截断 ≤256 是第一道（Builder denylist/转义为第二道），两道都要在。
+        $safeMsg = '';
+        if ($message !== null && $message !== '') {
+            $safeMsg = mb_substr(strip_tags($message), 0, 256);
+        }
+
+        // 结构化前缀（; 分隔）：滑窗计数用前缀 LIKE "order_id={id};%"，杜绝 order_id=5 误匹配 50/51
+        $prefix = "order_id={$order->id};user_id={$order->user_id};deploy_callback_failure";
+        $logMessage = $safeMsg !== '' ? $prefix.';reason='.$safeMsg : $prefix;
+
+        // 直写 ErrorLog（不走 LogBuffer——buffer 到请求 terminating 才 flush，写后立即计数会漏当前次）
+        ErrorLog::create([
+            'correlation_id' => app()->bound('correlation_id') ? app('correlation_id') : null,
+            'method' => 'POST',
+            'url' => LogScrubber::scrubUrl($request->fullUrl()),
+            'exception' => 'DeployCallbackFailure',
+            'message' => $logMessage,
+            'status_code' => 200,
+            'ip' => $request->ip(),
+        ]);
+
+        $windowDays = (int) config('deploy.callback_failure.window_days', 7);
+        $threshold = (int) config('deploy.callback_failure.threshold', 2);
+        $ttlHours = (int) config('deploy.callback_failure.dedupe_ttl_hours', 168);
+
+        // 7 天滑窗计数（含当前次，因已直写）
+        $count = ErrorLog::where('exception', 'DeployCallbackFailure')
+            ->where('message', 'like', "order_id={$order->id};%")
+            ->where('created_at', '>=', now()->subDays($windowDays))
+            ->count();
+
+        if ($count >= $threshold) {
+            // 固定指纹（非默认内容指纹）：计数逐次变化会击穿 per-order 去重致每日刷屏，
+            // 传固定指纹使同一订单持续失败在 dedupe TTL 内只发一封（对齐 E5/E6 计数型调用范式）。
+            app(SystemAlert::class)->send(
+                'deploy_callback',
+                "订单 #{$order->id} 部署回调持续失败",
+                "{$windowDays} 天内 {$count} 次部署失败回调",
+                [
+                    'order_id' => $order->id,
+                    'user_id' => $order->user_id,
+                    'failure_count' => $count,
+                    'latest_message' => $safeMsg,
+                ],
+                dedupeKey: "deploy_callback_fail_{$order->id}",
+                dedupeTtlHours: $ttlHours,
+                fingerprint: 'deploy_callback_failure',
+            );
+        }
     }
 
     /**
