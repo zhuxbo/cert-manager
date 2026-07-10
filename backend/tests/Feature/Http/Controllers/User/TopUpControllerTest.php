@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\ErrorLog;
 use App\Models\Fund;
 use App\Models\Setting;
 use App\Models\SettingGroup;
@@ -7,6 +8,7 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Payment\PaymentGateway;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Support\Facades\DB;
 use Tests\Traits\ActsAsUser;
 use Yansongda\Pay\Pay;
 
@@ -348,6 +350,184 @@ test('检查充值状态-微信查单参数带 Wechatpay-Serial 公钥序列号'
     expect($captured->query)->not->toBeNull();
     expect($captured->query['_serial_no'] ?? null)->toBe('PUB_KEY_ID_TEST_0001');
 });
+
+test('微信回调重放已成功充值单直接应答成功停止重试', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $fund = DB::transaction(fn () => Fund::factory()->create([
+        'user_id' => $user->id,
+        'amount' => '123.45',
+        'type' => 'addfunds',
+        'pay_method' => 'wechat',
+        'status' => 1, // 已成功（creating 钩子入账）
+        'pay_sn' => 'WX_REPLAY_SETTLED',
+    ]));
+    $secret = seedWechatPayConfigCache();
+    $balanceBefore = (string) $user->refresh()->balance;
+
+    // 模拟微信补投：终态单 + 平台证书 serial（验签必失败的那类），应绕过验签直接 ACK
+    $this->postJson('/callback/wechat', buildWechatNotifyBody((string) $fund->id, $secret, 'WX_REPLAY_SETTLED'), [
+        'Wechatpay-Serial' => 'PLATFORM_CERT_SERIAL_76A5BC',
+    ])
+        ->assertOk()
+        ->assertSee('SUCCESS', false);
+
+    expect((string) $user->refresh()->balance)->toBe($balanceBefore); // 未重复入账
+    expect($fund->refresh()->status)->toBe(1);
+    // 报文与本地一致，不应产生不匹配错误日志
+    expect(ErrorLog::where('message', 'like', '%不匹配%')->exists())->toBeFalse();
+});
+
+test('微信回调重放已退款充值单同样直接应答成功', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $fund = DB::transaction(function () use ($user) {
+        $fund = Fund::factory()->create([
+            'user_id' => $user->id,
+            'amount' => '50.00',
+            'type' => 'addfunds',
+            'pay_method' => 'wechat',
+            'status' => 1,
+            'pay_sn' => 'WX_REPLAY_REFUNDED',
+        ]);
+        $fund->update(['type' => 'refunds', 'status' => 2]); // 1→2 退款（updating 钩子出账）
+
+        return $fund;
+    });
+    $secret = seedWechatPayConfigCache();
+    $balanceBefore = (string) $user->refresh()->balance;
+
+    $this->postJson('/callback/wechat', buildWechatNotifyBody((string) $fund->id, $secret, 'WX_REPLAY_REFUNDED', 5000))
+        ->assertOk()
+        ->assertSee('SUCCESS', false);
+
+    expect((string) $user->refresh()->balance)->toBe($balanceBefore);
+    expect($fund->refresh()->status)->toBe(2);
+});
+
+test('微信回调重放报文与终态单不匹配时仍应答成功但记后台错误日志', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $fund = DB::transaction(fn () => Fund::factory()->create([
+        'user_id' => $user->id,
+        'amount' => '123.45',
+        'type' => 'addfunds',
+        'pay_method' => 'wechat',
+        'status' => 1,
+        'pay_sn' => 'WX_REPLAY_MISMATCH',
+    ]));
+    $secret = seedWechatPayConfigCache();
+    $balanceBefore = (string) $user->refresh()->balance;
+
+    // 金额（9999 分 ≠ 123.45 元）与交易号均与本地不一致
+    $this->postJson('/callback/wechat', buildWechatNotifyBody((string) $fund->id, $secret, 'WX_OTHER_TXN', 9999))
+        ->assertOk()
+        ->assertSee('SUCCESS', false);
+
+    expect((string) $user->refresh()->balance)->toBe($balanceBefore); // ACK 不变、零状态变更
+    expect($fund->refresh()->status)->toBe(1);
+    expect(ErrorLog::where('message', 'like', '%微信回调重放数据与已终态充值单不匹配%')->exists())->toBeTrue();
+});
+
+test('微信回调指向支付宝终态单不被消噪放行仍走验签', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $fund = DB::transaction(fn () => Fund::factory()->create([
+        'user_id' => $user->id,
+        'amount' => '88.00',
+        'type' => 'addfunds',
+        'pay_method' => 'alipay', // 非微信单，消噪分支 pay_method 过滤必须挡住
+        'status' => 1,
+        'pay_sn' => 'ALI_SETTLED_001',
+    ]));
+    $secret = seedWechatPayConfigCache();
+    $balanceBefore = (string) $user->refresh()->balance;
+
+    $this->postJson('/callback/wechat', buildWechatNotifyBody((string) $fund->id, $secret))
+        ->assertStatus(400); // 未被 ACK，走完整验签被拒
+
+    expect($fund->refresh()->status)->toBe(1);
+    expect((string) $user->refresh()->balance)->toBe($balanceBefore);
+});
+
+test('微信回调处理中订单不被消噪拦截仍走完整验签', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $fund = Fund::factory()->create([
+        'user_id' => $user->id,
+        'amount' => '123.45',
+        'type' => 'addfunds',
+        'pay_method' => 'wechat',
+        'status' => 0, // 处理中
+        'pay_sn' => null,
+    ]);
+    $secret = seedWechatPayConfigCache();
+
+    // 未被忽略分支放行 → 进入 SDK 完整验签 → 无有效签名被拒
+    $this->postJson('/callback/wechat', buildWechatNotifyBody((string) $fund->id, $secret))
+        ->assertStatus(400);
+
+    expect($fund->refresh()->status)->toBe(0); // 未入账
+    expect((string) $user->refresh()->balance)->toBe('1000.00');
+});
+
+test('微信回调密文无法解密时回落完整验签不误放行', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $fund = DB::transaction(fn () => Fund::factory()->create([
+        'user_id' => $user->id,
+        'amount' => '66.00',
+        'type' => 'addfunds',
+        'pay_method' => 'wechat',
+        'status' => 1,
+        'pay_sn' => 'WX_REPLAY_BADCIPHER',
+    ]));
+    seedWechatPayConfigCache(); // 本地密钥与密文密钥不一致 → 解密失败
+
+    $this->postJson('/callback/wechat', buildWechatNotifyBody((string) $fund->id, str_repeat('x', 32)))
+        ->assertStatus(400);
+});
+
+/**
+ * 种入微信支付配置缓存（getPayConfig 缓存命中分支直接使用），返回 APIv3 密钥。
+ */
+function seedWechatPayConfigCache(): string
+{
+    $secret = str_repeat('k', 32);
+    cache()->put('pay_config_wechat', [
+        'mch_id' => '1677356476',
+        'mch_secret_key' => $secret,
+        'notify_url' => 'https://example.com/callback/wechat',
+    ], now()->addDay());
+
+    return $secret;
+}
+
+/**
+ * 构造微信 v3 回调通知体，resource 为真实 AEAD_AES_256_GCM 加密密文。
+ */
+function buildWechatNotifyBody(string $outTradeNo, string $secret, string $transactionId = 'WX_REPLAY_TXN', int $amountTotal = 12345): array
+{
+    $plain = json_encode([
+        'trade_state' => 'SUCCESS',
+        'out_trade_no' => $outTradeNo,
+        'transaction_id' => $transactionId,
+        'amount' => ['total' => $amountTotal],
+    ]);
+    $nonce = 'ab12cd34ef56';
+    $aad = 'transaction';
+    $tag = '';
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', $secret, OPENSSL_RAW_DATA, $nonce, $tag, $aad);
+
+    return [
+        'id' => 'notify-'.$outTradeNo,
+        'create_time' => '2026-07-10T11:21:09+08:00',
+        'resource_type' => 'encrypt_resource',
+        'event_type' => 'TRANSACTION.SUCCESS',
+        'summary' => '支付成功',
+        'resource' => [
+            'original_type' => 'transaction',
+            'algorithm' => 'AEAD_AES_256_GCM',
+            'ciphertext' => base64_encode($cipher.$tag),
+            'associated_data' => $aad,
+            'nonce' => $nonce,
+        ],
+    ];
+}
 
 function mockPayCallback(string $driver, array $payload, int $times = 1, bool $shouldAck = true): void
 {

@@ -253,6 +253,12 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 回调 / 应答验签同源 SDK `verify_wechat_sign`：读响应头 `Wechatpay-Serial` → 在 `wechat_public_cert_path` 找 → 命中公钥直接验 / 找不到回退 `GET v3/certificates` 下载平台证书验。故切换期两种签名都能验，满足微信「兼容验签」要求。
 
+### 坑 3：微信每日 ~20 点补投重放已成功通知，serial 与签名不一致 → 验签必失败（非本地配置问题）
+
+微信通知是 at-least-once：某补投链路每天 20:01~20:05 换 IP（121.51.58.17x 段）重放当天**已应答成功**的支付通知（通知 `id`/`create_time`/resource `nonce` 与首投完全相同），且重放的 `Wechatpay-Serial` 标平台证书序列号、实际签名却与该证书对不上（微信侧元数据不一致），本地公钥/现场下载的平台证书都验不过 → 每天固定一条 `InvalidSignException` 噪音 + 微信重试放大。诊断特征：错误集中在每日 20 点后数分钟；yansongda 日志出现 `v3/certificates` 现场下载 = reload 被触发 = 回调 serial 非 `PUB_KEY_ID_`（若 serial 连下载列表都不中会抛「配置异常」，抛「验证微信签名失败」说明 serial 命中了证书但签名对不上）。
+
+消噪（`TopUpController::wechatNotify` → `isCallbackForSettledWechatFund`）：**验签前**先 `decrypt_wechat_resource` 解密取 `out_trade_no`，查 fund `whereIn(type,[addfunds,refunds]) + pay_method=wechat + whereIn(status,[1,2])`（与 `ensureCallbackAccounted` 口径一致），已终态直接应答微信成功（`{"code":"SUCCESS"}`）让其停止重试。安全边界不变：解密依赖 APIv3 密钥的 AEAD 认证加密（无密钥伪造不出合法密文）、命中分支零状态变更、解密失败/查无终态单一律回落完整验签（预检异常 `Log::info` 留痕，区分「消噪失效」与「新故障」）；处理中订单不受影响仍走全量验签。命中时交叉校验报文 `amount.total`/`transaction_id` 与本地 fund（`reportSettledCallbackMismatch`），矛盾记后台错误日志（`ApiExceptions::logException`，ACK 行为不变）——补齐旧路径 `ensureCallbackAccounted` 金额交叉校验在此分支的可观测性。
+
 ### 配置与运维流程
 
 - 配置项：`system_setting` 的 `wechat.publicKeyId` + `wechat.publicKey`（base64），`PaymentConfigTrait` 注入 `wechat_public_cert_path[publicKeyId]=公钥文件`

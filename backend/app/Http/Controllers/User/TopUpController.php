@@ -9,8 +9,12 @@ use App\Models\User;
 use App\Services\Payment\PaymentGateway;
 use Exception;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
+
+use function Yansongda\Pay\decrypt_wechat_resource;
+use function Yansongda\Pay\get_provider_config;
 
 class TopUpController extends BaseController
 {
@@ -229,6 +233,15 @@ class TopUpController extends BaseController
     public function wechatNotify(): ResponseInterface
     {
         $this->getPayConfig('wechat');
+
+        // 微信补投链路（每日 20 点左右换 IP 重放已成功的通知）Wechatpay-Serial 与实际签名
+        // 密钥不一致，验签必失败且微信会持续重试。终态单的回调本就无事可做：先解密
+        // （AEAD 认证加密，无 APIv3 密钥伪造不出合法密文）取单号查状态，已终态直接应答
+        // 成功让微信停止重试；处理中订单不受影响，仍走完整验签。
+        if ($this->isCallbackForSettledWechatFund()) {
+            return $this->pay()->wechat()->success();
+        }
+
         $result = $this->pay()->wechat()->callback();
 
         $paymentData = (object) $result['resource']['ciphertext'];
@@ -401,6 +414,80 @@ class TopUpController extends BaseController
         }
 
         throw new Exception('支付回调未入账：本地资金记录不存在或金额/支付方式不匹配');
+    }
+
+    /**
+     * 微信回调是否指向已终态（成功/退款）的充值单。
+     *
+     * 仅解密不验签：解密依赖 APIv3 密钥的 AEAD 认证加密，第三方伪造不出可解密的
+     * 密文；且命中分支只应答成功、不产生任何状态变更。解密失败/配置缺失/查无终态
+     * 单一律返回 false 回落完整验签流程，安全边界不变。
+     */
+    private function isCallbackForSettledWechatFund(): bool
+    {
+        try {
+            $body = json_decode(request()->getContent(), true);
+            $resource = is_array($body) ? ($body['resource'] ?? null) : null;
+            if (! is_array($resource)) {
+                return false;
+            }
+
+            $decrypted = decrypt_wechat_resource($resource, get_provider_config('wechat'));
+            $payment = $decrypted['ciphertext'] ?? null;
+            $outTradeNo = is_array($payment) ? ($payment['out_trade_no'] ?? null) : null;
+            if (empty($outTradeNo) || ! is_string($outTradeNo)) {
+                return false;
+            }
+
+            $fund = Fund::where('id', $outTradeNo)
+                ->whereIn('type', ['addfunds', 'refunds']) // 与 ensureCallbackAccounted 口径一致
+                ->where('pay_method', 'wechat')
+                ->whereIn('status', [1, 2]) // 成功/退款，非处理中
+                ->first();
+
+            if (! $fund) {
+                return false;
+            }
+
+            $this->reportSettledCallbackMismatch($fund, $payment);
+
+            Log::info('微信回调命中已终态充值单，直接应答成功（补投重放消噪）', [
+                'out_trade_no' => $outTradeNo,
+                'wechatpay_serial' => request()->header('Wechatpay-Serial'),
+            ]);
+
+            return true;
+        } catch (Throwable $e) {
+            // 预检异常（配置缺失/解密失败等）回落完整验签；留痕以便区分「消噪失效」与「新故障」
+            Log::info('微信回调终态预检异常，回落完整验签', ['error' => $e->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /**
+     * 终态单重放报文与本地入账数据交叉校验，矛盾记后台错误日志（ACK 行为不变）。
+     */
+    private function reportSettledCallbackMismatch(Fund $fund, array $payment): void
+    {
+        $reportedAmount = isset($payment['amount']['total']) && is_numeric($payment['amount']['total'])
+            ? bcdiv((string) $payment['amount']['total'], '100', 2)
+            : null;
+        $reportedPaySn = $payment['transaction_id'] ?? null;
+
+        $amountMatched = $reportedAmount !== null && bccomp($reportedAmount, (string) $fund->amount, 2) === 0;
+        $paySnMatched = is_string($reportedPaySn) && $reportedPaySn === (string) $fund->pay_sn;
+
+        if (! $amountMatched || ! $paySnMatched) {
+            app(ApiExceptions::class)->logException(new Exception(sprintf(
+                '微信回调重放数据与已终态充值单不匹配: fund=%s 本地金额=%s 报文金额=%s 本地pay_sn=%s 报文transaction_id=%s',
+                $fund->id,
+                $fund->amount,
+                $reportedAmount ?? '缺失',
+                $fund->pay_sn !== null ? $fund->pay_sn : '空',
+                is_string($reportedPaySn) ? $reportedPaySn : '缺失'
+            )));
+        }
     }
 
     private function pay(): PaymentGateway
