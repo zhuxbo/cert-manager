@@ -131,7 +131,7 @@ class PurgeCommand extends Command
             ->join('products', 'orders.product_id', '=', 'products.id')
             ->whereHas('latestCert', fn ($query) => $query
                 ->where('status', 'processing')
-                ->whereIn('action', ['new', 'renew']))
+                ->whereIn('action', ['new', 'renew', 'reissue']))
             ->where('products.refund_period', '>=', 5)
             ->where('orders.created_at', '<=', DB::raw('DATE_SUB(NOW(), INTERVAL (products.refund_period - 4) DAY)'))
             ->where('orders.created_at', '>', DB::raw('DATE_SUB(NOW(), INTERVAL (products.refund_period - 2) DAY)'))
@@ -154,7 +154,7 @@ class PurgeCommand extends Command
             ->join('products', 'orders.product_id', '=', 'products.id')
             ->whereHas('latestCert', fn ($query) => $query
                 ->where('status', 'processing')
-                ->whereIn('action', ['new', 'renew']))
+                ->whereIn('action', ['new', 'renew', 'reissue']))
             ->where('products.refund_period', '>=', 5)
             ->where('orders.created_at', '>', DB::raw('DATE_SUB(NOW(), INTERVAL products.refund_period DAY)'))
             ->where('orders.created_at', '<=', DB::raw('DATE_SUB(NOW(), INTERVAL (products.refund_period - 2) DAY)'))

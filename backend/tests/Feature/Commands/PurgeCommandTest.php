@@ -240,7 +240,10 @@ test('purge 不误删 temp-certs 下 1 小时内的进行中下载目录', funct
 
 // --- 自动取消：action 过滤测试 ---
 
-test('PurgeCommand 不取消 reissue 处理中订单', function () {
+test('PurgeCommand 取消 reissue 处理中订单（B3：退款期兜底扩展覆盖 reissue）', function () {
+    // 行为变更（审计 P1-12）：reissue 原被 whereIn('action',['new','renew']) 排除致退款期到期时
+    // 卡 processing、无兜底取消；B3 扩展覆盖 reissue，退款/恢复由 cancelLocked reissue 分支直测。
+    // 本文件只做编排断言（cert 置 cancelling + cancel task 建），不跑到资金路径。
     $user = $this->createTestUser();
     $product = $this->createTestProduct(['refund_period' => 30]);
     $order = $this->createTestOrder($user, $product);
@@ -248,16 +251,15 @@ test('PurgeCommand 不取消 reissue 处理中订单', function () {
     $order->forceFill(['created_at' => now()->subDays(29)])->save();
     $this->createTestCert($order, ['status' => 'processing', 'action' => 'reissue']);
 
-    // reissue 在 whereIn('action', ['new','renew']) 阶段被过滤，不应进入 syncImmediately；
-    // shouldNotReceive 做反向保护：若过滤被误删，sync 被意外调用时测试立即失败
+    // mock sync 避免真实 API 调用；createTask/deleteTask 走真实逻辑以便断言 Task 记录
     $actionMock = Mockery::mock(Action::class)->makePartial();
-    $actionMock->shouldNotReceive('sync');
+    $actionMock->shouldReceive('sync')->andReturn(null);
     $this->app->bind(Action::class, fn () => $actionMock);
 
     $this->artisan('schedule:purge')->assertSuccessful();
 
-    expect($order->latestCert()->first()->status)->toBe('processing');
-    expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(0);
+    expect($order->latestCert()->first()->status)->toBe('cancelling');
+    expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(1);
 });
 
 test('PurgeCommand 仍取消 new 处理中订单', function () {

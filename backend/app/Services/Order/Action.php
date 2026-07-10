@@ -1043,6 +1043,13 @@ class Action
             $order->latestCert->status === 'cancelled' && $this->error('订单已取消');
             $order->latestCert->status != 'cancelling' && $this->error('订单状态不是取消中');
 
+            $cert = $order->latestCert;
+            $isReissue = $cert->action === 'reissue';
+
+            // F1+F4 前置只读预检（reissue 专属，必须在 api->cancel 之前：失败即回滚且上游从未被调用）。
+            // 挡住"二次 reissue-cancel 在上游取消成功后撞 cancel 唯一索引 → 卡 cancelling 无退款"形态。
+            $lastTransaction = $isReissue ? $this->prepareReissueRefund($order, $cert) : null;
+
             try {
                 $this->api->cancel($orderId);
             } catch (ApiResponseException $e) {
@@ -1051,25 +1058,50 @@ class Action
                 $this->error($msg, $errors);
             }
 
-            // 获取交易信息
-            $transaction = OrderUtil::getCancelTransaction($order->toArray());
+            if ($isReissue) {
+                // 语义1：增量退款——对所有 reissue 取消入口生效（Purge/手动 commitCancel/batchCommitCancel）。
+                // reissue 只更 cert.amount 不更 order.amount、交易含 原始new+reissue增量 两笔，若走
+                // getCancelTransaction 求和会超退原始全额（latent over-refund）。改增量口径只退当次 reissue。
+                // $lastTransaction=null（amount=0）跳过退款块。
+                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
 
-            // 创建交易记录并退款
-            //
-            // 防双退底线（与 refundForSyncedCancel 注释互引，二者协作不可单独删除）：
-            //   - 锁内 status 校验：上面 L926「status===cancelled → error('订单已取消')」是第一道。
-            //     refundForSyncedCancel 已退款并置 cancelled 后刻意保留的残留 cancel task，被
-            //     TaskJob 唤醒调用本方法时，会在锁内撞上该校验抛错回滚，不会走到此处二次退款。
-            //   - DB 唯一索引 transactions_dedup_unique（type,transaction_id WHERE type!='order'，
-            //     迁移 2026_05_07_120000）是物理底线：即便锁校验被某条并发路径绕过，此 INSERT 也会
-            //     因唯一冲突抛错回滚。应用层校验仅是预检，删除唯一索引会破坏底线。
-            Transaction::create($transaction);
+                // 语义2：恢复 gate —— 判据 issued_at===null（上游契约依赖的代理：正常契约下 active 必经
+                // sync 写入证书体 + issued_at 原子共写，processing/approving 取消时恒为 null；破坏它需上游
+                // 解耦"证书体/issued_at"与"active 状态"，两方向均不产生资金错，见 skills/backend/order-fund.md）。
+                if ($cert->issued_at === null) {
+                    // 未签发（Purge 主路径 processing、手动 processing/approving 取消）：
+                    // 恢复旧证书 active + 回切 latest_cert_id + 删 reissue cert → 旧证书自然重回 cert_expire 窗口（P1-12 解）
+                    $this->restoreReissuedCert($order, $cert);
+                } else {
+                    // 已签发（F3，仅手动 commitCancel(active) 可达）：退增量 + cert→cancelled + cancelled_at，
+                    // 维持现状状态语义（旧证书可能已被上游 supersede、cloud-deploy 已推送 reissue cert，不恢复不删）
+                    $cert->update(['status' => 'cancelled']);
+                    $order->cancelled_at = now();
+                    $order->save();
+                }
+            } else {
+                // new/renew：原逻辑逐字不变（getCancelTransaction 求和单笔口径，触点唯一、零影响）
+                //
+                // 获取交易信息
+                $transaction = OrderUtil::getCancelTransaction($order->toArray());
 
-            // 更新订单状态
-            $order->latestCert->update(['status' => 'cancelled']);
+                // 创建交易记录并退款
+                //
+                // 防双退底线（与 refundForSyncedCancel 注释互引，二者协作不可单独删除）：
+                //   - 锁内 status 校验：上面「status===cancelled → error('订单已取消')」是第一道。
+                //     refundForSyncedCancel 已退款并置 cancelled 后刻意保留的残留 cancel task，被
+                //     TaskJob 唤醒调用本方法时，会在锁内撞上该校验抛错回滚，不会走到此处二次退款。
+                //   - DB 唯一索引 transactions_dedup_unique（type,transaction_id WHERE type!='order'，
+                //     迁移 2026_05_07_120000）是物理底线：即便锁校验被某条并发路径绕过，此 INSERT 也会
+                //     因唯一冲突抛错回滚。应用层校验仅是预检，删除唯一索引会破坏底线。
+                Transaction::create($transaction);
 
-            // 保存取消时间
-            $order->update(['cancelled_at' => now()]);
+                // 更新订单状态
+                $order->latestCert->update(['status' => 'cancelled']);
+
+                // 保存取消时间
+                $order->update(['cancelled_at' => now()]);
+            }
         }, 1);
 
         $this->success();

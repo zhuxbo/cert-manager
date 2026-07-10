@@ -1091,6 +1091,82 @@ trait ActionTrait
     }
 
     /**
+     * reissue 取消退款预检（只读，必须在上游 api->cancel 之前调用）。
+     *
+     * 两道前置校验，失败点全部前移到上游调用之前（收窄"上游已取消但本地回滚"窗口）：
+     *   - F1 fail-safe：唯一索引 (type,transaction_id) WHERE type!='order' 每订单仅一条 cancel 流水。
+     *     恢复旧证书 active 打开了"二次 reissue → 二次取消"路径，若不预检会在 api->cancel 成功【之后】
+     *     撞唯一冲突 → 回滚 → 上游已取消、本地无退款、卡 cancelling。命中即报错转人工，杜绝该形态。
+     *   - F4 金额校验：amount>0 时预取 last_transaction 并断言金额，失败前移到上游调用前。
+     *
+     * @return Transaction|null amount==0 返回 null（不建 cancel 流水，天然不触发 F1 唯一索引）
+     */
+    protected function prepareReissueRefund(Order $order, Cert $cert): ?Transaction
+    {
+        // F1：已存在 cancel 流水即拒绝（挡在 api->cancel 之前，转人工）
+        $alreadyRefunded = Transaction::where('type', 'cancel')
+            ->where('transaction_id', $order->id)
+            ->exists();
+        $alreadyRefunded && $this->error('该订单已存在取消退款流水，请人工处理');
+
+        // amount>0：预取并校验上次交易（增量退款依据），失败前移到上游调用前
+        if ($cert->amount > 0) {
+            $lastTransaction = Transaction::where('transaction_id', $order->id)->orderBy('id', 'desc')->first();
+            $lastTransaction || $this->error('未找到上次交易记录');
+            bccomp('-'.$cert->amount, (string) $lastTransaction->amount, 2) !== 0
+            && $this->error('上次交易记录金额错误');
+
+            return $lastTransaction;
+        }
+
+        return null;
+    }
+
+    /**
+     * reissue 取消增量退款（写）：只退当次 reissue 增量金额、counts 取 -last_transaction（增量非累计）。
+     *
+     * $lastTransaction=null（amount==0）整体跳过、不建 cancel 流水（外层守卫 `$cert->amount>0` 决定，
+     * Transaction::creating 的 amount=0 短路为次层）；purchased_* 内存递减由调用方随分支 save 持久化。
+     */
+    protected function applyReissueIncrementRefund(Order $order, Cert $cert, ?Transaction $lastTransaction): void
+    {
+        if (! $lastTransaction) {
+            return;
+        }
+
+        Transaction::create([
+            'user_id' => $order->user_id,
+            'type' => 'cancel',
+            'transaction_id' => $order->id,
+            'amount' => $cert->amount,
+            'standard_count' => -$lastTransaction->standard_count,
+            'wildcard_count' => -$lastTransaction->wildcard_count,
+        ]);
+
+        $order->purchased_standard_count -= $lastTransaction->standard_count;
+        $order->purchased_wildcard_count -= $lastTransaction->wildcard_count;
+    }
+
+    /**
+     * 未签发 reissue 取消的恢复：回切 latest_cert_id + 恢复旧证书 active + 删除 reissue cert。
+     *
+     * certs.last_cert_id 与 orders.latest_cert_id 均 UNIQUE，删除 reissue cert 释放槽位（标 cancelled
+     * 会占死槽位锁死后续 reissue）。$order->save() 一并持久化 applyReissueIncrementRefund 的 purchased_* 内存递减。
+     */
+    protected function restoreReissuedCert(Order $order, Cert $cert): void
+    {
+        $order->latest_cert_id = $cert->last_cert_id;
+        $order->save();
+
+        $lastCert = Cert::where('id', $cert->last_cert_id)->first();
+        $lastCert || $this->error('未找到上个证书');
+        $lastCert->status = 'active';
+        $lastCert->save();
+
+        $cert->delete();
+    }
+
+    /**
      * 取消待提交订单
      *
      * 并发安全：事务内持 order 行级锁，与 commitCancel / batchCommitCancel /
@@ -1126,38 +1202,12 @@ trait ActionTrait
             }
 
             if ($cert->action === 'reissue') {
-                if ($cert->amount > 0) {
-                    $last_transaction = Transaction::where('transaction_id', $order_id)->orderBy('id', 'desc')->first();
-                    $last_transaction || $this->error('未找到上次交易记录');
-                    bccomp('-'.$cert->amount, (string) $last_transaction->amount, 2) !== 0
-                    && $this->error('上次交易记录金额错误');
-
-                    $transaction = [
-                        'user_id' => $order->user_id,
-                        'type' => 'cancel',
-                        'transaction_id' => $order_id,
-                        'amount' => $cert->amount,
-                        'standard_count' => -$last_transaction->standard_count,
-                        'wildcard_count' => -$last_transaction->wildcard_count,
-                    ];
-                    Transaction::create($transaction);
-                    $order->purchased_standard_count -= $last_transaction->standard_count;
-                    $order->purchased_wildcard_count -= $last_transaction->wildcard_count;
-                }
-
-                // latestCert恢复为上个证书
-                $order->latest_cert_id = $cert->last_cert_id;
-                $order->save();
-
-                $last_cert = Cert::where('id', $cert->last_cert_id)->first();
-                $last_cert || $this->error('未找到上个证书');
-
-                // 恢复上个证书的状态
-                $last_cert->status = 'active';
-                $last_cert->save();
-
-                // 删除当前证书
-                $cert->delete();
+                // 与 cancelLocked reissue 分支共享同一组 helper（反模式 4/6 消对称副本）：
+                // 增量退款口径 + 恢复旧证书。pending 恒未签发（未提交上游、api_id=null）→ 走恢复分支。
+                // 重构后行为不变 + 对称获得 F1 fail-safe（预检已存在 cancel 流水即报错，二次 reissue-cancel 安全增强）。
+                $lastTransaction = $this->prepareReissueRefund($order, $cert);
+                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
+                $this->restoreReissuedCert($order, $cert);
             } elseif ($cert->action === 'renew') {
                 // renew 取消时恢复上个订单的证书状态
                 if ($cert->last_cert_id) {
