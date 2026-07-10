@@ -8,6 +8,7 @@ use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
 use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
 use App\Services\Notification\Builders\SecurityNotificationBuilder;
+use App\Services\Notification\Builders\SystemAlertNotificationBuilder;
 use App\Services\Notification\Builders\TaskFailedNotificationBuilder;
 use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 
@@ -44,6 +45,9 @@ return [
         // 携带初始密码：用专用 Builder 把密码走 transient（仅渲染、不入库），
         // 不能回落 DefaultNotificationBuilder（会把明文密码直通进 notifications.data）
         'user_created' => UserCreatedNotificationBuilder::class,
+        // 通用运维/健康告警（admin-only，E1~E6 监控与 F/G/H 复用）：专用 Builder 对 details
+        // 做标量化 + 敏感键 denylist + PEM 掩码/截断，携密不入库；显式不回落 DefaultNotificationBuilder
+        'system_alert' => SystemAlertNotificationBuilder::class,
     ],
 
     'default_builder' => DefaultNotificationBuilder::class,

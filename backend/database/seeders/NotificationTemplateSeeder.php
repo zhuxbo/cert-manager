@@ -79,6 +79,20 @@ class NotificationTemplateSeeder extends Seeder
                 ],
                 'example' => null,
             ],
+            // 通用运维/健康告警（admin-only）：SystemAlert 服务经 system_alert code 触发，
+            // E1~E6 监控命令与后续 F/G/H 复用。details 由 SystemAlertNotificationBuilder 过滤，
+            // 模板一律 Blade {{ }} 转义（禁 {!! !!}），防外部可控文本 XSS 进管理员邮箱。
+            [
+                'code' => 'system_alert',
+                'name' => '运维告警',
+                'content' => $this->getSystemAlertHtml(),
+                'variables' => [
+                    'category',
+                    'title',
+                    'message',
+                ],
+                'example' => null,
+            ],
         ];
 
         foreach ($templates as $template) {
@@ -809,6 +823,124 @@ HTML;
                                 </div>
                                 @endforeach
 
+                            </td>
+                        </tr>
+                    </table>
+
+                </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * 通用运维告警模板（system_alert）。
+     *
+     * 全部 Blade {{ }} 转义输出、禁用 {!! !!}：title/message/details 均可能含上游 msg、
+     * 域名等外部可控文本，SystemAlertNotificationBuilder 已截断/掩码，模板再以 {{ }} 转义
+     * 兜底，防 XSS 进管理员邮箱。details 为过滤后的一层键值标量。
+     *
+     * @noinspection CssRedundantUnit
+     * @noinspection HtmlDeprecatedTag
+     * @noinspection HtmlDeprecatedAttribute
+     * @noinspection XmlDeprecatedElement
+     * @noinspection CssReplaceWithShorthandSafely
+     */
+    private function getSystemAlertHtml(): string
+    {
+        return <<<'HTML'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>运维告警</title>
+    <style>
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        table { border-collapse: collapse !important; }
+        body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; background-color: #f4f6f8; }
+
+        @media screen and (max-width: 600px) {
+            .email-container { width: 100% !important; margin: auto !important; }
+            .mobile-padding { padding-left: 20px !important; padding-right: 20px !important; }
+            .wrapper-padding { padding-top: 30px !important; padding-bottom: 30px !important; }
+        }
+        @media (prefers-color-scheme: dark) {
+            body, .outer-wrapper { background-color: #2d2d2d !important; }
+            .white-card { background-color: #1f1f1f !important; border: 1px solid #333333 !important; }
+            h1, h2, h3, p, span, div, td { color: #e1e1e1 !important; }
+            .footer-text { color: #888888 !important; }
+            .category-badge { background-color: #33240a !important; color: #fbbf24 !important; }
+            .message-box { background-color: #332b00 !important; border-left-color: #f59e0b !important; }
+            .message-text { color: #fbbf24 !important; }
+            .detail-key { color: #888888 !important; }
+            .detail-value { color: #e1e1e1 !important; border-bottom-color: #333 !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f8;">
+
+    <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
+        运维告警：{{ $title }} - {{ $message }}
+    </div>
+
+    <center style="width: 100%; background-color: #f4f6f8;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="outer-wrapper" style="background-color: #f4f6f8;">
+            <tr>
+                <td align="center" class="wrapper-padding" style="padding-top: 50px; padding-bottom: 50px; padding-left: 10px; padding-right: 10px;">
+
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="white-card" style="max-width: 640px; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: left;">
+
+                        <tr>
+                            <td style="background-color: #f59e0b; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+
+                                <h1 style="margin: 0 0 12px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
+                                    ⚠️ {{ $title }}
+                                </h1>
+
+                                @if(! empty($category))
+                                <p style="margin: 0 0 20px 0;">
+                                    <span class="category-badge" style="display: inline-block; background-color: #fff7ed; color: #b45309; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; font-family: monospace;">{{ $category }}</span>
+                                </p>
+                                @endif
+
+                                <div class="message-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 24px;">
+                                    <p class="message-text" style="margin: 0; font-size: 15px; line-height: 24px; color: #92400e; word-break: break-word;">
+                                        {{ $message }}
+                                    </p>
+                                </div>
+
+                                @if(! empty($details))
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border-collapse: collapse; margin-bottom: 12px;">
+                                    @foreach($details as $key => $value)
+                                    <tr>
+                                        <td class="detail-key" width="35%" style="padding: 10px 0; font-size: 13px; color: #888888; vertical-align: top; border-bottom: 1px solid #f0f0f0; word-break: break-all;">{{ $key }}</td>
+                                        <td class="detail-value" style="padding: 10px 0; font-size: 14px; color: #333333; font-family: monospace; border-bottom: 1px solid #f0f0f0; word-break: break-all;">{{ $value }}</td>
+                                    </tr>
+                                    @endforeach
+                                </table>
+                                @endif
+
+                                <p style="margin: 16px 0 0 0; font-size: 13px; line-height: 20px; color: #999999;">
+                                    本邮件由系统监控自动发送，请登录控制台核查处理。
+                                </p>
+
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="background-color: #fafafa; padding: 20px 40px; text-align: center; border-top: 1px solid #eeeeee;">
+                                <p class="footer-text" style="margin: 0; font-size: 13px; line-height: 20px; color: #999999; font-family: sans-serif;">
+                                    本邮件由系统自动发送，请勿直接回复。
+                                </p>
                             </td>
                         </tr>
                     </table>
