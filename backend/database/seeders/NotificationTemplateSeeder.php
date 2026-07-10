@@ -65,6 +65,20 @@ class NotificationTemplateSeeder extends Seeder
                 ],
                 'example' => null,
             ],
+            // 余额前瞻预警（schedule:balance-forecast 周一 09:30 触发）：未来 30 天自动续费余额不足。
+            // required 是「预估上限」，模板文案「预计最多需要」。site_url 由 Builder 从系统设置注入。
+            [
+                'code' => 'balance_forecast',
+                'name' => '余额前瞻预警',
+                'content' => $this->getBalanceForecastHtml(),
+                'variables' => [
+                    'available',
+                    'required',
+                    'shortfall',
+                    'certificates',
+                ],
+                'example' => null,
+            ],
             // 任务失败告警
             [
                 'code' => 'task_failed',
@@ -695,6 +709,132 @@ HTML;
                                         <td align="center">
                                             <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
                                                 登录控制台
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="background-color: #fafafa; padding: 20px 40px; text-align: center; border-top: 1px solid #eeeeee;">
+                                <p class="footer-text" style="margin: 0; font-size: 13px; line-height: 20px; color: #999999; font-family: sans-serif;">
+                                    本邮件由系统自动发送，请勿直接回复。
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * @noinspection CssRedundantUnit
+     * @noinspection HtmlDeprecatedTag
+     * @noinspection HtmlDeprecatedAttribute
+     * @noinspection HtmlUnknownTarget
+     * @noinspection XmlDeprecatedElement
+     * @noinspection CssReplaceWithShorthandSafely
+     */
+    private function getBalanceForecastHtml(): string
+    {
+        return <<<'HTML'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账户余额前瞻预警</title>
+    <style>
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+        table { border-collapse: collapse !important; }
+        body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; background-color: #f4f6f8; }
+
+        @media screen and (max-width: 600px) {
+            .email-container { width: 100% !important; margin: auto !important; }
+            .mobile-padding { padding-left: 20px !important; padding-right: 20px !important; }
+        }
+        @media (prefers-color-scheme: dark) {
+            body, .outer-wrapper { background-color: #2d2d2d !important; }
+            .white-card { background-color: #1f1f1f !important; border: 1px solid #333333 !important; }
+            h1, h2, h3, p, span, div, td { color: #e1e1e1 !important; }
+            .footer-text { color: #888888 !important; }
+            .highlight-text { color: #f59e0b !important; }
+            .card-info { background-color: #252525 !important; border: 1px solid #333333 !important; }
+            .cert-row { border-bottom-color: #333333 !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f8;">
+
+    <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
+        未来 30 天内有证书将自动续费，预计最多需要 {{ $required }} 元，当前可用额度不足，请及时充值。
+    </div>
+
+    <center style="width: 100%; background-color: #f4f6f8;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="outer-wrapper" style="background-color: #f4f6f8;">
+            <tr>
+                <td align="center" style="padding-top: 50px; padding-bottom: 50px; padding-left: 10px; padding-right: 10px;">
+
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="white-card" style="max-width: 600px; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: left;">
+
+                        <tr>
+                            <td style="background-color: #f59e0b; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+
+                                <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
+                                    💰 账户余额前瞻预警
+                                </h1>
+
+                                <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 26px; color: #555555;">
+                                    您好，未来 30 天内有以下证书将自动续费。按当前价格<strong>预计最多需要 {{ $required }} 元</strong>，
+                                    而您的账户当前可用额度为 {{ $available }} 元，尚差约 {{ $shortfall }} 元。为避免因余额不足导致自动续费失败，请及时充值。
+                                </p>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom: 24px;">
+                                    <tr>
+                                        <td class="card-info" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 20px;">
+                                            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                                <tr>
+                                                    <td style="padding-bottom: 8px; font-size: 13px; color: #888888; font-family: sans-serif;">证书域名</td>
+                                                    <td style="padding-bottom: 8px; font-size: 13px; color: #888888; font-family: sans-serif; text-align: right;">到期日 / 预估金额</td>
+                                                </tr>
+                                                @foreach($certificates as $cert)
+                                                <tr class="cert-row" style="border-bottom: 1px solid #eeeeee;">
+                                                    <td style="padding: 10px 0; font-size: 14px; color: #333333; font-family: monospace;">{{ $cert['common_name'] ?? '' }}</td>
+                                                    <td style="padding: 10px 0; font-size: 14px; color: #333333; font-family: sans-serif; text-align: right;">{{ $cert['expires_at'] ?? '' }} · {{ $cert['amount'] ?? '' }} 元</td>
+                                                </tr>
+                                                @endforeach
+                                                <tr>
+                                                    <td style="padding-top: 14px; font-size: 15px; font-weight: 600; color: #333333;">预计最多合计</td>
+                                                    <td class="highlight-text" style="padding-top: 14px; font-size: 18px; font-weight: 700; color: #f59e0b; text-align: right;">{{ $required }} 元</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <p style="margin: 0 0 28px 0; font-size: 13px; line-height: 22px; color: #999999;">
+                                    说明：以上为预估上限。实际扣费以续费当日为准，部分证书若因委托未配置等原因未能续费则不会扣费，因此真实扣费可能低于此金额。
+                                </p>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                    <tr>
+                                        <td align="center">
+                                            <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
+                                                登录控制台充值
                                             </a>
                                         </td>
                                     </tr>

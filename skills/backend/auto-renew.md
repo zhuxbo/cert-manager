@@ -12,6 +12,7 @@
 - `AutoRenewCommand` 每天 00:00 执行：证书到期前 14 天触发，订单剩余 ≤15 天续费、>15 天重签；API channel 订单由下游控制，不处理
 - **延时提交**：Command 创建续费/重签 + 支付后不立即 commit，通过 Task 表创建延时 commit 任务（随机 0~8 小时），分散上游压力，8 点后人工可检查状态
 - **产品条件**：续费要求 `product.status=1 && renew=1`；重签仅要求 `reissue=1`（产品禁用仍可重签）
+- **仅 ssl 产品（A3）**：选单 `getRenewOrders`/`getReissueOrders` 与判定 `willAuto{Renew,Reissue}Execute` 四处均加 ssl 白名单（`product_type IS NULL OR ='ssl'`，`Product::isSSL()` null→ssl）；smime/codesign/docsign 退出自动续费/重签选单，改由 `cert_expire` 到期提醒。**四处必须同步改**——`willAuto*` 是 `ExpireCommand::willBeHandledByAutoRenew` 与 `CertExpireNotificationBuilder` 的单一源，只改选单不改 `willAuto*` 会「选单排除但仍被判会处理」→ 两腿断静默过期
 - **参数继承**：从原订单提取 period/contact/organization/domains；CSR 按 `product.reuse_csr` 决定重用或生成
 
 ## 算法继承（防静默降级）
@@ -25,6 +26,18 @@
 ## 失败通知 + 到期去重
 
 - （`auto_renew_failed` 模板，仅 seeder、db:seed 幂等可达）：续费/重签失败（含 IP、无委托等跳过类）按到期节点（14/7/3/1 天）发邮件给订单用户。**失败文案归一**：仅「余额不足」「委托无效」两类用户可行动失败给专属清晰文案，IP/上游系统类错误统一走兜底常量 `FALLBACK_REASON`「自动续签未成功，请尽快手动续期」（原始异常仅进 cron 日志、不泄露给用户）；邮件用证书 `common_name` 标识（非 order_id），处理方式按失败类型逐条列出 + 联系客服兜底 + 「登录控制台」按钮（`site_url` 由专用 `AutoRenewFailedNotificationBuilder` 从系统设置注入，**不进模板 variables、Admin 测试发送无需手填**）；**余额检查仅 renew**（reissue 不扣费、不检查余额）；**兜底必发**——任何失败都发通知以堵 `ExpireCommand` 排除自动续签订单后的静默过期洞。`ExpireCommand` 反向排除「会被自动续签/重签处理」的订单（`cert.channel≠api 且 willAutoRenew‖willAutoReissue`）避免同节点重复发到期通知；节点常量与 `isExpireNotifyNode` 由 `Console\Commands\Concerns\ExpireNotifyWindow` trait 两命令共用；`CertExpireNotificationBuilder`/`AcmeExpireNotificationBuilder` 重查窗口上界亦 `use` 该 trait 由 `max(EXPIRE_NOTIFY_NODES)` 派生（非硬编码 14，对齐 `StalledRenewalQuery::forUser`），与派发侧节点同源防漂移（漂移后果：节点扩含 >14 天时派发侧发了 intent、Builder 重查为空 → 整封静默漏发）。修复点：`willAutoReissueExecute` 改判 `product.reissue`（重签不限产品状态），与 `getReissueOrders` 对齐
+
+### 余额不足独立去重（A2）
+
+- 「余额不足」这一类失败**脱离节点 gate**、走 per-user 独立去重键 `auto_renew_balance_notified:{user_id}`（`sendBalanceFailureNotification`）：常规 `Cache::add` 每 `BALANCE_NOTIFY_INTERVAL_DAYS=3` 天一封（防同用户多单风暴）；**到期前 ≤1 天窗口（`isFinalExpireNotifyNode`，由 `min(EXPIRE_NOTIFY_NODES)` 派生）豁免去重必发**（`Cache::put` 同时刷键抑制同轮叠发），保住「到期前 1 天必达」下界。**余额检查通过即 `Cache::forget` 清键**（恢复后再欠费立即告警，不等 TTL）。仅余额分支改闸门，IP/委托/兜底仍走 `sendFailureNotification` 节点 gate；两路径共用 `dispatchAutoRenewFailed`
+
+### 零价成单守卫（A4）
+
+- 续费前置校验 `OrderUtil::hasPriceConfigured(userId, productId, period)`（**行存在性**判定，与 `getMinPrice` 共用 `fetchPriceRows` 取行源防漂移）：缺价（无任何 `ProductPrice` 行）→ **跳过、不建单**（前置于 `renew()`/旧证书终态化之前，杜绝 `getMinPrice ?? '0'` 传导出 0 元静默续费）；**显式免费产品**（行存在 `price=0.00`）放行。`price` 列 NOT NULL default 0，故「行在=有价 / 无行=缺价」二分健全。缺价告警复用包0 `SystemAlert::send('missing_price',…,dedupeKey="missing_price:{product}:{period}",72,'missing')`（固定指纹防 details churn，72h≥3×日巡检），healthy 分支 `clearDedupe` 复位；用户端走 `FALLBACK_REASON`。**守卫只在 AutoRenewCommand renew 路径**——不改 `getMinPrice` 契约、不碰手工/V1/V2/展示；reissue 基础价本就置 0，不校验
+
+### 余额前瞻预警（A1）
+
+- `BalanceForecastCommand`（`schedule:balance-forecast`，周一 09:30，只读）：聚合每用户「未来 30 天到期 + 付费续费轨道」订单估价上限 vs 可用额（`balance + |credit_limit|`），不足则一封 `balance_forecast`（per-user 聚合、weekly 天然去重）。**权威判定单一源**：DB 粗筛（ssl 白名单 + `expires_at<now+30` + 非 api + auto 回落 + `period_till<=now+15`）+ PHP 层 `willAutoRenewExecute` 过滤，排除免费重签单（消除系统性高估）。`required` 是**预估上限**（委托将失败单仍计入），文案「预计最多需要」。三件套：`BalanceForecastNotificationBuilder` + seeder 模板 + config builder；**不入 `user_default_preferences`**（强制发，比照 `auto_renew_failed`，前端零改动）。JSON 查询助手 `whereJsonBoolEq`/`whereJsonKeyMissing` 抽入 `Concerns\QueriesUserJsonSettings` trait 两命令共用
 
 ## 手工标记已续费
 

@@ -371,23 +371,51 @@ class OrderUtil
     }
 
     /**
+     * 取 level_code + custom_level_code 两行 ProductPrice。
+     *
+     * getMinPrice 与 hasPriceConfigured 共用同一取行源，保证「守卫放行」与「估价取值」永远一致，
+     * 不会出现「hasPriceConfigured 说有价、getMinPrice 却取到 0」的漂移。
+     *
+     * @return array{0: ?ProductPrice, 1: ?ProductPrice} [level 行, custom level 行]
+     */
+    private static function fetchPriceRows(int $userId, int $productId, int $period): array
+    {
+        $user = FindUtil::User($userId);
+
+        return [
+            ProductPrice::where([
+                'level_code' => $user->level_code,
+                'product_id' => $productId,
+                'period' => $period,
+            ])->first(),
+            ProductPrice::where([
+                'level_code' => $user->custom_level_code ?? '',
+                'product_id' => $productId,
+                'period' => $period,
+            ])->first(),
+        ];
+    }
+
+    /**
+     * 价格行是否已配置（存在性守卫，A4 零价成单防线）。
+     *
+     * 行存在即已配置——含显式 price=0.00 的真免费产品（放行）；无任何行 = 缺价（拒绝）。
+     * price 列 NOT NULL default 0，不存在「行在但价为 NULL」第三形态，故存在性二分健全。
+     * 供 auto-renew 续费前置校验：缺价即跳过，杜绝 getMinPrice `?? '0'` 传导出的 0 元静默续费。
+     */
+    public static function hasPriceConfigured(int $userId, int $productId, int $period): bool
+    {
+        [$levelPrice, $customLevelPrice] = self::fetchPriceRows($userId, $productId, $period);
+
+        return $levelPrice !== null || $customLevelPrice !== null;
+    }
+
+    /**
      * 获取最低价格
      */
     public static function getMinPrice(int $userId, int $productId, int $period): array
     {
-        $user = FindUtil::User($userId);
-
-        $levelPrice = ProductPrice::where([
-            'level_code' => $user->level_code,
-            'product_id' => $productId,
-            'period' => $period,
-        ])->first();
-
-        $customLevelPrice = ProductPrice::where([
-            'level_code' => $user->custom_level_code ?? '',
-            'product_id' => $productId,
-            'period' => $period,
-        ])->first();
+        [$levelPrice, $customLevelPrice] = self::fetchPriceRows($userId, $productId, $period);
 
         $minPrice = [];
 

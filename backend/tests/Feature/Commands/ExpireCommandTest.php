@@ -466,6 +466,35 @@ test('B1：cancelled/expired 状态的 ACME 不受 set-expired / 节点通知影
     expect($cancelled->fresh()->status)->toBe('cancelled');
 });
 
+test('A3：smime active 到期单（auto_reissue on）不再被排除 → 照发 cert_expire（willAuto* 加 isSSL 后两腿对齐）', function () {
+    // 杀手场景对端：A3 让 willAutoReissueExecute 对非 ssl 返 false，ExpireCommand 不再排除 smime，
+    // 改由 cert_expire 提醒（改前 smime 被 willAutoReissueExecute 排除且 AutoRenewCommand 选单也排除 → 两头空静默过期）。
+    NotificationTemplate::create(['code' => 'auto_renew_failed', 'name' => '自动续费失败', 'content' => 'x', 'status' => 1]);
+
+    $user = User::factory()->create(['email' => 'smime@example.com']);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1, 'reissue' => 1, 'product_type' => 'smime']);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_till' => now()->addDays(30), // >15 天：改前落 willAutoReissueExecute=true 被排除
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(7), // 节点窗口内
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    // A3 后：非 ssl 不被排除 → 照发 cert_expire
+    $notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'cert_expire' && $intent->notifiableId === $user->id));
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
 test('多个到期时间段的证书都会触发通知', function () {
     $user = User::factory()->create(['email' => 'test@example.com']);
     $product = Product::factory()->create();

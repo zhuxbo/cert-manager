@@ -64,6 +64,16 @@ Schedule::command('schedule:auto-renew')
     ->name('auto-renew-certificates')
     ->description('自动续费/重签即将到期的证书');
 
+// 余额前瞻预警 - 每周一 09:30 执行（未来 30 天自动续费余额不足则每用户一封，预估上限）
+// 周一 09:30：错开 auto-renew 00:00 / backup 02:00 / audit 03:00，且避开 schedule:expire 的 09:00
+// （withoutOverlapping 按命令名互斥、不挡不同命令同刻并发）；weekly 天然「每用户每周期一封」去重
+Schedule::command('schedule:balance-forecast')
+    ->weeklyOn(1, '09:30')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('balance-forecast')
+    ->description('未来 30 天自动续费余额前瞻预警（预估上限）');
+
 // 数据库备份任务 - 每天凌晨2点执行，保留 7 天
 Schedule::command('schedule:backup')
     ->dailyAt('02:00')

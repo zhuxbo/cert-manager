@@ -4,6 +4,7 @@ use App\Models\Admin;
 use App\Models\User;
 use App\Services\Notification\Builders\AcmeExpireNotificationBuilder;
 use App\Services\Notification\Builders\AutoRenewFailedNotificationBuilder;
+use App\Services\Notification\Builders\BalanceForecastNotificationBuilder;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
@@ -36,6 +37,9 @@ return [
         // 自动续费/重签失败：专用 Builder 注入系统设置 site.url（登录控制台按钮），
         // 不进模板 variables、测试发送无需手填 site_url（与 cert_expire 一致）
         'auto_renew_failed' => AutoRenewFailedNotificationBuilder::class,
+        // 余额前瞻预警（A1，未来 30 天自动续费余额不足）：专用 Builder 注入 site.url、透传
+        // 金额/证书明细；required 为「预估上限」。不入 user_default_preferences（强制发，主控已裁）
+        'balance_forecast' => BalanceForecastNotificationBuilder::class,
         'cert_issued' => CertIssuedNotificationBuilder::class,
         'cert_expire' => CertExpireNotificationBuilder::class,
         // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）

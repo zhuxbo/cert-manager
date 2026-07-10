@@ -40,6 +40,12 @@ class AutoRenewService
             return false;
         }
 
+        // 仅 ssl 产品走自动续费；smime/codesign/docsign 等无域名验证产品退出选单，改由 cert_expire 提醒
+        // （product_type NULL 视为 ssl，与 Product::isSSL / getRenewOrders 白名单口径一致）
+        if (! $product->isSSL()) {
+            return false;
+        }
+
         // 订单剩余时间不超过15天时执行续费，超过15天走重签
         $periodTill = $order->period_till;
         if ($periodTill) {
@@ -71,6 +77,12 @@ class AutoRenewService
         // 检查产品是否支持重签（重签不限产品 status，仅看 reissue；与 getReissueOrders 只查 reissue==1 对齐）
         $product = $order->product;
         if (! $product->reissue) {
+            return false;
+        }
+
+        // 仅 ssl 产品走自动重签；非 ssl（smime/codesign/docsign）退出选单，改由 cert_expire 提醒
+        // （product_type NULL 视为 ssl，与 Product::isSSL / getReissueOrders 白名单口径一致）
+        if (! $product->isSSL()) {
             return false;
         }
 
