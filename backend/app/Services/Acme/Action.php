@@ -26,6 +26,10 @@ class Action
     use MutexLock;
     use RunsTaskMutationTransaction;
 
+    // directory_url 缓存 TTL（天）：directory 端点极稳定，长 TTL 既压低回源请求（每 CA 至多每 TTL 一次），
+    // 又避免 forever 在 CA 极偶发换端点时永久驻留错值——过期后 show 读路径自动回源刷新
+    private const DIRECTORY_URL_CACHE_TTL_DAYS = 30;
+
     /**
      * 创建 ACME 订单（unpaid 状态）
      */
@@ -563,7 +567,11 @@ class Action
                 $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
                 // 终态守卫：本地已是终态（cancelled/revoked/expired）时拒绝上游 status 覆盖，防滞后 active 复活已退款订阅
                 $localTerminal = in_array($acme->status, [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED], true);
-                if (! $localTerminal && isset($data['status']) && in_array($data['status'], $syncableStatuses, true)) {
+                // cancelling 守卫：本地取消中时仅挡上游滞后 active 回写（上游终态 cancelled/revoked/expired 仍放行），
+                // 否则 active 覆盖后延时 cancel_acme 任务因状态非 cancelling 抛错、用户取消意图静默丢弃（P1-4）
+                $cancellingRevivedByActive = $acme->status === Acme::STATUS_CANCELLING
+                    && ($data['status'] ?? null) === Acme::STATUS_ACTIVE;
+                if (! $localTerminal && ! $cancellingRevivedByActive && isset($data['status']) && in_array($data['status'], $syncableStatuses, true)) {
                     $updateData['status'] = $data['status'];
                     // 上游已取消/吊销且本地尚未记录取消时间 → 用当前时间补记（正式取消时间）
                     if (in_array($data['status'], [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED], true) && ! $acme->cancelled_at) {
@@ -734,7 +742,10 @@ class Action
     }
 
     /**
-     * 写入/刷新 directory URL 缓存（Cache::forever，按 CA 聚合）
+     * 写入/刷新 directory URL 缓存（长 TTL，按 CA 聚合）
+     *
+     * 用 put + TTL 而非 forever：过期即自动纳入 syncDirectoryUrl 既有「缓存 miss 回源」分支，
+     * 无需新增读路径逻辑，即可让 CA 极偶发换端点时错值最终被刷新（详见 TTL 常量注释）。
      */
     private function cacheDirectoryUrl(string $ca, ?string $url): void
     {
@@ -743,7 +754,11 @@ class Action
             return;
         }
 
-        Cache::forever($this->directoryUrlCacheKey($ca), $url);
+        Cache::put(
+            $this->directoryUrlCacheKey($ca),
+            $url,
+            now()->addDays(self::DIRECTORY_URL_CACHE_TTL_DAYS)
+        );
     }
 
     private function directoryUrlCacheKey(string $ca): string

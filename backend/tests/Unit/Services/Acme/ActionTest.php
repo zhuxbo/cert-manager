@@ -1547,3 +1547,184 @@ test('单体 pay 传入 autoCommit=false 不创建 Task', function () {
     expect(Task::where('order_id', $acme->id)->count())->toBe(0);
     Queue::assertNotPushed(TaskJob::class);
 });
+
+// ==================== D1: sync cancelling 守卫（P1-4）====================
+
+test('sync cancelling 守卫：本地 cancelling 不被上游滞后 active 复活', function () {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    // 手动置 cancelling + api_id：仅验证守卫拦住 active 回写，不依赖退款流水
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-cancelling-active',
+    ]);
+    $acme->update(['status' => Acme::STATUS_CANCELLING]);
+
+    setupGatewaySettings();
+    // 上游滞后返回 active
+    Http::fake([
+        'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active']]),
+    ]);
+
+    // force=true 避免 success 抛 ApiResponseException 打断断言
+    $this->service->sync($acme->id, true);
+
+    // 守卫挡住：cancelling 未被复活为 active（未修复此断言红）
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+});
+
+test('sync cancelling 放行上游终态：仍写回 cancelled/revoked/expired（不被守卫误挡）', function (string $upstream) {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => "gw-cancelling-$upstream",
+    ]);
+    $acme->update(['status' => Acme::STATUS_CANCELLING]);
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => $upstream]]),
+    ]);
+
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    // 守卫只挡 active：上游终态仍照常写回
+    expect($acme->status)->toBe($upstream);
+    if (in_array($upstream, [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED], true)) {
+        expect($acme->cancelled_at)->not->toBeNull();
+    }
+})->with([
+    Acme::STATUS_CANCELLED,
+    Acme::STATUS_REVOKED,
+    Acme::STATUS_EXPIRED,
+]);
+
+test('sync 挡 active 后延时 cancel_acme 仍完成取消+退费（K1 端到端）', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    // 真实扣费流水，供 cancel 退费反向冲正（账目恒等，过 FundInvariants）
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    // 模拟 commit 成功后的 active + api_id
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-k1-active']);
+
+    setupGatewaySettings();
+    // 同 URL 顺序两次响应用 fakeSequence（两次 Http::fake 同 pattern 会累加且先注册者先匹配）：
+    // sync 先遇上游滞后 active（守卫应挡），随后 cancel 上游返回 cancelled
+    Http::fakeSequence('fake-gateway.test/*')
+        ->push(['code' => 1, 'data' => ['status' => 'active']])
+        ->push(['code' => 1, 'data' => ['status' => 'cancelled']]);
+
+    // commitCancel(active) → cancelling + 延时 cancel_acme 任务
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->where('status', 'executing')->count())->toBe(1);
+
+    // sync 遇上游滞后 active：守卫挡住，保持 cancelling
+    $this->service->sync($acme->id, true);
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+
+    // 延时任务到点执行 cancel：上游 cancelled → cancelled + acme_cancel 退款流水
+    // （未修复：sync 已翻 active，此处 cancelLocked 校验 !=cancelling 抛「订单状态不是取消中」）
+    expectApiSuccess(fn () => $this->service->cancel($acme->id));
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
+    expect(Transaction::where('transaction_id', $acme->id)
+        ->where('type', Transaction::TYPE_ACME_CANCEL)
+        ->first())->not->toBeNull();
+});
+
+test('sync 挡 active 后 revokeCancel 仍能置回 active 并删任务（K2 交互）', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-k2-active',
+        'amount' => '100.00',
+    ]);
+
+    // commitCancel → cancelling + cancel_acme 任务
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->where('status', 'executing')->count())->toBe(1);
+
+    // sync 遇上游滞后 active：守卫挡住，保持 cancelling
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active']]),
+    ]);
+    $this->service->sync($acme->id, true);
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+
+    // 用户撤回：revokeCancel 仍能置回 active 并清空任务
+    // （未修复：sync 已翻 active，revokeCancel 校验 !=cancelling 抛「订单不在取消中状态」，且任务残留）
+    expectApiSuccess(fn () => $this->service->revokeCancel($acme->id));
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+});
+
+// ==================== D2: directory_url 缓存 TTL（P2）====================
+
+test('directory_url 缓存过期后 syncDirectoryUrl 回源上游刷新（不再永久驻留）', function () {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-dir-ttl',
+    ]);
+
+    setupGatewaySettings();
+    // 同 URL 顺序两次响应用 fakeSequence（两次 Http::fake 同 pattern 会累加且先注册者先匹配）：
+    // 首次回源拿 A，TTL 过期后再次回源拿 B
+    Http::fakeSequence('fake-gateway.test/*')
+        ->push(['code' => 1, 'data' => ['status' => 'active', 'directory_url' => 'https://acme.example.test/A/']])
+        ->push(['code' => 1, 'data' => ['status' => 'active', 'directory_url' => 'https://acme.example.test/B/']]);
+
+    // 首次上游返回 directory_url A → syncDirectoryUrl 缓存 A
+    expect($this->service->syncDirectoryUrl($acme->fresh()))->toBe('https://acme.example.test/A/');
+
+    // 超过 TTL(30 天)：缓存过期，下次详情查看应回源拿到 B（未修复的 forever 永不过期，仍返回 A → 红）
+    $this->travel(31)->days();
+    expect($this->service->syncDirectoryUrl($acme->fresh()))->toBe('https://acme.example.test/B/');
+});
+
+test('directory_url TTL 未到期时命中缓存不回源（防 TTL 设过短）', function () {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-dir-hit',
+    ]);
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active', 'directory_url' => 'https://acme.example.test/A/']]),
+    ]);
+    expect($this->service->syncDirectoryUrl($acme->fresh()))->toBe('https://acme.example.test/A/');
+    Http::assertSentCount(1);
+
+    // TTL(30 天) 之内：命中缓存，不再回源上游
+    $this->travel(1)->days();
+    expect($this->service->syncDirectoryUrl($acme->fresh()))->toBe('https://acme.example.test/A/');
+    Http::assertSentCount(1);
+});
