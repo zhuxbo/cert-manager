@@ -58,11 +58,12 @@ class DelegationCleanupCommand extends Command
             $allTxtRecords = $this->proxyDNS->getAllTxtRecords($proxyZone);
             $this->info('腾讯云 TXT 记录总数: '.count($allTxtRecords));
 
-            // 3. 查询所有处理中订单的委托记录
-            $this->info('正在查询处理中订单的委托记录...');
+            // 3. 查询所有 processing/approving 订单的委托记录（F2-3 缺陷二：approving 单已过 DCV、
+            //    等 CA 审批，其委托 TXT 不可删，否则 CA 复查 DCV 即失败）
+            $this->info('正在查询处理中/待批准订单的委托记录...');
             $processingOrders = Order::with(['latestCert'])
                 ->whereHas('latestCert', function ($query) {
-                    $query->where('status', 'processing');
+                    $query->whereIn('status', ['processing', 'approving']);
                 })
                 ->get();
 
@@ -138,63 +139,80 @@ class DelegationCleanupCommand extends Command
     protected function cleanDatabaseMarks(array $deletedLabels): int
     {
         $cleanedCount = 0;
+        $deletedLabelSet = array_flip($deletedLabels); // O(1) 命中判定，替代逐条 in_array
 
-        // 查找所有设置了auto_txt_written标记的证书
-        $orders = Order::with(['latestCert'])
-            ->whereHas('latestCert', function ($query) {
-                $query->where('created_at', '>=', now()->subDays(30));
-            })
-            ->get();
-
-        foreach ($orders as $order) {
-            $cert = $order->latestCert;
-            $validations = $cert->validation;
-
-            if (empty($validations)) {
-                continue;
-            }
-
-            $hasChanges = false;
-            $updatedValidations = [];
-
-            foreach ($validations as $index => $validation) {
-                // 检查是否有auto_txt_written标记
-                if (! isset($validation['auto_txt_written']) || $validation['auto_txt_written'] !== true) {
-                    $updatedValidations[$index] = $validation;
-
-                    continue;
+        // F2-3 缺陷一：去掉 30 天窗口，分块扫所有带 auto_txt_written 标记的证书。
+        // 原只扫 30 天内订单 → >30 天订单 label 被删后标记不清、TXT 永不重写。
+        // 全扫性能收敛（每日 06:00 冷路径，chunkById 控内存）：
+        //  - SQL 侧 validation LIKE '%auto_txt_written%' 粗筛（json_encode 不转义该 ASCII 键，是
+        //    带标记记录的严格超集、无漏；误匹配由 PHP 侧 isset && === true 复核吸收），避免
+        //    whereNotNull 近乎全表（validation 除 unpaid 外几乎非空、无选择性）；
+        //  - latestCert 只 select id/validation，不水合 csr/private_key/enc_* 宽列（mediumtext）；
+        //  - 每 chunk 先收集 delegation_id 再 whereIn 批量取 label 映射，消除逐条 find 的 N+1。
+        Order::with(['latestCert' => fn ($query) => $query->select('id', 'validation')])
+            ->whereHas('latestCert', fn ($query) => $query->where('validation', 'like', '%auto_txt_written%'))
+            ->chunkById(200, function ($orders) use ($deletedLabelSet, &$cleanedCount) {
+                // 先收集本 chunk 全部带标记的 delegation_id，一次 whereIn 批量取 label（消除 N+1）
+                $delegationIds = [];
+                foreach ($orders as $order) {
+                    foreach ($order->latestCert->validation ?? [] as $validation) {
+                        if (($validation['auto_txt_written'] ?? false) === true && ! empty($validation['delegation_id'])) {
+                            $delegationIds[$validation['delegation_id']] = true;
+                        }
+                    }
                 }
 
-                $delegationId = $validation['delegation_id'] ?? null;
+                $labelById = empty($delegationIds)
+                    ? collect()
+                    : CnameDelegation::whereIn('id', array_keys($delegationIds))->pluck('label', 'id');
 
-                if (! $delegationId) {
-                    $updatedValidations[$index] = $validation;
+                foreach ($orders as $order) {
+                    $cert = $order->latestCert;
+                    $validations = $cert->validation;
 
-                    continue;
+                    if (empty($validations)) {
+                        continue;
+                    }
+
+                    $hasChanges = false;
+                    $updatedValidations = [];
+
+                    foreach ($validations as $index => $validation) {
+                        // 检查是否有 auto_txt_written 标记
+                        if (! isset($validation['auto_txt_written']) || $validation['auto_txt_written'] !== true) {
+                            $updatedValidations[$index] = $validation;
+
+                            continue;
+                        }
+
+                        $delegationId = $validation['delegation_id'] ?? null;
+
+                        if (! $delegationId) {
+                            $updatedValidations[$index] = $validation;
+
+                            continue;
+                        }
+
+                        $label = $labelById->get($delegationId);
+
+                        // 委托记录不存在（孤儿标记），或 label 已被删除 → 清理标记
+                        if ($label === null || isset($deletedLabelSet[$label])) {
+                            unset($validation['auto_txt_written'], $validation['auto_txt_written_at'], $validation['delegation_id']);
+                            $updatedValidations[$index] = $validation;
+                            $hasChanges = true;
+                            $cleanedCount++;
+                        } else {
+                            $updatedValidations[$index] = $validation;
+                        }
+                    }
+
+                    // 保存更新后的 validation
+                    if ($hasChanges) {
+                        $cert->validation = $updatedValidations;
+                        $cert->save();
+                    }
                 }
-
-                // 获取委托记录
-                $delegation = CnameDelegation::find($delegationId);
-
-                // 如果委托记录不存在，或者 label 已被删除，清理标记
-                if (! $delegation || in_array($delegation->label, $deletedLabels)) {
-                    unset($validation['auto_txt_written']);
-                    unset($validation['auto_txt_written_at']);
-                    unset($validation['delegation_id']);
-                    $updatedValidations[$index] = $validation;
-                    $hasChanges = true;
-                    $cleanedCount++;
-                } else {
-                    $updatedValidations[$index] = $validation;
-                }
-            }
-
-            // 保存更新后的validation
-            if ($hasChanges) {
-                $cert->validation = $updatedValidations;
-                $cert->save();
-            }
-        }
+            });
 
         return $cleanedCount;
     }

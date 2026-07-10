@@ -767,7 +767,19 @@ trait ActionTrait
             $domain = $item['domain'] ?? '';
             if (isset($indexed[$domain])) {
                 $indexedDomain = $indexed[$domain];
+
+                // F2-2 token 轮换检测：API value 与旧 value 均存在且不等 = 上游轮换了 DCV token。
+                // 此时不带过旧的 auto_txt_written/auto_txt_written_at（= 清标记），令下轮
+                // writeDelegationTxtRecords/collectTxtRecords 重写新 token（upsertTXT append-only，不删旧、不伤兄弟）。
+                // delegation_* 保留（委托未变，仅 token 变）。value 相同或任一缺失 → 不剔除（no-op 护栏，
+                // 防上游 value 不稳定时每轮误判轮换→每轮 append 致活跃 label TXT 累积至上限）。
+                $valueRotated = isset($item['value'], $indexedDomain['value'])
+                    && $item['value'] !== $indexedDomain['value'];
+
                 foreach ($indexedDomain as $key => $value) {
+                    if ($valueRotated && ($key === 'auto_txt_written' || $key === 'auto_txt_written_at')) {
+                        continue;
+                    }
                     if (! array_key_exists($key, $item)) {
                         $item[$key] = $value;
                     }

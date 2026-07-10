@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace App\Services\Order\Utils;
 
 use App\Models\Order;
+use App\Services\Delegation\DnsResolver;
 use App\Traits\ApiResponseStatic;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class VerifyUtil
@@ -104,7 +107,16 @@ class VerifyUtil
     }
 
     /**
-     * 验证域名验证记录，支持故障转移
+     * 验证域名验证记录，支持故障转移（F2-1）。
+     *
+     * 迁移到 Laravel Http facade（原裸 Guzzle 无法被 Http::fake 拦截、兜底不可测）。
+     * 迁移非行为等价，按逐差异对齐：Guzzle 默认对 4xx/5xx 抛异常 → 故障转移，Laravel Http 默认不抛，
+     * 故循环内显式 `$response->failed()` continue，保「错误状态码也转移」；连接级异常改 catch ConnectionException。
+     *
+     * dnsTools 全部节点不可达时经 DnsResolver 本地兜底：
+     *  - 本地命中期望值 → code=1（走既有 revalidate 自愈），并带 dns_tools_down（infra 挂，供 admin 告警计数）。
+     *  - 不可判定（含 file/http 项或本地未命中）→ code=0 + dns_tools_down=true（触发连续 N 建 sync 安全网）。
+     * dnsTools 有节点应答（成功或 DCV 失败）时不打 dns_tools_down 标记（DNS 确实未就绪，维持现状）。
      */
     public static function verifyValidation(array $validation): array
     {
@@ -114,26 +126,27 @@ class VerifyUtil
         if (empty($urls)) {
             Log::error('DNS Tools URLs 未配置');
 
-            return [
-                'code' => 0,
-                'msg' => 'DNS Tools URLs 未配置，无法进行域名验证',
-            ];
+            return self::localFallbackResult($validation, 'DNS Tools URLs 未配置，无法进行域名验证');
         }
-
-        $client = new Client([
-            'timeout' => 3.0, // 设置超时时间为3秒
-            'verify' => false, // 关闭SSL证书验证
-        ]);
 
         $lastError = '';
         foreach ($urls as $url) {
             try {
-                // 发送json数据
-                $response = $client->post($url.'/api/dcv/verify', [
-                    'json' => $validation,
-                ]);
+                $response = Http::withoutVerifying() // 关闭 SSL 证书验证（对齐原 verify:false）
+                    ->timeout(3) // 3 秒超时（对齐原 timeout:3.0）
+                    ->asJson()
+                    ->post($url.'/api/dcv/verify', $validation);
 
-                $result = json_decode($response->getBody()->getContents(), true);
+                // 4xx/5xx 视为节点降级 → 故障转移到下一节点（对齐原 Guzzle throw-on-error 语义，
+                // 否则会误采信 5xx 节点的响应体）
+                if ($response->failed()) {
+                    $lastError = 'HTTP '.$response->status();
+                    Log::error('DNS Tools API 返回错误状态码', ['url' => $url, 'status' => $response->status()]);
+
+                    continue;
+                }
+
+                $result = $response->json();
 
                 if ($result === null) {
                     Log::error('DNS Tools API 返回无效 JSON', ['url' => $url]);
@@ -142,12 +155,13 @@ class VerifyUtil
                     continue;
                 }
 
+                // dnsTools 节点有应答（成功或 DCV 失败）→ 不打 infra-down 标记
                 return [
                     'code' => $result['code'] ?? 0,
                     'msg' => $result['msg'] ?? '',
                     'errors' => $result['errors'] ?? [],
                 ];
-            } catch (GuzzleException $e) {
+            } catch (ConnectionException $e) {
                 $lastError = $e->getMessage();
                 Log::error('DNS Tools API 请求失败', [
                     'url' => $url,
@@ -158,10 +172,96 @@ class VerifyUtil
             }
         }
 
-        return [
-            'code' => 0,
-            'msg' => 'DNS Tools API 请求失败: '.$lastError,
-        ];
+        // 全部节点不可达 → 本地 DNS 兜底 + infra-down 信号
+        return self::localFallbackResult($validation, 'DNS Tools API 请求失败: '.$lastError);
+    }
+
+    /**
+     * dnsTools 全挂时的本地兜底结果（F2-1）。均带 dns_tools_down=true 供 admin 告警计数。
+     *
+     * @param  string  $downMsg  不可判定时的错误文案
+     */
+    private static function localFallbackResult(array $validation, string $downMsg): array
+    {
+        $local = self::verifyValidationLocal($validation);
+
+        if ($local === true) {
+            // 本地 DNS 确认有效 → 走既有 revalidate 自愈（CA 权威复核，本地 false-pass 仅多一次 revalidate、不误签）
+            return ['code' => 1, 'msg' => '本地 DNS 兜底验证通过', 'errors' => [], 'dns_tools_down' => true];
+        }
+
+        // 不可判定（含 file/http 项或本地未命中）→ code=0 + infra-down 标记
+        return ['code' => 0, 'msg' => $downMsg, 'dns_tools_down' => true];
+    }
+
+    /**
+     * 本地 DNS 兜底判定（F2-1）：仅对 DNS 类项（txt/cname）经 DnsResolver 直查本地核对期望值。
+     *
+     * 钉死本地 dns_get_record（DnsResolver），绝不复用 queryTxtRecords（后者会先重打全部 dnsTools 各 3s，
+     * 在停摆场景成倍放大延迟）。全部 DNS 项命中 → true；任一无法确认或含非 DNS 项（file/http/https/email）→ null
+     * （不可判定，不 false-negative：本地可能滞后，交 CA 权威复核）。
+     *
+     * @return bool|null true=全部命中；null=不可判定
+     */
+    private static function verifyValidationLocal(array $validation): ?bool
+    {
+        $resolver = app(DnsResolver::class);
+        $sawDnsItem = false;
+
+        foreach ($validation as $item) {
+            $method = strtolower($item['method'] ?? '');
+
+            // 含 file/http/https/email/admin 等非 DNS 项 → 本地不可判定
+            if (! in_array($method, ['txt', 'cname'], true)) {
+                return null;
+            }
+
+            $expected = (string) ($item['value'] ?? '');
+            $host = (string) ($item['host'] ?? '');
+            if ($expected === '' || $host === '') {
+                return null; // 缺判据 → 不可判定
+            }
+
+            // 裸前缀（无点）host 用 domain 补全成 FQDN（镜像 AutoDcvTxtService::collectTxtRecords）：
+            // 主力 CA 的 host 常为裸前缀（_<md5>/_certum/_pki-validation），dns_get_record 查单标签名
+            // 恒空 → 本地兜底对这些订单结构性失效。已是 FQDN（含点）的 host 保持不变。
+            if (! str_contains($host, '.')) {
+                $domain = ltrim((string) ($item['domain'] ?? ''), '*.');
+                if ($domain === '') {
+                    return null; // 无 domain 可补 → 不可判定（不对无意义单标签查询、不 false-negative）
+                }
+                $host = $host.'.'.$domain;
+            }
+
+            $sawDnsItem = true;
+
+            if ($method === 'txt') {
+                $hit = false;
+                foreach ($resolver->txt($host) as $txtValue) {
+                    if (trim((string) $txtValue) === trim($expected)) {
+                        $hit = true;
+                        break;
+                    }
+                }
+                if (! $hit) {
+                    return null; // 未命中 → 不可判定（不 false-negative）
+                }
+            } else { // cname
+                $target = strtolower(rtrim($expected, '.'));
+                $hit = false;
+                foreach ($resolver->cname($host) as $cnameTarget) {
+                    if (strtolower(rtrim((string) $cnameTarget, '.')) === $target) {
+                        $hit = true;
+                        break;
+                    }
+                }
+                if (! $hit) {
+                    return null;
+                }
+            }
+        }
+
+        return $sawDnsItem ? true : null;
     }
 
     /**
