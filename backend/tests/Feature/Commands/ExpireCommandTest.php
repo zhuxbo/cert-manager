@@ -1,6 +1,8 @@
 <?php
 
+use App\Models\Acme;
 use App\Models\Cert;
+use App\Models\NotificationTemplate;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
@@ -233,6 +235,9 @@ test('刚标记为 expired 的证书在同一次执行中也会被清理敏感�
 });
 
 test('去重：开启自动续费的非 api 订单不发 cert_expire（交给 AutoRenewCommand）', function () {
+    // B2 前置：排除依赖 auto_renew_failed 模板启用（默认生产态 status=1）。停用时 B2 改为回落发 cert_expire。
+    NotificationTemplate::create(['code' => 'auto_renew_failed', 'name' => '自动续费失败', 'content' => 'x', 'status' => 1]);
+
     // 开 auto_renew + 非 api + period_till ≤15 天 → willAutoRenewExecute=true → ExpireCommand 排除
     $user = User::factory()->create(['email' => 'auto@example.com']);
     $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
@@ -252,6 +257,35 @@ test('去重：开启自动续费的非 api 订单不发 cert_expire（交给 Au
     $notificationCenter = Mockery::mock(NotificationCenter::class);
     // 被排除 → 不应发 cert_expire
     $notificationCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
+test('B2：auto_renew_failed 模板停用时自动续签订单回落发 cert_expire（防两头空静默过期）', function () {
+    // auto_renew_failed 停用（status=0）→ AutoRenewCommand 发不出失败通知；ExpireCommand 若仍排除则两头空。
+    // B2：排除前置 gate 于模板启用，停用时不排除 → 照发 cert_expire（回落，方向安全=少排除）。
+    NotificationTemplate::create(['code' => 'auto_renew_failed', 'name' => '自动续费失败', 'content' => 'x', 'status' => 0]);
+
+    $user = User::factory()->create(['email' => 'fallback@example.com']);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(7),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    // 模板停用 → 不排除 → 照发 cert_expire（回落）
+    $notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'cert_expire'));
     $this->app->instance(NotificationCenter::class, $notificationCenter);
 
     $this->artisan('schedule:expire')->assertSuccessful();
@@ -353,6 +387,83 @@ test('去重：用户同时有 auto 订单和手动订单 → 仍发一次 cert_
     $this->app->instance(NotificationCenter::class, $notificationCenter);
 
     $this->artisan('schedule:expire')->assertSuccessful();
+});
+
+// --- B1: ACME 订阅到期提醒 + set-expired ---
+
+test('B1：active ACME 订阅 period_till 落 14 天节点窗口 → 派发 acme_expire', function () {
+    $user = User::factory()->create(['email' => 'acme@example.com']);
+    $product = Product::factory()->create();
+    Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addDays(13)->addHours(12), // 节点 14 窗口 [now+13, now+14]
+    ]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'acme_expire' && $intent->notifiableId === $user->id));
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+});
+
+test('B1：active ACME 订阅 period_till 已过 → 置 expired（纯本地簿记，不触碰 EAB/上游）', function () {
+    $user = User::factory()->create(['email' => 'acme2@example.com']);
+    $product = Product::factory()->create();
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->subDay(),
+    ]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->zeroOrMoreTimes();
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+
+    // eab_kid/eab_hmac 不变（EAB 未触碰），仅 status 置 expired
+    $fresh = $acme->fresh();
+    expect($fresh->status)->toBe('expired');
+    expect($fresh->eab_kid)->toBe($acme->eab_kid);
+});
+
+test('B1：active ACME 订阅 period_till 在 14 天窗口外（30 天后）→ 不派发、不改状态', function () {
+    $user = User::factory()->create(['email' => 'acme3@example.com']);
+    $product = Product::factory()->create();
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addDays(30),
+    ]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+
+    expect($acme->fresh()->status)->toBe('active');
+});
+
+test('B1：cancelled/expired 状态的 ACME 不受 set-expired / 节点通知影响', function () {
+    $user = User::factory()->create(['email' => 'acme4@example.com']);
+    $product = Product::factory()->create();
+    // 已取消订阅（period_till 落窗口内也不应派发 / 不应被 set-expired 覆盖）
+    $cancelled = Acme::factory()->cancelled()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addDays(7),
+    ]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+
+    expect($cancelled->fresh()->status)->toBe('cancelled');
 });
 
 test('多个到期时间段的证书都会触发通知', function () {

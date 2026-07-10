@@ -1,12 +1,14 @@
 <?php
 
 use App\Models\Cert;
+use App\Models\NotificationTemplate;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
+use App\Services\Notification\TemplateSelector;
 use App\Services\Order\AutoRenewService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
@@ -66,7 +68,23 @@ function buildPartialBuilder(AutoRenewService $svc, Collection $orders): CertExp
         3600
     );
 
+    // B2：build() 调 app(TemplateSelector::class)->select('auto_renew_failed') 判定是否 gate 排除。
+    // 默认绑定为「启用」（生产默认 status=1），保持既有排除测试语义；本 Unit 无 DB，用容器 mock 隔离。
+    bindAutoRenewFailedTemplate(true);
+
     return $builder;
+}
+
+/**
+ * 绑定 TemplateSelector 到容器，控制 auto_renew_failed 模板启用态（B2 排除 gate）。
+ */
+function bindAutoRenewFailedTemplate(bool $enabled): void
+{
+    $selector = Mockery::mock(TemplateSelector::class);
+    $selector->shouldReceive('select')
+        ->with('auto_renew_failed')
+        ->andReturn($enabled ? new NotificationTemplate(['code' => 'auto_renew_failed', 'status' => 1]) : null);
+    app()->instance(TemplateSelector::class, $selector);
 }
 
 test('接收者非 User 时抛出异常', function () {
@@ -129,6 +147,26 @@ test('自动续签会执行的非 api 订单即使委托未配置也排除（不
 
     // 委托有效性不再影响 builder：会被 AutoRenewCommand 处理的非 api 订单一律排除 → null
     expect($builder->build($intent, buildMockUser()))->toBeNull();
+});
+
+test('B2：auto_renew_failed 模板停用时不排除自动续签订单（回落发 cert_expire，防两头空）', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+
+    // 非 api + willAutoRenew=true：模板启用时本会被排除；停用时应回落纳入
+    $orders = new Collection([buildMockOrder(['common_name' => 'fallback.com', 'channel' => 'web'])]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+    // 覆盖为停用（buildPartialBuilder 默认绑定启用，此处最后一次绑定生效）
+    bindAutoRenewFailedTemplate(false);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, buildMockUser());
+
+    // 模板停用 → 不排除 → 汇总邮件含该证书（回落，防静默过期）
+    expect($result)->toBeInstanceOf(NotificationPayload::class);
+    expect($result->data['certificates'])->toHaveCount(1);
+    expect($result->data['certificates'][0]['domain'])->toBe('fallback.com');
 });
 
 test('api channel 订单即使 willAutoRenew=true 也不排除（AutoRenewCommand 不处理 api，照常发 cert_expire 防漏发）', function () {

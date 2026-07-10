@@ -3,11 +3,13 @@
 namespace App\Console\Commands;
 
 use App\Console\Commands\Concerns\ExpireNotifyWindow;
+use App\Models\Acme;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
+use App\Services\Notification\TemplateSelector;
 use App\Services\Order\AutoRenewService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -52,6 +54,14 @@ class ExpireCommand extends Command
             ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '<', now()))
             ->update(['status' => 'expired']);
 
+        // ACME 订阅到期：period_till 已过的 active 订阅置 expired（纯本地簿记）。
+        // 安全性：不 revoke、不调上游、不动 eab_kid/eab_hmac（certbot 直连 CA directory，不经本系统），
+        // 与状态图 active──[到期]──→expired 一致；本地 expired 后 sync 终态守卫只挡 status、
+        // period_till 仍被上游覆盖（Acme\Action 既有性质，见 skills/backend/acme-module.md）。
+        Acme::where('status', Acme::STATUS_ACTIVE)
+            ->where('period_till', '<', now())
+            ->update(['status' => Acme::STATUS_EXPIRED]);
+
         // 到期通知时间窗口查询条件（第 14/7/3/1 天当天，节点来自 ExpireNotifyWindow 单一源）
         $windows = $this->expireNotifyWindows();
         $expireWindowQuery = function ($query) use ($windows) {
@@ -74,6 +84,9 @@ class ExpireCommand extends Command
         // whereHas('user'|'product') 与 AutoRenewCommand::getRenewOrders/getReissueOrders 的过滤范围对齐，
         // 同时保证 willBeHandledByAutoRenew 内三关系非空（user 缺失本就发不出邮件、product 缺失会被汇总邮件 builder 的 whereHas('product') 二次过滤）。
         $autoRenewService = app(AutoRenewService::class);
+        // auto_renew_failed 模板是否启用（循环外算一次布尔，避免逐单查询）：停用时 AutoRenewCommand
+        // 发不出失败通知，若 ExpireCommand 仍排除自动订单则两头空 → 静默过期。故排除以模板启用为前置。
+        $autoRenewFailedEnabled = app(TemplateSelector::class)->select('auto_renew_failed') !== null;
         $orders = Order::with(['latestCert', 'user', 'product'])
             ->whereHas('latestCert', $expireWindowQuery)
             ->whereHas('user')
@@ -81,7 +94,7 @@ class ExpireCommand extends Command
             ->get();
 
         $user_ids = $orders
-            ->reject(fn (Order $order) => $this->willBeHandledByAutoRenew($order, $autoRenewService))
+            ->reject(fn (Order $order) => $this->willBeHandledByAutoRenew($order, $autoRenewService, $autoRenewFailedEnabled))
             ->pluck('user_id')
             ->unique()
             ->values()
@@ -105,6 +118,37 @@ class ExpireCommand extends Command
             }
         }
 
+        // ACME 订阅到期通知（节点 14/7/3/1，与 cert_expire 派发口径对齐）：查窗口内 active 订阅，
+        // 按 user 去重逐 user 派发 acme_expire。无 willAuto* 去重（ACME 不由 AutoRenewCommand 处理，
+        // 无双发风险）；Builder 侧用连续 14 天超集窗口（防异步延迟跨窗漏发，见 AcmeExpireNotificationBuilder）。
+        $acmeUserIds = Acme::where('status', Acme::STATUS_ACTIVE)
+            ->where(function ($query) use ($windows) {
+                foreach ($windows as $i => [$start, $end]) {
+                    $i === 0
+                        ? $query->whereBetween('period_till', [$start, $end])
+                        : $query->orWhereBetween('period_till', [$start, $end]);
+                }
+            })
+            ->pluck('user_id')
+            ->unique()
+            ->values()
+            ->all();
+
+        foreach ($acmeUserIds as $acmeUserId) {
+            $acmeUser = User::find($acmeUserId);
+            if ($acmeUser && $acmeUser->email) {
+                $notificationCenter->dispatch(new NotificationIntent(
+                    'acme_expire',
+                    'user',
+                    $acmeUser->id,
+                    [
+                        'email' => $acmeUser->email,
+                    ]
+                ));
+                $this->info("User $acmeUser->id email $acmeUser->email ACME subscription expiration notification task created");
+            }
+        }
+
         // 清理终态证书的敏感材料：已到期/吊销/取消/被续期重签/失败的 CSR、私钥、证书串
         // 业务已无保留价值，提前清理可缩小备份脱敏成本与泄露面
         $this->purgeTerminalCertMaterial();
@@ -119,8 +163,15 @@ class ExpireCommand extends Command
      *   - API channel：AutoRenewCommand 跳过，返回 false（不排除，照常发 cert_expire，避免两头空）
      *   - 其余 willAutoRenewExecute||willAutoReissueExecute：返回其结果
      */
-    private function willBeHandledByAutoRenew(Order $order, AutoRenewService $autoRenewService): bool
+    private function willBeHandledByAutoRenew(Order $order, AutoRenewService $autoRenewService, bool $autoRenewFailedEnabled): bool
     {
+        // auto_renew_failed 模板停用 → AutoRenewCommand 发不出失败通知 → 不排除，回落发 cert_expire
+        // （双腿同断防静默过期）。双时点 race：Builder 于 Job 异步执行时各查一次模板启用态，管理员在
+        // 派发与执行间重新启用模板会使该封落空（自愈型、方向无害，下轮 auto_renew_failed 接手），不引入跨时点同步。
+        if (! $autoRenewFailedEnabled) {
+            return false;
+        }
+
         // API channel 订单由下游系统自行续费/重签，AutoRenewCommand 不处理（getRenewOrders/getReissueOrders 已 channel != api 过滤）
         if ($order->latestCert->channel === 'api') {
             return false;

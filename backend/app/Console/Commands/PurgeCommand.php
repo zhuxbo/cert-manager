@@ -16,6 +16,7 @@ use App\Models\UserLog;
 use App\Services\Order\Action;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
@@ -120,6 +121,9 @@ class PurgeCommand extends Command
         // 清理已签发订单的用户上传文档（保留验证报告表单）
         $this->purgeIssuedOrderDocuments();
 
+        // 清理 storage/temp-certs 下超过 1 小时的残留（下载中断/异常/exit 未清理的临时证书目录，含私钥）
+        $this->purgeStaleTempCerts();
+
         // 预同步：距退款期限2-4天的处理中订单，24小时内无同步则创建sync任务
         // 退款期限<5天的产品跳过由人工控制
         // 同时避免 refund_period UNSIGNED 减法溢出
@@ -197,6 +201,43 @@ class PurgeCommand extends Command
         } else {
             $this->info('No orders to cancel near refund deadline');
         }
+    }
+
+    /**
+     * 清理 storage/temp-certs 下超过 1 小时的残留目录/文件（含证书私钥、pfx、password.txt）。
+     *
+     * 泄漏来源：下载建包相位异常（downFlow 未调用）、readfile 中途客户端断连致脚本中止（exit/中止
+     * 都跑不到 downFlow 内的清理与 finally）。这是唯一能覆盖 exit/中止残留的兜底。
+     * 阈值 1h ≫ 下载时长，进行中下载（mtime≈now）永不命中；仅扫直接子项、跳符号链接
+     * （路径名为 random、无用户输入，无遍历面）。
+     */
+    private function purgeStaleTempCerts(): void
+    {
+        $base = storage_path('temp-certs');
+        if (! is_dir($base)) {
+            return;
+        }
+
+        $cutoff = time() - 3600;
+        $cleared = 0;
+
+        foreach (scandir($base) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = "$base/$entry";
+            if (is_link($path)) {
+                continue; // 不跟随符号链接
+            }
+            $mtime = @filemtime($path);
+            if ($mtime === false || $mtime > $cutoff) {
+                continue;
+            }
+            is_dir($path) ? File::deleteDirectory($path) : File::delete($path);
+            $cleared++;
+        }
+
+        $this->info("Purged $cleared stale temp-cert entries");
     }
 
     /**

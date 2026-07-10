@@ -47,23 +47,31 @@ trait ActionFileTrait
 
         mkdir($tempDir, 0755, true);
 
-        $zip = new ZipArchive;
-        $suffix = $type == 'all' ? '' : '_'.$type;
-        $filename = count($orders) == 1
-            ? str_replace('*', 'STAR', $orders[0]->latestCert->common_name).$suffix.'.zip'
-            : 'certs-'.count($orders).'-'.$random.$suffix.'.zip';
+        // 建包相位 try/finally：mkdir 之后若 addCertToZip 抛异常（如 SM2 openssl 缺失 / PFX 生成失败），
+        // downFlow 不会被调用、其内部 exit 前的 deleteDirectory 也跑不到，含私钥的 tempDir 会泄漏。
+        // finally 删除残留 tempDir。正常路径 downFlow 内已删 + exit（exit 不执行 finally）；
+        // readfile 中途客户端断连致脚本中止的泄漏由 PurgeCommand mtime>1h 扫兜住（exit/中止均不跑 finally）。
+        try {
+            $zip = new ZipArchive;
+            $suffix = $type == 'all' ? '' : '_'.$type;
+            $filename = count($orders) == 1
+                ? str_replace('*', 'STAR', $orders[0]->latestCert->common_name).$suffix.'.zip'
+                : 'certs-'.count($orders).'-'.$random.$suffix.'.zip';
 
-        $zip->open($tempDir.'/'.$filename, ZipArchive::CREATE);
+            $zip->open($tempDir.'/'.$filename, ZipArchive::CREATE);
 
-        $commonNames = [];
-        foreach ($orders as $order) {
-            $this->addCertToZip($order, $zip, $tempDir, $commonNames, $type);
-            $commonNames[] = $order->latestCert->common_name;
+            $commonNames = [];
+            foreach ($orders as $order) {
+                $this->addCertToZip($order, $zip, $tempDir, $commonNames, $type);
+                $commonNames[] = $order->latestCert->common_name;
+            }
+
+            $zip->close();
+
+            $this->downFlow($tempDir.'/'.$filename, $tempDir);
+        } finally {
+            File::deleteDirectory($tempDir);
         }
-
-        $zip->close();
-
-        $this->downFlow($tempDir.'/'.$filename, $tempDir);
     }
 
     /**
@@ -85,13 +93,18 @@ trait ActionFileTrait
         $tempDir = storage_path('temp-certs/'.$random);
         mkdir($tempDir, 0755, true);
 
-        $zip = new ZipArchive;
-        $filename = '订单'.$orderId.'-请放到网站根目录解压.zip';
-        $zip->open($tempDir.'/'.$filename, ZipArchive::CREATE);
-        $zip->addFromString('.well-known/pki-validation/'.($file['name'] ?? 'error.txt'), $file['content'] ?? '');
-        $zip->close();
+        // 建包相位 try/finally（同 download）：异常时清理残留 tempDir，正常路径 downFlow 内已删 + exit
+        try {
+            $zip = new ZipArchive;
+            $filename = '订单'.$orderId.'-请放到网站根目录解压.zip';
+            $zip->open($tempDir.'/'.$filename, ZipArchive::CREATE);
+            $zip->addFromString('.well-known/pki-validation/'.($file['name'] ?? 'error.txt'), $file['content'] ?? '');
+            $zip->close();
 
-        $this->downFlow($tempDir.'/'.$filename, $tempDir);
+            $this->downFlow($tempDir.'/'.$filename, $tempDir);
+        } finally {
+            File::deleteDirectory($tempDir);
+        }
     }
 
     /**

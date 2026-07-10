@@ -9,6 +9,7 @@ use App\Http\Requests\Product\ImportCaProductRequest;
 use App\Http\Requests\Product\UpdateRequest;
 use App\Models\Callback;
 use App\Models\Cert;
+use App\Models\DomainValidationRecord;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\Task;
@@ -312,6 +313,13 @@ class Action
             $cert = Cert::create($latestCert);
             $order->latest_cert_id = $cert->id;
             $order->save();
+
+            // 删除旧的域名验证记录：reissue 复用同一 order_id，旧记录 created_at 为原签发时间，
+            // 会让 ValidateCommand 的验证节奏（以 created_at 为锚）直接落 12 小时档。删除后
+            // ValidateCommand 在新 cert 进 processing 时重建 created_at=now 的记录，恢复快档。
+            // 落服务层单点覆盖 HTTP/API/Deploy/auto-reissue 全入口，与 OrderController::revalidate/updateDCV
+            // 的重置语义对称；事务内删除，reissue 失败 rollback 一并回滚，无孤儿。
+            DomainValidationRecord::where('order_id', $order->id)->delete();
 
             DB::commit();
         } catch (Throwable $e) {

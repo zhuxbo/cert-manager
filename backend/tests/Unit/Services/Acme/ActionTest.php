@@ -762,6 +762,38 @@ test('sync 成功同步状态', function () {
     expect($acme->vendor_id)->toBe('v-new');
 });
 
+test('B1-M1：本地 expired（ExpireCommand set-expired 后）sync 遇上游 active 不复活，但 period_till 仍被上游覆盖', function () {
+    // 固化「expired 但 period_till 未来」滞留态：sync 终态守卫已含 STATUS_EXPIRED，只挡 status，
+    // period_till 为非状态字段仍按上游覆盖（既有性质，B1 仅让 set-expired 可达，不扩展守卫）。
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    $acme = Acme::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-m1-test',
+        'status' => Acme::STATUS_EXPIRED,  // ExpireCommand set-expired 后本地终态
+        'period_till' => now()->subDay(),  // 本地记录已过期
+    ]);
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => ['status' => 'active', 'period_till' => now()->addYear()->toDateTimeString()],
+        ]),
+    ]);
+
+    expectApiSuccess(fn () => $this->service->sync($acme->id));
+
+    $acme->refresh();
+    // 终态守卫：本地 expired 不被上游滞后 active 复活
+    expect($acme->status)->toBe(Acme::STATUS_EXPIRED);
+    // period_till 非状态字段仍被上游覆盖，形成"expired 但 period_till 未来"的已知滞留态
+    expect($acme->period_till->isFuture())->toBeTrue();
+    expect($acme->period_till->gt(now()->addMonths(6)))->toBeTrue();
+});
+
 test('sync 10秒内缓存不重复请求', function () {
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);

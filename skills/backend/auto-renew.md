@@ -24,7 +24,7 @@
 
 ## 失败通知 + 到期去重
 
-- （`auto_renew_failed` 模板，仅 seeder、db:seed 幂等可达）：续费/重签失败（含 IP、无委托等跳过类）按到期节点（14/7/3/1 天）发邮件给订单用户。**失败文案归一**：仅「余额不足」「委托无效」两类用户可行动失败给专属清晰文案，IP/上游系统类错误统一走兜底常量 `FALLBACK_REASON`「自动续签未成功，请尽快手动续期」（原始异常仅进 cron 日志、不泄露给用户）；邮件用证书 `common_name` 标识（非 order_id），处理方式按失败类型逐条列出 + 联系客服兜底 + 「登录控制台」按钮（`site_url` 由专用 `AutoRenewFailedNotificationBuilder` 从系统设置注入，**不进模板 variables、Admin 测试发送无需手填**）；**余额检查仅 renew**（reissue 不扣费、不检查余额）；**兜底必发**——任何失败都发通知以堵 `ExpireCommand` 排除自动续签订单后的静默过期洞。`ExpireCommand` 反向排除「会被自动续签/重签处理」的订单（`cert.channel≠api 且 willAutoRenew‖willAutoReissue`）避免同节点重复发到期通知；节点常量与 `isExpireNotifyNode` 由 `Console\Commands\Concerns\ExpireNotifyWindow` trait 两命令共用。修复点：`willAutoReissueExecute` 改判 `product.reissue`（重签不限产品状态），与 `getReissueOrders` 对齐
+- （`auto_renew_failed` 模板，仅 seeder、db:seed 幂等可达）：续费/重签失败（含 IP、无委托等跳过类）按到期节点（14/7/3/1 天）发邮件给订单用户。**失败文案归一**：仅「余额不足」「委托无效」两类用户可行动失败给专属清晰文案，IP/上游系统类错误统一走兜底常量 `FALLBACK_REASON`「自动续签未成功，请尽快手动续期」（原始异常仅进 cron 日志、不泄露给用户）；邮件用证书 `common_name` 标识（非 order_id），处理方式按失败类型逐条列出 + 联系客服兜底 + 「登录控制台」按钮（`site_url` 由专用 `AutoRenewFailedNotificationBuilder` 从系统设置注入，**不进模板 variables、Admin 测试发送无需手填**）；**余额检查仅 renew**（reissue 不扣费、不检查余额）；**兜底必发**——任何失败都发通知以堵 `ExpireCommand` 排除自动续签订单后的静默过期洞。`ExpireCommand` 反向排除「会被自动续签/重签处理」的订单（`cert.channel≠api 且 willAutoRenew‖willAutoReissue`）避免同节点重复发到期通知；节点常量与 `isExpireNotifyNode` 由 `Console\Commands\Concerns\ExpireNotifyWindow` trait 两命令共用；`CertExpireNotificationBuilder`/`AcmeExpireNotificationBuilder` 重查窗口上界亦 `use` 该 trait 由 `max(EXPIRE_NOTIFY_NODES)` 派生（非硬编码 14，对齐 `StalledRenewalQuery::forUser`），与派发侧节点同源防漂移（漂移后果：节点扩含 >14 天时派发侧发了 intent、Builder 重查为空 → 整封静默漏发）。修复点：`willAutoReissueExecute` 改判 `product.reissue`（重签不限产品状态），与 `getReissueOrders` 对齐
 
 ## 手工标记已续费
 

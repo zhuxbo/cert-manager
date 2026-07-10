@@ -2,6 +2,7 @@
 
 use App\Models\Admin;
 use App\Models\User;
+use App\Services\Notification\Builders\AcmeExpireNotificationBuilder;
 use App\Services\Notification\Builders\AutoRenewFailedNotificationBuilder;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
@@ -37,6 +38,8 @@ return [
         'auto_renew_failed' => AutoRenewFailedNotificationBuilder::class,
         'cert_issued' => CertIssuedNotificationBuilder::class,
         'cert_expire' => CertExpireNotificationBuilder::class,
+        // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）
+        'acme_expire' => AcmeExpireNotificationBuilder::class,
         'task_failed' => TaskFailedNotificationBuilder::class,
         'finance_audit' => FinanceAuditNotificationBuilder::class,
         // 账号安全变更（改密/重置）：专用 Builder 白名单 username/event/email 入库，
@@ -63,6 +66,7 @@ return [
     'user_default_preferences' => [
         'cert_issued' => true,
         'cert_expire' => true,
+        'acme_expire' => true,
         'security' => true,
     ],
 ];

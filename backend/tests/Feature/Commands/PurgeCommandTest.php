@@ -200,6 +200,44 @@ test('未注入 config 时使用默认 180 天兜底（user_logs）', function (
     expect(UserLog::where('url', 'https://test.local/u-new')->exists())->toBeTrue();
 });
 
+// --- B5: temp-certs 残留清理（私钥泄漏兜底）---
+
+test('purge 清理 temp-certs 下超过 1 小时的残留目录（含私钥）', function () {
+    $base = storage_path('temp-certs');
+    is_dir($base) || mkdir($base, 0755, true);
+
+    // 唯一命名 fixture，只断言自建项生命周期（避免 paratest 跨 worker 误判，反模式 14）
+    $oldDir = "$base/b5old".uniqid();
+    mkdir($oldDir, 0755, true);
+    file_put_contents("$oldDir/private.key", 'SECRET PRIVATE KEY');
+    // mtime 设为 2 小时前（须在写入内容之后，写文件会刷新目录 mtime）
+    touch($oldDir, time() - 7200);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    // 超 1h 的残留目录被删（含私钥）
+    expect(is_dir($oldDir))->toBeFalse();
+});
+
+test('purge 不误删 temp-certs 下 1 小时内的进行中下载目录', function () {
+    $base = storage_path('temp-certs');
+    is_dir($base) || mkdir($base, 0755, true);
+
+    $freshDir = "$base/b5fresh".uniqid();
+    mkdir($freshDir, 0755, true);
+    file_put_contents("$freshDir/inflight.zip", 'downloading');
+    // mtime = now（进行中下载），阈值 1h ≫ 下载时长，永不命中 mtime>1h
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    // 进行中目录不被误删
+    expect(is_dir($freshDir))->toBeTrue();
+
+    // 清理自建 fixture
+    unlink("$freshDir/inflight.zip");
+    rmdir($freshDir);
+});
+
 // --- 自动取消：action 过滤测试 ---
 
 test('PurgeCommand 不取消 reissue 处理中订单', function () {

@@ -26,6 +26,15 @@ class NotificationTemplateSeeder extends Seeder
                 'variables' => ['user_id', 'email'],
                 'example' => null,
             ],
+            // ACME 订阅到期提醒（订阅到期 ≠ 证书到期：到期后 certbot 无法继续自动签发/续签）
+            [
+                'code' => 'acme_expire',
+                'name' => 'ACME 订阅到期提醒',
+                'content' => $this->getAcmeExpireHtml(),
+                // site_url 不列入：由 AcmeExpireNotificationBuilder 从系统设置注入，测试发送无需手填
+                'variables' => ['username', 'email', 'subscriptions'],
+                'example' => null,
+            ],
             // 安全通知
             [
                 'code' => 'security',
@@ -389,6 +398,157 @@ HTML;
                                         <td align="center">
                                             <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
                                                 立即续期
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="background-color: #fafafa; padding: 20px 40px; text-align: center; border-top: 1px solid #eeeeee;">
+                                <p class="footer-text" style="margin: 0; font-size: 13px; line-height: 20px; color: #999999; font-family: sans-serif;">
+                                    感谢您选择 <a href="{{ $site_url }}" style="color: #999999; text-decoration: underline;">{{ $site_name }}</a>
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    </td>
+            </tr>
+        </table>
+    </center>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * @noinspection CssRedundantUnit
+     * @noinspection HtmlDeprecatedTag
+     * @noinspection HtmlDeprecatedAttribute
+     * @noinspection HtmlUnknownTarget
+     * @noinspection XmlDeprecatedElement
+     * @noinspection CssReplaceWithShorthandSafely
+     */
+    private function getAcmeExpireHtml(): string
+    {
+        return <<<'HTML'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACME 订阅到期提醒</title>
+    <style>
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+        table { border-collapse: collapse !important; }
+        body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; background-color: #f4f6f8; }
+
+        @media screen and (max-width: 600px) {
+            .email-container { width: 100% !important; margin: auto !important; }
+            .mobile-padding { padding-left: 20px !important; padding-right: 20px !important; }
+            .wrapper-padding { padding-top: 30px !important; padding-bottom: 30px !important; }
+            .data-table th, .data-table td { font-size: 12px !important; padding: 10px 5px !important; }
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body, .outer-wrapper { background-color: #2d2d2d !important; }
+            .white-card { background-color: #1f1f1f !important; border: 1px solid #333333 !important; }
+            h1, h2, h3, p, span, div { color: #e1e1e1 !important; }
+            .footer-text { color: #888888 !important; }
+            .highlight-text { color: #f59e0b !important; }
+            .data-table th { background-color: #333333 !important; color: #cccccc !important; border-bottom: 1px solid #444 !important; }
+            .data-table td { border-bottom: 1px solid #333 !important; color: #e1e1e1 !important; }
+            .warning-box { background-color: #332b00 !important; border-left-color: #f59e0b !important; }
+            .warning-text { color: #fbbf24 !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f8;">
+
+    <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
+        您的 ACME 订阅即将到期，到期后自动签发/续签将中断。
+    </div>
+
+    <center style="width: 100%; background-color: #f4f6f8;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="outer-wrapper" style="background-color: #f4f6f8;">
+            <tr>
+                <td align="center" class="wrapper-padding" style="padding-top: 50px; padding-bottom: 50px; padding-left: 10px; padding-right: 10px;">
+
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="white-card" style="max-width: 600px; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: left;">
+
+                        <tr>
+                            <td style="background-color: #f59e0b; height: 4px; font-size: 0; line-height: 0;">&nbsp;</td>
+                        </tr>
+
+                        <tr>
+                            <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+
+                                <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
+                                    ⚠️ ACME 订阅到期提醒
+                                </h1>
+
+                                <p style="margin: 0 0 15px 0; font-size: 16px; line-height: 26px; color: #555555;">
+                                    尊敬的 <span class="highlight-text" style="color: #f59e0b; font-weight: 600;">{{ $username }}</span>，您好：
+                                </p>
+
+                                <p style="margin: 0 0 25px 0; font-size: 15px; line-height: 26px; color: #555555;">
+                                    您的下列 ACME 订阅即将到期。<strong>订阅到期后，ACME 客户端（如 certbot）将无法继续自动签发/续签证书</strong>；已签发的证书会在其各自有效期到期后失效。请及时续订 ACME 订阅，避免自动化链路中断。
+                                </p>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="data-table" style="margin-bottom: 24px; border-collapse: collapse; width: 100%;">
+                                    <thead>
+                                        <tr style="background-color: #fffbeb;">
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">序号</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">产品</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">订阅标识</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">到期时间</th>
+                                            <th align="center" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">剩余</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach($subscriptions as $index => $sub)
+                                        <tr>
+                                            <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #666666;">
+                                                {{ $index + 1 }}
+                                            </td>
+                                            <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; font-weight: 600; color: #333333;">
+                                                {{ $sub['product_name'] }}
+                                            </td>
+                                            <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #666666; font-family: monospace;">
+                                                {{ $sub['eab_kid'] }}
+                                            </td>
+                                            <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #666666;">
+                                                {{ $sub['expire_at'] }}
+                                            </td>
+                                            <td align="center" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px;">
+                                                @if($sub['days_left'] <= 7)
+                                                    <span style="background-color: #fee2e2; color: #dc2626; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 12px;">{{ $sub['days_left'] }}天</span>
+                                                @else
+                                                    <span style="background-color: #fffbeb; color: #d97706; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 12px;">{{ $sub['days_left'] }}天</span>
+                                                @endif
+                                            </td>
+                                        </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+
+                                <div class="warning-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 30px;">
+                                    <p class="warning-text" style="margin: 0; font-size: 14px; line-height: 22px; color: #92400e;">
+                                        <strong>重要提示：</strong><br>
+                                        订阅到期后 ACME 客户端续签将被 CA 拒绝，证书无人续期，最终随有效期到期失效，导致站点“不安全”告警。
+                                    </p>
+                                </div>
+
+                                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                    <tr>
+                                        <td align="center">
+                                            <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
+                                                续订订阅
                                             </a>
                                         </td>
                                     </tr>
