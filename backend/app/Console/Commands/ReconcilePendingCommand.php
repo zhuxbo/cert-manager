@@ -47,6 +47,10 @@ class ReconcilePendingCommand extends Command
         // (a) 主可动作扫描：现状 whereHas(pending+null api_id+cutoff) + whereNotExists(executing commit)
         // 叠加 PendingReconcileQuery::actionable（JOIN certs 锚点 + 排除到顶/产品缺失），到顶/产品缺失单
         // 不再占 limit 名额（否则批量产品下线/持续失败会挤满窗口、饿死真正可动作的卡单——队头阻塞）。
+        //
+        // 【受保护不变式：本主扫描不得加 channel 过滤】——O4 sweep-orphan-orders 限定 channel=auto 接手，
+        // Deploy/api 渠道的 pending 孤儿全靠本主扫描（无 channel 过滤）接住瞬态自愈；加了 channel 过滤 =
+        // Deploy/api 安全网静默消失（O 计划受保护不变式，ReconcilePendingCommandTest 有护栏用例守此）。
         $orders = PendingReconcileQuery::actionable(
             Order::with('latestCert') // 仅 latestCert（C4 退避锚点）；user 通知已迁 (b) 转人工扫描，本 (a) 扫描不消费 user
                 ->whereHas('latestCert', function ($query) use ($cutoff) {

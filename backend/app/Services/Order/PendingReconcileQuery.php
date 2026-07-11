@@ -76,6 +76,24 @@ final class PendingReconcileQuery
     }
 
     /**
+     * O4 sweep-orphan-orders 收尾叠加：到顶 AND 无产品缺失（供 sweep-orphan-orders 自动 cancelPending 退款）。
+     *
+     * 与 actionable() / maxedOrProductMissing() 共用同一批 SQL 片段常量（MAXED_COUNT_SUBQUERY /
+     * PRODUCT_MISSING_EXISTS），三者同源无漂移。语义 = maxedOrProductMissing() ∩ 非产品缺失
+     * = (到顶 OR 缺失) ∩ 非缺失 = 到顶 ∩ 非缺失：reconcile 已停止 re-queue（到顶）且非 T8 产品缺失单
+     * （那类留 admin 判断重购/取消，O4 不接手）。sweep-orphan-orders 必经本方法消费，禁止手抄 SQL/字面量。
+     *
+     * @param  Builder<Order>  $query  调用方须已 whereHas('latestCert', pending+null api_id+channel ...)
+     * @return Builder<Order>
+     */
+    public static function maxedAndNotProductMissing(Builder $query, int $maxAttempts): Builder
+    {
+        return self::withCertAnchor($query)
+            ->whereRaw(self::MAXED_COUNT_SUBQUERY.' >= ?', ['commit', 'failed', $maxAttempts])
+            ->whereRaw('NOT '.self::PRODUCT_MISSING_EXISTS, ['commit', 'failed', self::likePattern()]);
+    }
+
+    /**
      * PHP 侧产品缺失精判（转人工循环分文案用）。
      *
      * 口径统一：SQL LIKE 在 utf8mb4_*_ci collation 下大小写不敏感，故此处 PHP 侧也用大小写不敏感匹配

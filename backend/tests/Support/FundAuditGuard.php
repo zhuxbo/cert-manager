@@ -7,6 +7,8 @@ if (! function_exists('fundAuditGuardedTestPaths')) {
     function fundAuditGuardedTestPaths(): array
     {
         return [
+            'Feature/Commands/AutoRenewAtomicityTest.php',
+            'Feature/Commands/SweepOrphanOrdersCommandTest.php',
             'Feature/Database/FundTransactionUniqueIndexesTest.php',
             'Feature/FundAudit/FundInvariantsTest.php',
             'Feature/Http/Controllers/Admin/FundControllerTest.php',
@@ -14,6 +16,7 @@ if (! function_exists('fundAuditGuardedTestPaths')) {
             'Feature/Http/Controllers/Admin/TransactionControllerTest.php',
             'Feature/Http/Controllers/User/FundControllerTest.php',
             'Feature/Http/Controllers/User/OrderControllerTest.php',
+            'Feature/Http/Controllers/Deploy/UpdateAtomicityTest.php',
             'Feature/Http/Controllers/User/TopUpControllerTest.php',
             'Feature/Http/Controllers/V2/ApiControllerFundFlowTest.php',
             'Feature/Models/FundCasTest.php',

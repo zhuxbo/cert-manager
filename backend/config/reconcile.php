@@ -53,4 +53,25 @@ return [
     'acme_max_attempts' => (int) env('RECONCILE_ACME_MAX_ATTEMPTS', 3),
 
     'acme_retry_delay_minutes' => (int) env('RECONCILE_ACME_RETRY_DELAY_MINUTES', 10),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Orphan order sweeper (O4 — schedule:sweep-orphan-orders)
+    |--------------------------------------------------------------------------
+    |
+    | 清理 channel=auto 卡死的孤儿续费/重签单：
+    |  - unpaid（stale > unpaid_stale_minutes）→ Action::delete（恢复旧证书、无退款、无流水）
+    |  - pending（reconcile 已到顶转人工、非产品缺失）→ Action::cancelPending（退款 + 恢复旧证书）
+    |
+    | 分级金丝雀（资金重手术）：unpaid 分支默认开（P0 修复即刻生效、无资金面）；pending 退款分支
+    | 语义反转为 arm-switch 默认关，首轮生产观察 T5 每日快照确认到顶集正确后手动置 true 开启。
+    | pending 到顶判据复用顶层 max_attempts（与 reconcile/T5 同源，绝不另设）。
+    |
+    */
+    'orphan' => [
+        'unpaid_enabled' => (bool) env('RECONCILE_ORPHAN_UNPAID_ENABLED', true),
+        'pending_enabled' => (bool) env('RECONCILE_ORPHAN_PENDING_ENABLED', false),
+        'unpaid_stale_minutes' => (int) env('RECONCILE_ORPHAN_UNPAID_STALE_MINUTES', 60),
+        'batch' => (int) env('RECONCILE_ORPHAN_BATCH', 50),
+    ],
 ];

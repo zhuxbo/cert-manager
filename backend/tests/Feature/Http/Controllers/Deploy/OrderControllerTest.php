@@ -1019,13 +1019,17 @@ test('update active 续费通过 period 验证', function () {
     ]);
 
     // 控制器已继承原订单 period，不会因 period 缺失报错
-    // 后续会因 gateway 不可用而失败，但不应是参数验证错误
     $response = deployPost($token, '/api/deploy/', [
         'order_id' => $order->id,
     ]);
 
+    // 【O3 行为迁移认领】此前 pay(autoCommit=true) 的 commit 打不可达 gateway 失败 → 响应 code=0 错误；
+    // O3 后 renew+pay(false) 原子落 pending、commit 移出被 getData 吞 → 响应 code=1 + status=pending
+    // （对齐 V2 一条龙自愈哲学：卡单停 pending 靠 reconcile 自愈，非报错）。弱断言（无「有效期」参数错误）保留。
     $msg = $response->json('msg') ?? '';
     expect($msg)->not->toContain('有效期');
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.status'))->toBe('pending');
 });
 
 // ========================================

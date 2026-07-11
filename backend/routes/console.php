@@ -128,6 +128,16 @@ Schedule::command('schedule:reconcile-acme')
     ->description('对账并重发卡在 pending 且无 api_id 的 ACME 订单 commit')
     ->onFailure($logScheduleFailure('schedule:reconcile-acme'));
 
+// O4 孤儿单清理 - 每小时（恢复类清理非紧急，freeze 期 skip、结束后追平；hourly 保证每 5min 的 T5
+// 转人工先于 pending 收尾接手，防两自动化拆台）。unpaid delete 默认开、pending 退款默认关（arm-switch）。
+Schedule::command('schedule:sweep-orphan-orders')
+    ->hourly()
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('sweep-orphan-orders')
+    ->description('清理 channel=auto 卡死的 unpaid（删除恢复）/ pending 到顶（退款）孤儿单')
+    ->onFailure($logScheduleFailure('schedule:sweep-orphan-orders'));
+
 // ============================================================
 // 健康监控命令群（包E：E1~E6）——freeze 期一律 skip（见计划 §0.3）
 // ============================================================

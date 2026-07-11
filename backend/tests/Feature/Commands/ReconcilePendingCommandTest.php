@@ -322,6 +322,18 @@ test('C2：user 键缺失的到顶单本轮补发 user（不被历史 admin 键�
     expect($latestFailed->fresh()->result['reconcile_user_alerted_at'] ?? null)->not->toBeNull();
 });
 
+// ==================== 受保护不变式（O4）：主扫描无 channel 过滤，接住 Deploy/api pending 孤儿 ====================
+
+test('受保护不变式：channel=deploy 的 pending 卡单进入主扫描窗口（主扫描不得加 channel 过滤）', function () {
+    // O4 sweep-orphan-orders 限定 channel=auto 接手；Deploy/api 渠道的 pending 孤儿全靠本主扫描（无 channel
+    // 过滤）接住瞬态自愈。护栏：若后人误给主扫描加 channel 过滤 → deploy 单不再建 commit task，本用例即红。
+    $order = makeReconcileOrder(['channel' => 'deploy']);
+
+    $this->artisan('schedule:reconcile-pending')->assertSuccessful();
+
+    expect(hasReconcileCommitTask($order->id))->toBeTrue();
+});
+
 // ==================== C3：executing 过滤下沉进 SQL，不占 limit 名额 ====================
 
 test('C3：有 executing commit task 的 pending 单不占 limit 名额', function () {

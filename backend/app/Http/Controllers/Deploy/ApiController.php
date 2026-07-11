@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Deploy;
 
 use App\Exceptions\ApiResponseException;
+use App\Exceptions\MutationBusyException;
 use App\Http\Controllers\Controller;
 use App\Models\Cert;
 use App\Models\ErrorLog;
@@ -10,6 +11,7 @@ use App\Models\Order;
 use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
+use App\Services\Order\Utils\OrderUtil;
 use App\Support\MutexLock;
 use App\Utils\LogScrubber;
 use Carbon\Carbon;
@@ -244,19 +246,34 @@ class ApiController extends Controller
                     $this->error('该订单未开启自动续费');
                 }
 
+                // O3-D：续费余额预检（fail-fast + 友好文案；孤儿主防线是下方 atomicity，非预检——预检通过后
+                // 并发耗尽余额由 charge 锁内二次校验兜住，事务回滚撤销 renew）。Deploy $order->user 懒加载现取
+                // 现读，单请求内 balance 新鲜，无需 refresh（区别于 AutoRenew O2）。口径与 AutoRenew 预检逐字一致。
+                $payer = $order->user;
+                $estimatedAmount = OrderUtil::getLatestCertAmount(
+                    ['user_id' => $payer->id, 'product_id' => $order->product_id, 'period' => $order->period,
+                        'purchased_standard_count' => 0, 'purchased_wildcard_count' => 0],
+                    ['standard_count' => $cert->standard_count, 'wildcard_count' => $cert->wildcard_count, 'action' => 'renew'],
+                    $order->product->toArray()
+                );
+                $availableBalance = bcadd((string) $payer->balance, (string) abs((float) $payer->credit_limit), 2);
+                bccomp($availableBalance, $estimatedAmount, 2) < 0 && $this->error('余额不足，请充值后再续费');
+
                 $updateParams['action'] = 'renew';
                 $updateParams['period'] = $order->period;
             } else {
                 $updateParams['action'] = 'reissue';
             }
 
-            // order 级互斥 + 订单行锁：把本地 renew/reissue（终态化旧证书 + 建新单，纯本地零上游）
-            // 串行，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
+            // order 级互斥 + 订单行锁：把本地 renew/reissue（终态化旧证书 + 建新单）+ pay(false)（扣费落 pending）
+            // 串行且原子，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
             // 关键设计约束：
             //  1) 与 Action::commit/cancel 共用 order_mutate_{id} 键（下划线格式），撞进行中
             //     commit/cancel 抢不到抛 MutationBusyException→503（与 V1/V2 同步入口语义一致）；
-            //  2) pay 必须留在互斥锁「外」——reissue 复用同一 orderId，pay→commit 自带同键互斥锁，
-            //     若在锁内则二次 ->get() 必失败自死锁；且 pay→commit 含上游 HTTP，锁内不做上游调用（红线）。
+            //  2) O3：pay(false) 进事务与 renew/reissue 原子（charge 纯本地扣费、无上游、无 mutex → 安全嵌套），
+            //     charge 失败即整体回滚，杜绝「旧证书终态 + 新单卡 unpaid」孤儿（P0-1 路径 2）；
+            //  3) commit 移到互斥锁「外」——reissue 复用同一 orderId，commit 自带同键互斥锁，
+            //     若在锁内则二次抢锁必失败自死锁；且 commit 含上游 HTTP，锁内不做上游调用（红线）。
             $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew) {
                 $resolved = $orderId;
 
@@ -283,13 +300,18 @@ class ApiController extends Controller
                         // 本地：旧证书翻 reissued + 建新 cert（无上游）
                         $this->getData($action, 'reissue', [$updateParams]);
                     }
+
+                    // O3-A：pay(false) 纯本地扣费落 pending，与 renew/reissue 同事务原子（charge 失败 → 整体回滚）
+                    $this->getData($action, 'pay', [$resolved, false]);
                 });
 
                 return $resolved;
             });
 
-            // pay 留在互斥锁外：autoCommit=true 不变（pay→commit 自带 order_mutate_ 锁，顺序获取不自死锁）
-            $this->getData($action, 'pay', [$orderId]);
+            // O3-B：commit 移出互斥锁（commit 自取 order_mutate_{resolved} 锁，此处 mutex 已释放、无自死锁）。
+            // 超时/失败/抢锁忙被 getData('commit') 吞 → 订单停 pending、已扣费保留；权威自愈 = ReconcilePendingCommand
+            // 主扫描（无 channel 过滤），下游 pull（query 跟 last_cert 链 + 以新 id update）仅为条件式加速。
+            $this->getData($action, 'commit', [$orderId]);
 
             $reQuery = true;
         }
@@ -543,8 +565,24 @@ class ApiController extends Controller
         } catch (ApiResponseException $e) {
             $result = $e->getApiResponse();
             if ($result['code'] === 0) {
+                // O3-C：commit 段超时/失败（SDK code=0）不冒泡——订单停 pending、已扣费保留，靠 reconcile 自愈，
+                // update 响应返回既有 status=pending 展示态（下游轮询容忍，见 deploy.yaml）。镜像 V2 getData。
+                // 其它段（renew/reissue/pay）保持原样：建单/扣费失败照常报错，触发本次请求失败。
+                if ($method === 'commit') {
+                    return [];
+                }
                 $this->error($result['msg'], $result['errors'] ?? null);
             }
+            // code===1（commit 成功由 success 抛出）落到末尾 return $result
+        } catch (MutationBusyException $e) {
+            // commit 段抢锁忙 = 成功态，不外抛 503（靠 reconcile/pull 自愈）；其它经 mutex 路径保持向上抛。
+            // 注（M-2 知情不对称）：unpaid resume 分支走 pay(autoCommit=true)，其 MutationBusyException 经此
+            // method='pay'≠'commit' 仍上抛 503——与 active 分支 commit 段吞不对称；既有行为、有意不改（O3 范围
+            // 仅 active 分支 + getData commit 段），下游重试即收敛。
+            if ($method === 'commit') {
+                return [];
+            }
+            throw $e;
         }
 
         return $result ?? [];

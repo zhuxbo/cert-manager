@@ -15,6 +15,7 @@ use App\Services\Order\Utils\DomainUtil;
 use App\Services\Order\Utils\OrderUtil;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class AutoRenewCommand extends Command
@@ -231,6 +232,11 @@ class AutoRenewCommand extends Command
             // healthy：价格已配置（含运营补价后首次通过）→ 清去重键，再次缺价立即告警
             app(SystemAlert::class)->clearDedupe($dedupeKey);
 
+            // O2：余额预检前刷新用户余额（消 00:00 预载 stale balance）。getRenewOrders 一次性 with('user')
+            // 预载，同 user_id 多订单共享同一 User 实例且 balance 停留在查询时刻值；前序单 charge 改的是
+            // DB 另取的 user 行，内存实例不更新 → 不 refresh 则后续同用户单读旧值必误放行（07-07 断言 1）。
+            $user->refresh();
+
             $availableBalance = bcadd($user->balance, (string) abs((float) $user->credit_limit), 2);
 
             $estimatedAmount = OrderUtil::getLatestCertAmount(
@@ -280,38 +286,56 @@ class AutoRenewCommand extends Command
         }
 
         $actionService = app(Action::class);
-        $targetOrderId = null;
 
-        // 1. 创建续费/重签
-        try {
-            if ($action === 'renew') {
-                $actionService->renew($params);
-            } else {
-                $actionService->reissue($params);
+        // O1：把「创建续费/重签 + 支付(不提交)」两步包进单个外层事务，保证原子性——pay 段 charge 失败时，
+        // renew 已翻转的旧证书（active→renewed）+ 新订单/证书一并回滚，杜绝「旧证书 renewed 终态 + 新单卡
+        // unpaid」的静默孤儿（P0-1 路径 1）。延时 commit 任务留事务外（= V2「commit 移出事务」等价）。
+        //
+        // 【attempts=1 是必需约束、非仅从简】renew()/reissue() 入口的 checkDuplicate 是 Cache::add(SETNX,
+        // 10s TTL) 且回滚不清缓存；若事务级重试（attempts>1），重入 renew()→checkDuplicate 命中自己首轮
+        // 残留键 → error('参数重复...') → 重试必自败。故必须用 DB::transaction 默认 attempts=1，勿改大。
+        // 死锁 → 回滚 → 下方 processOrders catch 兜底通知 → 次日自愈（与 V2 一条龙对齐）。
+        //
+        // 【闭包内零上游 HTTP】new()/reissue() 全本地 SQL、charge() 纯本地扣费；含上游的 commit() 由事务外
+        // createTask 的延时任务异步执行。CSR 生成（initParams 内本地 openssl fork，无上游）落在事务内但先于
+        // 任何行锁（首个写 Order::create 在其后），不违反「锁内不做慢操作」红线，AutoRenew 串行低并发可接受。
+        $targetOrderId = DB::transaction(function () use ($actionService, $action, $params) {
+            $newOrderId = null;
+
+            // 段1：创建续费/重签。success() 抛 ApiResponseException(带 data.order_id) 是成功信号——吞掉取 id；
+            // 业务失败（无 order_id）rethrow \Exception 逸出闭包 → 外层回滚（勿把成功路径当失败回滚，07-07 §四.1）。
+            try {
+                if ($action === 'renew') {
+                    $actionService->renew($params);
+                } else {
+                    $actionService->reissue($params);
+                }
+            } catch (ApiResponseException $e) {
+                $result = $e->getApiResponse();
+                if (! isset($result['data']['order_id'])) {
+                    throw new \Exception($result['msg'] ?? '操作失败');
+                }
+                $newOrderId = $result['data']['order_id'];
             }
-        } catch (ApiResponseException $e) {
-            $result = $e->getApiResponse();
-            if (! isset($result['data']['order_id'])) {
-                throw new \Exception($result['msg'] ?? '操作失败');
+
+            // 段2：支付（不自动提交，转 pending）。code!==1 rethrow 逸出闭包 → 外层回滚（renew + 扣费一起撤销）。
+            try {
+                $actionService->pay($newOrderId, false);
+            } catch (ApiResponseException $e) {
+                $result = $e->getApiResponse();
+                if (($result['code'] ?? 0) !== 1) {
+                    throw new \Exception('支付失败: '.($result['msg'] ?? '未知错误'));
+                }
             }
-            $targetOrderId = $result['data']['order_id'];
-        }
+
+            return $newOrderId;
+        });
 
         if ($targetOrderId != $order->id) {
             $this->info("订单 #{$order->id} 续费创建新订单 #{$targetOrderId}");
         }
 
-        // 2. 支付（不自动提交，转为 pending 状态）
-        try {
-            $actionService->pay($targetOrderId, false);
-        } catch (ApiResponseException $e) {
-            $result = $e->getApiResponse();
-            if (($result['code'] ?? 0) !== 1) {
-                throw new \Exception('支付失败: '.($result['msg'] ?? '未知错误'));
-            }
-        }
-
-        // 3. 创建延时提交任务（随机分布在0~8小时内，8点后人工可检查状态）
+        // 3. 创建延时提交任务（事务外；随机分布在0~8小时内，8点后人工可检查状态）
         $delay = random_int(0, 28800);
         $actionService->createTask($targetOrderId, 'commit', $delay);
 
