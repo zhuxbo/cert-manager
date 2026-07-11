@@ -294,7 +294,8 @@ trait OrderController
         }
         $token = $deployToken->token;
 
-        $siteUrl = rtrim(get_system_setting('site', 'url'), '/');
+        // site.url 未配置时返回 null：(string) 强转与下行 releaseDomain 对齐（消 null 弃用告警，防未来补 strict_types 时 rtrim(null) 引爆）
+        $siteUrl = rtrim((string) get_system_setting('site', 'url'), '/');
         $deployUrl = "$siteUrl/api/deploy";
         $releaseDomain = rtrim((string) get_system_setting('site', 'releaseDomain'), '/');
 

@@ -9,9 +9,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 /**
- * @property-read Cert $latestCert
+ * @property-read Cert|null $latestCert
  * @property-read Cert[] $certs
- * @property-read User $user
+ * @property-read User|null $user
  * @property-read Product $product
  * @property-read Notification $notifications
  * */

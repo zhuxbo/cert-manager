@@ -108,7 +108,8 @@ class Sdk
      */
     protected function call(string $uri, array $data = [], $method = 'post', ?int $timeout = null): array
     {
-        $apiUrl = rtrim(get_system_setting('ca', 'url'), '/');
+        // ca.url 未配置时 get_system_setting 返回 null；(string) 强转为 '' 走下方优雅兜底，避免 strict_types 下 rtrim(null) 抛 TypeError（对齐 Acme Sdk）
+        $apiUrl = rtrim((string) get_system_setting('ca', 'url'), '/');
         $apiToken = get_system_setting('ca', 'token');
 
         if (! $apiUrl || ! $apiToken) {
