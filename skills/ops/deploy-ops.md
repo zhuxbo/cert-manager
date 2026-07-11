@@ -90,7 +90,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
    ```
    include /www/wwwroot/ssl-manager/nginx/manager.conf;
    ```
-2. **队列守护进程**（宝塔 → 计划任务 → 守护进程，以 www 用户运行）：
+2. **队列守护进程**（宝塔 → 计划任务 → 守护进程，以 www 用户运行；**进程数=2**，避免单 worker 被长任务如备份/恢复 timeout=3600 阻塞证书自动化）：
    ```
    /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-time 3600
    ```
@@ -274,7 +274,7 @@ php artisan upgrade:rollback  # 回滚
 
 - 自动创建网站
 - 写 nginx 自定义配置
-- 添加 supervisor 守护进程（程序名为站点域名 `$SITE_DOMAIN`，保多站点唯一）
+- 添加 supervisor 守护进程（程序名为站点域名 `$SITE_DOMAIN`，保多站点唯一；`numprocs=2`，两处硬编码 `bt-install.sh` `bt_add_supervisor_process` 实参 + 手工提示对称。存量装机 `upgrade.sh` `${snumprocs:-1}` 保留现值，老装机可手工提 2）
 - 添加 cron（schedule:run）
 
 降级路径（用户拒绝 / 未提供 `BT_KEY`）：打印手工配置步骤，体验等同现状（用户面板手工配）。

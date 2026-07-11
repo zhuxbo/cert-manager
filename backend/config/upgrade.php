@@ -5,6 +5,12 @@
  */
 
 return [
+    // 升级进程「无心跳视为已死」的阈值（秒）——watchdog 与 UpgradeStatusManager::isStale 共用。
+    // SIGKILL/OOM 打断升级后，维护/冻结最长卡 stale_seconds + 1min watchdog 周期才被解除。
+    // PID 存活探测已根除慢单步（大库 migrate / 慢镜像 composer）误判，此阈值不再承担误判防线、
+    // 纯粹是「进程死后多快恢复」的旋钮，资源紧张环境可 env 下调。默认 3600s。
+    'stale_seconds' => (int) env('UPGRADE_STALE_SECONDS', 3600),
+
     // 备份配置
     'backup' => [
         // 备份存储目录（项目根目录 backups）

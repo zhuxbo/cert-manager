@@ -97,8 +97,9 @@ class RestoreBackupJob implements ShouldQueue
 
         try {
             // 1. 拍保险备份
+            // --internal-no-lock：本 Job 已持 backup:mutex，snapshot 重入不得再抢锁（否则自死锁 → 快照缺失 = 恢复无护栏）
             $this->progress($service, 'running', 'snapshot', '正在创建恢复前快照...');
-            $snapshotExit = Artisan::call('schedule:backup', ['--prefix' => 'pre_restore', '--keep' => 0]);
+            $snapshotExit = Artisan::call('schedule:backup', ['--prefix' => 'pre_restore', '--keep' => 0, '--internal-no-lock' => true]);
             if ($snapshotExit !== 0) {
                 throw new RuntimeException('恢复前快照失败: '.trim(Artisan::output()));
             }

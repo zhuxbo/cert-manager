@@ -6,6 +6,7 @@ use App\Exceptions\PhpEnvironmentException;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Composer\ComposerMirror;
+use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -166,6 +167,13 @@ class UpgradeService
             $oldComposerHashes = $this->getComposerHashes(base_path());
             Log::info('[Upgrade] Current composer hashes', $oldComposerHashes);
 
+            // 危险窗起点：切代码 + 迁移前 freeze —— 本仓已删 PreventRequestsDuringMaintenance，
+            // artisan down 不挡 HTTP（只暂停 worker/scheduler），freeze 才是唯一真正挡外部写请求
+            // （下单/支付回调/文档上传）的 HTTP 闸。写锁失败仅告警继续（不新增失败模式，保护缺失可接受）。
+            if (! UpgradeFreezeLock::freeze($currentVersion, $targetVersion, 7200)) {
+                Log::warning('[Upgrade] freeze 写锁失败，升级继续但危险窗未挡 HTTP 写');
+            }
+
             // 步骤 7: 应用升级
             $statusManager->startStep('apply');
             $this->packageExtractor->applyUpgrade($extractedPath);
@@ -244,6 +252,11 @@ class UpgradeService
                 $statusManager->completeStep('clear_cache');
             }
 
+            // 危险窗终点：解冻 —— 必须严格先于 artisan up（步骤 16）。
+            // up 会解除 down、唤醒被暂停的 worker 去 pop job；若此时 freeze 仍在，
+            // SkipWhenUpgradeFrozen 的 release(60) 会开始烧 job attempts。此处解冻天然满足序。
+            UpgradeFreezeLock::unfreeze();
+
             // 步骤 14: 更新版本号
             $statusManager->startStep('update_version');
             $this->updateEnvVersion($targetVersion);
@@ -287,13 +300,20 @@ class UpgradeService
                 'structure_check' => $structureCheckResult,
             ];
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // \Throwable 而非 \Exception：TypeError 等 \Error 中断也要就地解维护 + 解冻，
+            // 否则 web 侧 \Error 逃逸后维护模式 / 冻结永久无人解除。
+
+            // 失败路径同样遵守「unfreeze 先于 up」：freeze 在 apply 前无条件写入，
+            // 此处无条件解冻（幂等，与 maintenance_mode 无关），避免冻结滞留到 TTL。
+            UpgradeFreezeLock::unfreeze();
+
             // 如果在维护模式中，尝试退出
             if ($inMaintenanceMode) {
                 try {
                     Artisan::call('up');
                     Log::info('[Upgrade] 升级失败后已退出维护模式');
-                } catch (\Exception $upError) {
+                } catch (\Throwable $upError) {
                     Log::error("退出维护模式失败: {$upError->getMessage()}");
                 }
             }
@@ -354,6 +374,9 @@ class UpgradeService
                 opcache_reset();
             }
 
+            // 防御性解冻（rollback 自身不 freeze，此处清失败升级滞留的 freeze）——先于 up，语义同升级路径
+            UpgradeFreezeLock::unfreeze();
+
             // 退出维护模式
             Artisan::call('up');
 
@@ -365,11 +388,12 @@ class UpgradeService
                 'restored_version' => $backup['version'] ?? 'unknown',
             ];
 
-        } catch (\Exception $e) {
-            // 尝试退出维护模式
+        } catch (\Throwable $e) {
+            // 尝试退出维护模式（先解冻）
+            UpgradeFreezeLock::unfreeze();
             try {
                 Artisan::call('up');
-            } catch (\Exception $upError) {
+            } catch (\Throwable $upError) {
                 // 忽略
             }
 

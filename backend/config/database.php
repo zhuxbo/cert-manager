@@ -46,6 +46,14 @@ return [
             'password' => env('REDIS_PASSWORD'),
             'port' => env('REDIS_PORT', '6379'),
             'database' => env('REDIS_DB', '0'),
+            // 网络黑洞快速失败：连接超时 + 命令读超时。键名对 phpredis（本仓唯一 client，
+            // PhpRedisConnector 把 read_timeout 映射到 OPT_READ_TIMEOUT + connect 第 6 参）。
+            // 不加 read_write_timeout —— 那是 Predis 专属键、phpredis 会静默忽略（留着即误导）。
+            // 黑洞时 5s 抛 RedisException → MutexLock/Cache::lock fail-open 退 DB 锁串行
+            // （与 innodb_lock_wait_timeout=50 同哲学的三层递进）。block_for=null 时非阻塞轮询不受影响；
+            // 未来若设 block_for>0 或用 redis 阻塞 pop，read_timeout 必须 > block_for（或 -1）。
+            'timeout' => (float) env('REDIS_TIMEOUT', 5),
+            'read_timeout' => (float) env('REDIS_READ_TIMEOUT', 5),
         ],
 
         'cache' => [
@@ -55,6 +63,9 @@ return [
             'password' => env('REDIS_PASSWORD'),
             'port' => env('REDIS_PORT', '6379'),
             'database' => env('REDIS_CACHE_DB', '1'),
+            // 与 default 对称：连接超时 + 命令读超时（phpredis OPT_READ_TIMEOUT）。
+            'timeout' => (float) env('REDIS_TIMEOUT', 5),
+            'read_timeout' => (float) env('REDIS_READ_TIMEOUT', 5),
         ],
     ],
 

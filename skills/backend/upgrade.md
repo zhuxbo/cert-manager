@@ -9,8 +9,29 @@
 - **freeze 文件锁**：`storage/framework/upgrade.lock` 文件存在=已 freeze；与 cache driver 完全解耦（`cache:clear` 不会清掉它）
 - **HTTP**：`MaintenanceMode` 中间件返回 503 + Retry-After，白名单 `/api/health` / `/api/meta` / `/api/admin/upgrade/*` / admin 会话保活
 - **Queue**：`SkipWhenUpgradeFrozen` middleware 在 Job 执行业务前 `release(60)` 早退
-- **Schedule**：`routes/console.php` 所有 `Schedule::command(...)` 链 `->skip(fn () => UpgradeFreezeLock::isFrozen())`，freeze 期间不触发 Command
+- **Schedule**：`routes/console.php` 各 `Schedule::command(...)` 链 `->skip(fn () => UpgradeFreezeLock::isFrozen())`，freeze 期间不触发 Command。**唯一例外 `upgrade:watchdog`**：自愈命令**不挂** skip、且 `->evenInMaintenanceMode()`，冻结/down 期必须存活（否则自废武功）——`ScheduleFreezeSkipTest` 对它单独断言 filtersPass=true
 - **smoke test 失败处理**：不 unfreeze，回滚代码到旧版本，旧版 smoke 通过后再恢复服务；都失败保持 freeze + 报警
+
+#### freeze 接入生产升级路径（危险窗挡 HTTP 写）
+
+- **核心机理**：本仓已删 Laravel `PreventRequestsDuringMaintenance` 全局中间件，`artisan down` **对 HTTP 零拦截**（只暂停 worker/scheduler）；`freeze`（`MaintenanceMode` 中间件）才是唯一真正挡外部写请求（下单/支付回调/文档上传）的 HTTP 闸。
+- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 于 `apply` 前（危险窗起点），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
+- **顺序契约（两侧对称）**：`unfreeze` 必须**严格先于** `artisan up`——up 唤醒被 down 暂停的 worker 去 pop job，若 freeze 仍在则 `SkipWhenUpgradeFrozen` 的 `release(60)` 开始烧 job attempts。web/shell 均有行序保证 + 测试断言（`UpgradePerformUpgradeFreezeTest` 断 CommandStarting('up') 时 !isFrozen；`upgrade.sh` awk 行序）。
+- **rollback 两入口补 unfreeze**（`UpgradeService::rollback` + `upgrade.sh rollback()`）：防失败升级滞留 freeze，先于 up；rollback 自身不 freeze。
+- **失败/中断兜底**：`performUpgradeWithStatus` catch 扩到 `\Throwable`（`\Error`/TypeError 也就地 unfreeze + up），且 unfreeze 无条件（与 maintenance_mode 解耦）；SIGKILL/OOM 由 watchdog 兜底；shell 失败 up 不跑属 P0-2 残留（freeze-TTL 只解 503，worker/scheduler 停摆待人工 up）。
+- **发布说明须写明**：升级危险窗内非白名单 API 短暂 503（含支付回调，网关自带重试缓冲）——今天 down 期 HTTP 全通，这是可见行为变更。
+
+#### upgrade:watchdog（升级进程硬杀自愈）
+
+- **问题**：SIGKILL/OOM/`\Error` 打断升级 → `status.json` 卡 `running` + 维护/冻结无人解除 + `execute` 闸门永闭。
+- **stale 判定**（`UpgradeStatusManager`）：`isStale = status==='running' && isTimeStale && !isProcessAlive`。心跳 `updated_at`（`save()` 单入口注入 `now()`，Carbon 同源可测）+ `pid`（`start()` 写 `getmypid()`）。`isProcessAlive`：Linux 走 `/proc/{pid}`、回落 `posix_kill`。**PID 存活是「不动作」一票否决**——慢单步（大库 migrate/慢镜像 composer）超阈值但进程活着时绝不解维护（误 up 半迁移库 + 唤醒 worker pop 半迁移库比卡死更坏）。`isRunning() = running && !isStale`。
+- **watchdog**：`Schedule::command('upgrade:watchdog')->everyMinute()->evenInMaintenanceMode()`（不挂 freeze skip）。`running && stale`（超时且进程死）→ `fail` + `artisan up`（先解冻）+ `unfreeze` + 去重 `SystemAlert('upgrade', dedupeKey='upgrade_watchdog')`；`running && time-stale 但进程活` → 仅 `Log::warning`。恢复地板 = `upgrade.stale_seconds`（默认 3600s）+ 1min 周期；shell 卡死无 status.json、watchdog 不覆盖（P0-2 残留）。
+
+#### 定时备份互斥 + 失败告警（`schedule:backup`）
+
+- **非阻塞抢锁**：`BackupCommand` 抢 `Cache::lock(backup:mutex)` 非阻塞 `get()`——抢不到（Create/RestoreBackupJob 持锁 3600s 中）→ 去重 `SystemAlert('backup', 'backup_lock_contention')` + 返回 **SUCCESS**（跳过≠失败），避免与半恢复库并发 dump 出垃圾备份污染灾备。
+- **`--internal-no-lock` 重入旁路（对端契约）**：`CreateBackupJob`/`RestoreBackupJob` 已持 `backup:mutex`，重入命令时**必须**传 `--internal-no-lock`（`$owns=false`）绕过抢锁——**漏传则命令抢锁失败静默跳过、备份/`pre_restore` 快照缺失（恢复无护栏）**。两调用点 + 命令三处对称，Job 测试断调用参数含该 flag。
+- **失败告警（仅 `$owns`）**：client-missing → `backup_client_missing`；dump/schema 异常 → `backup_dump_error`；成功清三个去重键（恢复后下次异常立即再告警）。`--internal-no-lock` 路径不告警（父 Job 自管进度）。
 
 ### 关键服务
 

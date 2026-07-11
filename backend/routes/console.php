@@ -154,3 +154,15 @@ Schedule::command('schedule:stuck-orders')
     ->skip($skipWhenFrozen)
     ->name('stuck-orders')
     ->description('聚合 processing/approving 长期卡单告警（按 validation_type 分档）');
+
+// ============================================================
+// H1 升级看门狗（自愈命令）——与上方所有命令有意不对称：
+//   - evenInMaintenanceMode()：artisan down 期 scheduler 默认跳过事件，自愈命令必须绕过；
+//   - **不挂** ->skip($skipWhenFrozen)：升级冻结期恰是它要收拾残局的时刻，挂了就自废武功。
+// 每分钟探测 status.json：running 且超时且升级进程已死 → up + unfreeze + 告警（PID 活则不动作）。
+// ============================================================
+Schedule::command('upgrade:watchdog')
+    ->everyMinute()
+    ->evenInMaintenanceMode()
+    ->name('upgrade-watchdog')
+    ->description('升级进程死后自动解除维护/冻结（SIGKILL/OOM 自愈）');

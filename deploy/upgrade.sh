@@ -1404,6 +1404,12 @@ perform_upgrade() {
     log_step "进入维护模式..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan down --retry=60 || true
+    # freeze：down 只暂停 worker/scheduler、不挡 HTTP（本仓已删 PreventRequestsDuringMaintenance）；
+    # freeze 才是挡外部写请求（下单/支付回调/文档上传）的 HTTP-503 闸，锁文件 storage/framework/upgrade.lock。
+    # 覆盖有边界：锁随 storage 移动（见下方 mv / 恢复）——此刻到 storage 恢复的[切代码窗]内锁离开规范路径、
+    # isFrozen()=false，该窗由 storage 缺失致 app 无法 bootstrap（请求 500）兜底挡写；freeze 的 HTTP-503
+    # 实际自 storage 恢复起才有效，正好罩住其后的 migrate/seed 数据危险窗。
+    "$PHP_CMD" artisan upgrade:freeze --ttl=7200 || true
 
     # 6. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."
@@ -1413,6 +1419,8 @@ perform_upgrade() {
     # 保留 .env（不保留 version.json，升级需要更新版本号）
     [ -f "$INSTALL_DIR/backend/.env" ] && cp "$INSTALL_DIR/backend/.env" "$preserve_dir/"
     # 保留 storage（使用 mv 避免大目录复制失败导致数据丢失）
+    # 注意：freeze 锁文件（storage/framework/upgrade.lock）随此 mv 一并移走 → 至下方恢复前
+    # isFrozen()=false、HTTP-503 暂失效；此[切代码窗]靠 storage 缺失致 app 500 兜底挡写。
     if [ -d "$INSTALL_DIR/backend/storage" ]; then
         mv "$INSTALL_DIR/backend/storage" "$preserve_dir/"
     fi
@@ -1544,6 +1552,8 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     # 注意：不恢复 version.json，使用升级包中的新版本
 
     # 恢复 storage（已使用 mv 保留，直接移回）
+    # freeze 锁文件随 storage 移回 → isFrozen() 重新生效，HTTP-503 有效覆盖自此刻起至 unfreeze，
+    # 正好罩住其后的 migrate/seed 数据危险窗。
     if [ -d "$preserve_dir/storage" ]; then
         rm -rf "$INSTALL_DIR/backend/storage" 2>/dev/null || true
         mv "$preserve_dir/storage" "$INSTALL_DIR/backend/"
@@ -1777,6 +1787,11 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         log_warning "部分校验未通过，请检查"
     fi
 
+    # unfreeze 必须严格先于 artisan up：up 唤醒被暂停的 worker 去 pop job，
+    # 若 freeze 仍在则 SkipWhenUpgradeFrozen 的 release(60) 会开始烧 job attempts。
+    # 「smoke」= 上方本地完整性校验（非需 admin 鉴权 + FPM 在线的 HTTP /upgrade/smoke）。
+    "$PHP_CMD" artisan upgrade:unfreeze || true
+
     # 14. 退出维护模式
     log_step "退出维护模式..."
     cd "$INSTALL_DIR/backend"
@@ -1789,6 +1804,8 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     else
         log_warning "queue:restart 失败（如未启用队列可忽略）"
     fi
+    # 非阻断：仅兜 supervisor 进程级崩溃（罕见）；supervisorctl 缺失即整体假、仅提示不阻断
+    supervisorctl status 2>/dev/null | grep -qi running || log_warning "queue worker 可能未运行，请到宝塔面板检查 Supervisor"
 
     # 15. 扫描 cron / supervisor 的 PHP 绝对路径（PHP 版本切换后保护性检查 + 自动修复 install.sh 自管项）
     update_jobs_php_path
@@ -1933,8 +1950,9 @@ rollback() {
         unzip -qo "$latest_backup/frontend.zip" -d "$INSTALL_DIR/frontend/"
     fi
 
-    # 退出维护模式
+    # 退出维护模式（先解冻：清失败升级滞留的 freeze，rollback 自身不 freeze，与升级路径同序）
     cd "$INSTALL_DIR/backend"
+    "$PHP_CMD" artisan upgrade:unfreeze || true
     "$PHP_CMD" artisan up
 
     log_success "回滚完成"

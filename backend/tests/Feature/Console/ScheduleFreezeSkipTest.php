@@ -34,6 +34,16 @@ test('upgrade freeze 期间所有 Schedule event 都被跳过', function () {
 
     foreach ($events as $event) {
         $description = $event->description ?? $event->command ?? 'unknown';
+
+        // upgrade:watchdog 是自愈命令，有意不挂 skip($skipWhenFrozen)：freeze 期必须存活
+        // （见 UpgradeWatchdogCommandTest / console.php 注释）；冻结期它仍 filtersPass=true。
+        if (str_contains((string) ($event->command ?? ''), 'upgrade:watchdog')) {
+            expect($event->filtersPass($this->app))
+                ->toBeTrue("upgrade:watchdog 必须在 freeze 期存活: $description");
+
+            continue;
+        }
+
         expect($event->filtersPass($this->app))
             ->toBeFalse("event 应在 freeze 期间被 skip，但 filtersPass 返回 true: $description");
     }

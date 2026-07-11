@@ -24,6 +24,7 @@ withMutex(string $key, Closure $cb, int $ttl = 60): mixed
 - **redis / database / array / memcached**：均支持 `Cache::lock`。
 - **多机部署注意**：file lock 基于本地文件系统、**不跨机**；多 app 服务器共享负载时，跨机并发同一订单各自抢到本地锁 → 退回 DB 锁串行（点 1 超时兜底，不 1205、不资金错乱，但失去"立即失败"优化）。多机要跨机互斥又不上 Redis，用 `database` driver（走 cache 表、跨机有效）。
 - **任何不支持 lock 的 driver / Cache 故障** → fail-open 放行退回点 1 兜底，不阻塞业务。
+- **redis 黑洞不能"挂"**：`config/database.php` redis `default`+`cache` 两块均设 `timeout`+`read_timeout`（默认 5s，`REDIS_TIMEOUT`/`REDIS_READ_TIMEOUT` 可调）。键名对 phpredis（`read_timeout`→`OPT_READ_TIMEOUT`，**不是** Predis 的 `read_write_timeout`——写错会被静默忽略、fail-open 永不触发）。无此配置时 redis 网络黑洞会让读阻塞至 OS TCP 超时（分钟级），`RedisException` 永不抛 → fail-open 死等。连接级断言见 `RedisTimeoutConfigTest`（断 `OPT_READ_TIMEOUT===5.0`，禁 config-only 假绿）。
 
 测试 `MutexLockTest` 同时覆盖 array（测试默认）+ file（生产默认）两 driver 实证真互斥。
 

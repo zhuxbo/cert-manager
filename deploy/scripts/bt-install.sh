@@ -1141,7 +1141,7 @@ show_manual_supervisor_hint() {
     echo " 运行用户: www"
     echo " 目录: $INSTALL_DIR/backend/"
     echo " 启动命令: $PHP_CMD $INSTALL_DIR/backend/artisan queue:work --queue tasks,notifications --tries 3 --delay 5 --max-jobs 1000 --max-time 3600 --memory 128 --timeout 60 --sleep 3"
-    echo " 进程数: 1"
+    echo " 进程数: 2"
     echo
 }
 
@@ -1232,7 +1232,7 @@ try_bt_automation() {
                 "www" \
                 "$INSTALL_DIR/backend/" \
                 "$PHP_CMD $INSTALL_DIR/backend/artisan queue:work --queue tasks,notifications --tries 3 --delay 5 --max-jobs 1000 --max-time 3600 --memory 128 --timeout 60 --sleep 3" \
-                1 \
+                2 \
                 "$SITE_DOMAIN"; then
                 supervisor_ok=true
             else

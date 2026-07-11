@@ -4,8 +4,10 @@ use App\Services\Backup\BackupHandlerInterface;
 use App\Services\Backup\BackupService;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
+use App\Services\Notification\SystemAlert;
 use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * 构造一个 backup_ 文件及 schema.json，mtime 指定为 N 天前。
@@ -274,4 +276,141 @@ test('mysqldump 不可用（BinaryLocator 抛 BinaryNotFoundException）时立�
     $output = Artisan::output();
     expect($exit)->not->toBe(0)
         ->and($output)->toContain('未找到 mysqldump 命令');
+});
+
+// ============================================================
+// H3：非阻塞抢 backup:mutex（跳过告警）+ --internal-no-lock 旁路 + 失败 SystemAlert
+// ============================================================
+
+/** 用 fake handler 让 backup() 抛异常，命中 dump 失败告警分支 */
+function fakeThrowingBackupService(): void
+{
+    $handler = Mockery::mock(BackupHandlerInterface::class);
+    $handler->shouldReceive('ensureClient')->andReturn('/fake/mysqldump');
+    $handler->shouldReceive('backup')->andThrow(new RuntimeException('mysqldump 失败: 模拟 dump 错误'));
+
+    $service = Mockery::mock(BackupService::class)->makePartial();
+    $service->shouldReceive('makeHandler')->andReturn($handler);
+    $service->shouldReceive('resolveIgnoreTables')->andReturn([]);
+    app()->instance(BackupService::class, $service);
+}
+
+/** 捕获型 SystemAlert：记录 send 的 dedupeKey 与 clearDedupe 的 key */
+function bkSpySystemAlert(): object
+{
+    $spy = new class
+    {
+        public int $sendCount = 0;
+
+        public array $sentKeys = [];
+
+        public array $clearedKeys = [];
+    };
+    $mock = Mockery::mock(SystemAlert::class);
+    $mock->shouldReceive('send')->andReturnUsing(
+        function ($category, $title, $message, $details = [], $dedupeKey = null, $ttl = 24, $fp = null) use ($spy) {
+            $spy->sendCount++;
+            $spy->sentKeys[] = $dedupeKey;
+
+            return true;
+        }
+    );
+    $mock->shouldReceive('clearDedupe')->andReturnUsing(function ($key) use ($spy) {
+        $spy->clearedKeys[] = $key;
+    });
+    app()->instance(SystemAlert::class, $mock);
+
+    return $spy;
+}
+
+test('H3① 定时备份遇 backup:mutex 被占 → 跳过（SUCCESS）+ 无产物 + backup_lock_contention 告警一次', function () {
+    // 预占互斥锁（模拟 Create/RestoreBackupJob 持锁中）
+    $held = Cache::lock(BackupService::MUTEX_LOCK_KEY, 60);
+    expect($held->get())->toBeTrue();
+
+    $spy = bkSpySystemAlert();
+
+    $exit = Artisan::call('schedule:backup', ['--path' => $this->testDir]);
+
+    expect($exit)->toBe(0) // 跳过≠失败
+        ->and(glob($this->testDir.'/backup_*.sql.gz') ?: [])->toBeEmpty()
+        ->and($spy->sendCount)->toBe(1)
+        ->and($spy->sentKeys[0])->toBe('backup_lock_contention');
+
+    $held->release();
+});
+
+test('H3② --internal-no-lock 旁路：锁被父 Job 持有时仍真实产出备份（防重入自死锁）', function () {
+    $held = Cache::lock(BackupService::MUTEX_LOCK_KEY, 60);
+    expect($held->get())->toBeTrue();
+
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
+        ->shouldReceive('exportCurrentStructure')
+        ->andReturn(['tables' => []]);
+
+    $exit = Artisan::call('schedule:backup', [
+        '--path' => $this->testDir,
+        '--internal-no-lock' => true,
+    ]);
+
+    expect($exit)->toBe(0)
+        ->and(glob($this->testDir.'/backup_*.sql.gz') ?: [])->not->toBeEmpty();
+
+    $held->release();
+});
+
+test('H3③ dump 失败 → FAILURE + backup_dump_error 告警', function () {
+    fakeThrowingBackupService();
+    $spy = bkSpySystemAlert();
+
+    $exit = Artisan::call('schedule:backup', ['--path' => $this->testDir]);
+
+    expect($exit)->not->toBe(0)
+        ->and($spy->sendCount)->toBe(1)
+        ->and($spy->sentKeys[0])->toBe('backup_dump_error');
+});
+
+test('H3④ --internal-no-lock + dump 失败 → 不告警（父 Job 自管进度上报）', function () {
+    fakeThrowingBackupService();
+    $spy = bkSpySystemAlert();
+
+    $exit = Artisan::call('schedule:backup', [
+        '--path' => $this->testDir,
+        '--internal-no-lock' => true,
+    ]);
+
+    expect($exit)->not->toBe(0)
+        ->and($spy->sendCount)->toBe(0);
+});
+
+test('H3⑤ 成功 → clearDedupe 三个去重键（恢复后下次异常立即再告警）', function () {
+    fakeOkBackupService();
+    $this->mock(DatabaseStructureService::class)
+        ->shouldReceive('exportCurrentStructure')
+        ->andReturn(['tables' => []]);
+    $spy = bkSpySystemAlert();
+
+    $exit = Artisan::call('schedule:backup', ['--path' => $this->testDir]);
+
+    expect($exit)->toBe(0)
+        ->and($spy->clearedKeys)->toContain('backup_lock_contention')
+        ->and($spy->clearedKeys)->toContain('backup_client_missing')
+        ->and($spy->clearedKeys)->toContain('backup_dump_error');
+});
+
+test('H3⑥ 备份客户端缺失 → FAILURE + backup_client_missing 告警', function () {
+    $handler = Mockery::mock(BackupHandlerInterface::class);
+    $handler->shouldReceive('ensureClient')->andThrow(new RuntimeException('未找到 mysqldump 命令'));
+    $service = Mockery::mock(BackupService::class)->makePartial();
+    $service->shouldReceive('makeHandler')->andReturn($handler);
+    app()->instance(BackupService::class, $service);
+
+    $spy = bkSpySystemAlert();
+
+    $exit = Artisan::call('schedule:backup', ['--path' => $this->testDir]);
+
+    expect($exit)->not->toBe(0)
+        ->and($spy->sendCount)->toBe(1)
+        ->and($spy->sentKeys[0])->toBe('backup_client_missing');
 });
