@@ -14,9 +14,13 @@ return [
     */
 
     // E1 上游 CA 凭证健康心跳（schedule:ca-healthcheck，周期 15min）
+    // M7：整体连通性维度——连续 connectivity_threshold 次失败才告警（3×15min=45min，滤上游滚动重启瞬断），
+    // 固定指纹 ca_outage 去重；connectivity_ttl_hours 契约 ≥ 3×45min。
     'ca_healthcheck' => [
         'enabled' => env('MONITORING_CA_HEALTHCHECK_ENABLED', true),
         'dedupe_ttl_hours' => (int) env('MONITORING_CA_HEALTHCHECK_TTL_HOURS', 24),
+        'connectivity_threshold' => (int) env('MONITORING_CA_CONNECTIVITY_THRESHOLD', 3),
+        'connectivity_ttl_hours' => (int) env('MONITORING_CA_CONNECTIVITY_TTL_HOURS', 6),
     ],
 
     // E2 产品属性漂移同步 cron（schedule:import-product，周期 1d）

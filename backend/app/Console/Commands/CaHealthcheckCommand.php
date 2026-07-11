@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\Notification\SystemAlert;
 use App\Services\Order\Api\default\Sdk;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -23,16 +24,20 @@ use Illuminate\Support\Facades\Log;
  *    **辅助信号** 含 'Unauthorized'（上游 200-body 透传，措辞属对上游应答体的猜测——可与上游
  *    实现校准：实现期亲读上游网关仓核对坏 token 实际应答形状后调整白名单；上游措辞变更会致
  *    此辅助信号失明，401/403 主信号兜底）。
- *  - 其余 code===0（连接超时/请求失败/No return code/5xx）→ 不告警（连通性归 P0-4 心跳/拨测，
- *    防瞬断噪音），Log::info 留痕。
+ *  - 其余 code===0（连接超时/请求失败/No return code/5xx）→ 连通性维度（M7）：连续 N 次失败才
+ *    告警（防瞬断噪音，滤上游滚动重启），SystemAlert 固定指纹 'ca_outage'（计数型防 churn 击穿）。
  */
 class CaHealthcheckCommand extends Command
 {
     protected $signature = 'schedule:ca-healthcheck';
 
-    protected $description = '上游 CA 凭证健康心跳（凭证失效告警，连通性不告警）';
+    protected $description = '上游 CA 健康心跳（凭证失效 + 整体连通性告警）';
 
     private const DEDUPE_KEY = 'ca_credentials';
+
+    private const CONNECTIVITY_DEDUPE_KEY = 'ca_connectivity';
+
+    private const CONNECTIVITY_FAILS_KEY = 'ca_healthcheck:connectivity_fails';
 
     public function handle(): int
     {
@@ -44,14 +49,15 @@ class CaHealthcheckCommand extends Command
         $code = $result['code'] ?? 0;
         $msg = (string) ($result['msg'] ?? '');
 
-        // 健康：清去重键（恢复后再异常立即告警）
+        // 健康：清凭证去重键 + 重置连通性（计数清零 + 清连通性去重键，恢复后再异常立即告警）
         if ($code === 1) {
             app(SystemAlert::class)->clearDedupe(self::DEDUPE_KEY);
+            $this->resetConnectivity();
 
             return self::SUCCESS;
         }
 
-        // 未配置态：剔出告警，不占键（新装/测试实例未填上游）
+        // 未配置态：剔出告警，不占键、不动连通性计数（新装/测试实例未填上游）
         if ($msg === 'Api url or token is not set') {
             Log::info('[ca_healthcheck] 上游未配置，跳过（不告警）');
 
@@ -59,7 +65,9 @@ class CaHealthcheckCommand extends Command
         }
 
         // 鉴权维度 → 告警（主信号 401/403；辅助信号 Unauthorized）
+        // 上游可达（能返回鉴权错误）→ 重置连通性计数，避免「上游回来但坏 token」时连通性残留混叠。
         if ($this->isAuthFailure($msg)) {
+            $this->resetConnectivity();
             Log::warning('[ca_healthcheck] 上游 CA 凭证疑似异常', ['msg' => $msg]);
             app(SystemAlert::class)->send(
                 'ca_credentials',
@@ -73,10 +81,49 @@ class CaHealthcheckCommand extends Command
             return self::SUCCESS;
         }
 
-        // 其余 code===0（连通性维度）→ 不告警，仅留痕
-        Log::info('[ca_healthcheck] 上游非鉴权类异常，不告警', ['msg' => $msg]);
+        // 其余 code===0（连通性维度：连接超时/请求失败/5xx）→ 连续 N 次失败才告警
+        $this->handleConnectivityFailure($msg);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * 连通性失败处理：累计计数，达阈值发 SystemAlert（固定指纹 ca_outage 防计数 churn 击穿去重）。
+     *
+     * 阈值 3×15min=45min 滤上游滚动重启瞬断；TTL 6h ≥ 3×45min 契约。计数用 Cache::forever
+     * 跨 cron 周期累计（cache:clear 清计数 = 延迟一周期非永久静默，M1 心跳/M3 拨测独立信号兜底）。
+     */
+    private function handleConnectivityFailure(string $msg): void
+    {
+        $fails = (int) Cache::get(self::CONNECTIVITY_FAILS_KEY, 0) + 1;
+        Cache::forever(self::CONNECTIVITY_FAILS_KEY, $fails);
+
+        $threshold = (int) config('monitoring.ca_healthcheck.connectivity_threshold', 3);
+        if ($fails < $threshold) {
+            Log::info('[ca_healthcheck] 上游连通性异常累计（未达告警阈值）', ['consecutive' => $fails, 'msg' => $msg]);
+
+            return;
+        }
+
+        Log::warning('[ca_healthcheck] 上游整体连通性异常', ['consecutive' => $fails, 'msg' => $msg]);
+        app(SystemAlert::class)->send(
+            'ca_connectivity',
+            '上游 CA 连通性异常',
+            $msg,
+            ['probe' => 'get-products', 'consecutive' => $fails],
+            self::CONNECTIVITY_DEDUPE_KEY,
+            (int) config('monitoring.ca_healthcheck.connectivity_ttl_hours', 6),
+            'ca_outage',
+        );
+    }
+
+    /**
+     * 重置连通性状态（healthy / 上游可达分支义务）：清计数 + 清连通性去重键。
+     */
+    private function resetConnectivity(): void
+    {
+        Cache::forget(self::CONNECTIVITY_FAILS_KEY);
+        app(SystemAlert::class)->clearDedupe(self::CONNECTIVITY_DEDUPE_KEY);
     }
 
     /**
