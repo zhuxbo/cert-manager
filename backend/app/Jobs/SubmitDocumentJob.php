@@ -21,19 +21,26 @@ use Throwable;
  *
  * - 按单文档入队：重试相互隔离，一个坏文档不阻塞其余
  * - 幂等：已 submitted / 文件缺失直接退出，不重试
- * - 上游失败抛异常触发框架重试（tries=3 指数退避 60s/300s）
+ * - 上游失败抛异常触发框架重试（指数退避 60s/300s，末值复用）
  * - 跨级去重由接收端 (order_id, content_hash) 唯一索引保证，重试不产生重复
  */
 class SubmitDocumentJob implements ShouldQueue
 {
     use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 3;
+    /**
+     * 最大尝试次数 = 5（C5）：吸收升级 freeze 期 SkipWhenUpgradeFrozen 的 release(60) attempts 累加，
+     * 把误杀阈值从 ~3min 抬到 ~5min。有意【不加 maxExceptions】——本 Job 设计为对上游瞬态错误抛异常重试，
+     * maxExceptions=1 会在首次上游错误即 fail、杀掉重试语义（与备份类 fail-fast 相反）。freeze release
+     * 与真实重试共享同一 attempts 预算，真实重试上限 3→5，对轻量幂等（含跨级唯一索引去重）的文档提交 benign。
+     * 代价：真·坏文档最终失败时延由 ~6min（60+300）拉长到 ~16min（60+300+300+300），告警浮现相应延后。
+     */
+    public int $tries = 5;
 
     public function __construct(public int $documentId) {}
 
     /**
-     * 指数退避：第 1 次失败后等 60s，第 2 次后等 300s（共 3 次尝试）
+     * 指数退避：第 1 次失败后等 60s，其后每次 300s（tries=5 时 Laravel 复用末值 → 60/300/300/300）
      *
      * @return array<int, int>
      */

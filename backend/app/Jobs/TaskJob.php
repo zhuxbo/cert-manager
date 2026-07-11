@@ -7,8 +7,11 @@ namespace App\Jobs;
 use App\Exceptions\ApiResponseException;
 use App\Exceptions\MutationBusyException;
 use App\Jobs\Concerns\HasUpgradeFreezeMiddleware;
+use App\Models\Acme;
 use App\Models\Admin;
+use App\Models\Order;
 use App\Models\Task as TaskModel;
+use App\Models\Transaction;
 use App\Services\Acme\Action as AcmeAction;
 use App\Services\LogBuffer;
 use App\Services\Notification\DTOs\NotificationIntent;
@@ -34,10 +37,20 @@ class TaskJob implements ShouldQueue
     private const MUTATION_BUSY_RELEASE_MAX_SECONDS = 70;
 
     /**
-     * 最大尝试次数：与生产 worker `--tries 3` 一致（重试次数不变），显式声明以便 handle()
-     * 内用 `$this->attempts() < $this->tries` 判断并发错误是否还能自愈重试。
+     * 最大尝试次数 = 5。Laravel 中 job 级 $tries 覆盖生产 worker `--tries 3`
+     * （已由 CreateBackupJob=5 + UpgradeFreezeReleaseAttemptsTest 实证生效，勿误以为被 worker 封回 3）。
+     * 取 5 的双重理由：
+     *  ① 抬升升级 freeze 容忍度：SkipWhenUpgradeFrozen 每次 release(60) 使 attempts+1，tries=3 时
+     *     约 3 次 pop（~3min）即被 MaxAttemptsExceeded 杀在 handle 前；tries=5 把误杀阈值抬到 ~5min（缓解件，
+     *     根治 freeze 停 worker 属 P0-2）。
+     *  ② 并发/mutex 自愈与 freeze release 共享同一 attempts 预算：handle() 内 `attempts() < $tries`
+     *     判断并发错误/MutationBusy 是否还能 release 自愈（预算 3→5，自愈次数 2→4），per-retry 行为不变。
+     * 有意不加 maxExceptions：TaskJob 自管 release/throw —— 业务失败经 $this->fail() 即终态、从不冒泡重试；
+     * 唯一冒泡是预算耗尽的并发/mutex 异常，本就经 tries 立即终态。maxExceptions 对其冗余，且会引入第二套
+     * cache 计数模糊自管模型（与 CreateBackupJob 的 tries=5+maxExceptions=1「让业务异常上抛的幂等 job
+     * fail-fast」语义不同）。
      */
-    public int $tries = 3;
+    public int $tries = 5;
 
     protected array $data;
 
@@ -104,6 +117,19 @@ class TaskJob implements ShouldQueue
                     $response = $e->getApiResponse();
                     $data['result'] = $response;
                     $data['status'] = $response['code'] === 1 ? 'successful' : 'failed';
+                    // C1：取消类 action（cancel/cancel_acme）业务失败必须触发 fail()——否则退款永不发生、
+                    // 订单永久卡 cancelling，无重试无告警（只能靠用户投诉）。commit 业务失败由 reconcile
+                    // 兜底告警、sync 为 best-effort 不告警，故仅限退款类，不扩散到全部业务失败（防告警风暴）。
+                    // 守卫 status==='failed'：成功路径（code=1→'successful'）绝不触发 fail()，不回归「取消静默成功」。
+                    // Imp-1 幂等豁免：refundForSyncedCancel 退款置 cancelled 后刻意保留的 cancel task、
+                    // 或孤儿 cancel_acme 任务被唤醒时，会撞业务行已终态而 code=0 拒绝（「订单已取消」/
+                    // 「订单状态不是取消中」）——退款已发生，属幂等 no-op，不是真·CA 失败，绝不再假告警。
+                    // 仅当锁内实测业务行仍非终态（真失败：退款未发生、卡 cancelling）才 fail()。
+                    if ($data['status'] === 'failed'
+                        && in_array($action, ['cancel', 'cancel_acme'], true)
+                        && ! $this->cancellationTargetTerminal($action, (int) $task->order_id)) {
+                        $failedException = $e;
+                    }
                 } catch (Throwable $e) {
                     // 并发错误（死锁 1213 / 锁等待超时 1205 / 序列化失败）：MySQL 已回滚整个事务，
                     // 连接已不在事务中。绝不能继续 $task->update() 或让闭包正常返回触发外层 commit
@@ -172,6 +198,67 @@ class TaskJob implements ShouldQueue
     }
 
     /**
+     * 取消类任务失败时判定业务行是否已终态（退款已发生的幂等 no-op vs 真·CA 失败）。
+     *
+     * Imp-1：refundForSyncedCancel 退款后刻意保留的 cancel task 被唤醒会撞「订单已取消」，
+     * 孤儿延时 cancel_acme 会撞「订单状态不是取消中」——均为 code=0 幂等拒绝，退款已发生，非真失败；
+     * 仅在真失败（退款应发生却未发生 / 仍卡 cancelling）时才应告警。
+     *
+     * order 侧判据（② 收窄，非无差别按状态豁免）：
+     *  - revoked / renewed / reissued：终态且无「退款应发生却未发生」的合法性缺口 → 幂等豁免；
+     *  - failed **已剔除豁免集**：failed 全系统无任何退款路径，「failed 但退款已发生」不存在合法形态，
+     *    force sync 把上游 failed 写过 cancelling 后 cancel task 撞「订单状态不是取消中」读到 failed
+     *    是真·CA 失败，必须告警。**注意与 sync 终态守卫的差异**：那里 failed 属【防复活】集
+     *    （不让上游旧 active 覆盖终态），语义不同于此处的【退款幂等】判定，两处集合不可混用；
+     *  - cancelled：辅以 cancel 流水存在性判定（③ 揭示 sync 可直写 cancelled 而未退款）。
+     * acme 侧不含 failed、无此洞，保持原样（② 仅收口 order 侧）。
+     *
+     * 必须在 handle() 事务内调用（TaskJob 已持 task 行锁）：锁读当前行状态、Transaction 查询同事务快照，
+     * 与 cancelLocked 读的同一行一致，锁序 task→order/acme 不反序。
+     */
+    private function cancellationTargetTerminal(string $action, int $targetId): bool
+    {
+        if ($action === 'cancel_acme') {
+            // 锁 acme 行读最新 status（与 AcmeAction::cancelLocked 的 ->lock() 读同一行）
+            $status = Acme::where('id', $targetId)->lock()->value('status');
+
+            return in_array($status, [
+                Acme::STATUS_CANCELLED,
+                Acme::STATUS_REVOKED,
+                Acme::STATUS_EXPIRED,
+            ], true);
+        }
+
+        // action === 'cancel'：镜像 Order::cancelLocked —— ->lock() 锁 order 行、经 latestCert 读证书态
+        $order = Order::with('latestCert')->lock()->find($targetId);
+        $cert = $order?->latestCert;
+        $status = $cert?->status;
+
+        // 被后继接替（renewed/reissued）/ 吊销（revoked）：终态且无未退款缺口 → 幂等豁免
+        if (in_array($status, ['revoked', 'renewed', 'reissued'], true)) {
+            return true;
+        }
+
+        // cancelled：已退款（有 cancel 流水）或应退金额为 0（0 元订单 / reissue 零增量，本就不建流水）
+        // → 合法幂等豁免；应退金额>0 却无 cancel 流水 = 退款未发生的真失败 → 不豁免、告警。
+        // 应退口径按 action：reissue = 当次增量 cert.amount；new/renew = order.amount（与退款 helper 一致）。
+        if ($status === 'cancelled') {
+            $hasCancelRefund = Transaction::where('type', 'cancel')
+                ->where('transaction_id', $targetId)
+                ->exists();
+            if ($hasCancelRefund) {
+                return true;
+            }
+
+            $refundable = $cert->action === 'reissue' ? (string) $cert->amount : (string) $order->amount;
+
+            return bccomp($refundable, '0', 2) <= 0;
+        }
+
+        return false;
+    }
+
+    /**
      * 任务失败
      *
      * @throws Throwable
@@ -193,7 +280,7 @@ class TaskJob implements ShouldQueue
                 'weight' => 0,
                 'last_execute_at' => now(),
                 'attempts' => ($task->attempts ?? 0) + 1,
-                'result' => ['code' => 0, 'msg' => $e->getMessage()],
+                'result' => ['code' => 0, 'msg' => $this->resolveFailureMessage($e)],
             ]);
         }
 
@@ -216,11 +303,26 @@ class TaskJob implements ShouldQueue
             $admin->id,
             [
                 'task_id' => $task->id,
-                'error_message' => $e->getMessage(),
+                'error_message' => $this->resolveFailureMessage($e),
                 'admin_email' => $targetEmail,
             ]
         );
 
         app(NotificationCenter::class)->dispatch($intent);
+    }
+
+    /**
+     * 解析失败消息用于告警/落库。
+     *
+     * ApiResponseException::getMessage() 恒空（构造不向父传 message，可读消息只在 getApiResponse()['msg']），
+     * 直接用 getMessage() 会得到空串（反模式 16）。取法逐字对齐 SubmitDocumentJob::failed。
+     */
+    private function resolveFailureMessage(Throwable $e): string
+    {
+        $message = $e instanceof ApiResponseException
+            ? (string) ($e->getApiResponse()['msg'] ?? '')
+            : $e->getMessage();
+
+        return $message !== '' ? $message : $e::class;
     }
 }

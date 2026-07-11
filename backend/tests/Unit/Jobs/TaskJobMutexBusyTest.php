@@ -60,7 +60,7 @@ test('commit 抢不到 order 互斥锁达 tries 上限：冒泡交 worker failJo
 
     $job = new TaskJob(['id' => $task->id]);
     $job->withFakeQueueInteractions();
-    $job->job->attempts = 3; // == tries（最后一次执行）
+    $job->job->attempts = 5; // == tries（最后一次执行；C5 将 tries 3→5，边界值随之上移）
 
     $threw = false;
     try {
