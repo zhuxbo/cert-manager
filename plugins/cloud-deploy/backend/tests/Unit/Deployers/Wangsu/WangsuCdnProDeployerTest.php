@@ -1,5 +1,6 @@
 <?php
 
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 use Plugins\CloudDeploy\Deployers\Wangsu\WangsuApiException;
 use Plugins\CloudDeploy\Deployers\Wangsu\WangsuCdnProDeployer;
 use Plugins\CloudDeploy\Deployers\Wangsu\WangsuRestClient;
@@ -149,9 +150,9 @@ test('轮询：finishTime 非空也视为完成（status 非 succeeded 时）', 
     $client->shouldReceive('getCdnProHostnameDetail')->andReturn(['hostname' => 'd.com']);
     $client->shouldReceive('createCdnProCertificate')->andReturn(['certId' => 'c1', 'version' => 1]);
     $client->shouldReceive('createCdnProDeploymentTask')->andReturn('task-4');
-    // 第一次 processing，第二次 finishTime 非空
+    // status 非 succeeded 但 finishTime 非空 → 视为完成（G2 压窗后单次首查即命中）
     $client->shouldReceive('getCdnProDeploymentTaskDetail')
-        ->andReturn(['status' => 'processing', 'finishTime' => ''], ['status' => 'processing', 'finishTime' => '2023-11-14T00:00:00Z']);
+        ->andReturn(['status' => 'processing', 'finishTime' => '2023-11-14T00:00:00Z']);
 
     $deployer = wangsuCdnProDeployerWith(fn () => $client);
     $deployer->bind(WANGSU_CDNPRO_PEM, WANGSU_CDNPRO_CREDS, ['domain' => 'd.com', 'environment' => 'production']);
@@ -172,7 +173,7 @@ test('轮询遇 status=failed 抛业务错误', function () {
         ->toThrow(RuntimeException::class, '部署任务失败');
 });
 
-test('轮询超过最大次数仍未完成抛等待超时', function () {
+test('G2 轮询窗口耗尽 → 抛 DeployPollPendingException 携 taskId（重试/sweep-B 续查同一任务）', function () {
     $client = Mockery::mock(WangsuRestClient::class);
     $client->shouldReceive('getCdnProHostnameDetail')->andReturn(['hostname' => 'd.com']);
     $client->shouldReceive('createCdnProCertificate')->andReturn(['certId' => 'c1', 'version' => 1]);
@@ -180,7 +181,7 @@ test('轮询超过最大次数仍未完成抛等待超时', function () {
     // 永远 processing
     $client->shouldReceive('getCdnProDeploymentTaskDetail')->andReturn(['status' => 'processing', 'finishTime' => '']);
 
-    // maxPollAttempts 缩到 2 加速测试
+    // maxPollAttempts 置 2 验多次迭代后仍超窗（默认压窗为 1）
     $deployer = new class(fn () => $client) extends WangsuCdnProDeployer
     {
         public function __construct(private $factory)
@@ -201,8 +202,40 @@ test('轮询超过最大次数仍未完成抛等待超时', function () {
         protected function sleep(int $seconds): void {}
     };
 
-    expect(fn () => $deployer->bind(WANGSU_CDNPRO_PEM, WANGSU_CDNPRO_CREDS, ['domain' => 'd.com', 'environment' => 'production']))
-        ->toThrow(RuntimeException::class, '未在等待窗口内完成');
+    try {
+        $deployer->bind(WANGSU_CDNPRO_PEM, WANGSU_CDNPRO_CREDS, ['domain' => 'd.com', 'environment' => 'production']);
+        expect(false)->toBeTrue('应抛 poll_pending');
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('task-6');
+    }
+});
+
+test('G2 resumePoll 续查同一 taskId：succeeded 收敛（不重建证书/部署任务）', function () {
+    $client = Mockery::mock(WangsuRestClient::class);
+    $client->shouldReceive('createCdnProCertificate')->never();
+    $client->shouldReceive('createCdnProDeploymentTask')->never();
+    $client->shouldReceive('getCdnProDeploymentTaskDetail')->once()->with('task-r')->andReturn(['status' => 'succeeded', 'finishTime' => '']);
+
+    $deployer = wangsuCdnProDeployerWith(fn () => $client);
+    $deployer->resumePoll('task-r', WANGSU_CDNPRO_CREDS, []);
+    expect(true)->toBeTrue();
+});
+
+test('G2 resumePoll 仍处理中 → 抛 DeployPollPendingException 同 taskId', function () {
+    $client = Mockery::mock(WangsuRestClient::class);
+    $client->shouldReceive('getCdnProDeploymentTaskDetail')->andReturn(['status' => 'processing', 'finishTime' => '']);
+
+    $deployer = wangsuCdnProDeployerWith(fn () => $client);
+    try {
+        $deployer->resumePoll('task-r2', WANGSU_CDNPRO_CREDS, []);
+        expect(false)->toBeTrue();
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('task-r2');
+    }
+});
+
+test('pollBudget bind 最坏耗时 ≤50s（T=WangsuRestClient::TIMEOUT_SECONDS 单一来源）', function () {
+    expect((new WangsuCdnProDeployer)->pollBudget()->worstCaseBindSeconds())->toBeLessThanOrEqual(50);
 });
 
 test('缺 api_key 凭证抛业务错误（私钥加密强依赖）', function () {

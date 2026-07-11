@@ -9,11 +9,14 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use Darabonba\OpenApi\Exceptions\ClientException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunErrorSanitizer;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
+use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentErrorSanitizer;
 use Plugins\CloudDeploy\Jobs\CloudDeployJob;
@@ -41,10 +44,14 @@ final class CloudDeployJobTestSpy
     /** @var list<array{cert:string,key:string,chain:string}> */
     public static array $uploads = [];
 
+    /** @var list<string> resumePoll 收到的 jobId（G2 续查） */
+    public static array $resumes = [];
+
     public static function reset(): void
     {
         self::$binds = [];
         self::$uploads = [];
+        self::$resumes = [];
     }
 }
 
@@ -800,4 +807,206 @@ test('failed() 重试耗尽派 cloud_deploy_failed 通知，context 仅白名单
 test('ServiceProvider 注册了 cloud_deploy_failed 专用 Builder', function () {
     expect(config('notification.builders.cloud_deploy_failed'))
         ->toBe(CloudDeployFailedNotificationBuilder::class);
+});
+
+/*
+|--------------------------------------------------------------------------
+| G2：jobId 持久化 + resumePoll 续查（job-id 型 deployer 长轮询超窗）
+| G4：failed() 补写 last_deployed_at + 不清 pending cache
+| G5：业务终态失败发通知（复用 cloud_deploy_failed）+ sweep-B 复扫再发（有界）
+|--------------------------------------------------------------------------
+*/
+
+/** ResumesRemoteJob fake deployer：bind 可抛 poll_pending；resumePoll 行为注入。 */
+function jobResumableDeployer(?string $bindJobId, ?callable $resume = null): AbstractDeployer
+{
+    return new class($bindJobId, $resume) extends AbstractDeployer implements ResumesRemoteJob
+    {
+        public function __construct(private ?string $bindJobId, private $resume) {}
+
+        public function provider(): string
+        {
+            return 'aliyun';
+        }
+
+        public function product(): string
+        {
+            return 'cdn';
+        }
+
+        public function label(): string
+        {
+            return 'x';
+        }
+
+        public function configSchema(): array
+        {
+            return [['key' => 'domain', 'label' => '域名', 'required' => true]];
+        }
+
+        public function bind(string|array $certRef, array $credentials, array $config): void
+        {
+            CloudDeployJobTestSpy::$binds[] = ['cert' => $certRef, 'config' => $config];
+            if ($this->bindJobId !== null) {
+                throw new DeployPollPendingException($this->bindJobId, '云端部署任务处理中');
+            }
+        }
+
+        public function resumePoll(string $remoteJobId, array $credentials, array $config): void
+        {
+            CloudDeployJobTestSpy::$resumes[] = $remoteJobId;
+            if ($this->resume !== null) {
+                ($this->resume)($remoteJobId);
+            }
+        }
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            throw new RuntimeException('fake 不应造真实 client');
+        }
+
+        protected function sanitize(Throwable $e): string
+        {
+            return 'x';
+        }
+    };
+}
+
+test('G2 bind 抛 poll_pending → 写 Cache pending + target failed/last_deployed_at + log poll_pending(is_final=false) + 重抛', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer('job-123'));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+
+    expect(fn () => (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle())
+        ->toThrow(DeployPollPendingException::class);
+
+    $pending = Cache::get("cloud-deploy:pending-job:$target->id");
+    expect($pending)->toBeArray();
+    expect($pending['job_id'])->toBe('job-123');
+    expect($pending['cert_id'])->toBe($cert->id);
+    expect($pending['product'])->toBe('cdn');
+
+    $target->refresh();
+    expect($target->last_status)->toBe('failed');
+    expect($target->last_cert_id)->toBe($cert->id);
+    expect($target->last_deployed_at)->not->toBeNull();
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'poll_pending')->where('is_final', false)->exists())->toBeTrue();
+});
+
+test('G2 预置 pending → 走 resumePoll 续查（bind 不被调）；成功 → success + forget cache', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: null)); // bind 若被调不会抛，靠 spy 断言未调
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id, 'product' => 'cdn', 'job_id' => 'job-9', 'remote_cert_id' => null], now()->addDays(10));
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployJobTestSpy::$resumes)->toBe(['job-9']); // 续查同一 jobId
+    expect(CloudDeployJobTestSpy::$binds)->toBeEmpty();        // bind 未被调（不重建任务）
+    expect(Cache::get("cloud-deploy:pending-job:$target->id"))->toBeNull(); // 收敛后 forget
+    $target->refresh();
+    expect($target->last_status)->toBe('success');
+});
+
+test('G2 resumePoll 抛 DeployBusinessException（云端终态失败）→ 终态 + forget + 派通知', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(
+        bindJobId: null,
+        resume: function () {
+            throw new DeployBusinessException('云端部署任务失败');
+        },
+    ));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id, 'product' => 'cdn', 'job_id' => 'job-x', 'remote_cert_id' => null], now()->addDays(10));
+
+    $spy = Mockery::mock(NotificationCenter::class);
+    $spy->shouldReceive('dispatch')->once()->withArgs(fn (NotificationIntent $i) => $i->code === 'cloud_deploy_failed' && ($i->context['error_code'] ?? null) === 'business_error');
+    app()->instance(NotificationCenter::class, $spy);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(Cache::get("cloud-deploy:pending-job:$target->id"))->toBeNull(); // 业务终态清 pending
+    $target->refresh();
+    expect($target->last_status)->toBe('failed');
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'business_error')->where('is_final', true)->exists())->toBeTrue();
+});
+
+test('G2 pending cert_id 不匹配（重签发换证）→ forget + 走正常 bind（绝不跨 cert 复用 jobId）', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: null));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    // pending 属旧 cert（id+1 一定不等当前 cert）
+    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id + 1000, 'product' => 'cdn', 'job_id' => 'stale', 'remote_cert_id' => null], now()->addDays(10));
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployJobTestSpy::$resumes)->toBeEmpty(); // 不续查旧 jobId
+    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1); // 走正常 bind
+    $target->refresh();
+    expect($target->last_status)->toBe('success');
+});
+
+test('G4：failed() 补写 last_deployed_at 且不清 pending cache（收敛链留给 sweep-B）', function () {
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $target->update(['last_deployed_at' => null]);
+    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id, 'product' => 'cdn', 'job_id' => 'keep-me', 'remote_cert_id' => null], now()->addDays(10));
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->failed(new DeployPollPendingException('keep-me', '待确认'));
+
+    $target->refresh();
+    expect($target->last_status)->toBe('failed');
+    expect($target->last_deployed_at)->not->toBeNull();                             // G4：补写
+    expect(Cache::get("cloud-deploy:pending-job:$target->id"))->not->toBeNull();    // 不清 pending
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'poll_pending')->where('is_final', true)->exists())->toBeTrue();
+});
+
+test('G5：业务终态失败（DeployBusinessException）→ 派一次 cloud_deploy_failed', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobThrowingDeployer(new DeployBusinessException('缺少配置 domain')));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+
+    $spy = Mockery::mock(NotificationCenter::class);
+    $spy->shouldReceive('dispatch')->once()->withArgs(fn (NotificationIntent $i) => $i->code === 'cloud_deploy_failed'
+        && ($i->context['error_code'] ?? null) === 'business_error'
+        && ! array_key_exists('error', $i->context));
+    app()->instance(NotificationCenter::class, $spy);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+});
+
+test('G5：missing_private_key / SM2 → 各派一次 cloud_deploy_failed（确定性业务码）', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobFakeInlineDeployer());
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $cert->update(['private_key' => '']);
+
+    $spy = Mockery::mock(NotificationCenter::class);
+    $spy->shouldReceive('dispatch')->once()->withArgs(fn (NotificationIntent $i) => ($i->context['error_code'] ?? null) === 'missing_private_key');
+    app()->instance(NotificationCenter::class, $spy);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+});
+
+test('G5：missing_chain → 不派通知（等 Backfill 补链，非终态）', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobFakeInlineDeployer());
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn', intermediate: null);
+
+    $spy = Mockery::mock(NotificationCenter::class);
+    $spy->shouldReceive('dispatch')->never();
+    app()->instance(NotificationCenter::class, $spy);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'missing_chain')->exists())->toBeTrue();
+});
+
+test('G5：sweep-B 复扫重推同一确定性失败 → 再派一次（每次终态失败一封，有界）', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobThrowingDeployer(new DeployBusinessException('缺少配置 domain')));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+
+    $count = 0;
+    $spy = Mockery::mock(NotificationCenter::class);
+    $spy->shouldReceive('dispatch')->andReturnUsing(function () use (&$count) {
+        $count++;
+    });
+    app()->instance(NotificationCenter::class, $spy);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle(); // 首扫
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle(); // sweep-B 复扫重推
+
+    expect($count)->toBe(2); // 每次终态失败发一次（非「仅一次」永久去重）
 });

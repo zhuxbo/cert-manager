@@ -6,7 +6,6 @@ use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\ESA\V20240910\ESA;
 use AlibabaCloud\SDK\ESA\V20240910\Models\SetCertificateRequest;
 use Darabonba\OpenApi\Exceptions\AlibabaCloudException;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -36,6 +35,7 @@ use Throwable;
  */
 class AliyunEsaDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
     use ParsesCasCertIdentifier;
 
     /** ESA 已配置同证书时的幂等错误码（视为成功）。 */
@@ -113,21 +113,11 @@ class AliyunEsaDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
             // 接入点：esa.{region}.aliyuncs.com（空 region 回落 cn-hangzhou，对齐 certimate）
-            'esa' => new ESA(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $this->endpointForRegion($credentials['region'] ?? ''),
-            ])),
+            'esa' => new ESA($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };
     }
 

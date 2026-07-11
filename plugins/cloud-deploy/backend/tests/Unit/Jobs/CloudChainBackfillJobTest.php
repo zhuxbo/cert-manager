@@ -4,6 +4,7 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Plugins\CloudDeploy\Jobs\CloudChainBackfillJob;
 use Plugins\CloudDeploy\Jobs\CloudDeployJob;
@@ -39,4 +40,17 @@ test('其它 issuer 的失败 target 不被触发', function () {
     (new CloudChainBackfillJob('R3-CA'))->handle();
 
     Queue::assertNothingPushed();
+});
+
+test('G6 failed() 记录 Log::error（缺链补推编排耗尽）', function () {
+    $captured = [];
+    Log::shouldReceive('error')->andReturnUsing(function (...$args) use (&$captured) {
+        $captured[] = $args;
+    });
+
+    (new CloudChainBackfillJob('R3-CA'))->failed(new RuntimeException('boom'));
+
+    expect($captured)->not->toBeEmpty();
+    expect($captured[0][0])->toContain('chain-backfill.failed');
+    expect($captured[0][1]['issuer'])->toBe('R3-CA');
 });

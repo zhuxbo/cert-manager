@@ -5,7 +5,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Ddoscoo\V20200101\Ddoscoo;
 use AlibabaCloud\SDK\Ddoscoo\V20200101\Models\AssociateWebCertRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -34,6 +33,8 @@ use Throwable;
  */
 class AliyunDdosproDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -91,21 +92,11 @@ class AliyunDdosproDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
             // 接入点：ddoscoo.{region}.aliyuncs.com（空 region 回落 cn-hangzhou，对齐 certimate）
-            'ddoscoo' => new Ddoscoo(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $this->endpointForRegion($credentials['region'] ?? ''),
-            ])),
+            'ddoscoo' => new Ddoscoo($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };
     }
 

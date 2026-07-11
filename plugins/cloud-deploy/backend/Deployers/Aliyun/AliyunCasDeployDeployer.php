@@ -6,9 +6,12 @@ use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Cas\V20200407\Models\CreateDeploymentJobRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\DescribeDeploymentJobRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\ListContactRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
+use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\PollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
 use Throwable;
 
 /**
@@ -24,15 +27,18 @@ use Throwable;
  *
  * CertIds 用**纯数字 CertId**（从 CertIdentifier "{certId}-{region}" 拆出，对齐 certimate `upres.CertId`）。
  */
-class AliyunCasDeployDeployer extends AbstractDeployer
+class AliyunCasDeployDeployer extends AbstractDeployer implements HasPollBudget, ResumesRemoteJob
 {
-    use ParsesCasCertIdentifier;
+    use BuildsAliyunConfig, ParsesCasCertIdentifier;
 
-    /** 轮询部署任务最大次数。 */
-    protected int $maxPollAttempts = 60;
+    /** bind 短窗首查次数（G2 压窗）：未终态即抛 DeployPollPendingException 走重试/sweep-B 续查同一 jobId。 */
+    protected int $maxPollAttempts = 1;
+
+    /** resumePoll 续查次数（无前置建任务，预算宽松）。 */
+    protected int $resumePollAttempts = 3;
 
     /** 每次轮询间隔秒数（测试子类置 0）。 */
-    protected int $pollIntervalSeconds = 10;
+    protected int $pollIntervalSeconds = 5;
 
     public function provider(): string
     {
@@ -113,35 +119,67 @@ class AliyunCasDeployDeployer extends AbstractDeployer
             $this->fail('阿里云 CreateDeploymentJob 未返回 JobId');
         }
 
-        $this->pollDeploymentJob($client, $jobId);
+        $this->pollDeploymentJob($client, (string) $jobId, $this->maxPollAttempts);
     }
 
     /**
-     * 轮询部署任务直到终态（success/error）。对齐 certimate：success/error 均视为「轮询完成」，
-     * 空/editing 视为异常；其余（调度/部署中）继续等待。超过 maxPollAttempts 抛超时业务错误。
+     * G2 续查：重试/sweep-B 复扫时续查**同一** jobId（不重建云端任务）。终态成功正常返回；
+     * 终态 error / 空 / editing 抛业务错误；仍处理中抛 DeployPollPendingException（同 jobId 续期）。
+     */
+    public function resumePoll(string $remoteJobId, array $credentials, array $config): void
+    {
+        /** @var Cas $client */
+        $client = $this->makeClient('cas', $credentials);
+        $this->pollDeploymentJob($client, $remoteJobId, $this->resumePollAttempts);
+    }
+
+    public function pollBudget(): PollBudget
+    {
+        // N_upload=1（CAS UploadUserCertificate）+ N_pre=2（listContact worst + createDeploymentJob）；
+        // T = read+connect 之和（darabonba 合成 Guzzle 总 timeout，见 BuildsAliyunConfig）
+        return new PollBudget(
+            clientTimeoutSeconds: self::aliyunCallBudgetSeconds(),
+            uploadCalls: 1,
+            preIterCalls: 2,
+            bindIterations: $this->maxPollAttempts,
+            intervalSeconds: $this->pollIntervalSeconds,
+        );
+    }
+
+    /**
+     * 有界轮询部署任务。终态 success 收敛；终态 error 抛业务错误（与 certimate「到达即停不区分成败」
+     * 有意分化——履 ResumesRemoteJob 契约「终态失败抛 DeployBusinessException」，与 Wangsu/Tencent 一致，
+     * G5 通知随之可达）；空/editing 视为异常（业务错误）；窗口耗尽抛 DeployPollPendingException
+     * （携 jobId、guardSdk 之外）走重试/sweep-B 续查。
      *
      * @param  Cas  $client
      */
-    protected function pollDeploymentJob(object $client, mixed $jobId): void
+    protected function pollDeploymentJob(object $client, string $jobId, int $attempts): void
     {
-        for ($i = 0; $i < $this->maxPollAttempts; $i++) {
+        for ($i = 0; $i < $attempts; $i++) {
             $status = $this->guardSdk(function () use ($client, $jobId) {
                 $resp = $client->describeDeploymentJob(new DescribeDeploymentJobRequest(['jobId' => $jobId]));
 
                 return (string) ($resp->body?->status ?? '');
             });
 
-            if ($status === 'success' || $status === 'error') {
-                return; // 终态（对齐 certimate：到达即停，不区分成败）
+            if ($status === 'success') {
+                return; // 终态成功
+            }
+            if ($status === 'error') {
+                $this->fail('阿里云部署任务终态失败（error）'); // 终态失败 → 业务错误（清 pending + G5 通知）
             }
             if ($status === '' || $status === 'editing') {
                 $this->fail("阿里云部署任务状态异常：$status");
             }
 
-            $this->sleep($this->pollIntervalSeconds);
+            if ($i < $attempts - 1) {
+                $this->sleep($this->pollIntervalSeconds); // 末次不 sleep（回收预算，timing M1）
+            }
         }
 
-        $this->fail('阿里云部署任务未在预期时间内完成');
+        // 窗口耗尽：任务已提交、未在窗口内达终态 → 携 jobId 抛 poll_pending（重试/sweep-B resumePoll 续查同一任务）
+        throw new DeployPollPendingException($jobId, '阿里云部署任务处理中，待确认（任务已提交云端）');
     }
 
     protected function sleep(int $seconds): void
@@ -173,11 +211,7 @@ class AliyunCasDeployDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
         };
     }
 

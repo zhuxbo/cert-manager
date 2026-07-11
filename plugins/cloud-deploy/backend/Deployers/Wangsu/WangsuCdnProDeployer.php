@@ -3,6 +3,10 @@
 namespace Plugins\CloudDeploy\Deployers\Wangsu;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
+use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\PollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
 use Throwable;
 
 /**
@@ -25,13 +29,16 @@ use Throwable;
  * config：domain（必填）/ environment（部署环境，必填，certimate target，默认 production）/
  *   certificate_id（选填，填则更新已有证书）/ webhook_id（选填）。
  */
-class WangsuCdnProDeployer extends AbstractDeployer
+class WangsuCdnProDeployer extends AbstractDeployer implements HasPollBudget, ResumesRemoteJob
 {
-    /** 轮询部署任务最大次数（超过即视为等待窗口超时，不阻塞无限等）。 */
-    protected int $maxPollAttempts = 60;
+    /** bind 短窗首查次数（G2 压窗）：未终态即抛 DeployPollPendingException 走重试/sweep-B 续查同一 taskId。 */
+    protected int $maxPollAttempts = 1;
 
-    /** 每次轮询间隔秒数（certimate 用 10s；测试子类置 0 免真实 sleep）。 */
-    protected int $pollIntervalSeconds = 10;
+    /** resumePoll 续查次数（无前置建任务，预算宽松）。 */
+    protected int $resumePollAttempts = 3;
+
+    /** 每次轮询间隔秒数（测试子类置 0 免真实 sleep）。 */
+    protected int $pollIntervalSeconds = 5;
 
     public function provider(): string
     {
@@ -116,16 +123,39 @@ class WangsuCdnProDeployer extends AbstractDeployer
         }
 
         // 5) 有界轮询任务状态（每次 describe 单独 guardSdk，终态/失败判定的业务错误在 guard 外抛）。
-        $this->pollDeploymentTask($client, $taskId);
+        $this->pollDeploymentTask($client, $taskId, $this->maxPollAttempts);
     }
 
     /**
-     * 有界轮询部署任务详情，直到 succeeded / finishTime 非空。
-     * status=failed 抛错；超过 maxPollAttempts 仍未完成抛"等待超时"（任务已提交，仅未在窗口内落地）。
+     * G2 续查：重试/sweep-B 复扫续查**同一** taskId（不重建证书/部署任务）。succeeded/finishTime 收敛；
+     * status=failed 抛业务错误；窗口耗尽抛 DeployPollPendingException（同 taskId 续期）。
      */
-    protected function pollDeploymentTask(WangsuRestClient $client, string $taskId): void
+    public function resumePoll(string $remoteJobId, array $credentials, array $config): void
     {
-        for ($attempt = 0; $attempt < $this->maxPollAttempts; $attempt++) {
+        /** @var WangsuRestClient $client */
+        $client = $this->makeClient('api', $credentials);
+        $this->pollDeploymentTask($client, $remoteJobId, $this->resumePollAttempts);
+    }
+
+    public function pollBudget(): PollBudget
+    {
+        // 内联型（N_upload=0）；N_pre=3（getHostnameDetail + create/update 证书 + createDeploymentTask）
+        return new PollBudget(
+            clientTimeoutSeconds: WangsuRestClient::TIMEOUT_SECONDS,
+            uploadCalls: 0,
+            preIterCalls: 3,
+            bindIterations: $this->maxPollAttempts,
+            intervalSeconds: $this->pollIntervalSeconds,
+        );
+    }
+
+    /**
+     * 有界轮询部署任务详情，直到 succeeded / finishTime 非空。status=failed 抛业务错误；窗口耗尽抛
+     * DeployPollPendingException（携 taskId、guardSdk 之外）走重试/sweep-B 续查（任务已提交、仅未在窗口内落地）。
+     */
+    protected function pollDeploymentTask(WangsuRestClient $client, string $taskId, int $attempts): void
+    {
+        for ($attempt = 0; $attempt < $attempts; $attempt++) {
             $detail = $this->guardSdk(fn () => $client->getCdnProDeploymentTaskDetail($taskId));
             $status = $detail['status'];
 
@@ -136,10 +166,13 @@ class WangsuCdnProDeployer extends AbstractDeployer
                 return;
             }
 
-            $this->sleep($this->pollIntervalSeconds);
+            if ($attempt < $attempts - 1) {
+                $this->sleep($this->pollIntervalSeconds); // 末次不 sleep（timing M1）
+            }
         }
 
-        $this->fail('网宿云 CDN Pro 部署任务未在等待窗口内完成');
+        // 窗口耗尽：任务已提交、未在窗口内落地 → 携 taskId 抛 poll_pending（重试/sweep-B resumePoll 续查同一任务）
+        throw new DeployPollPendingException($taskId, '网宿云 CDN Pro 部署任务处理中，待确认（任务已提交）');
     }
 
     /**

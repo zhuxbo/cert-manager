@@ -1,5 +1,7 @@
 <?php
 
+use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentCosDeployer;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Ssl\V20191205\Models\DeployCertificateInstanceRequest;
@@ -153,6 +155,43 @@ test('COS bind 轮询发现失败子任务时抛业务错误', function () {
     expect(fn () => $deployer->bind('cert-cos', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
         'region' => 'ap-guangzhou', 'bucket' => 'b', 'domain' => 'd.example.com',
     ]))->toThrow(RuntimeException::class, '失败子任务');
+});
+
+test('G2 COS 窗口耗尽 → 抛 DeployPollPendingException 携 recordId（重试/sweep-B 续查同一记录）', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DeployCertificateInstance')->once()->andReturn(cosDeployResponse(999));
+    $ssl->shouldReceive('DescribeHostDeployRecordDetail')->andReturn(cosRecordDetailResponse(1, 0, 0)); // 永远 running
+
+    $deployer = tencentCosDeployerWith(fn () => $ssl);
+    try {
+        $deployer->bind('cert-cos', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['region' => 'ap-guangzhou', 'bucket' => 'b', 'domain' => 'd.example.com']);
+        expect(false)->toBeTrue('应抛 poll_pending');
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('999');
+    }
+});
+
+test('G2 COS resumePoll 续查同一 recordId：全成功收敛（不重建部署任务）', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DeployCertificateInstance')->never();
+    $ssl->shouldReceive('DescribeHostDeployRecordDetail')->once()->andReturn(cosRecordDetailResponse(1, 1, 0));
+
+    $deployer = tencentCosDeployerWith(fn () => $ssl);
+    $deployer->resumePoll('rec-1', ['secret_id' => 'AK', 'secret_key' => 'SK'], []);
+    expect(true)->toBeTrue();
+});
+
+test('G2 COS resumePoll 失败子任务 → 抛业务错误（终态失败）', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DescribeHostDeployRecordDetail')->once()->andReturn(cosRecordDetailResponse(2, 1, 1));
+
+    $deployer = tencentCosDeployerWith(fn () => $ssl);
+    expect(fn () => $deployer->resumePoll('rec-2', ['secret_id' => 'AK', 'secret_key' => 'SK'], []))
+        ->toThrow(DeployBusinessException::class);
+});
+
+test('pollBudget bind 最坏耗时 ≤50s（T=CLIENT_TIMEOUT_SECONDS 单一来源）', function () {
+    expect((new TencentCosDeployer)->pollBudget()->worstCaseBindSeconds())->toBeLessThanOrEqual(50);
 });
 
 test('COS bind 部署响应无 DeployRecordId 时触发即成功（不轮询）', function () {

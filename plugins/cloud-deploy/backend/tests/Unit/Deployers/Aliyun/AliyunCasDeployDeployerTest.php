@@ -11,6 +11,8 @@ use AlibabaCloud\SDK\Cas\V20200407\Models\ListContactResponseBody;
 use AlibabaCloud\SDK\Cas\V20200407\Models\ListContactResponseBody\contactList;
 use AlibabaCloud\Tea\Exception\TeaError;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunCasDeployDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -131,6 +133,76 @@ test('缺 resource_ids 配置抛业务错误', function () {
     $deployer = aliyunCasDeployDeployerWith(fn () => new stdClass);
     expect(fn () => $deployer->bind('1-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], []))
         ->toThrow(RuntimeException::class, '缺少配置 resource_ids');
+});
+
+test('bind 轮询遇 error 终态 → 抛 DeployBusinessException（终态失败非成功，G5 通知可达）', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('createDeploymentJob')->andReturn(casCreateJobResponse(8));
+    $cas->shouldReceive('describeDeploymentJob')->once()->andReturn(casDescribeJobResponse('error'));
+
+    $deployer = aliyunCasDeployDeployerWith(fn () => $cas);
+    expect(fn () => $deployer->bind('1-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'resource_ids' => 'res-1', 'contact_ids' => 'c-1',
+    ]))->toThrow(DeployBusinessException::class, '终态失败');
+});
+
+test('G2 resumePoll 遇 error 终态 → 抛 DeployBusinessException（履 ResumesRemoteJob 契约：清 pending + 终态）', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('describeDeploymentJob')->once()->andReturn(casDescribeJobResponse('error'));
+
+    $deployer = aliyunCasDeployDeployerWith(fn () => $cas);
+    expect(fn () => $deployer->resumePoll('job-err', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], []))
+        ->toThrow(DeployBusinessException::class, '终态失败');
+});
+
+test('G2 bind 首查未终态 → 抛 DeployPollPendingException 携 jobId（压窗 + 重试续查）', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('createDeploymentJob')->andReturn(casCreateJobResponse(777));
+    $cas->shouldReceive('describeDeploymentJob')->once()->andReturn(casDescribeJobResponse('deploying'));
+
+    $deployer = aliyunCasDeployDeployerWith(fn () => $cas);
+    try {
+        $deployer->bind('1-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], ['resource_ids' => 'res-1', 'contact_ids' => 'c-1']);
+        expect(false)->toBeTrue('应抛 poll_pending');
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('777');
+    }
+});
+
+test('G2 resumePoll 终态 success 正常返回（续查同一 jobId、不重建任务）', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('createDeploymentJob')->never(); // 不重建云端任务
+    $cas->shouldReceive('describeDeploymentJob')->once()->andReturn(casDescribeJobResponse('success'));
+
+    $deployer = aliyunCasDeployDeployerWith(fn () => $cas);
+    $deployer->resumePoll('job-42', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], []);
+    expect(true)->toBeTrue(); // 无异常即收敛
+});
+
+test('G2 resumePoll 仍处理中 → 抛 DeployPollPendingException 同 jobId', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('describeDeploymentJob')->andReturn(casDescribeJobResponse('deploying'));
+
+    $deployer = aliyunCasDeployDeployerWith(fn () => $cas);
+    try {
+        $deployer->resumePoll('job-99', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], []);
+        expect(false)->toBeTrue();
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('job-99');
+    }
+});
+
+test('G2 resumePoll 遇 editing → 抛业务错误（终态失败）', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('describeDeploymentJob')->once()->andReturn(casDescribeJobResponse('editing'));
+
+    $deployer = aliyunCasDeployDeployerWith(fn () => $cas);
+    expect(fn () => $deployer->resumePoll('job-1', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], []))
+        ->toThrow(DeployBusinessException::class);
+});
+
+test('pollBudget bind 最坏耗时 ≤50s（T=read+connect 之和，darabonba 合成总超时）', function () {
+    expect((new AliyunCasDeployDeployer)->pollBudget()->worstCaseBindSeconds())->toBeLessThanOrEqual(50);
 });
 
 test('bind SDK 抛 TeaError 时脱敏重抛（无 AK/SK、不挂 previous）', function () {

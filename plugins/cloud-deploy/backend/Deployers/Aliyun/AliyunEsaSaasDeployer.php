@@ -6,7 +6,6 @@ use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\ESA\V20240910\ESA;
 use AlibabaCloud\SDK\ESA\V20240910\Models\ListCustomHostnamesRequest;
 use AlibabaCloud\SDK\ESA\V20240910\Models\UpdateCustomHostnameRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -25,6 +24,7 @@ use Throwable;
  */
 class AliyunEsaSaasDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
     use ParsesCasCertIdentifier;
 
     /** 列表分页每页大小。 */
@@ -139,21 +139,11 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
             // 接入点：esa.{region}.aliyuncs.com（空 region 回落 cn-hangzhou，对齐 certimate + esa 端点）
-            'esa' => new ESA(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $this->endpointForRegion($credentials['region'] ?? ''),
-            ])),
+            'esa' => new ESA($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };
     }
 

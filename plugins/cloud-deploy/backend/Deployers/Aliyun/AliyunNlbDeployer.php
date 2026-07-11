@@ -5,7 +5,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Nlb\V20220430\Models\UpdateListenerAttributeRequest;
 use AlibabaCloud\SDK\Nlb\V20220430\Nlb;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -22,6 +21,8 @@ use Throwable;
  */
 class AliyunNlbDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -78,20 +79,10 @@ class AliyunNlbDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
-            'nlb' => new Nlb(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $region !== '' ? "nlb.$region.aliyuncs.com" : 'nlb.cn-hangzhou.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'nlb' => new Nlb($this->aliyunConfig($credentials, $region !== '' ? "nlb.$region.aliyuncs.com" : 'nlb.cn-hangzhou.aliyuncs.com')),
         };
     }
 

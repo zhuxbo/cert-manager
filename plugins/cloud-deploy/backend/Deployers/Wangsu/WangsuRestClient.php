@@ -44,6 +44,15 @@ class WangsuRestClient
 
     private const SIGN_ALGORITHM = 'CNC-HMAC-SHA256';
 
+    /** 连接超时（秒）。 */
+    public const CONNECT_TIMEOUT_SECONDS = 10;
+
+    /**
+     * 总请求超时（秒）= 10s。CDN Pro 长轮询预算算式的 T 单一来源（WangsuCdnProDeployer::pollBudget 读此常量）；
+     * 改此常量即破 §G2.3 预算，CloudDeployPollBudgetTest 红。
+     */
+    public const TIMEOUT_SECONDS = 10;
+
     private ClientInterface $http;
 
     /**
@@ -57,9 +66,10 @@ class WangsuRestClient
         ?ClientInterface $http = null,
     ) {
         // 设 socket 超时上限（默认无限），避免上游慢/挂时 worker 长期阻塞；http_errors=false 自行解析错误体。
+        // TIMEOUT 收至 10s（长轮询预算 T，G2.3）：单次调用远 < 10s，收紧不误伤正常调用、超时走重试链。
         $this->http = $http ?? new Client([
-            RequestOptions::CONNECT_TIMEOUT => 10,
-            RequestOptions::TIMEOUT => 30,
+            RequestOptions::CONNECT_TIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
+            RequestOptions::TIMEOUT => self::TIMEOUT_SECONDS,
             RequestOptions::HTTP_ERRORS => false,
         ]);
     }

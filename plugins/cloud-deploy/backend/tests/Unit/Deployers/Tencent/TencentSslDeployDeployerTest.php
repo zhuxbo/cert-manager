@@ -1,5 +1,7 @@
 <?php
 
+use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentSslDeployDeployer;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Ssl\V20191205\Models\DeployCertificateInstanceRequest;
@@ -163,6 +165,43 @@ test('ssl-deploy region 选填：缺省时 client 空 region', function () {
     ]);
 
     expect($seenRegion)->toBe('');
+});
+
+test('G2 ssl-deploy 窗口耗尽 → 抛 DeployPollPendingException 携 recordId', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DeployCertificateInstance')->once()->andReturn(sslDeployDeployResponse(888));
+    $ssl->shouldReceive('DescribeHostDeployRecordDetail')->andReturn(sslDeployRecordDetailResponse(1, 0, 0)); // 永远 running
+
+    $deployer = tencentSslDeployDeployerWith(fn () => $ssl);
+    try {
+        $deployer->bind('cert-1', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['resource_type' => 'clb', 'instance_id_list' => 'lb-1']);
+        expect(false)->toBeTrue('应抛 poll_pending');
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('888');
+    }
+});
+
+test('G2 ssl-deploy resumePoll 续查同一 recordId：全成功收敛（不重建部署任务）', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DeployCertificateInstance')->never();
+    $ssl->shouldReceive('DescribeHostDeployRecordDetail')->once()->andReturn(sslDeployRecordDetailResponse(1, 1, 0));
+
+    $deployer = tencentSslDeployDeployerWith(fn () => $ssl);
+    $deployer->resumePoll('rec-9', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['region' => 'ap-guangzhou']);
+    expect(true)->toBeTrue();
+});
+
+test('G2 ssl-deploy resumePoll 失败子任务 → 抛业务错误（终态失败）', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DescribeHostDeployRecordDetail')->once()->andReturn(sslDeployRecordDetailResponse(2, 1, 1));
+
+    $deployer = tencentSslDeployDeployerWith(fn () => $ssl);
+    expect(fn () => $deployer->resumePoll('rec-8', ['secret_id' => 'AK', 'secret_key' => 'SK'], []))
+        ->toThrow(DeployBusinessException::class);
+});
+
+test('pollBudget bind 最坏耗时 ≤50s', function () {
+    expect((new TencentSslDeployDeployer)->pollBudget()->worstCaseBindSeconds())->toBeLessThanOrEqual(50);
 });
 
 test('ssl-deploy 轮询发现失败子任务时抛业务错误', function () {

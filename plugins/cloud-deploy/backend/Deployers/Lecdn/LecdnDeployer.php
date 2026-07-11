@@ -94,6 +94,7 @@ class LecdnDeployer extends AbstractDeployer
             'api' => new LecdnRestClient(
                 new GuzzleClient([
                     'base_uri' => "$serverUrl/prod-api/",
+                    'connect_timeout' => 10,
                     'timeout' => 30,
                     'verify' => empty($credentials['allow_insecure']),
                 ]),

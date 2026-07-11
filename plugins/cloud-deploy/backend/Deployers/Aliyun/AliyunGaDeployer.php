@@ -6,7 +6,6 @@ use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Ga\V20191120\Ga;
 use AlibabaCloud\SDK\Ga\V20191120\Models\UpdateListenerRequest;
 use AlibabaCloud\SDK\Ga\V20191120\Models\UpdateListenerRequest\certificates;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -27,6 +26,8 @@ use Throwable;
  */
 class AliyunGaDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     /** GA 全局服务，地域固定杭州（与 certimate 一致）。 */
     private const REGION_ID = 'cn-hangzhou';
 
@@ -88,20 +89,10 @@ class AliyunGaDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
-            'ga' => new Ga(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'ga.cn-hangzhou.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'ga' => new Ga($this->aliyunConfig($credentials, 'ga.cn-hangzhou.aliyuncs.com')),
         };
     }
 

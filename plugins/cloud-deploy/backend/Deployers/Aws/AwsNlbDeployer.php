@@ -20,7 +20,7 @@ use Throwable;
  */
 class AwsNlbDeployer extends AbstractDeployer
 {
-    use ResolvesAwsCertSource;
+    use BuildsAwsClientConfig, ResolvesAwsCertSource;
 
     public function provider(): string
     {
@@ -113,14 +113,7 @@ class AwsNlbDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
-        $cfg = [
-            'version' => 'latest',
-            'region' => $region !== '' ? $region : 'us-east-1',
-            'credentials' => [
-                'key' => $credentials['access_key_id'] ?? '',
-                'secret' => $credentials['secret_access_key'] ?? '',
-            ],
-        ];
+        $cfg = $this->awsClientConfig($credentials, $region);
 
         return match ($kind) {
             'acm' => new AcmClient($cfg),

@@ -76,6 +76,7 @@ class UpyunFileDeployer extends AbstractDeployer
             'api' => new UpyunRestClient(
                 new GuzzleClient([
                     'base_uri' => self::BASE_URI,
+                    'connect_timeout' => 10,
                     'timeout' => 30,
                     // 又拍云控制台账号登录拿 Cookie，jar 自动保存 Set-Cookie 并回送后续请求
                     'cookies' => new CookieJar,

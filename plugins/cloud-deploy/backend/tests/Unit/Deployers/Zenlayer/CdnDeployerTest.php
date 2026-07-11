@@ -1,5 +1,6 @@
 <?php
 
+use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
 use Plugins\CloudDeploy\Deployers\Zenlayer\ZenlayerApiException;
 use Plugins\CloudDeploy\Deployers\Zenlayer\ZenlayerCdnDeployer;
 use Plugins\CloudDeploy\Deployers\Zenlayer\ZenlayerRestClient;
@@ -157,6 +158,42 @@ test('缺 domain 配置抛业务错误', function () {
     $deployer = zenlayerCdnDeployerWith(fn () => new stdClass);
     expect(fn () => $deployer->bind('c', zenlayerCdnCreds(), []))
         ->toThrow(RuntimeException::class, '缺少配置 domain');
+});
+
+test('G2 轮询窗口耗尽（configStatus 未达 DEPLOYED）→ 脱敏 RuntimeException（可重试、非 DeployBusinessException）', function () {
+    // 状态轮询型：超窗抛 DeployTimeout 在 guardSdk 闭包内 → 被重包装为脱敏 RuntimeException（可重试，
+    // 重试/sweep 自续观察同一域名收敛，无需 jobId）。timing M2：禁断 ZenlayerApiException 原类型。
+    $client = Mockery::mock(ZenlayerRestClient::class);
+    $client->shouldReceive('call')->andReturnUsing(function (string $action) {
+        static $first = true;
+        if ($action === 'DescribeDomains') {
+            if ($first) {
+                $first = false;
+
+                return ['dataSet' => [['domainId' => 'd-1', 'domainName' => 'cdn.example.com']]];
+            }
+
+            return ['dataSet' => [['domainId' => 'd-1', 'configStatus' => 'DEPLOYING']]]; // 永不 DEPLOYED
+        }
+        if ($action === 'DescribeDomainCertificate') {
+            return ['certificate' => ['certificateId' => 'old']];
+        }
+
+        return [];
+    });
+
+    $deployer = zenlayerCdnDeployerWith(fn () => $client);
+    try {
+        $deployer->bind('cert-NEW', zenlayerCdnCreds(), ['domain' => 'cdn.example.com']);
+        expect(false)->toBeTrue('应抛超窗异常');
+    } catch (Throwable $e) {
+        expect($e)->toBeInstanceOf(RuntimeException::class)
+            ->and($e)->not->toBeInstanceOf(DeployBusinessException::class);
+    }
+});
+
+test('pollBudget bind 最坏耗时 ≤50s（T=ZenlayerRestClient::TIMEOUT_SECONDS 单一来源）', function () {
+    expect((new ZenlayerCdnDeployer)->pollBudget()->worstCaseBindSeconds())->toBeLessThanOrEqual(50);
 });
 
 test('bind SDK 抛 ZenlayerApiException 时脱敏重抛（含错误码、无 AK/PWD、不挂 previous）', function () {

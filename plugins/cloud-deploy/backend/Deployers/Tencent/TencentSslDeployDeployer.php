@@ -4,6 +4,9 @@ namespace Plugins\CloudDeploy\Deployers\Tencent;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\PollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
 use TencentCloud\Common\Credential;
 use TencentCloud\Common\Profile\ClientProfile;
 use TencentCloud\Common\Profile\HttpProfile;
@@ -33,13 +36,19 @@ use Throwable;
  * 有界轮询 DescribeHostDeployRecordDetail 直到终态（复用 TencentDeployRecordPoller）。
  * Status 固定 1（启用）。
  */
-class TencentSslDeployDeployer extends AbstractDeployer
+class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget, ResumesRemoteJob
 {
-    /** 轮询部署任务最大次数。 */
-    protected int $maxPollAttempts = 30;
+    /** SSL client 请求超时（秒）= §G2.3 预算 T 单一来源（长轮询专用；非轮询腾讯端点保持 15）。 */
+    public const CLIENT_TIMEOUT_SECONDS = 10;
+
+    /** bind 短窗首查次数（G2 压窗）：未终态即抛 DeployPollPendingException 走重试/sweep-B 续查同一 recordId。 */
+    protected int $maxPollAttempts = 2;
+
+    /** resumePoll 续查次数（无前置建任务，预算宽松）。 */
+    protected int $resumePollAttempts = 3;
 
     /** 每次轮询间隔秒数（测试子类置 0）。 */
-    protected int $pollIntervalSeconds = 10;
+    protected int $pollIntervalSeconds = 5;
 
     public function provider(): string
     {
@@ -112,7 +121,30 @@ class TencentSslDeployDeployer extends AbstractDeployer
         }
 
         // 轮询在 guardSdk 之外：终态/失败判定的业务错误需透传（不被 sanitizer 吞）
-        $this->pollDeployRecord($client, (string) $recordId);
+        $this->pollDeployRecord($client, (string) $recordId, $this->maxPollAttempts);
+    }
+
+    /**
+     * G2 续查：重试/sweep-B 复扫续查**同一** DeployRecordId（不重建部署任务）。全成功收敛；失败子任务抛
+     * DeployBusinessException；窗口耗尽抛 DeployPollPendingException（同 recordId 续期）。region 取自 config。
+     */
+    public function resumePoll(string $remoteJobId, array $credentials, array $config): void
+    {
+        /** @var SslClient $client */
+        $client = $this->makeClient('ssl', $credentials, (string) ($config['region'] ?? ''));
+        $this->pollDeployRecord($client, $remoteJobId, $this->resumePollAttempts);
+    }
+
+    public function pollBudget(): PollBudget
+    {
+        // N_upload=1（SSL UploadCertificate）+ N_pre=1（DeployCertificateInstance）
+        return new PollBudget(
+            clientTimeoutSeconds: self::CLIENT_TIMEOUT_SECONDS,
+            uploadCalls: 1,
+            preIterCalls: 1,
+            bindIterations: $this->maxPollAttempts,
+            intervalSeconds: $this->pollIntervalSeconds,
+        );
     }
 
     /**
@@ -141,11 +173,12 @@ class TencentSslDeployDeployer extends AbstractDeployer
     }
 
     /**
-     * 每次 DescribeHostDeployRecordDetail 单独 guardSdk 脱敏，终态判定的业务错误由 poller 在 guard 外抛。
+     * 每次 DescribeHostDeployRecordDetail 单独 guardSdk 脱敏；失败子任务抛 DeployBusinessException、
+     * 窗口耗尽抛 DeployPollPendingException（携 recordId、guardSdk 之外），均由 poller 在 guard 外抛。
      *
      * @param  SslClient  $client
      */
-    protected function pollDeployRecord(object $client, string $recordId): void
+    protected function pollDeployRecord(object $client, string $recordId, int $attempts): void
     {
         TencentDeployRecordPoller::poll(
             fn () => $this->guardSdk(function () use ($client, $recordId) {
@@ -154,7 +187,8 @@ class TencentSslDeployDeployer extends AbstractDeployer
 
                 return $client->DescribeHostDeployRecordDetail($req);
             }),
-            $this->maxPollAttempts,
+            $recordId,
+            $attempts,
             $this->pollIntervalSeconds,
             fn (int $seconds) => $this->sleep($seconds),
         );
@@ -171,7 +205,8 @@ class TencentSslDeployDeployer extends AbstractDeployer
     {
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
-        $http->setReqTimeout(15);
+        // 长轮询端点：请求超时收至 10s（§G2.3 预算 T；非轮询腾讯端点保持 15）。
+        $http->setReqTimeout(self::CLIENT_TIMEOUT_SECONDS);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 

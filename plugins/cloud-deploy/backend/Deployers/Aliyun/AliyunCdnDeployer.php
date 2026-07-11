@@ -4,7 +4,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 
 use AlibabaCloud\SDK\Cdn\V20180510\Cdn;
 use AlibabaCloud\SDK\Cdn\V20180510\Models\SetCdnDomainSSLCertificateRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -14,6 +13,8 @@ use Throwable;
  */
 class AliyunCdnDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -63,11 +64,7 @@ class AliyunCdnDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'cdn' => new Cdn(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'cdn.aliyuncs.com',
-            ])),
+            'cdn' => new Cdn($this->aliyunConfig($credentials, 'cdn.aliyuncs.com')),
         };
     }
 

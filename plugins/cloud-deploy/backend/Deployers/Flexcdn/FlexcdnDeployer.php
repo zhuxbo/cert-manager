@@ -77,6 +77,7 @@ class FlexcdnDeployer extends AbstractDeployer
             'api' => new FlexcdnRestClient(
                 new GuzzleClient([
                     'base_uri' => "$serverUrl/",
+                    'connect_timeout' => 10,
                     'timeout' => 30,
                     'verify' => empty($credentials['allow_insecure']),
                 ]),

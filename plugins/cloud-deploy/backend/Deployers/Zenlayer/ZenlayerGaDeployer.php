@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Zenlayer;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\PollBudget;
 use Throwable;
 
 /**
@@ -21,9 +23,14 @@ use Throwable;
  * **仅实现 DEPLOY_TARGET_ACCELERATOR**（accelerator_id 必填），与插件其他端点单目标口径一致。轮询走 sleep()
  * 注入缝（测试 no-op），上限 30 次。
  */
-class ZenlayerGaDeployer extends AbstractDeployer
+class ZenlayerGaDeployer extends AbstractDeployer implements HasPollBudget
 {
-    private const POLL_MAX_ATTEMPTS = 30;
+    /** bind 轮询 acceleratorStatus 次数（G2 压窗）：状态轮询型，超窗抛 DeployTimeout（guardSdk 内重包装为可重试
+     * RuntimeException），重试/sweep 自续观察同一加速器收敛，无需 jobId 续查。 */
+    protected int $maxPollAttempts = 1;
+
+    /** 每次轮询间隔秒数（测试子类置 0）。 */
+    protected int $pollIntervalSeconds = 5;
 
     public function provider(): string
     {
@@ -101,7 +108,7 @@ class ZenlayerGaDeployer extends AbstractDeployer
      */
     private function pollAcceleratorStatus(ZenlayerRestClient $client, string $acceleratorId): void
     {
-        for ($attempt = 0; $attempt < self::POLL_MAX_ATTEMPTS; $attempt++) {
+        for ($attempt = 0; $attempt < $this->maxPollAttempts; $attempt++) {
             $resp = $client->call('DescribeAccelerators', [
                 'acceleratorIds' => [$acceleratorId],
                 'pageNum' => 1,
@@ -120,10 +127,24 @@ class ZenlayerGaDeployer extends AbstractDeployer
                 throw new ZenlayerApiException('DeployFailed', "Zenlayer 加速器 $acceleratorId 状态异常: $status");
             }
 
-            $this->sleep(10);
+            if ($attempt < $this->maxPollAttempts - 1) {
+                $this->sleep($this->pollIntervalSeconds); // 末次不 sleep（timing M1）
+            }
         }
 
         throw new ZenlayerApiException('DeployTimeout', "Zenlayer 加速器 $acceleratorId 证书部署超时");
+    }
+
+    public function pollBudget(): PollBudget
+    {
+        // N_upload=1（CreateCertificate）+ N_pre=2（DescribeAccelerators + ModifyAcceleratorCertificate）
+        return new PollBudget(
+            clientTimeoutSeconds: ZenlayerRestClient::TIMEOUT_SECONDS,
+            uploadCalls: 1,
+            preIterCalls: 2,
+            bindIterations: $this->maxPollAttempts,
+            intervalSeconds: $this->pollIntervalSeconds,
+        );
     }
 
     /** 轮询间隔（秒）；测试 override 为 no-op。 */

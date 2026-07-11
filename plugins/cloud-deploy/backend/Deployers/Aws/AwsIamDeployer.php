@@ -19,6 +19,8 @@ use Throwable;
  */
 class AwsIamDeployer extends AbstractDeployer
 {
+    use BuildsAwsClientConfig;
+
     public function provider(): string
     {
         return 'aws';
@@ -72,16 +74,11 @@ class AwsIamDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
+        // IAM 是全局服务，但 SDK 仍要求 region；缺省回落 us-east-1（aws-global 等价）。
+        $cfg = $this->awsClientConfig($credentials, $region);
+
         return match ($kind) {
-            // IAM 是全局服务，但 SDK 仍要求 region；缺省回落 us-east-1（aws-global 等价）。
-            'iam' => new IamClient([
-                'version' => 'latest',
-                'region' => $region !== '' ? $region : 'us-east-1',
-                'credentials' => [
-                    'key' => $credentials['access_key_id'] ?? '',
-                    'secret' => $credentials['secret_access_key'] ?? '',
-                ],
-            ]),
+            'iam' => new IamClient($cfg),
         };
     }
 

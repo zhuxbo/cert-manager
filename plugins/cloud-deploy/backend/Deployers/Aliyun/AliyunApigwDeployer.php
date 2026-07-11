@@ -7,7 +7,6 @@ use AlibabaCloud\SDK\APIG\V20240327\Models\GetDomainRequest;
 use AlibabaCloud\SDK\APIG\V20240327\Models\ListDomainsRequest;
 use AlibabaCloud\SDK\APIG\V20240327\Models\UpdateDomainRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -50,6 +49,8 @@ use Throwable;
  */
 class AliyunApigwDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     /** 服务类型：云原生新版 APIG（本类实现）。 */
     private const SERVICE_TYPE_CLOUDNATIVE = 'cloudnative';
 
@@ -192,21 +193,11 @@ class AliyunApigwDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
             // 接入点：apig.{region}.aliyuncs.com（空 region 回落 cn-hangzhou，对齐 certimate）
-            'apig' => new APIG(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $this->endpointForRegion($credentials['region'] ?? ''),
-            ])),
+            'apig' => new APIG($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };
     }
 

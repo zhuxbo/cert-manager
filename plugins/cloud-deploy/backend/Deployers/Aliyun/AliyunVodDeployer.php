@@ -6,7 +6,6 @@ use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailRequest;
 use AlibabaCloud\SDK\Vod\V20170321\Models\SetVodDomainSSLCertificateRequest;
 use AlibabaCloud\SDK\Vod\V20170321\Vod;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -23,6 +22,7 @@ use Throwable;
  */
 class AliyunVodDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
     use ParsesCasCertIdentifier;
 
     public function provider(): string
@@ -93,16 +93,8 @@ class AliyunVodDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
-            'vod' => new Vod(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'vod.cn-hangzhou.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'vod' => new Vod($this->aliyunConfig($credentials, 'vod.cn-hangzhou.aliyuncs.com')),
         };
     }
 

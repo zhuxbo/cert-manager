@@ -40,6 +40,10 @@ test('Zenlayer ZGA：证书服务型（usesRemoteCertStore + storeKind zenlayer_
     expect($deployer->label())->toBe('Zenlayer 全球加速 ZGA');
 });
 
+test('pollBudget bind 最坏耗时 ≤50s（G2 计算断言）', function () {
+    expect((new ZenlayerGaDeployer)->pollBudget()->worstCaseBindSeconds())->toBeLessThanOrEqual(50);
+});
+
 test('uploader.upload 走 zga 服务 CreateCertificate 返回 certificateId', function () {
     $captured = null;
     $client = Mockery::mock(ZenlayerRestClient::class);

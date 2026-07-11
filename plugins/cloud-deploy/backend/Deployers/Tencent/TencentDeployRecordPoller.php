@@ -2,7 +2,8 @@
 
 namespace Plugins\CloudDeploy\Deployers\Tencent;
 
-use RuntimeException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 
 /**
  * 腾讯云 SSL「一键部署」任务详情轮询（DescribeHostDeployRecordDetail）的纯业务终态判定。
@@ -30,12 +31,14 @@ class TencentDeployRecordPoller
 {
     /**
      * @param  callable():object  $fetchDetail  返回一次 DescribeHostDeployRecordDetailResponse（调用方内部已 guardSdk）
+     * @param  string  $recordId  DeployRecordId（窗口耗尽时携入 DeployPollPendingException 供 resumePoll 续查）
      * @param  int  $maxAttempts  最大轮询次数
      * @param  int  $intervalSeconds  每次轮询间隔（传给 $sleeper）
      * @param  callable(int):void  $sleeper  休眠实现（测试注入 no-op）
      */
     public static function poll(
         callable $fetchDetail,
+        string $recordId,
         int $maxAttempts,
         int $intervalSeconds,
         callable $sleeper,
@@ -44,33 +47,33 @@ class TencentDeployRecordPoller
             $resp = $fetchDetail();
 
             $total = $resp->getTotalCount();
-            if ($total === null) {
-                // 任务详情未就绪（腾讯侧刚建任务尚未展开子任务），继续等待
-                $sleeper($intervalSeconds);
+            if ($total !== null) {
+                $succeeded = (int) ($resp->getSuccessTotalCount() ?? 0);
+                $failed = (int) ($resp->getFailedTotalCount() ?? 0);
+                $total = (int) $total;
 
-                continue;
-            }
+                if ($succeeded + $failed >= $total) {
+                    if ($failed > 0) {
+                        // 终态失败：抛业务错误（满足 ResumesRemoteJob 契约「终态失败抛 DeployBusinessException」→
+                        // CloudDeployJob 清 pending + 终态 + 通知，不无谓重试）。变量后紧跟中文须加花括号。
+                        throw new DeployBusinessException(
+                            "腾讯云证书部署任务存在失败子任务（成功 {$succeeded}，失败 {$failed}，共 {$total}）"
+                        );
+                    }
 
-            $succeeded = (int) ($resp->getSuccessTotalCount() ?? 0);
-            $failed = (int) ($resp->getFailedTotalCount() ?? 0);
-            $total = (int) $total;
-
-            if ($succeeded + $failed >= $total) {
-                if ($failed > 0) {
-                    // 变量后紧跟中文须加花括号（PHP 变量名匹配 \x80-\xff 字节）
-                    throw new RuntimeException(
-                        "腾讯云证书部署任务存在失败子任务（成功 {$succeeded}，失败 {$failed}，共 {$total}）"
-                    );
+                    // 全部成功，部署完成
+                    return;
                 }
-
-                // 全部成功，部署完成
-                return;
             }
+            // total===null：任务详情未就绪（腾讯侧刚建任务尚未展开子任务），继续等待
 
-            $sleeper($intervalSeconds);
+            if ($attempt < $maxAttempts - 1) {
+                $sleeper($intervalSeconds); // 末次不 sleep（回收预算，timing M1）
+            }
         }
 
-        // 轮询窗口耗尽仍未达终态：任务已提交、腾讯侧异步落地，抛业务错误让上层可见
-        throw new RuntimeException('腾讯云证书部署任务未在等待窗口内完成（任务已提交，请稍后在控制台确认部署状态）');
+        // 窗口耗尽仍未达终态：任务已提交、腾讯侧异步落地 → 携 recordId 抛 poll_pending（guardSdk 之外），
+        // 走 CloudDeployJob 重试/sweep-B resumePoll 续查同一 DeployRecordId（不重建部署任务）。
+        throw new DeployPollPendingException($recordId, '腾讯云证书部署任务处理中，待确认（任务已提交，稍后在控制台确认部署状态）');
     }
 }

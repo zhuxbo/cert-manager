@@ -94,7 +94,10 @@ class AliyunOssDeployer extends AbstractDeployer
                     ))
                     ->setSignatureVersion('v4')
                     ->setRegion($credentials['region'] ?? '')
-                    ->setEndpoint($this->endpointForRegion($credentials['region'] ?? '')),
+                    ->setEndpoint($this->endpointForRegion($credentials['region'] ?? ''))
+                    // G3：OSS V2 SDK 独立于 darabonba Config，显式设连接/读写超时（秒），防 TCP 黑洞挂起
+                    ->setConnectTimeout(5.0)
+                    ->setReadwriteTimeout(10.0),
             ),
         };
     }

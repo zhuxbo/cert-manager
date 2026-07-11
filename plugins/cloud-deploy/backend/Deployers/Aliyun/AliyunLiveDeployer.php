@@ -4,7 +4,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 
 use AlibabaCloud\SDK\Live\V20161101\Live;
 use AlibabaCloud\SDK\Live\V20161101\Models\SetLiveDomainCertificateRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -18,6 +17,8 @@ use Throwable;
  */
 class AliyunLiveDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -69,11 +70,7 @@ class AliyunLiveDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'live' => new Live(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'live.aliyuncs.com',
-            ])),
+            'live' => new Live($this->aliyunConfig($credentials, 'live.aliyuncs.com')),
         };
     }
 

@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Zenlayer;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\PollBudget;
 use Throwable;
 
 /**
@@ -20,11 +22,16 @@ use Throwable;
  * 本端点**仅实现 exact + DEPLOY_TARGET_DOMAIN**（domain 必填、精确域名），与插件其他端点「仅 exact」口径一致。
  * 轮询走 sleep() 注入缝（测试 no-op），上限 30 次（与 certimate 10s 间隔等价的有界收敛）。
  */
-class ZenlayerCdnDeployer extends AbstractDeployer
+class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
 {
     private const PAGE_SIZE = 100;
 
-    private const POLL_MAX_ATTEMPTS = 30;
+    /** bind 轮询 configStatus 次数（G2 压窗）：状态轮询型，超窗抛 DeployTimeout（guardSdk 内重包装为可重试
+     * RuntimeException），重试/sweep 自续观察同一域名收敛，无需 jobId 续查。 */
+    protected int $maxPollAttempts = 1;
+
+    /** 每次轮询间隔秒数（测试子类置 0）。 */
+    protected int $pollIntervalSeconds = 5;
 
     public function provider(): string
     {
@@ -139,8 +146,8 @@ class ZenlayerCdnDeployer extends AbstractDeployer
         // 修改域名证书
         $client->call('ModifyDomainCertificate', ['domainId' => $domainId, 'certificateId' => $certId]);
 
-        // 轮询部署状态：DEPLOYED 成功 / FAILED 报错
-        for ($attempt = 0; $attempt < self::POLL_MAX_ATTEMPTS; $attempt++) {
+        // 轮询部署状态：DEPLOYED 成功 / FAILED 报错 / 超窗抛 DeployTimeout（guardSdk 内重包装为可重试 RuntimeException）
+        for ($attempt = 0; $attempt < $this->maxPollAttempts; $attempt++) {
             $pollResp = $client->call('DescribeDomains', ['domainIds' => [$domainId], 'pageNum' => 1, 'pageSize' => 1]);
             $dataSet = is_array($pollResp['dataSet'] ?? null) ? $pollResp['dataSet'] : [];
             if ($dataSet === []) {
@@ -155,10 +162,27 @@ class ZenlayerCdnDeployer extends AbstractDeployer
                 throw new ZenlayerApiException('DeployFailed', "Zenlayer CDN 域名 $domainId 证书部署失败");
             }
 
-            $this->sleep(10);
+            if ($attempt < $this->maxPollAttempts - 1) {
+                $this->sleep($this->pollIntervalSeconds); // 末次不 sleep（timing M1）
+            }
         }
 
         throw new ZenlayerApiException('DeployTimeout', "Zenlayer CDN 域名 $domainId 证书部署超时");
+    }
+
+    public function pollBudget(): PollBudget
+    {
+        // N_upload=1（CreateCertificate）+ N_pre=3（DescribeDomains 找域名 + DescribeDomainCertificate + ModifyDomainCertificate）。
+        // 假设声明：worst=50 恰在 ≤50 边界，按「单页单匹配域名」计——DescribeDomains 分页（>100 域名）或
+        // exact 命中多个 domainId 时逐域名串行，真实最坏可超预算；接受残余：超出部分由 CloudDeployJob
+        // $timeout=55 SIGALRM 优雅兜底（状态轮询型，重试自续观察收敛，无慢性误报）。
+        return new PollBudget(
+            clientTimeoutSeconds: ZenlayerRestClient::TIMEOUT_SECONDS,
+            uploadCalls: 1,
+            preIterCalls: 3,
+            bindIterations: $this->maxPollAttempts,
+            intervalSeconds: $this->pollIntervalSeconds,
+        );
     }
 
     /** 轮询间隔（秒）；测试 override 为 no-op。 */

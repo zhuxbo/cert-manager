@@ -25,6 +25,7 @@ trait BuildsRatpanelClient
         return new RatpanelRestClient(
             new GuzzleClient([
                 'base_uri' => "$serverUrl/api/",
+                'connect_timeout' => 10,
                 'timeout' => 30,
                 'verify' => empty($credentials['allow_insecure']),
                 'headers' => ['Accept' => 'application/json'],

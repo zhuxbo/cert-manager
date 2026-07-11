@@ -20,6 +20,8 @@ use Throwable;
  */
 class AwsAcmDeployer extends AbstractDeployer
 {
+    use BuildsAwsClientConfig;
+
     public function provider(): string
     {
         return 'aws';
@@ -71,15 +73,10 @@ class AwsAcmDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
+        $cfg = $this->awsClientConfig($credentials, $region);
+
         return match ($kind) {
-            'acm' => new AcmClient([
-                'version' => 'latest',
-                'region' => $region !== '' ? $region : 'us-east-1',
-                'credentials' => [
-                    'key' => $credentials['access_key_id'] ?? '',
-                    'secret' => $credentials['secret_access_key'] ?? '',
-                ],
-            ]),
+            'acm' => new AcmClient($cfg),
         };
     }
 

@@ -4,6 +4,7 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Plugins\CloudDeploy\Jobs\CloudDeployJob;
 use Plugins\CloudDeploy\Jobs\CloudDeployTriggerJob;
@@ -45,6 +46,41 @@ test('续费：迁移原订单所有 target 到新订单并推送', function () 
 
     expect($target->fresh()->order_id)->toBe($newOrder->id); // 已迁移
     Queue::assertPushed(CloudDeployJob::class, 1);
+});
+
+test('G1 迁移跨用户守卫：prevOrder 混入他用户脏 target → 只迁同 user', function () {
+    Queue::fake();
+    $userB = User::factory()->create();
+    $accessB = CloudDeployAccess::create(['user_id' => $userB->id, 'name' => 'b', 'provider' => 'aliyun', 'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'SK']]);
+
+    $oldOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $oldCert = Cert::factory()->create(['order_id' => $oldOrder->id, 'status' => 'renewed']);
+    $newOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $newCert = Cert::factory()->create(['order_id' => $newOrder->id, 'status' => 'active', 'action' => 'renew', 'last_cert_id' => $oldCert->id]);
+    $newOrder->update(['latest_cert_id' => $newCert->id]);
+
+    // 同 user target（应迁移）
+    $tSame = CloudDeployTarget::create(['user_id' => $this->user->id, 'access_id' => $this->access->id, 'order_id' => $oldOrder->id, 'product' => 'cdn', 'config' => ['domain' => 'a'], 'enabled' => true]);
+    // 脏 target：绑在旧订单但 user_id=B（越权数据，不应迁移）
+    $tDirty = CloudDeployTarget::create(['user_id' => $userB->id, 'access_id' => $accessB->id, 'order_id' => $oldOrder->id, 'product' => 'cdn', 'config' => ['domain' => 'b'], 'enabled' => true]);
+
+    (new CloudDeployTriggerJob($newCert->id))->handle();
+
+    expect($tSame->fresh()->order_id)->toBe($newOrder->id);  // 同 user 迁移
+    expect($tDirty->fresh()->order_id)->toBe($oldOrder->id); // 跨 user 未迁移（越权守卫）
+});
+
+test('G1 failed() 记录 Log::error（续费迁移编排失败）', function () {
+    $captured = [];
+    Log::shouldReceive('error')->andReturnUsing(function (...$args) use (&$captured) {
+        $captured[] = $args;
+    });
+
+    (new CloudDeployTriggerJob(123))->failed(new RuntimeException('boom'));
+
+    expect($captured)->not->toBeEmpty();
+    expect($captured[0][0])->toContain('trigger.failed');
+    expect($captured[0][1]['cert'])->toBe(123);
 });
 
 test('已成功推过同证书的 target 被幂等跳过', function () {

@@ -5,7 +5,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Wafopenapi\V20211001\Models\ModifyDefaultHttpsRequest;
 use AlibabaCloud\SDK\Wafopenapi\V20211001\Wafopenapi;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -29,6 +28,8 @@ use Throwable;
  */
 class AliyunWafDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -89,21 +90,11 @@ class AliyunWafDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
             // 接入点：wafopenapi.{region}.aliyuncs.com（空 region 回落 cn-hangzhou）
-            'waf' => new Wafopenapi(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $region !== '' ? "wafopenapi.$region.aliyuncs.com" : 'wafopenapi.cn-hangzhou.aliyuncs.com',
-            ])),
+            'waf' => new Wafopenapi($this->aliyunConfig($credentials, $region !== '' ? "wafopenapi.$region.aliyuncs.com" : 'wafopenapi.cn-hangzhou.aliyuncs.com')),
         };
     }
 

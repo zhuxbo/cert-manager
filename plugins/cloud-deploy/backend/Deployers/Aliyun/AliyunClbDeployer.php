@@ -4,7 +4,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 
 use AlibabaCloud\SDK\Slb\V20140515\Models\SetLoadBalancerHTTPSListenerAttributeRequest;
 use AlibabaCloud\SDK\Slb\V20140515\Slb;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -26,6 +25,8 @@ use Throwable;
  */
 class AliyunClbDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -98,16 +99,10 @@ class AliyunClbDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
             // 接入点：region 化（空 region 回落中心 endpoint slb.aliyuncs.com，等价 cn-hangzhou）
-            'slb' => new Slb(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $region !== '' ? "slb.$region.aliyuncs.com" : 'slb.aliyuncs.com',
-            ])),
+            'slb' => new Slb($this->aliyunConfig($credentials, $region !== '' ? "slb.$region.aliyuncs.com" : 'slb.aliyuncs.com')),
         };
     }
 

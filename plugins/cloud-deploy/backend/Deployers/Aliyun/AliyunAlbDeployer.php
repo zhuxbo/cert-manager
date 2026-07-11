@@ -6,7 +6,6 @@ use AlibabaCloud\SDK\Alb\V20200616\Alb;
 use AlibabaCloud\SDK\Alb\V20200616\Models\UpdateListenerAttributeRequest;
 use AlibabaCloud\SDK\Alb\V20200616\Models\UpdateListenerAttributeRequest\certificates;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -24,6 +23,8 @@ use Throwable;
  */
 class AliyunAlbDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -81,20 +82,10 @@ class AliyunAlbDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object
     {
-        $ak = $credentials['access_key_id'] ?? '';
-        $sk = $credentials['access_key_secret'] ?? '';
 
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
-            'alb' => new Alb(new Config([
-                'accessKeyId' => $ak,
-                'accessKeySecret' => $sk,
-                'endpoint' => $region !== '' ? "alb.$region.aliyuncs.com" : 'alb.cn-hangzhou.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'alb' => new Alb($this->aliyunConfig($credentials, $region !== '' ? "alb.$region.aliyuncs.com" : 'alb.cn-hangzhou.aliyuncs.com')),
         };
     }
 

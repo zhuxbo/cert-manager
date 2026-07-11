@@ -34,6 +34,15 @@ class ZenlayerRestClient
 
     private const ALGORITHM = 'ZC2-HMAC-SHA256';
 
+    /** 连接超时（秒）。 */
+    public const CONNECT_TIMEOUT_SECONDS = 5;
+
+    /**
+     * 总请求超时（秒）= 10s。CDN/GA 长轮询预算算式 T 的单一来源（Zenlayer*Deployer::pollBudget 读此常量）；
+     * 改此常量即破 §G2.3 预算，CloudDeployPollBudgetTest 红。
+     */
+    public const TIMEOUT_SECONDS = 10;
+
     /**
      * @param  string  $service  服务名（进 x-zc-service + path /api/v2/{service}，大小写敏感：cdn / zga）
      * @param  string  $version  x-zc-version（cdn=2022-11-20 / zga=2023-07-06）
@@ -48,9 +57,9 @@ class ZenlayerRestClient
         ?Client $http = null,
     ) {
         $this->http = $http ?? new Client([
-            // 上游慢/挂时不让 worker 长期阻塞（与 Ksyun/Dogecloud/Baidu 锁外约定一致）。
-            RequestOptions::CONNECT_TIMEOUT => 10,
-            RequestOptions::TIMEOUT => 30,
+            // 上游慢/挂时不让 worker 长期阻塞；TIMEOUT 收至 10s（长轮询预算 T，G2.3）。
+            RequestOptions::CONNECT_TIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
+            RequestOptions::TIMEOUT => self::TIMEOUT_SECONDS,
             RequestOptions::HTTP_ERRORS => false,
         ]);
     }

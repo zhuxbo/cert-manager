@@ -6,7 +6,6 @@ use AlibabaCloud\SDK\FC\V20230330\FC;
 use AlibabaCloud\SDK\FC\V20230330\Models\CertConfig;
 use AlibabaCloud\SDK\FC\V20230330\Models\UpdateCustomDomainInput;
 use AlibabaCloud\SDK\FC\V20230330\Models\UpdateCustomDomainRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -25,6 +24,8 @@ use Throwable;
  */
 class AliyunFcDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
+
     public function provider(): string
     {
         return 'aliyun';
@@ -87,11 +88,7 @@ class AliyunFcDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'fc' => new FC(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => $this->endpointForRegion($credentials['region'] ?? ''),
-            ])),
+            'fc' => new FC($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };
     }
 

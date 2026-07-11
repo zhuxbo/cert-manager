@@ -5,7 +5,6 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Dcdn\V20180115\Dcdn;
 use AlibabaCloud\SDK\Dcdn\V20180115\Models\SetDcdnDomainSSLCertificateRequest;
-use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -18,6 +17,7 @@ use Throwable;
  */
 class AliyunDcdnDeployer extends AbstractDeployer
 {
+    use BuildsAliyunConfig;
     use ParsesCasCertIdentifier;
 
     public function provider(): string
@@ -79,16 +79,8 @@ class AliyunDcdnDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'cas' => new Cas(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'cas.aliyuncs.com',
-            ])),
-            'dcdn' => new Dcdn(new Config([
-                'accessKeyId' => $credentials['access_key_id'] ?? '',
-                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
-                'endpoint' => 'dcdn.aliyuncs.com',
-            ])),
+            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'dcdn' => new Dcdn($this->aliyunConfig($credentials, 'dcdn.aliyuncs.com')),
         };
     }
 
