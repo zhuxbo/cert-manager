@@ -306,15 +306,30 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 ### upgrade.sh 中断后的手工恢复（operator runbook）
 
-`upgrade.sh` 是 `set -e`：freeze 点火后、unfreeze 前任一危险步骤失败即退出，freeze + down 会滞留（现象：非白名单 API 503——freeze TTL 2h 后自解，但 queue worker / scheduler 停摆**不会自解**）。手工恢复顺序**必须先解冻再解维护**（与 `skills/backend/upgrade.md` 顺序契约一致；颠倒则 up 唤醒的 worker 在 freeze 下被 `release(60)` 烧 attempts）：
+`upgrade.sh` 是 `set -e`：freeze 点火后、unfreeze 前任一危险步骤失败/中断即退出。**数据侧已自动兜底**（P0-2 包U）：
+
+- **storage 自动还原**：切代码窗内把活的 `backend/storage`（含 `storage/databak` 全部本地 DB 备份）`mv` 到安装目录同文件系统的 `.upgrade-preserve-$$`；失败退出 / `Ctrl-C` / `SSH 断连`（SIGINT/TERM/HUP）均由 `cleanup` trap **先把 storage 移回原位再清理**——storage 与 databak 不丢。保留目录在持久盘（非 `/tmp`），故即便 `SIGKILL`/断电（trap 跑不了）数据也存活在 `.upgrade-preserve-*/storage`。
+- **搁浅数据入口拦截**：SIGKILL/断电后 storage 滞留 `.upgrade-preserve-*/storage` 而 `backend/storage` 缺失时，**重跑 `upgrade.sh` 会在入口被拦截并中止**（否则会新建空 storage 把真数据连同 databak 静默埋掉）。按终端指引先手工把 storage 移回、删除残留目录，再重跑：
+
+  ```bash
+  mv '<站点>/.upgrade-preserve-<pid>/storage' '<站点>/backend/storage'
+  rm -rf '<站点>/.upgrade-preserve-<pid>'
+  ```
+
+  （无 storage 子目录的空壳残留会被入口顺手清理并留痕日志，无需人工。）
+
+- **same-fs 断言**：`backend/storage` 与安装目录不在同一文件系统时（异构挂载），mv-out 前断言失败**中止升级、原地未破坏**，需调整挂载布局后重试。
+
+**服务侧仍需人工恢复**（不自动 up）：freeze + down 会滞留（现象：非白名单 API 503——freeze TTL 2h 后自解，但 queue worker / scheduler 停摆**不会自解**）。失败时终端会自动打印下述 runbook。手工恢复顺序**必须先解冻再解维护**（与 `skills/backend/upgrade.md` 顺序契约一致；颠倒则 up 唤醒的 worker 在 freeze 下被 `release(60)` 烧 attempts）。**前置条件**：先确认代码目录完整（重跑 `upgrade.sh` 至成功、或 `upgrade.sh rollback`）——不确认就 up 会把半迁移库/半新代码放给流量并唤醒 worker，比卡 freeze 更坏：
 
 ```bash
 cd <站点>/backend
-php artisan upgrade:unfreeze   # ① 先解冻
+php artisan upgrade:unfreeze   # ① 先解冻（严格先于 up）
 php artisan up                 # ② 再解除维护（恢复 worker/scheduler 消费）
+php artisan queue:restart      # ③ 重启常驻 worker
 ```
 
-随后看 `storage/upgrades/status.json` 与升级日志决定：重跑 `upgrade.sh` 或走 `upgrade.sh rollback`（rollback 自身已内置 unfreeze→up 配对）。
+随后看 `storage/upgrades/status.json` 与升级日志决定：重跑 `upgrade.sh` 或走 `upgrade.sh rollback`（rollback 新格式分支只恢复 app/config/database/routes/bootstrap + 配置文件、**不触碰 storage**，自身已内置 unfreeze→up 配对）。
 
 ### Laravel 13 升级 release 部署
 

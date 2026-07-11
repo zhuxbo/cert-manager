@@ -12,6 +12,10 @@ set -e
 # 配置
 # ========================================
 TEMP_DIR="/tmp/ssl-manager-upgrade-$$"
+# 危险窗守卫状态（trap handler 依赖；见 cleanup / perform_upgrade）
+PRESERVE_DIR="" # 保留目录绝对路径（安装目录同文件系统，非 TEMP_DIR 内）；perform_upgrade 内设定
+FREEZE_FIRED=0  # upgrade:freeze 已点火（决定失败路径是否打印恢复 runbook）
+UPGRADE_DONE=0  # 升级成功走到 artisan up 之后（避免尾部步骤失败误打 runbook）
 # release 服务 URL
 # - 部署到 release 服务时，__RELEASE_URL__ 会被替换为实际地址
 # - 如果未替换（本地运行），则需要通过 --url 参数或 version.json 配置
@@ -48,12 +52,114 @@ SCRIPT_DIR="$UPGRADE_SH_DIR/scripts"
 # ========================================
 # 工具函数
 # ========================================
-cleanup() {
-    if [ -d "$TEMP_DIR" ]; then
-        rm -rf "$TEMP_DIR"
+# 取路径所在文件系统设备号（GNU stat -c / BSD stat -f 双兼容；两者皆失败输出空）
+_fs_device() {
+    stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null || true
+}
+
+# same-fs 强制断言：storage 搬移原子性的先决门。mv 跨 fs 不报错而是静默 copy+unlink，
+# 复制窗中断会让 cleanup 用半份覆盖完好源——设备号不一致必须拦在搬移窗之前。
+_assert_storage_same_fs() {
+    local dev_install dev_storage
+    dev_install=$(_fs_device "$INSTALL_DIR")
+    dev_storage=$(_fs_device "$INSTALL_DIR/backend/storage")
+    if [ -z "$dev_install" ] || [ -z "$dev_storage" ] || [ "$dev_install" != "$dev_storage" ]; then
+        log_error "backend/storage 与安装目录不在同一文件系统（设备号 ${dev_storage:-?} vs ${dev_install:-?}），"
+        log_error "storage 搬移无法保证原子还原，已中止升级（原地未破坏）。请调整挂载布局后重试。"
+        exit 1
     fi
 }
+
+# 升级入口残留检测：上次升级被 SIGKILL/断电打断（trap 未跑）时，storage 会滞留在
+# .upgrade-preserve-<旧pid>/ 内且 backend/storage 缺失；此时继续升级会在后续步骤
+# mkdir 出全新空 storage，把真 storage（含 databak 数据库备份）静默埋掉——必须先人工恢复。
+_check_stranded_preserve() {
+    local dir
+    for dir in "$INSTALL_DIR"/.upgrade-preserve-*; do
+        [ -d "$dir" ] || continue # glob 无匹配时字面量不过 -d
+        if [ -d "$dir/storage" ]; then
+            log_error "检测到上次升级中断遗留的 storage 数据：$dir/storage"
+            log_error "继续升级会新建空 storage 并埋掉真实数据（含 databak），已中止。"
+            log_error "请先手工恢复（若 backend/storage 已存在，先人工确认其为空壳再挪开）："
+            log_error "  mv '$dir/storage' '$INSTALL_DIR/backend/storage'"
+            log_error "  rm -rf '$dir'"
+            log_error "恢复完成后重跑 upgrade.sh。"
+            exit 1
+        fi
+        # 空壳残留（storage 已被还原/消费，仅剩 .env / frontend_config / api_adapters 等副本）：清理防堆积。
+        # 「:1559 storage 移回 ~ :1591 api_adapters 还原」窄窗被打断时，preserve 仅剩 api_adapters 副本
+        # （另存于本次备份 backend.zip、可恢复）——rm 前列出内容物留痕，防静默清走无迹可查。
+        local shell_contents
+        shell_contents=$(ls -A "$dir" 2>/dev/null | tr '\n' ' ')
+        log_warning "清理上次升级遗留的空 preserve 目录: $dir（残留内容: ${shell_contents}）"
+        rm -rf "$dir"
+    done
+}
+
+# 纯还原：把 PRESERVE_DIR 里尚未移回的 storage/vendor 移回原位。
+# 返回 0 = 成功或无需还原；返回 1 = 还原失败（调用方须保留 PRESERVE_DIR、不得删）。
+_restore_preserved_storage() {
+    [ -n "$PRESERVE_DIR" ] || return 0
+    local failed=0
+    # storage 含 databak——最高优先级，成对判断「preserve 有、原位无(或空)」
+    if [ -d "$PRESERVE_DIR/storage" ]; then
+        log_warning "升级中断：还原 storage（含 databak 数据库备份）到原位..."
+        rm -rf "$INSTALL_DIR/backend/storage" 2>/dev/null || true
+        if mv "$PRESERVE_DIR/storage" "$INSTALL_DIR/backend/storage"; then
+            log_success "storage 已还原：$INSTALL_DIR/backend/storage"
+        else
+            log_error "storage 还原失败！数据仍在：$PRESERVE_DIR/storage"
+            log_error "请手工执行：mv '$PRESERVE_DIR/storage' '$INSTALL_DIR/backend/storage'"
+            failed=1
+        fi
+    fi
+    # vendor 次要（composer 可重建），但还原可省一次重装、且让 artisan 能 bootstrap
+    if [ "$failed" -eq 0 ] && [ -d "$PRESERVE_DIR/vendor" ] && [ ! -d "$INSTALL_DIR/backend/vendor" ]; then
+        mv "$PRESERVE_DIR/vendor" "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
+    fi
+    return "$failed"
+}
+
+# 升级中断后的运维恢复指引（与 skills/ops/deploy-ops.md runbook + H2 顺序契约一致）
+_print_recovery_runbook() {
+    log_error "═══════════════════════════════════════════════"
+    log_error "升级未完成，系统仍处于 freeze + 维护模式；storage 已还原（数据安全）。"
+    log_error "请先确认代码目录完整（重跑 upgrade.sh 至成功、或 upgrade.sh rollback）后再执行："
+    log_error "  cd '$INSTALL_DIR/backend'"
+    log_error "  $PHP_CMD artisan upgrade:unfreeze   # ① 先解冻（严格先于 up）"
+    log_error "  $PHP_CMD artisan up                 # ② 再解除维护（恢复 worker/scheduler）"
+    log_error "  $PHP_CMD artisan queue:restart      # ③ 重启常驻 worker"
+    log_error "随后看 storage/upgrades/status.json 与升级日志，决定重跑 upgrade.sh 或 upgrade.sh rollback。"
+    log_error "═══════════════════════════════════════════════"
+}
+
+cleanup() {
+    local rc=$?
+    # 防重入（先闭后续信号、再解 EXIT，重入窗收敛到最小；
+    # 即便极窄窗内重入，还原亦幂等——PRESERVE/storage 存在性门 + rc 首行捕获，双跑无害）
+    trap '' INT TERM HUP
+    trap - EXIT
+
+    if ! _restore_preserved_storage; then
+        # 守卫自身失败绝不吞：保留 PRESERVE_DIR（唯一副本）、只删 TEMP_DIR、非零退出
+        [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+        exit 1
+    fi
+
+    # 升级未完成且已冻结 → 打印运维恢复 runbook（不自动 up，见 _print_recovery_runbook）
+    if [ "$UPGRADE_DONE" -eq 0 ] && [ "$FREEZE_FIRED" -eq 1 ]; then
+        _print_recovery_runbook
+        # 仅打脚本 PID 的 kill 会让在途前台命令正常跑完 → rc=0；强制提升为非零，
+        # 使「已冻结但未完成」永不以 0 谎报成功（真实 Ctrl-C 打进程组 rc 已非零，不受影响）
+        [ "$rc" -eq 0 ] && rc=1
+    fi
+
+    [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+    [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] && rm -rf "$PRESERVE_DIR"
+    exit "$rc"
+}
 trap cleanup EXIT
+trap cleanup INT TERM HUP
 
 get_timestamp() {
     # 与 PHP BackupManager 格式一致：2026-01-15_021459
@@ -1358,6 +1464,11 @@ perform_upgrade() {
 
     log_step "开始升级到版本 $target_version"
 
+    # 0. 残留检测：上次升级被 SIGKILL/断电打断（trap 未跑）会把真 storage 滞留在
+    #    .upgrade-preserve-*/ 内且 backend/storage 缺失，继续升级会新建空 storage 埋掉真数据。
+    #    必须在 create_backup / down / freeze / 任何 mv 之前拦截（拦截时零服务扰动）。
+    _check_stranded_preserve
+
     # 1. 记录旧版本 composer.json 和 composer.lock hash
     local old_composer_json_hash=""
     local old_composer_lock_hash=""
@@ -1410,35 +1521,45 @@ perform_upgrade() {
     # isFrozen()=false，该窗由 storage 缺失致 app 无法 bootstrap（请求 500）兜底挡写；freeze 的 HTTP-503
     # 实际自 storage 恢复起才有效，正好罩住其后的 migrate/seed 数据危险窗。
     "$PHP_CMD" artisan upgrade:freeze --ttl=7200 || true
+    # freeze 已点火：失败/中断路径据此打印恢复 runbook（unfreeze→up→queue:restart）
+    FREEZE_FIRED=1
 
     # 6. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."
-    local preserve_dir="$TEMP_DIR/preserve"
-    mkdir -p "$preserve_dir"
+    # 保留目录放安装目录同文件系统内（非 TEMP_DIR//tmp）：
+    #   ① storage 的 mv 变原子 rename（同 fs），消除 /tmp 为 tmpfs 时的跨文件系统复制窗；
+    #   ② 不在 TEMP_DIR 内 → EXIT trap 的 rm -rf "$TEMP_DIR" 天然够不着它（守卫失败数据仍在盘上）。
+    PRESERVE_DIR="$INSTALL_DIR/.upgrade-preserve-$$"
+    mkdir -p "$PRESERVE_DIR"
 
     # 保留 .env（不保留 version.json，升级需要更新版本号）
-    [ -f "$INSTALL_DIR/backend/.env" ] && cp "$INSTALL_DIR/backend/.env" "$preserve_dir/"
+    [ -f "$INSTALL_DIR/backend/.env" ] && cp "$INSTALL_DIR/backend/.env" "$PRESERVE_DIR/"
     # 保留 storage（使用 mv 避免大目录复制失败导致数据丢失）
     # 注意：freeze 锁文件（storage/framework/upgrade.lock）随此 mv 一并移走 → 至下方恢复前
     # isFrozen()=false、HTTP-503 暂失效；此[切代码窗]靠 storage 缺失致 app 500 兜底挡写。
     if [ -d "$INSTALL_DIR/backend/storage" ]; then
-        mv "$INSTALL_DIR/backend/storage" "$preserve_dir/"
+        # 进搬移窗先决门：设备号不一致即中止（原地未破坏），杜绝 mv 跨 fs 静默 copy 半态
+        _assert_storage_same_fs
+        mv "$INSTALL_DIR/backend/storage" "$PRESERVE_DIR/" || {
+            log_error "storage 移出失败，中止升级（原地未破坏）"
+            exit 1 # → cleanup：preserve 无 storage、原位有 storage → 还原 no-op；安全
+        }
     fi
     # 保留 vendor（加速升级）
     if [ -d "$INSTALL_DIR/backend/vendor" ]; then
         log_info "保留 vendor 目录（加速升级）..."
-        mv "$INSTALL_DIR/backend/vendor" "$preserve_dir/"
+        mv "$INSTALL_DIR/backend/vendor" "$PRESERVE_DIR/"
     fi
     # frontend/web 不移动，在清理旧代码时跳过（避免脚本中断导致丢失）
     # 保留前端用户配置文件（logo、平台配置等）
-    mkdir -p "$preserve_dir/frontend_config"
+    mkdir -p "$PRESERVE_DIR/frontend_config"
     # admin: logo.svg, platform-config.json
     for file in logo.svg platform-config.json; do
-        [ -f "$INSTALL_DIR/frontend/admin/$file" ] && cp "$INSTALL_DIR/frontend/admin/$file" "$preserve_dir/frontend_config/admin_$file"
+        [ -f "$INSTALL_DIR/frontend/admin/$file" ] && cp "$INSTALL_DIR/frontend/admin/$file" "$PRESERVE_DIR/frontend_config/admin_$file"
     done
     # user: logo.svg, platform-config.json, qrcode.png
     for file in logo.svg platform-config.json qrcode.png; do
-        [ -f "$INSTALL_DIR/frontend/user/$file" ] && cp "$INSTALL_DIR/frontend/user/$file" "$preserve_dir/frontend_config/user_$file"
+        [ -f "$INSTALL_DIR/frontend/user/$file" ] && cp "$INSTALL_DIR/frontend/user/$file" "$PRESERVE_DIR/frontend_config/user_$file"
     done
     # 保留自定义 API 适配器（Order/Api 和 Acme/Api 对称扫描；按 bucket 归档避免重名冲突）
     # 跳过：核心入口 Api.php、默认实现 default/、各接口契约文件（新增接口需登记到 case 清单）
@@ -1457,8 +1578,8 @@ perform_upgrade() {
                     continue
                     ;;
             esac
-            [ "$has_custom" = false ] && mkdir -p "$preserve_dir/api_adapters/$bucket"
-            cp -r "$item" "$preserve_dir/api_adapters/$bucket/"
+            [ "$has_custom" = false ] && mkdir -p "$PRESERVE_DIR/api_adapters/$bucket"
+            cp -r "$item" "$PRESERVE_DIR/api_adapters/$bucket/"
             has_custom=true
             log_info "保留自定义 API 适配器: $bucket/$name"
         done
@@ -1548,34 +1669,37 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
 
     # 9. 恢复保留的文件
     log_step "恢复保留文件..."
-    [ -f "$preserve_dir/.env" ] && cp "$preserve_dir/.env" "$INSTALL_DIR/backend/"
+    [ -f "$PRESERVE_DIR/.env" ] && cp "$PRESERVE_DIR/.env" "$INSTALL_DIR/backend/"
     # 注意：不恢复 version.json，使用升级包中的新版本
 
     # 恢复 storage（已使用 mv 保留，直接移回）
     # freeze 锁文件随 storage 移回 → isFrozen() 重新生效，HTTP-503 有效覆盖自此刻起至 unfreeze，
     # 正好罩住其后的 migrate/seed 数据危险窗。
-    if [ -d "$preserve_dir/storage" ]; then
+    if [ -d "$PRESERVE_DIR/storage" ]; then
         rm -rf "$INSTALL_DIR/backend/storage" 2>/dev/null || true
-        mv "$preserve_dir/storage" "$INSTALL_DIR/backend/"
+        mv "$PRESERVE_DIR/storage" "$INSTALL_DIR/backend/" || {
+            log_error "storage 移回失败，交 cleanup 守卫还原"
+            exit 1 # → cleanup：preserve 仍有 storage → 守卫还原
+        }
     fi
 
     # 恢复 vendor
-    if [ -d "$preserve_dir/vendor" ]; then
-        mv "$preserve_dir/vendor" "$INSTALL_DIR/backend/"
+    if [ -d "$PRESERVE_DIR/vendor" ]; then
+        mv "$PRESERVE_DIR/vendor" "$INSTALL_DIR/backend/"
     fi
 
     # frontend/web 已在原地保留，无需恢复
 
     # 恢复前端用户配置文件
-    if [ -d "$preserve_dir/frontend_config" ]; then
+    if [ -d "$PRESERVE_DIR/frontend_config" ]; then
         log_info "恢复前端用户配置..."
         # admin
         for file in logo.svg platform-config.json; do
-            [ -f "$preserve_dir/frontend_config/admin_$file" ] && cp "$preserve_dir/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file"
+            [ -f "$PRESERVE_DIR/frontend_config/admin_$file" ] && cp "$PRESERVE_DIR/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file"
         done
         # user
         for file in logo.svg platform-config.json qrcode.png; do
-            [ -f "$preserve_dir/frontend_config/user_$file" ] && cp "$preserve_dir/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file"
+            [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] && cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file"
         done
     fi
 
@@ -1583,7 +1707,7 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     for spec in "order:Services/Order/Api" "acme:Services/Acme/Api"; do
         local bucket="${spec%%:*}"
         local rel="${spec#*:}"
-        local bucket_dir="$preserve_dir/api_adapters/$bucket"
+        local bucket_dir="$PRESERVE_DIR/api_adapters/$bucket"
         [ -d "$bucket_dir" ] && [ "$(ls -A "$bucket_dir" 2>/dev/null)" ] || continue
 
         local api_adapter_dir="$INSTALL_DIR/backend/app/$rel"
@@ -1796,6 +1920,9 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     log_step "退出维护模式..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan up
+    # 升级实质已完成（storage 已回原位、库已迁移、服务已恢复）：此后尾部步骤（queue:restart /
+    # FPM reload / nginx reload）失败均非致命，不得再打恢复 runbook。必须落在 up 与 queue:restart 之间。
+    UPGRADE_DONE=1
 
     # 14b. 重启队列 worker（让常驻 worker 跑完当前 job 后退出，supervisor 自动拉起新进程加载新代码）
     log_step "重启队列 worker..."

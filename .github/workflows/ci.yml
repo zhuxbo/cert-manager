@@ -678,3 +678,6 @@ jobs:
 
       - name: 对称副本字节等价 + redis 解析 bash↔PHP 等价
         run: bash deploy/test/test-symmetric-copies.sh
+
+      - name: upgrade storage 防删守卫 + 信号还原演练（验收⑦）
+        run: bash deploy/test/test-upgrade-preserve-guard.sh
