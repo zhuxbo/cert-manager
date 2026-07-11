@@ -36,11 +36,14 @@ test('upgrade freeze 期间所有 Schedule event 都被跳过', function () {
     foreach ($events as $event) {
         $description = $event->description ?? $event->command ?? 'unknown';
 
-        // upgrade:watchdog 是自愈命令，有意不挂 skip($skipWhenFrozen)：freeze 期必须存活
-        // （见 UpgradeWatchdogCommandTest / console.php 注释）；冻结期它仍 filtersPass=true。
-        if (str_contains((string) ($event->command ?? ''), 'upgrade:watchdog')) {
+        // 有意 freeze 存活者（不挂 skip($skipWhenFrozen)，见 console.php 注释）：
+        //   - upgrade:watchdog：升级进程死后自愈命令，freeze 期恰是它收拾残局之时；
+        //   - schedule:heartbeat：M1 心跳，freeze 期若停则 /api/health 误判 stale 503 → 拨测/外部监控误报。
+        // 二者冻结期均 filtersPass=true。
+        $command = (string) ($event->command ?? '');
+        if (str_contains($command, 'upgrade:watchdog') || str_contains($command, 'schedule:heartbeat')) {
             expect($event->filtersPass($this->app))
-                ->toBeTrue("upgrade:watchdog 必须在 freeze 期存活: $description");
+                ->toBeTrue("freeze 期存活命令必须 filtersPass=true: $description");
 
             continue;
         }

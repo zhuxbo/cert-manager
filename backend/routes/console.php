@@ -166,3 +166,16 @@ Schedule::command('upgrade:watchdog')
     ->evenInMaintenanceMode()
     ->name('upgrade-watchdog')
     ->description('升级进程死后自动解除维护/冻结（SIGKILL/OOM 自愈）');
+
+// ============================================================
+// M1 调度器心跳（P0-4.1）——继 watchdog 后第二个有意 freeze 存活者：
+//   - evenInMaintenanceMode()：与 watchdog 同款，freeze/down 全窗跳动，unfreeze 后即新鲜；
+//   - **不挂** ->skip($skipWhenFrozen)：挂了则 freeze 期心跳停 → /api/health 判 stale 503
+//     → M3 拨测/外部监控在每次升级窗误报「scheduler 死」。
+// 写 Cache::forever('schedule:heartbeat')，供 /api/health 判活；health 侧 freeze 期不评估 stale（双保险）。
+// ============================================================
+Schedule::command('schedule:heartbeat')
+    ->everyMinute()
+    ->evenInMaintenanceMode()
+    ->name('scheduler-heartbeat')
+    ->description('调度器心跳（写 Cache，供 /api/health 判活）');
