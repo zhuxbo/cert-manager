@@ -161,6 +161,19 @@ test('⑦ 反号超阈（无同号法定人数）→ 不告警', function () {
     expect($state->count)->toBe(0);
 });
 
+test('⑨ details 键名避 denylist 且值全为标量（Builder 掩码回归护栏）', function () {
+    Http::fake([
+        '*clock-a.test*' => clockResponse(200),
+        '*clock-b.test*' => clockResponse(210),
+    ]);
+    $state = clockCaptureCenter();
+
+    $this->artisan('schedule:clock-check')->assertSuccessful();
+
+    expect($state->count)->toBe(1);
+    assertSystemAlertDetailsSafe($state->captured->context['details']);
+});
+
 test('⑧ enabled=false → 不告警不请求', function () {
     config()->set('monitoring.clock.enabled', false);
     // 不 fake：preventStrayRequests 会让任何真实请求抛错，验证根本没请求

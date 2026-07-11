@@ -162,6 +162,8 @@ class VerifyUtil
                     'errors' => $result['errors'] ?? [],
                 ];
             } catch (ConnectionException $e) {
+                // 仅连接级异常做节点故障转移；其余罕见 Guzzle 异常（如重定向环）逸出本方法，
+                // 交 ValidateCommand 外层 catch(Throwable) 兜底：该单本轮跳过、next_check_at 不前移、下轮重试
                 $lastError = $e->getMessage();
                 Log::error('DNS Tools API 请求失败', [
                     'url' => $url,

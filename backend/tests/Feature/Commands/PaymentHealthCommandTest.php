@@ -51,14 +51,23 @@ function makePayCert(int $days): string
     return $pem;
 }
 
-/** 写入某支付渠道 system_setting 分组 */
+/** 字段 type 与 SettingSeeder 同源：证书/密钥字段生产为 base64 型（存 base64_encode、读经 accessor base64_decode） */
+function paySettingType(string $key): string
+{
+    return in_array($key, [
+        'appCertPublicKey', 'certPublicKeyRSA2', 'rootCert', // alipay
+        'apiclientKey', 'apiclientCert', 'publicKey', // wechat
+    ], true) ? 'base64' : 'string';
+}
+
+/** 写入某支付渠道 system_setting 分组（生产同款 type，base64 型走真实 accessor 解码路径） */
 function setPaymentGroup(string $group, array $kv): void
 {
     $g = SettingGroup::firstOrCreate(['name' => $group], ['title' => $group, 'weight' => 1]);
     foreach ($kv as $k => $v) {
         Setting::updateOrCreate(
             ['group_id' => $g->id, 'key' => $k],
-            ['type' => 'string', 'value' => $v, 'weight' => 0]
+            ['type' => paySettingType($k), 'value' => $v, 'weight' => 0]
         );
     }
     Setting::clearGroupCache($g->id);
@@ -190,4 +199,22 @@ test('⑨ rootCert 到期不触发（跳过 notAfter，只查非空）', functio
     $this->artisan('schedule:payment-health')->assertSuccessful();
 
     expect($state->count)->toBe(0);
+});
+
+test('⑩ wechat 渠道证书 <30 天 → 告警（CHANNELS 数据驱动同构直测）', function () {
+    setPaymentGroup('wechat', [
+        'mch_id' => '1600000000',
+        'mch_secret_key' => 'dummy-v3-key',
+        'apiclientKey' => 'dummy-private-key',
+        'apiclientCert' => makePayCert(10),
+    ]);
+    $state = paymentCaptureCenter();
+
+    $this->artisan('schedule:payment-health')->assertSuccessful();
+
+    expect($state->count)->toBe(1);
+    $detailsJson = json_encode($state->captured->context['details']);
+    expect($detailsJson)->toContain('wechat_expiring')
+        ->and($detailsJson)->toContain('apiclientCert')
+        ->and($detailsJson)->not->toContain('BEGIN CERTIFICATE');
 });

@@ -165,6 +165,17 @@ test('⑦ 同样失败次日不重发（指纹）、零失败日清键', functio
     expect(Cache::has('system_alert:import_product'))->toBeFalse();
 });
 
+test('⑨ details 键名避 denylist 且值全为标量（Builder 掩码回归护栏）', function () {
+    Product::factory()->create(['source' => 'test', 'api_id' => 'P1']);
+    bindImportApi(fn ($source) => ['code' => 1, 'data' => [['code' => '']]]); // 脏产品 → 告警
+    $state = importCaptureCenter();
+
+    $this->artisan('schedule:import-product')->assertSuccessful();
+
+    expect($state->count)->toBe(1);
+    assertSystemAlertDetailsSafe($state->captured->context['details']);
+});
+
 test('⑧ enabled=false → 不同步不告警', function () {
     config()->set('monitoring.import_product.enabled', false);
     $product = Product::factory()->create(['source' => 'test', 'api_id' => 'P1', 'weight' => 0]);

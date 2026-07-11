@@ -6,7 +6,7 @@ use App\Models\Order;
 use App\Services\Notification\SystemAlert;
 use Closure;
 use Illuminate\Console\Command;
-use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * E6 卡单聚合告警（P2）。
@@ -21,7 +21,7 @@ use Illuminate\Database\Eloquent\Collection;
  * （与 ReconcilePendingCommand 同源；updated_at 被 validate 每分钟刷新不稳）。
  *
  * 首跑存量为预期：查询无 created_at 下界，首次上线会把全部历史久卡单一次性计入——首封为
- * 一封聚合长邮件（count 可能上百、样本限 20），此后周去重每周至多一封直至存量被
+ * 一封聚合邮件（count 可能上百、样本限 5），此后周去重每周至多一封直至存量被
  * sync/Purge 收敛或人工处理。
  */
 class StuckOrdersCommand extends Command
@@ -34,7 +34,10 @@ class StuckOrdersCommand extends Command
 
     private const STUCK_STATUSES = ['processing', 'approving'];
 
-    private const SAMPLE_LIMIT = 20;
+    // 样本拼为单值标量串，受 SystemAlert Builder 值上限（200 字）截断约束：
+    // 5 条（约 30~40 字/条）恰好落在上限内、有效信息完整可见；再多只会被截掉（丰度假象）。
+    // total/分档计数为独立短标量不受影响。
+    private const SAMPLE_LIMIT = 5;
 
     public function handle(): int
     {
@@ -49,23 +52,24 @@ class StuckOrdersCommand extends Command
         // null/未知 validation_type 回落最长档（防误报方向）
         $fallbackDays = max($dvDays, $ovDays, $evDays);
 
-        $dv = $this->stuckOrders(fn ($q) => $q->where('validation_type', 'dv'), $dvDays);
-        $ov = $this->stuckOrders(fn ($q) => $q->where('validation_type', 'ov'), $ovDays);
-        $ev = $this->stuckOrders(fn ($q) => $q->where('validation_type', 'ev'), $evDays);
-        // 第 4 条：null/未知回落档——grouped whereNull/orWhereNotIn（裸 whereNotIn 对 NULL 行恒 false，会漏 null）
-        $other = $this->stuckOrders(function ($q) {
-            $q->where(function ($q2) {
-                $q2->whereNull('validation_type')
-                    ->orWhereNotIn('validation_type', ['dv', 'ov', 'ev']);
-            });
-        }, $fallbackDays);
-
-        $counts = [
-            'dv' => $dv->count(),
-            'ov' => $ov->count(),
-            'ev' => $ev->count(),
-            'other' => $other->count(),
+        $tiers = [
+            'dv' => [fn ($q) => $q->where('validation_type', 'dv'), $dvDays],
+            'ov' => [fn ($q) => $q->where('validation_type', 'ov'), $ovDays],
+            'ev' => [fn ($q) => $q->where('validation_type', 'ev'), $evDays],
+            // 第 4 条：null/未知回落档——grouped whereNull/orWhereNotIn（裸 whereNotIn 对 NULL 行恒 false，会漏 null）
+            'other' => [function ($q) {
+                $q->where(function ($q2) {
+                    $q2->whereNull('validation_type')
+                        ->orWhereNotIn('validation_type', ['dv', 'ov', 'ev']);
+                });
+            }, $fallbackDays],
         ];
+
+        // 计数走 SQL count()，不把全量卡单（首跑存量可能上百上千）载入内存
+        $counts = [];
+        foreach ($tiers as $tier => [$productFilter, $tierDays]) {
+            $counts[$tier] = $this->stuckOrdersQuery($productFilter, $tierDays)->count();
+        }
         $total = array_sum($counts);
 
         // 零卡单：清去重键（存量收敛后下次卡单立即告警）
@@ -75,14 +79,18 @@ class StuckOrdersCommand extends Command
             return self::SUCCESS;
         }
 
-        // 样本拍平为标量串（order_id domain 档位），键名避 denylist 子串
+        // 样本限量取出并拍平为标量串（order_id domain 档位），键名避 denylist 子串
         $sample = [];
-        foreach (['dv' => $dv, 'ov' => $ov, 'ev' => $ev, 'other' => $other] as $tier => $orders) {
+        foreach ($tiers as $tier => [$productFilter, $tierDays]) {
+            if (count($sample) >= self::SAMPLE_LIMIT) {
+                break;
+            }
+            $orders = $this->stuckOrdersQuery($productFilter, $tierDays)
+                ->with('latestCert')
+                ->limit(self::SAMPLE_LIMIT - count($sample))
+                ->get();
             foreach ($orders as $order) {
                 $sample[] = $order->id.' '.($order->latestCert->common_name ?? '').' '.$tier;
-                if (count($sample) >= self::SAMPLE_LIMIT) {
-                    break 2;
-                }
             }
         }
 
@@ -109,20 +117,18 @@ class StuckOrdersCommand extends Command
     }
 
     /**
-     * 查询某一档卡单：product 命中 $productFilter，latestCert 处于 processing/approving
-     * 且 cert.created_at 早于 now-$days 天。
+     * 某一档卡单查询：product 命中 $productFilter，latestCert 处于 processing/approving
+     * 且 cert.created_at 早于 now-$days 天。调用方按需 count() 或限量取样，避免全量入内存。
      *
-     * @return Collection<int, Order>
+     * @return Builder<Order>
      */
-    private function stuckOrders(Closure $productFilter, int $days): Collection
+    private function stuckOrdersQuery(Closure $productFilter, int $days): Builder
     {
         return Order::query()
             ->whereHas('product', $productFilter)
             ->whereHas('latestCert', function ($q) use ($days) {
                 $q->whereIn('status', self::STUCK_STATUSES)
                     ->where('created_at', '<', now()->subDays($days));
-            })
-            ->with(['latestCert', 'product'])
-            ->get();
+            });
     }
 }

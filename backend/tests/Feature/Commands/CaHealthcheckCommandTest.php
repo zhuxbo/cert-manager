@@ -118,6 +118,16 @@ test('⑥ 连续两次同样鉴权失败 → 仅 1 封（状态指纹去重）',
     expect($state->count)->toBe(1);
 });
 
+test('⑧ details 键名避 denylist 且值全为标量（Builder 掩码回归护栏）', function () {
+    caHealthFakeSdk(['code' => 0, 'msg' => 'Http status code 401']);
+    $state = caHealthCaptureCenter();
+
+    $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
+
+    expect($state->count)->toBe(1);
+    assertSystemAlertDetailsSafe($state->captured->context['details']);
+});
+
 test('⑦ enabled=false → 不探测不告警', function () {
     config()->set('monitoring.ca_healthcheck.enabled', false);
     // 绑一个「被调用即失败」的 Sdk 断言：enabled=false 时根本不该调 getProducts

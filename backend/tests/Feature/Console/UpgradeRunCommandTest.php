@@ -3,6 +3,7 @@
 use App\Console\Commands\UpgradeRunCommand;
 use App\Services\Upgrade\UpgradeStatusManager;
 use App\Utils\UpgradeFreezeLock;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Support\Facades\Artisan;
 
 /**
@@ -51,9 +52,26 @@ test('running 期 fatal：fail + 解冻 + 解维护（unfreeze 严格先于 up�
         ->and(UpgradeFreezeLock::isFrozen())->toBeTrue()
         ->and($sm->isRunning())->toBeTrue();
 
+    // 序断言（对齐 UpgradePerformUpgradeFreezeTest H2-A 的 Artisan mock 范式）：捕获 'up'
+    // 调用时刻的 isFrozen，机器验证「unfreeze 严格先于 up」而非仅终态。CommandStarting 事件
+    // 在 runningUnitTests 下被框架显式不桥接（Foundation\Console\Kernel::rerouteSymfonyCommandEvents），
+    // 故只能走 facade mock；mock 透传真实 kernel，终态断言（下方）继续观测实际落地。
+    $realKernel = app(ConsoleKernel::class);
+    $frozenAtUp = null;
+    Artisan::shouldReceive('call')->andReturnUsing(
+        function (string $command, array $parameters = []) use ($realKernel, &$frozenAtUp) {
+            if ($command === 'up' && $frozenAtUp === null) {
+                $frozenAtUp = UpgradeFreezeLock::isFrozen();
+            }
+
+            return $realKernel->call($command, $parameters);
+        }
+    );
+
     UpgradeRunCommand::handleFatalShutdown($sm, urcFatalErr());
 
     expect((new UpgradeStatusManager)->get()['status'])->toBe('failed')
+        ->and($frozenAtUp)->toBeFalse()                          // up 启动时刻 freeze 已解除（序契约；若 up 未被调则为 null 同样红）
         ->and(UpgradeFreezeLock::isFrozen())->toBeFalse()       // freeze 已清除（缺 unfreeze 时此断言红）
         ->and($this->app->isDownForMaintenance())->toBeFalse(); // 维护已解
 });

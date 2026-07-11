@@ -29,7 +29,8 @@ test('upgrade freeze 期间所有 Schedule event 都被跳过', function () {
     $schedule = $this->app->make(Schedule::class);
     $events = $schedule->events();
 
-    // 6 个 Schedule::command + 1 个 Artisan::command('inspire')->hourly()
+    // 全部 Schedule::command（E 批监控/H 批 watchdog 扩容后 18 个）+ 1 个 Artisan::command('inspire')；
+    // 断言只取下限 >=7 防注册面回退、不锁具体数量（新增命令无需改此处），逐 event 检查才是主断言
     expect(count($events))->toBeGreaterThanOrEqual(7);
 
     foreach ($events as $event) {

@@ -128,6 +128,16 @@ test('⑤ 恢复后清键、再超阈立即发', function () {
     expect($state->count)->toBe(2);
 });
 
+test('⑧ details 键名避 denylist 且值全为标量（Builder 掩码回归护栏）', function () {
+    insertFailedJobs(4, 1); // 超阈 → 告警
+    $state = failedJobsCaptureCenter();
+
+    $this->artisan('schedule:failed-jobs-check')->assertSuccessful();
+
+    expect($state->count)->toBe(1);
+    assertSystemAlertDetailsSafe($state->captured->context['details']);
+});
+
 test('⑥ enabled=false → 不告警', function () {
     config()->set('monitoring.failed_jobs.enabled', false);
     insertFailedJobs(10, 1);

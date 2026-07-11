@@ -171,7 +171,11 @@ class ValidateCommand extends Command
 
                         // F2-1 记录本轮 infra-down 观测（dnsTools 全挂→有 dns_tools_down 标记；有节点应答→无标记）
                         $infraDown = ($verified['dns_tools_down'] ?? false) === true;
-                        $infraDown ? ($sawInfraDown = true) : ($sawDnsToolsResponse = true);
+                        if ($infraDown) {
+                            $sawInfraDown = true;
+                        } else {
+                            $sawDnsToolsResponse = true;
+                        }
 
                         if ($verified['code'] == 1) {
                             // 验证成功：创建重新验证任务

@@ -40,6 +40,7 @@ function setupDnsToolsAndAdmin(): void
 /** dnsTools 全连接异常 */
 function fakeDnsToolsDown(): void
 {
+    Http::preventStrayRequests(); // 硬化：漏网 URL 直接报错，与 VerifyValidationTest 对齐
     Http::fake(['dnstool1.test/*' => fn () => throw new ConnectionException('down')]);
 }
 

@@ -266,8 +266,8 @@ class ApiController extends Controller
                     // 首语句即 ->lock()->find：第二请求在 orders 行锁上阻塞至先到者提交，随后 latestCert
                     // eager-load（独立非锁定 SELECT）在提交后才建 view → 读到 renewed/unpaid 新值被守卫挡下。
                     // 若在其前插入任何一致读（含 get_system_setting 触发的 DB 读），view 前移 → 再读见旧
-                    // active → 双开复活。与既有 commitLocked（Action.php:396-402）同构。
-                    $locked = Order::with('latestCert')->whereHas('latestCert')->lock()->find($orderId);
+                    // active → 双开复活。与既有 commitLocked（Action.php）同构。
+                    $locked = Order::with('latestCert')->whereHas('user')->whereHas('latestCert')->lock()->find($orderId);
 
                     // 【load-bearing：真正串行主体是上面 orders 行 FOR UPDATE。下面守卫与 new()/reissue()
                     //  内 initParams 的 active 校验都是行锁之上的再读（冗余防御 + 友好文案 + 早失败省一次
@@ -429,7 +429,7 @@ class ApiController extends Controller
 
         if ($count >= $threshold) {
             // 固定指纹（非默认内容指纹）：计数逐次变化会击穿 per-order 去重致每日刷屏，
-            // 传固定指纹使同一订单持续失败在 dedupe TTL 内只发一封（对齐 E5/E6 计数型调用范式）。
+            // 传固定指纹使同一订单持续失败在 dedupe TTL 内只发一封（对齐 AutoRenewCommand 固定指纹范式，防计数 churn）。
             app(SystemAlert::class)->send(
                 'deploy_callback',
                 "订单 #{$order->id} 部署回调持续失败",

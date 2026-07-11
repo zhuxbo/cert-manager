@@ -3,6 +3,7 @@
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\FundAudit\FundInvariants;
+use App\Services\Notification\Builders\SystemAlertNotificationBuilder;
 use App\Services\Payment\PaymentGateway;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -106,6 +107,26 @@ expect()->extend('toBeOne', function () {
 function something()
 {
     // ..
+}
+
+/**
+ * SystemAlert details 消费方安全护栏（监控/告警命令测试共用）：
+ * 逐键断言 ① 值为标量——非标量会被 SystemAlertNotificationBuilder 换成 [filtered:non-scalar] 占位、信息丢失；
+ * ② 键名不命中 Builder 敏感键 denylist——命中即值被掩码为 ***、运维定位信息丢失。
+ * 正则经反射读 Builder 私有常量（本体冻结、不改可见性），与实现同源不漂移。
+ */
+function assertSystemAlertDetailsSafe(array $details): void
+{
+    $pattern = (new ReflectionClassConstant(
+        SystemAlertNotificationBuilder::class,
+        'SENSITIVE_KEY_PATTERN'
+    ))->getValue();
+
+    expect($details)->not->toBeEmpty();
+    foreach ($details as $key => $value) {
+        expect(is_scalar($value))->toBeTrue("details.$key 应为标量（非标量会被 Builder 占位过滤）")
+            ->and(preg_match($pattern, (string) $key))->toBe(0, "details.$key 键名命中 Builder denylist（值会被掩码）");
+    }
 }
 
 /**
