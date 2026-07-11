@@ -3,10 +3,17 @@
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 
 // 升级 freeze 期间跳过定时任务，避免 migrate 中途运行 Command 引发错误
 $skipWhenFrozen = fn () => UpgradeFreezeLock::isFrozen();
+
+// M6：schedule 命令非零退出时落 Log::error（弱信号兜底可见性——多数命令自 catch 返 SUCCESS，
+// 主信号是 M1 心跳 + M3 拨测）。仅挂 validate/auto-renew/reconcile-pending（backup/finance/E 系自带告警）。
+$logScheduleFailure = fn (string $name) => function () use ($name) {
+    Log::error("[schedule.failed] $name 非零退出");
+};
 
 // 默认的 inspire 命令
 Artisan::command('inspire', function () {
@@ -20,7 +27,8 @@ Schedule::command('schedule:validate')
     ->everyMinute()
     ->skip($skipWhenFrozen)
     ->name('validate-certificates')
-    ->description('自动验证处理中的证书');
+    ->description('自动验证处理中的证书')
+    ->onFailure($logScheduleFailure('schedule:validate'));
 
 // 无验证信息订单同步 - 每天 9/15/21 点执行
 // 处理 dcv 或 validation 为空的 processing/approving 订单（codesign/docsign/smime 等无 DCV 产品），
@@ -62,7 +70,8 @@ Schedule::command('schedule:auto-renew')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('auto-renew-certificates')
-    ->description('自动续费/重签即将到期的证书');
+    ->description('自动续费/重签即将到期的证书')
+    ->onFailure($logScheduleFailure('schedule:auto-renew'));
 
 // 余额前瞻预警 - 每周一 09:30 执行（未来 30 天自动续费余额不足则每用户一封，预估上限）
 // 周一 09:30：错开 auto-renew 00:00 / backup 02:00 / audit 03:00，且避开 schedule:expire 的 09:00
@@ -97,7 +106,8 @@ Schedule::command('schedule:reconcile-pending')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('reconcile-pending-orders')
-    ->description('对账并重发卡在 pending 且无 api_id 的订单 commit');
+    ->description('对账并重发卡在 pending 且无 api_id 的订单 commit')
+    ->onFailure($logScheduleFailure('schedule:reconcile-pending'));
 
 // ============================================================
 // 健康监控命令群（包E：E1~E6）——freeze 期一律 skip（见计划 §0.3）

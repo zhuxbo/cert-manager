@@ -681,3 +681,6 @@ jobs:
 
       - name: upgrade storage 防删守卫 + 信号还原演练（验收⑦）
         run: bash deploy/test/test-upgrade-preserve-guard.sh
+
+      - name: upgrade cron 管理段（M3/M6 §1.5）mock 演练
+        run: bash deploy/test/test-cron-manage.sh

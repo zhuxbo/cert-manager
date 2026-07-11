@@ -94,10 +94,16 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
    ```
    /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan queue:work --queue tasks,notifications --sleep=3 --tries=3 --max-time 3600
    ```
-3. **定时任务**（宝塔 → 计划任务 → 每分钟，以 www 用户运行）：
+3. **定时任务**（宝塔 → 计划任务 → 每分钟，**以 www 用户运行**）：
    ```
-   /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan schedule:run
+   /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan schedule:run >> /www/wwwroot/ssl-manager/backend/storage/logs/schedule.log 2>&1
    ```
+4. **外部健康拨测**（宝塔 → 计划任务 → 每 5 分钟，**以 www 用户运行**）：
+   ```
+   /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan monitor:probe >> /www/wwwroot/ssl-manager/backend/storage/logs/probe.log 2>&1
+   ```
+
+> **⚠ cron 必须以 www 运行**：`schedule:run` / `monitor:probe` 勿用 root crontab 添加——root 写 file cache 后 www 的 FPM 读不到调度心跳键，`/api/health` 会误判心跳 stale/缺失（属主坑）。
 
 ### 目录结构
 
@@ -110,6 +116,45 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 ├── nginx/                    # manager.conf + render.sh + default/(受管) + custom/(自定义) + enabled/(渲染产物)，详见「nginx 路由自定义」
 └── backups/                  # 备份和升级包
 ```
+
+---
+
+## 健康监控与告警（部署必读）
+
+监控最小闭环（P0-4）：`/api/health` 判活 + 调度心跳 + 外部拨测 + 上游连通性告警，打破「告警与执行通道同生共死」。
+
+### /api/health 判活维度
+
+`GET /api/health`（无鉴权、命名空间无关、不受维护模式拦截）返回 `status` 与 `checks`：
+
+- `db`：连接探活失败 → `error`（503）。
+- `disk_free_gb`：低于 `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）。
+- `queue_lag_seconds`：redis 驱动=各队列就绪深度 + **已到期**延时之和（阈 `health.queue_depth_threshold`，默认 500 条）；database 驱动=积压秒数（阈 `health.queue_lag_threshold`，默认 600 秒）。超阈 → `error`（503）。
+- `heartbeat_age_seconds`：`schedule:heartbeat` 每分钟写 `Cache::forever`；**过旧**（> `health.heartbeat_stale_seconds`，默认 300）→ `error`（503，死 scheduler）；**缺失**（null）→ `degraded`（**200**，新装机未跑调度 / `cache:clear` 清键，不误报）。
+- **freeze 期**（升级冻结）：`queue_lag` 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止），避免升级窗误报。
+
+**F1 已知死角**：「scheduler 已死 + 之后 `cache:clear`」→ 心跳键缺失 → `degraded` 200 → 本机拨测（只对非 2xx/`status=error` 发信）**静默**。这是 `Cache::forever`+missing→degraded 换取「新装机不 503」的固有对价；**兜底靠下方外部站点监控**（无视本机 cache 状态）。
+
+### 外部站点监控（部署必选项，非可选兜底）
+
+本机 `monitor:probe` 拨测独立于 Laravel 队列，可检出 **worker 死 / scheduler 死**（打破同生共死）；但 **crond 死 / 机器死 / 断电 / PHP fatal** 层本机无内部兜底——此层唯一兜底是外部监控，同时兜 F1 死角。
+
+**部署必做**：宝塔面板 → 监控报警 / 网站监控，为本站配置外部站点监控拨测 `https://<域名>/api/health`，非 2xx 告警。存量机器升级后同样必须核对此项已配置。
+
+### 日志与轮转
+
+- `schedule:run` → `storage/logs/schedule.log`；`monitor:probe` → `storage/logs/probe.log`（不再 `>> /dev/null`，`onFailure` 弱信号兜底 + 输出可查）。
+- `bt-install.sh` / `upgrade.sh` 自动写 `/etc/logrotate.d/ssl-manager`（weekly rotate 4 compress，防日志涨满盘触发 disk_free 503）；`/etc/logrotate.d` 不可写时降级跳过（需手工轮转）。
+
+### 存量机器升级后核对清单（§1.5）
+
+`upgrade.sh` 的 cron 管理段（`update_jobs_php_path`）在升级时自动：① 修正 `schedule:run` / `monitor:probe` cron 的 PHP 绝对路径（PHP 大版本切换后不失效）；② 迁移旧 `schedule:run >> /dev/null` → `schedule.log`；③ **缺失时幂等新增 `monitor:probe` 拨测 cron**（守卫：本机确有 `schedule:run` 自管行才补发）。升级后请核对：
+
+1. 宝塔计划任务存在两条：`<域名>`（schedule:run，每分钟）+ `<目录名>-probe`（monitor:probe，每 5 分钟），均以 www 运行、输出落对应 `.log`。
+2. `/etc/logrotate.d/ssl-manager` 存在。
+3. 外部站点监控已配置。
+
+**无宝塔 API key 时**（`update_jobs_php_path` 提前 return）：以上 cron 自动管理跳过，需手工到面板核对/添加两条 cron（命令见上方「手工配置步骤」3/4）。
 
 ---
 

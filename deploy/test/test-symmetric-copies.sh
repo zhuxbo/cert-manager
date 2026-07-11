@@ -7,6 +7,8 @@
 #   ③ _read_req_field      common.sh ↔ upgrade.sh    （bash↔bash，要求字节一致）
 #   ④ _redis_required_from_env  upgrade.sh(内嵌 PHP) ↔ EnvironmentChecker::isRedisRequiredFromEnv
 #      （bash↔PHP，要求对同一批 .env 输入输出一致）
+#   ⑤ write_logrotate_conf  bt-install.sh ↔ upgrade.sh （bash↔bash，要求字节一致；
+#      P0 批次 M6 引入，写同一 /etc/logrotate.d/ssl-manager，漂移会让新装机与升级机轮转行为分叉）
 #
 # 副本是有意保留的（upgrade.sh 独立部署不 source common.sh），但 review-checklist 反模式 4 要求
 # "保留对称副本必须配 build 时 grep 等价校验 或 运行时输出等价测试，仅靠注释不够"。本脚本即该配套。
@@ -20,16 +22,19 @@ PASS=0
 FAIL=0
 
 # 提取顶层函数体：从 `^name() {$` 到该函数顶格闭合 `^}$`（含首尾两行）。
-# 顶层函数闭合 } 顶格，函数体内嵌套 } 多有缩进；但内嵌 PHP（`-r '...'` 多行单引号块）
-# 里有顶格 }（如 foreach 闭合），会被朴素 `$0 == "}"` 误判为函数结束。
-# 故跟踪单引号块状态：进入 `... -r '`（行尾为单引号）后，只有块外的顶格 } 才算函数结束。
+# 顶层函数闭合 } 顶格，函数体内嵌套 } 多有缩进；但两类多行块内也可能出现顶格 }，
+# 会被朴素 `$0 == "}"` 误判为函数结束，需按块状态豁免：
+#   - 内嵌 PHP（`-r '...'` 多行单引号块）里的顶格 }（如 foreach 闭合）；
+#   - heredoc（`<<EOF ... EOF`）里的顶格 }（如 write_logrotate_conf 的 logrotate 条目块闭合）。
 extract_fn() {
     awk -v head="$2() {" -v sq="'" '
         $0 == head { p = 1 }
         p { print }
+        p && index($0, "<<EOF") > 0 { inh = 1; next }
+        p && inh && $0 == "EOF" { inh = 0; next }
         p && index($0, "-r ") > 0 && substr($0, length($0), 1) == sq { inq = 1; next }
         p && inq && substr($0, 1, 1) == sq { inq = 0; next }
-        p && inq == 0 && $0 == "}" { exit }
+        p && inq == 0 && inh == 0 && $0 == "}" { exit }
     ' "$1"
 }
 
@@ -56,6 +61,31 @@ assert_identical() {
 assert_identical _php_pretty_version
 assert_identical _probe_any_php
 assert_identical _read_req_field
+
+# ===== ⑤ write_logrotate_conf bt-install.sh ↔ upgrade.sh 字节等价 =====
+echo ""
+echo "=== write_logrotate_conf 对称副本字节等价 (bt-install.sh ↔ upgrade.sh) ==="
+BT_INSTALL="$ROOT/deploy/scripts/bt-install.sh"
+assert_identical_files() {
+    local fn="$1" f1="$2" f2="$3" a b
+    a="$(extract_fn "$f1" "$fn")"
+    b="$(extract_fn "$f2" "$fn")"
+    # 提取自愈校验：函数体必须以顶格 } 结尾（防 heredoc/引号状态误判致截断，截断的两侧比较无意义）
+    if [ -z "$a" ] || [ -z "$b" ] || [ "${a##*$'\n'}" != "}" ] || [ "${b##*$'\n'}" != "}" ]; then
+        echo "✗ $fn：函数体提取失败或不完整（未闭合于顶格 }）"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+    if [ "$a" = "$b" ]; then
+        echo "✓ $fn：两副本字节一致"
+        PASS=$((PASS + 1))
+    else
+        echo "✗ $fn：两副本已漂移："
+        diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") || true
+        FAIL=$((FAIL + 1))
+    fi
+}
+assert_identical_files write_logrotate_conf "$BT_INSTALL" "$UPGRADE"
 
 # ===== ④ _redis_required_from_env bash↔PHP 运行时输出等价 =====
 echo ""
