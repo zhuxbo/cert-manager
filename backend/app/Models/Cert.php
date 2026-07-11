@@ -5,7 +5,12 @@ namespace App\Models;
 use App\Models\Traits\HasSnowflakeId;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
+/**
+ * @property-read Cert|null $lastCert  上一个证书（本证书由其续费/重签而来）
+ * @property-read Cert|null $nextCert  接替证书（其 last_cert_id 指向本证书）
+ */
 class Cert extends BaseModel
 {
     use HasFactory, HasSnowflakeId;
@@ -125,6 +130,17 @@ class Cert extends BaseModel
     public function lastCert(): BelongsTo
     {
         return $this->belongsTo(self::class, 'last_cert_id');
+    }
+
+    /**
+     * 获取接替证书（续费/重签产生的下一张证书，其 last_cert_id 指向本证书）。
+     *
+     * certs.last_cert_id 为 nullable UNIQUE → 至多一条接替，故 HasOne。与 lastCert() BelongsTo 同键对称，
+     * 供续期停滞检测（StalledRenewalQuery）单点表达「存在接替」，避免多处裸 whereExists 拼写漂移。
+     */
+    public function nextCert(): HasOne
+    {
+        return $this->hasOne(self::class, 'last_cert_id');
     }
 
     /**

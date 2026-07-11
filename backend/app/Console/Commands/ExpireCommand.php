@@ -11,6 +11,7 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Notification\TemplateSelector;
 use App\Services\Order\AutoRenewService;
+use App\Services\Order\StalledRenewalQuery;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -115,6 +116,37 @@ class ExpireCommand extends Command
                     ]
                 ));
                 $this->info("User $user->id email $user->email certificate expiration notification task created");
+            }
+        }
+
+        // 续期停滞孤儿提醒（cert_renew_stalled）：续费/重签把前驱证书终态化（renewed/reissued）后，接替
+        // 证书长期卡在非 active 停滞态（unpaid/pending/processing/approving/failed），前驱即将到期。此类前驱
+        // 不在上面 active 到期查询内（cert_expire 对 renewed/reissued 抑制），且 AutoRenewCommand 因 active
+        // 前置不再处理该单 → X 是唯一止血。检测经 StalledRenewalQuery 单一形态（前驱轴 + EXISTS 接替 5 态 +
+        // 48h 在途门槛 + 节点窗口），markRenewed 手工标记单无接替、结构性免疫。收件人经前驱 order->user 解析，
+        // Builder 侧重查共用同一形态（forUser 超集窗口，防异步延迟跨窗漏发）。additive 分支，既有 active 到期
+        // 查询一字不改（零回归）。
+        $stalledUserIds = app(StalledRenewalQuery::class)->forDispatch()
+            ->with('order:id,user_id')
+            ->get()
+            ->pluck('order.user_id')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        foreach ($stalledUserIds as $stalledUserId) {
+            $stalledUser = User::find($stalledUserId);
+            if ($stalledUser && $stalledUser->email) {
+                $notificationCenter->dispatch(new NotificationIntent(
+                    'cert_renew_stalled',
+                    'user',
+                    $stalledUser->id,
+                    [
+                        'email' => $stalledUser->email,
+                    ]
+                ));
+                $this->info("User $stalledUser->id email $stalledUser->email certificate renewal stalled notification task created");
             }
         }
 

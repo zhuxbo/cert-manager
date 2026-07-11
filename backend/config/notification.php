@@ -7,6 +7,7 @@ use App\Services\Notification\Builders\AutoRenewFailedNotificationBuilder;
 use App\Services\Notification\Builders\BalanceForecastNotificationBuilder;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
+use App\Services\Notification\Builders\CertRenewStalledNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
 use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
 use App\Services\Notification\Builders\SecurityNotificationBuilder;
@@ -42,6 +43,9 @@ return [
         'balance_forecast' => BalanceForecastNotificationBuilder::class,
         'cert_issued' => CertIssuedNotificationBuilder::class,
         'cert_expire' => CertExpireNotificationBuilder::class,
+        // 续期停滞孤儿提醒（续费/重签把前驱终态化后接替卡停滞态、前驱即将到期）：专用 Builder 注入
+        // site.url、按接替状态映射文案；不入 user_default_preferences（强制发，穿透用户已关的到期提醒偏好）
+        'cert_renew_stalled' => CertRenewStalledNotificationBuilder::class,
         // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）
         'acme_expire' => AcmeExpireNotificationBuilder::class,
         'task_failed' => TaskFailedNotificationBuilder::class,
