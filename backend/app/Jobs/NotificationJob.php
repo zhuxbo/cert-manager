@@ -237,28 +237,36 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
     /**
      * 最终失败兜底（末轮瞬态仍失败 / handle 抛未捕获异常时由 worker 触发）。
      *
-     * 复用行复用启发式定位最近行 → 标 FAILED 终态 + Log::error + 幂等清理该行持久化的 cleanup_paths
-     * （与 handle 内 release 前清理、MailChannel finally 清理幂等叠加，is_dir/is_file 守卫无 double-free）。
+     * Log::error 前置于 DB 操作：failed() 的典型触发路径②是 handle 建行时 DB 挂（maxExceptions=1
+     * 快失败），此时下方 resolveNotifiable/findReusableRow 再查 DB 大概率再抛。故先记结构化日志保
+     * 可观测性，再尽力定位复用行 → 标 FAILED 终态 + 幂等清理该行持久化的 cleanup_paths（与 handle 内
+     * release 前清理、MailChannel finally 清理幂等叠加，is_dir/is_file 守卫无 double-free）；DB 段包
+     * try/catch，二次 DB 异常不再上抛吞掉日志（worker 层 JobFailed 事件与 failed_jobs 行仍是兜底信号）。
      */
     public function failed(?Throwable $e = null): void
     {
-        $notifiable = $this->resolveNotifiable();
-        if ($notifiable) {
-            $row = $this->findReusableRow($notifiable);
-            if ($row) {
-                if ($row->status !== Notification::STATUS_FAILED) {
-                    $row->markAsFailed();
-                }
-                $this->cleanupPaths($row->data['_meta']['cleanup_paths'] ?? []);
-            }
-        }
-
         Log::error('[notification.dispatch.failed] 通知发送最终失败', [
             'template_id' => $this->templateId,
             'notifiable_type' => $this->notifiableType,
             'notifiable_id' => $this->notifiableId,
             'error' => $e?->getMessage(),
         ]);
+
+        try {
+            $notifiable = $this->resolveNotifiable();
+            if ($notifiable) {
+                $row = $this->findReusableRow($notifiable);
+                if ($row) {
+                    if ($row->status !== Notification::STATUS_FAILED) {
+                        $row->markAsFailed();
+                    }
+                    $this->cleanupPaths($row->data['_meta']['cleanup_paths'] ?? []);
+                }
+            }
+        } catch (Throwable $dbError) {
+            // 行定位/清理失败（如 failed() 恰因 DB 挂触发）不再上抛：日志已记于前，兜底可观测性不受损
+            app(ApiExceptions::class)->logException($dbError);
+        }
     }
 
     /**

@@ -446,6 +446,25 @@ test('M4：瞬态失败且未达上限 → release 错峰重试（不标 failed�
     expect($notification->status)->toBe(Notification::STATUS_FAILED); // 行 UI 可见
 });
 
+test('M4：瞬态失败第 2 轮起退避进 300s 档（retryDelay backoff[1]）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->once()
+            ->andReturn(['code' => 0, 'msg' => 'SMTP 抖动', 'retryable' => true]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions();
+    $job->job->attempts = 2; // 第 2 次尝试 → backoff[max(0,2-1)]=backoff[1]=300
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertReleased();
+    expect($job->job->releaseDelay)->toBe(300); // backoff[1]（60→300 档切换）
+});
+
 test('M4：永久失败 → 不 release、行 FAILED、不进 failed_jobs（防新装机风暴）', function () {
     $user = createJobUser();
     $template = createJobTemplate();
@@ -517,6 +536,25 @@ test('M4：瞬态失败 release 前清理本轮 cleanup_paths（含私钥 ZIP �
     $job->assertReleased();
     // 瞬态 release 前已清本轮 build 产物（下轮 handle 重跑 build 重生成）
     expect(is_dir($tempDir))->toBeFalse();
+});
+
+test('M4：末轮瞬态仍失败（attempts=5=tries）→ 不再 release、调 fail() 交终态兜底', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->once()
+            ->andReturn(['code' => 0, 'msg' => 'SMTP 抖动', 'retryable' => true]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions();
+    $job->job->attempts = 5; // 末轮（=tries），attempts<tries 为假 → 不 release，走 fail()
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertNotReleased(); // 末轮不再 release
+    $job->assertFailed();      // 显式 fail() → 触发 failed() 兜底（真实 worker 语义）
 });
 
 test('M4：failed() 定位行标 FAILED 终态并 Log::error 兜底', function () {

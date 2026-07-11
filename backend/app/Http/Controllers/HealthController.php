@@ -92,7 +92,7 @@ class HealthController extends Controller
      *
      * 按 config('queue.default') 分发：
      * - database：min(jobs.available_at where reserved_at IS NULL) 后 PHP 计算 time() - $min
-     * - redis：第一版只返回队列深度（Redis::llen("queues:default")），不计算时间差
+     * - redis：全队列（queue.names）就绪深度 + 已到期延时深度求和（见 queueLagRedis()）
      * - sync / 其他：返回 0
      *
      * 任何失败一律返回 0（健康检查不应因 queue 探活异常而 503）。

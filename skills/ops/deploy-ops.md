@@ -137,7 +137,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 ### 外部站点监控（部署必选项，非可选兜底）
 
-本机 `monitor:probe` 拨测独立于 Laravel 队列，可检出 **worker 死 / scheduler 死**（打破同生共死）；但 **crond 死 / 机器死 / 断电 / PHP fatal** 层本机无内部兜底——此层唯一兜底是外部监控，同时兜 F1 死角。
+本机 `monitor:probe` 拨测独立于 Laravel 队列，可检出 **worker 死 / scheduler 死**（打破同生共死）；但 **crond 死 / 机器死 / 断电 / PHP fatal** 层本机无内部兜底——此层唯一兜底是外部监控，同时兜 F1 死角。**另 `db 死` 场景**：`/api/health` 虽返 503，但本机拨测发信端要解析 admin 邮箱（查 DB）也随之失败——邮件发不出（catch 后不占去重键、每 5min 重试到 DB 恢复），故 db 故障下本机拨测邮件可能同不可用，外部监控是该层唯一可靠信号。
 
 **部署必做**：宝塔面板 → 监控报警 / 网站监控，为本站配置外部站点监控拨测 `https://<域名>/api/health`，非 2xx 告警。存量机器升级后同样必须核对此项已配置。
 
