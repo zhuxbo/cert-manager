@@ -10,7 +10,8 @@ interface ChannelInterface
     /**
      * 发送通知并返回结果
      *
-     * @return array{code: int, msg?: string} 返回格式：['code' => 1, 'msg' => '可选消息'] 成功，['code' => 0, 'msg' => '错误消息'] 失败
+     * @return array{code: int, msg?: string, retryable?: bool} 返回格式：['code' => 1, 'msg' => '可选消息'] 成功，['code' => 0, 'msg' => '错误消息'] 失败；
+     *                                                          失败可选携 retryable（true=瞬态可重试 / false 或缺省=永久不重试），由 NotificationJob 消费
      */
     public function send(Notification $notification): array;
 

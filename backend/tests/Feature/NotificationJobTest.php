@@ -15,6 +15,7 @@ use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 uses(RefreshDatabase::class)->group('database');
 
@@ -410,4 +411,138 @@ test('handles channel exception gracefully', function () {
     expect($notification->status)->toBe(Notification::STATUS_FAILED);
     expect($notification->data['result']['status'])->toBe(Notification::STATUS_FAILED);
     expect($notification->data['result']['message'])->toBe('发送失败，请稍后重试');
+});
+
+// ==========================================
+// M4：失败重试（tries=5 / maxExceptions=1 / retryable 分档 / 行复用 / release / failed）
+// ==========================================
+
+test('M4：NotificationJob tries=5 且 maxExceptions=1（幂等 ShouldQueue 约定）', function () {
+    $job = new NotificationJob('user', 1, 1, 'mail', [], DefaultNotificationBuilder::class);
+
+    expect($job->tries)->toBe(5)
+        ->and($job->maxExceptions)->toBe(1);
+});
+
+test('M4：瞬态失败且未达上限 → release 错峰重试（不标 failed）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->once()
+            ->andReturn(['code' => 0, 'msg' => 'SMTP 抖动', 'retryable' => true]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions(); // attempts=1 < tries=5
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertReleased();
+    $job->assertNotFailed();
+    expect($job->job->releaseDelay)->toBe(60); // backoff[0]
+
+    $notification = Notification::where('notifiable_id', $user->id)->first();
+    expect($notification->status)->toBe(Notification::STATUS_FAILED); // 行 UI 可见
+});
+
+test('M4：永久失败 → 不 release、行 FAILED、不进 failed_jobs（防新装机风暴）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->once()
+            ->andReturn(['code' => 0, 'msg' => '邮件服务未配置', 'retryable' => false]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertNotReleased();
+    $job->assertNotFailed();
+
+    $notification = Notification::where('notifiable_id', $user->id)->first();
+    expect($notification->status)->toBe(Notification::STATUS_FAILED)
+        ->and(DB::table('failed_jobs')->count())->toBe(0);
+});
+
+test('M4：瞬态重试多轮复用同一 notifications 行（3 轮仅 1 行）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')
+            ->andReturn(['code' => 0, 'msg' => 'SMTP 抖动', 'retryable' => true]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    // 3 轮：attempts 1→2→3，均瞬态失败；attempts>1 时复用行
+    foreach ([1, 2, 3] as $attempt) {
+        $job->job->attempts = $attempt;
+        $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+    }
+
+    expect(
+        Notification::where('notifiable_id', $user->id)
+            ->where('template_id', $template->id)
+            ->count()
+    )->toBe(1);
+});
+
+test('M4：瞬态失败 release 前清理本轮 cleanup_paths（含私钥 ZIP 不逐轮泄漏）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $tempDir = storage_path('temp-certs/test_'.uniqid());
+    mkdir($tempDir, 0755, true);
+    file_put_contents($tempDir.'/cert.zip', 'private-key-zip');
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->once()
+            ->andReturn(['code' => 0, 'msg' => 'SMTP 抖动', 'retryable' => true]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', [
+        'username' => $user->username,
+        '_meta' => ['cleanup_paths' => [$tempDir]],
+    ], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertReleased();
+    // 瞬态 release 前已清本轮 build 产物（下轮 handle 重跑 build 重生成）
+    expect(is_dir($tempDir))->toBeFalse();
+});
+
+test('M4：failed() 定位行标 FAILED 终态并 Log::error 兜底', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // 模拟 handle 已落 sending 行 + 持久化 cleanup_paths
+    $tempDir = storage_path('temp-certs/test_'.uniqid());
+    mkdir($tempDir, 0755, true);
+    file_put_contents($tempDir.'/cert.zip', 'zip');
+
+    $notification = $user->notifications()->create([
+        'template_id' => $template->id,
+        'data' => ['_meta' => ['cleanup_paths' => [$tempDir]]],
+        'status' => Notification::STATUS_SENDING,
+    ]);
+
+    Log::spy();
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class);
+    $job->failed(new RuntimeException('末轮瞬态仍失败'));
+
+    expect($notification->fresh()->status)->toBe(Notification::STATUS_FAILED)
+        ->and(is_dir($tempDir))->toBeFalse(); // failed() 幂等兜底清理
+
+    Log::shouldHaveReceived('error')
+        ->withArgs(fn ($msg) => str_contains((string) $msg, '通知发送最终失败'))
+        ->once();
 });

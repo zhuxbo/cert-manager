@@ -254,3 +254,136 @@ test('isAvailable 在 Email 未配置时返回 false', function () {
 
     expect($channel->isAvailable())->toBeFalse();
 });
+
+// ==========================================
+// M4：retryable 标记（走真实 send()，经 makeMail 注入 mock Email）
+// ==========================================
+
+/** 真实 MailChannel，但 makeMail 返回注入的 mock Email（避免真实 SMTP 连接） */
+function mailChannelWithMock(Email $mockEmail): MailChannel
+{
+    return new class($mockEmail) extends MailChannel
+    {
+        public function __construct(private Email $injected) {}
+
+        protected function makeMail(): Email
+        {
+            return $this->injected;
+        }
+    };
+}
+
+test('M4：空收件人邮箱 → retryable=false（永久，真实 send 路径）', function () {
+    $notifiable = Mockery::mock(Model::class);
+    $notifiable->shouldReceive('getAttribute')->with('email')->andReturn(null);
+    $notification = createMockNotification([], $notifiable);
+
+    $result = (new MailChannel)->send($notification);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['msg'])->toBe('收件人邮箱为空')
+        ->and($result['retryable'])->toBeFalse();
+});
+
+test('M4：邮件服务未配置 → retryable=false（永久）', function () {
+    $notifiable = Mockery::mock(Model::class);
+    $notifiable->shouldReceive('getAttribute')->with('email')->andReturn('user@example.com');
+    $notifiable->shouldReceive('getAttribute')->with('username')->andReturn('u');
+    $notification = createMockNotification(['email' => 'user@example.com'], $notifiable);
+
+    $mock = Mockery::mock(Email::class)->makePartial();
+    $mock->configured = false;
+    $mock->shouldReceive('isSMTP')->once();
+    $mock->shouldReceive('isHTML')->once();
+
+    $result = mailChannelWithMock($mock)->send($notification);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['msg'])->toBe('邮件服务未配置')
+        ->and($result['retryable'])->toBeFalse();
+});
+
+test('M4：附件不存在 → retryable=false（永久，防 ZIP 重建风暴）', function () {
+    $notifiable = Mockery::mock(Model::class);
+    $notifiable->shouldReceive('getAttribute')->with('email')->andReturn('user@example.com');
+    $notifiable->shouldReceive('getAttribute')->with('username')->andReturn('u');
+    $template = Mockery::mock(NotificationTemplate::class);
+    $template->shouldReceive('getAttribute')->with('name')->andReturn('T');
+
+    $notification = createMockNotification([
+        'email' => 'user@example.com',
+        '_meta' => [
+            'subject' => 'S',
+            'content' => 'B',
+            'attachments' => [['path' => '/tmp/nope_'.uniqid().'.pdf', 'name' => 'x.pdf']],
+        ],
+    ], $notifiable, $template);
+
+    $mock = Mockery::mock(Email::class)->makePartial();
+    $mock->configured = true;
+    $mock->shouldReceive('isSMTP')->once();
+    $mock->shouldReceive('isHTML')->once();
+    $mock->shouldReceive('addAddress')->once();
+    $mock->shouldReceive('setSubject')->once();
+
+    $result = mailChannelWithMock($mock)->send($notification);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['msg'])->toBe('邮件附件不存在或已被删除')
+        ->and($result['retryable'])->toBeFalse();
+});
+
+test('M4：SMTP send 返回 false → retryable=true（瞬态）', function () {
+    $notifiable = Mockery::mock(Model::class);
+    $notifiable->shouldReceive('getAttribute')->with('email')->andReturn('user@example.com');
+    $notifiable->shouldReceive('getAttribute')->with('username')->andReturn('u');
+    $template = Mockery::mock(NotificationTemplate::class);
+    $template->shouldReceive('getAttribute')->with('name')->andReturn('T');
+
+    $notification = createMockNotification([
+        'email' => 'user@example.com',
+        '_meta' => ['subject' => 'S', 'content' => 'B'],
+    ], $notifiable, $template);
+
+    $mock = Mockery::mock(Email::class)->makePartial();
+    $mock->configured = true;
+    $mock->ErrorInfo = 'SMTP connect failed';
+    $mock->shouldReceive('isSMTP')->once();
+    $mock->shouldReceive('isHTML')->once();
+    $mock->shouldReceive('addAddress')->once();
+    $mock->shouldReceive('setSubject')->once();
+    $mock->shouldReceive('send')->once()->andReturn(false);
+
+    $result = mailChannelWithMock($mock)->send($notification);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['retryable'])->toBeTrue()
+        ->and($result['msg'])->toContain('邮件发送失败');
+});
+
+test('M4：send 抛异常 → retryable=true（瞬态）', function () {
+    $notifiable = Mockery::mock(Model::class);
+    $notifiable->shouldReceive('getAttribute')->with('email')->andReturn('user@example.com');
+    $notifiable->shouldReceive('getAttribute')->with('username')->andReturn('u');
+    $template = Mockery::mock(NotificationTemplate::class);
+    $template->shouldReceive('getAttribute')->with('name')->andReturn('T');
+
+    $notification = createMockNotification([
+        'email' => 'user@example.com',
+        '_meta' => ['subject' => 'S', 'content' => 'B'],
+    ], $notifiable, $template);
+
+    $mock = Mockery::mock(Email::class)->makePartial();
+    $mock->configured = true;
+    $mock->shouldReceive('isSMTP')->once();
+    $mock->shouldReceive('isHTML')->once();
+    $mock->shouldReceive('addAddress')->once();
+    $mock->shouldReceive('setSubject')->once();
+    $mock->shouldReceive('send')->once()->andThrow(new RuntimeException('network down'));
+
+    $result = mailChannelWithMock($mock)->send($notification);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['retryable'])->toBeTrue()
+        ->and($result['msg'])->toBe('network down');
+});
