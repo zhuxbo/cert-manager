@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\Channels\MailChannel;
 use App\Services\Notification\SystemAlert;
+use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -979,6 +980,27 @@ test('update unpaid 仅传 order_id 不触发守卫（推进自愈路径不被�
 
     // 走 pay 分支（余额不足失败），而非被守卫拦截
     expect((string) $response->json('msg'))->not->toContain('无法变更');
+});
+
+test('update pending 仅传 order_id → commit 推进：上游超时被吞返 200 + status=pending（O3 resume 自愈形态）', function () {
+    // O3 迁移后 resume 分支端到端护栏：卡在 pending 的在途单（已扣费、api_id 空），下游仅传 order_id 触达
+    // update 的 pending 分支 → getData('commit')。上游 commit 返回 code=0（超时/失败）被 getData 吞 → 订单停
+    // pending、下游可继续 poll 自愈，非报错。锁死「pending resume 入口的 commit 吞外溢」的 O3 迁移后形态。
+    $api = Mockery::mock(Api::class);
+    // 默认 pending cert 的 action='new' → commitLocked 调 $this->api->new()；令其返回 code=0 模拟上游超时/失败
+    $api->shouldReceive('new')->andReturn(['code' => 0, 'msg' => '上游超时']);
+    app()->instance(Api::class, $api);
+
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'pending');
+
+    $response = deployPost($token, '/api/deploy/', ['order_id' => $order->id])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    // commit 被吞 → 订单停 pending（下游 poll 自愈）、api_id 仍空（未推进上游）
+    expect($response->json('data.status'))->toBe('pending')
+        ->and($cert->fresh()->status)->toBe('pending')
+        ->and($cert->fresh()->api_id)->toBeNull();
 });
 
 // ========================================

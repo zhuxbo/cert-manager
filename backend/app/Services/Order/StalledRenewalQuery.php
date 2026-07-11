@@ -46,9 +46,12 @@ class StalledRenewalQuery
      * 排除 cancelled/revoked（已终止非停滞、误报不可静音）、renewed/reissued（链延长、接替曾签发成功）、
      * expired（接替曾 active 走完生命周期）、cancelling（取消过渡态）——详见计划 X1。
      *
+     * public：CertRenewStalledNotificationBuilder 重查后对预载 nextCert 再判停滞态白名单（毫秒级 race 兜底），
+     * 复用本单一真相源，禁在 Builder 侧手写第二份 5 态清单。
+     *
      * @var string[]
      */
-    private const SUCCESSOR_STALLED_STATUSES = ['unpaid', 'pending', 'processing', 'approving', 'failed'];
+    public const SUCCESSOR_STALLED_STATUSES = ['unpaid', 'pending', 'processing', 'approving', 'failed'];
 
     /**
      * 在途年龄门槛（小时）：接替 created_at 早于此才算停滞。

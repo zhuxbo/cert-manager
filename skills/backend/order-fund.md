@@ -96,6 +96,73 @@ withMutex(string $key, Closure $cb, int $ttl = 60): mixed
 
 ---
 
+## 续费孤儿止血 + 卡单对账扩展（P0-1 包 O / P0-3 包 T）
+
+延续「API 下单韧性」的 pending 卡单对账，本批把**续费/重签**路径补齐原子性（O1~O3）、给孤儿单加自动收尾（O4）、给僵尸任务与卡单加兜底（T1/T5）。到顶/产品缺失判据全部收口到共享 `PendingReconcileQuery`（禁手抄）。cert_renew_stalled 到期止血侧见 `skills/backend/auto-renew.md`。
+
+### PendingReconcileQuery 共享判据（`Services/Order/PendingReconcileQuery.php`，单一真相源）
+
+pending 订单「到顶(maxed-out) / 产品缺失(product-missing)」判据是 reconcile 主扫描（可动作）、转人工扫描（告警）、O4 sweep 收尾（退款）三方共用的分界，**必须共用同一批 SQL 片段常量，禁止任一处手抄 `whereRaw`**——否则「哪些单已到顶」在三处漂移，造成「reconcile 判到顶告警、sweep 判未到顶不收尾」的裂缝。
+
+- **三方法正反同源**（同 `MAXED_COUNT_SUBQUERY` / `PRODUCT_MISSING_EXISTS` 片段）：`actionable()` = 未到顶 AND 无产品缺失（主扫描占 limit）；`maxedOrProductMissing()` = 到顶 OR 产品缺失（转人工告警，与 actionable 严格互补）；`maxedAndNotProductMissing()` = 到顶 AND 非产品缺失（O4 收尾退款，= 转人工集 ∩ 非 T8 产品缺失）。
+- **锚点 = latestCert.created_at**（`JOIN certs as lc`）：只统计「当前证书周期」内失败 commit task（`last_execute_at >= lc.created_at`），二次卡单不被上一张证书旧账误判到顶。**INNER JOIN 勿改 LEFT**——NULL 锚点会让 `>= lc.created_at` 恒 NULL、到顶判据静默失效。
+- **maxAttempts 参数同源硬约束**：所有调用方（含 sweep-orphan-orders）必须传 `config('reconcile.max_attempts')` 同源值，不得硬编码或读别的键——参数化本身留的漂移口子。
+- **PRODUCT_NOT_FOUND_SIGNAL 常量** `'Product not found'`：上游产品下线/删除返回（亲验 gateway V2 措辞），落 `task.result['msg']`；`matchesProductMissing()` PHP 侧用 `stripos`（与 SQL `LIKE` 在 utf8mb4\_\*\_ci 大小写不敏感口径一致）。措辞变更即失明 → 该单回退正常退避 → max_attempts 到顶转人工兜底（只慢不丢）。
+- **改动纪律**：动 `PendingReconcileQuery` 任一片段/常量/方法，必须同步核对全部消费方（`ReconcilePendingCommand` 主+转人工两扫描、`SweepOrphanOrdersCommand::sweepPending`）——类 docblock 已钉「包O 消费方契约」。
+
+### 受保护不变式：reconcile 主扫描不得加 channel 过滤
+
+`ReconcilePendingCommand` 主扫描（`actionable`）**绝不能加 `channel` 过滤**。O4 sweep-orphan-orders 限定 `channel=auto` 接手，Deploy/api 渠道的 pending 孤儿全靠本主扫描（无 channel 过滤）接住瞬态自愈；一旦加 channel 过滤 = Deploy/api 安全网静默消失。`ReconcilePendingCommandTest` 有护栏用例守此。
+
+### O1 AutoRenew 续费/重签事务化（`AutoRenewCommand::processOrder`）
+
+把「创建续费/重签 + `pay(commit=false)`」两步包进单个 `DB::transaction` 闭包保证原子：pay 段 charge 失败时，renew 已翻转的旧证书（active→renewed）+ 新订单/证书一并回滚，杜绝「旧证书 renewed 终态 + 新单卡 unpaid」的静默孤儿（P0-1 路径 1）。延时 commit 任务留**事务外** `createTask($id,'commit',$delay)`（= V2「commit 移出事务」等价）。
+
+- **ApiResponseException 流控**：`renew()/reissue()` 的 `success()` 抛 `ApiResponseException`（带 `data.order_id`）是**成功信号**——吞掉取 id；业务失败（无 order_id）rethrow `\Exception` 逸出闭包触发回滚（**勿把成功路径当失败回滚**）。pay 段 `code!==1` rethrow 逸出。
+- **attempts=1 是必需约束、非从简**：`renew()/reissue()` 入口 `checkDuplicate` 是 `Cache::add`（SETNX，10s TTL）且回滚不清缓存；若事务级重试（attempts>1），重入命中自己首轮残留键 → error → 必自败。故用 `DB::transaction` 默认 attempts=1，勿改大；死锁 → 回滚 → `processOrders` catch 兜底通知 → 次日自愈。
+- **闭包内零上游 HTTP**：new/reissue 全本地 SQL、charge 纯本地扣费；含上游的 commit 由事务外延时任务异步执行（不违反「锁内不做上游调用」红线；CSR 生成 openssl fork 落事务内但先于首个行锁）。
+
+### O2 / O3-D 余额预检实时化
+
+AutoRenew 续费预检前 `$user->refresh()`（O2）：`getRenewOrders` 一次性 `with('user')` 预载，同 user 多订单共享同一 User 实例、balance 停在查询时刻值；前序单 charge 改的是 DB 另取的行，内存实例不更新 → 不 refresh 则后续同用户单读旧值误放行（07-07 断言 1）。Deploy update（O3-D）`$order->user` 懒加载现取现读，单请求内 balance 新鲜、无需 refresh；口径与 AutoRenew 预检逐字一致（`getLatestCertAmount` + `balance + |credit_limit|` 比对，仅 renew 检查）。
+
+### O3 Deploy update 移植 V2 一条龙范式（`Deploy/ApiController::update`）
+
+active 续费分支**完整移植** V2 范式（非「只包事务」）：
+
+- **O3-A**：`pay(false)` 进 `withMutex(order_mutate_$id)` 事务，与 renew/reissue 同事务原子（charge 纯本地扣费、无上游、无嵌套 mutex → 安全嵌套），charge 失败整体回滚，杜绝「旧证书终态 + 新单卡 unpaid」孤儿（P0-1 路径 2）。
+- **O3-B**：`commit` 移到互斥锁**外**（commit 自取同键 mutex，锁内二次抢必自死锁；且 commit 含上游 HTTP，锁内不做上游调用红线）。
+- **O3-C**：`getData('commit')` 段 SDK `code=0` 超时/失败**不冒泡**（`return []`）——订单停 pending、已扣费保留，返 200+pending 展示态（下游轮询容忍，见 deploy.yaml），权威自愈 = ReconcilePendingCommand 主扫描（无 channel 过滤）+ 下游 pull `get` 条件式加速。
+- **M-2 知情不对称**：unpaid resume 分支走 `pay(autoCommit=true)`，其 `MutationBusyException` 经 `method='pay'≠'commit'` 仍上抛 503——与 active 分支 commit 段吞不对称；既有行为、有意不改（O3 范围仅 active 分支 + getData commit 段），下游重试即收敛。
+
+### O4 schedule:sweep-orphan-orders 孤儿清理（金丝雀双开关）
+
+`SweepOrphanOrdersCommand`（每小时）清理 `channel=auto` 卡死的孤儿续费/重签单，两分支各带独立金丝雀开关（分级：unpaid 无资金面默认开、pending 退款默认关待武装）：
+
+- **unpaid 分支**（`RECONCILE_ORPHAN_UNPAID_ENABLED` 默认 **true**）：stale > `orphan.unpaid_stale_minutes`（默认 60）→ `Action::delete`（恢复旧证书 active、删新单，无退款无流水；锁内只放行 unpaid，并发变更报错跳过无害）。
+- **pending 分支**（`RECONCILE_ORPHAN_PENDING_ENABLED` 默认 **false**，arm-switch）：消费 `PendingReconcileQuery::maxedAndNotProductMissing`（到顶 ∩ 非产品缺失）+ 镜像 reconcile 排除 executing commit task → `Action::cancelPending`（退款 + 恢复旧证书，四道网齐；锁内二次校验 status=pending，late-commit 推 processing 即早退不误退款）。
+- **hourly 时序**：保证每 5min 的 T5 转人工先于 pending 收尾接手，防两自动化拆台。运维武装节奏见 `skills/ops/deploy-ops.md` arm-switch 节。
+- 每单独立事务 + 一单失败不断整批。
+
+### T1 schedule:sweep-stale-tasks 僵尸任务重派（`SweepStaleTasksCommand`）
+
+僵尸 executing 任务（dispatch 后 worker 未消费、永久卡 executing 且从未执行）会 ① 压制 reconcile（`whereNotExists(executing)` 整单排除，卡单永不重发）② 静默失效（取消类任务永不退款）。本命令是二者权威兜底（每 5min）。
+
+- **扫描**：`status=executing AND started_at < now-stale_minutes`（默认 30）且 `last_execute_at 空或滞后`（未来延时任务 started_at 在未来对 threshold 恒 false → 天然排除）。
+- **收敛**：每 task 独立事务 + 单行锁（不碰 order/acme，无跨行锁序）+ CAS 复检（TaskJob 已接管则落空跳过）；观察期 `min_interval_minutes`（默认 30）内不猛派；`TaskJob::dispatch(...)->afterCommit()->onQueue(tasks)` 重派（幂等：handle 守卫 status=executing AND started_at<=now）。
+- **零迁移**：result JSON 承载 `swept_count`/`last_swept_at`。超 `max_redispatch`（默认 3）→ 置 **stopped**（非 executing 解压 reconcile、非 failed 不污染 C4 max_attempts 计数）+ swept_count 清零（admin batchStart 拉起获全新预算）+ SystemAlert `task_stale` 转人工。sweeper 不扫 stopped，无自拉起循环。
+- **T3 配套**：`Admin/TaskController::batchStart` 恢复 cancel/cancel_acme 任务必须补 `->delay($task->started_at + 3s)`——否则 job 立即消费、handle 守卫 `started_at<=now` 落空 no-op → task 永久 executing（用户取消意图静默失效）。delay 从 `$task->started_at` 取真值（跟随 120s 恢复延时），消除与硬编码双点漂移。
+
+### T5 reconcile 队头前移 + 每日快照转人工（`ReconcilePendingCommand`，与 T8 同一原子改动）
+
+- **队头前移**：到顶/产品缺失单经 `actionable()` 在主扫描 SQL 内排除，**不占 limit 名额**——否则批量产品下线/持续失败挤满窗口、饿死真正可动作卡单（队头阻塞）。
+- **两段式原子**：前移后主扫描 (a) 内不再触发到顶告警，必须由 handle 末尾转人工扫描 (b) `alertMaxedOrders` 承载（同一 handle 原子落地，否则「前移已落、告警丢失」）。(b) 消费 `maxedOrProductMissing`、不占 limit（候选=卡单终局态总量、有界）。
+- **user 逐单 + admin 每日快照**：user 复刻 C2（channel=auto+email gate、单周期一封、`task.result.reconcile_user_alerted_at` 去重、dispatch 成功后落键），文案中性化——产品缺失走「请重新选购」可行动文案、其余走「正在处理；长时间未完成将自动取消并退款」不承诺重试（因 O4 会自动取消退款）；admin 每日快照 SystemAlert `reconcile_maxed` **fingerprint 含当天日期**（吸收 M5，见 `skills/backend/notification.md`）。
+
+**测试**：`AutoRenewAtomicityTest`（O1 回滚）、`Deploy/UpdateAtomicityTest`（O3）、`SweepOrphanOrdersCommandTest`（O4 双开关 + GUARD PROBE 反向变异）、`SweepStaleTasksCommandTest`（T1 DELETE jobs 注入范式）、`ReconcilePendingCommandTest`（T5 前移 + 护栏 channel 不变式）、`Admin/TaskControllerTest`（T3 delay）。守门三独立文件登记 `tests/Support/FundAuditGuard.php`。
+
+---
+
 ## 资金确定性体系（4 道网）
 
 > **目的**：把资金安全从"LLM 审 + 单测 + 锁/事务"的**抽样**强度，升级为"DB 约束 + 应用层 CAS + 自动不变式校验"的**确定性**强度。当 LLM/审核找不到新问题、单测覆盖不到新路径时，多道独立网仍能拦住资金错账或在小时级被发现。

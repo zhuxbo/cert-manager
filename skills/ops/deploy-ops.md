@@ -156,6 +156,17 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 **无宝塔 API key 时**（`update_jobs_php_path` 提前 return）：以上 cron 自动管理跳过，需手工到面板核对/添加两条 cron（命令见上方「手工配置步骤」3/4）。
 
+### 卡单孤儿清理与 pending 退款 arm-switch（RECONCILE_ORPHAN_PENDING_ENABLED）
+
+`schedule:sweep-orphan-orders`（每小时）清理 channel=auto 卡死的孤儿续费/重签单，两分支各带独立金丝雀开关：
+
+- **unpaid 分支**（默认**开**）：超时未支付孤儿 → 删除新单、恢复旧证书 active，无退款无流水（安全，无需武装）。
+- **pending 分支**（默认**关**，env `RECONCILE_ORPHAN_PENDING_ENABLED=true` 武装）：到顶转人工（非产品缺失）孤儿 → `cancelPending` 退款 + 恢复旧证书。涉及资金动作，须观察期后再开。
+
+**开启前的人工处理节奏（观察期必读）**：pending 分支关闭期间，卡单到顶转人工由 `schedule:reconcile-pending` 承载 —— 每日发一封 `reconcile_maxed` admin 快照告警（`SystemAlert`，指纹含当天日期，列出当天全部到顶/产品缺失转人工单的 id 与计数）。运维据此**人工兑现退款**（后台对相应订单执行取消退款）；同时 reconcile 已给用户发中性通知「正在处理；若长时间未完成将自动取消并退款」——关闭期该「自动退款」承诺由人工兑现，勿漏。
+
+**武装节奏**：先连续观察若干个每日快照周期，核对转人工单的数量/形态符合预期（无异常膨胀、无本应瞬态自愈的卡单被误列），确认自动 `cancelPending` 的退款金额与恢复旧证书行为符合预期后，再置 `RECONCILE_ORPHAN_PENDING_ENABLED=true` 交由 sweep 自动兑现；开启后每日快照告警仍在，转为事后核对。
+
 ---
 
 ## nginx 路由自定义

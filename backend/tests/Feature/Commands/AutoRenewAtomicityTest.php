@@ -130,8 +130,21 @@ test('O1 成功路径：renew+pay 原子提交 —— 旧证书 renewed、新单
         ->and((float) $tx->first()->amount)->toBe(-100.0)
         ->and($user->fresh()->balance)->toBe('900.00');
 
-    // 延时 commit task 入队（tasks 队列）+ 成功不发通知
-    Queue::assertPushed(TaskJob::class, fn (TaskJob $job) => $job->queue === config('queue.names.tasks'));
+    // 延时 commit task 入队（tasks 队列）+ delay 落在随机分散窗口内（AutoRenew 分散上游）+ 成功不发通知
+    Queue::assertPushed(TaskJob::class, function (TaskJob $job) {
+        if ($job->queue !== config('queue.names.tasks')) {
+            return false;
+        }
+        // createTask：$later = random_int(0,28800)，>0 时 delay = now()+($later+3) 落 [now+4, now+28803]；
+        // $later==0（random 边界，概率 1/28801）无 delay 立即派发，亦为合法形态。断言时点 now() ≥ dispatch
+        // 时点，故 offset 上界不越 28803（无需 slack）；下界 ≥0 即「派发在未来」。
+        if ($job->delay === null) {
+            return true;
+        }
+        $offset = $job->delay->getTimestamp() - now()->getTimestamp();
+
+        return $offset >= 0 && $offset <= 28803;
+    });
     expect($intents)->toBeEmpty();
 });
 
@@ -246,13 +259,18 @@ test('O2：同用户两续费单、余额仅够一单 → 第二单预检拦截�
 
     $this->artisan('schedule:auto-renew')->assertSuccessful();
 
-    // 第一单成功续费、扣光余额
-    expect($cert1->fresh()->status)->toBe('renewed')
-        ->and($user->fresh()->balance)->toBe('0.00');
+    // 顺序无关断言（不依赖 getRenewOrders 无 orderBy 时的隐式主键序）：恰一单成功续费、一单被预检拦截。
+    $freshCerts = collect([$cert1->fresh(), $cert2->fresh()]);
+    $renewedCerts = $freshCerts->where('status', 'renewed');
+    $activeCerts = $freshCerts->where('status', 'active');
 
-    // 第二单被预检拦截：旧证书保持 active、无新单（仅旧证书一条）
-    expect($cert2->fresh()->status)->toBe('active')
-        ->and(Cert::where('order_id', $order2->id)->count())->toBe(1);
+    expect($renewedCerts)->toHaveCount(1)             // 恰一单成功续费（renewed）
+        ->and($activeCerts)->toHaveCount(1)           // 恰一单被拦（旧证书保持 active）
+        ->and($user->fresh()->balance)->toBe('0.00'); // 成功单扣光余额
+
+    // 被拦单无新证书（仅旧证书一条）——按保持 active 的那单定位，顺序无关
+    $blockedOrderId = $activeCerts->first()->order_id;
+    expect(Cert::where('order_id', $blockedOrderId)->count())->toBe(1);
 
     // 发「余额不足」通知（区别于 charge 回滚的兜底文案，证明拦在预检而非 charge）
     $reasons = collect($intents)->where('code', 'auto_renew_failed')->pluck('context.reason')->all();

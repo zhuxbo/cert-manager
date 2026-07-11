@@ -6,10 +6,10 @@
 
 | Skill           | 文件                                          | 触发场景                                                                                                      |
 | --------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| 后端·核心       | `backend/core.md`                             | 技术栈/架构/代码规范/Artisan/缓存日志/关键文件索引/测试/变异测试                                              |
-| 后端·订单资金   | `backend/order-fund.md`                       | order 级互斥锁、下单韧性、资金四道网、支付验签、退款/Purge                                                    |
+| 后端·核心       | `backend/core.md`                             | 技术栈/架构/代码规范/Artisan/缓存日志/关键文件索引/测试/变异测试/健康监控与调度心跳                           |
+| 后端·订单资金   | `backend/order-fund.md`                       | order 级互斥锁、下单韧性、资金四道网、支付验签、退款/Purge、续费孤儿止血/卡单对账                             |
 | 后端·认证安全   | `backend/auth.md`                             | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据 URL）                                                     |
-| 后端·升级       | `backend/upgrade.md`                          | 升级系统、freeze 冻结契约（unfreeze 先于 up/watchdog 自愈/备份互斥）、BinaryLocator 外部命令                  |
+| 后端·升级       | `backend/upgrade.md`                          | 升级系统、freeze 冻结契约（unfreeze 先于 up/watchdog 自愈/备份互斥）、upgrade.sh 数据防删守卫、BinaryLocator  |
 | 后端·数据库     | `backend/database.md`                         | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容                                                                    |
 | 后端·委托验证   | `backend/delegation.md`                       | 委托验证、S/MIME 验证字段                                                                                     |
 | ACME 模块       | `backend/acme-module.md`                      | ACME 协议服务端、上游对接、订阅计费、状态流转                                                                 |
@@ -21,7 +21,7 @@
 | 通知体系        | `backend/notification.md`                     | 主系统 mail + 插件通道注入、ChannelManager singleton、携密不入库、SystemAlert 运维告警（去重指纹/净化管线）   |
 | 前端开发        | `frontend/frontend-dev.md`                    | Vue 3、Monorepo、共享组件                                                                                     |
 | 插件开发        | `plugins/plugin-dev.md`                       | 插件系统、IIFE 打包、安装/更新/卸载                                                                           |
-| 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook                                                                      |
+| 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、健康监控/外部拨测/孤儿退款 arm-switch                               |
 | 构建发布        | `ops/build-release.md`                        | 版本发布、打包、CI/CD                                                                                         |
 | Review 清单     | `review-checklist.md`                         | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描                                       |
 | ACME E2E 测试   | `acme-e2e-test/`                              | certbot 端到端测试（Manager + 上游系统）                                                                      |

@@ -173,13 +173,14 @@ z11_devnull_discard() {
 
 z12_task_lockforupdate() {
     # Task:: 起头的语句聚合到分号，若链中出现 lockForUpdate 即为「Task 模型直接 FOR UPDATE」；
-    # 仅允许 Task 模型 scope 定义（app/Models/Task.php）与 TaskJob 主键锁（app/Jobs/TaskJob.php）两处，
+    # 仅允许三处：Task 模型 scope 定义（app/Models/Task.php）、TaskJob 主键锁（app/Jobs/TaskJob.php）、
+    # SweepStaleTasksCommand 主键 CAS 复检锁（主键等值单行锁与 TaskJob 同构、无间隙锁风险）；
     # 其余一律走 Task::lockForMutation scope（强制复合索引 + 统一锁顺序，防退回单列索引宽间隙锁 → 1213）。
     # 触发词是 Task:: 而非 lockForUpdate：其他模型（Order/User/Acme）的 lockForUpdate 不以 Task:: 起头，零误报；
     # Task::lockForMutation(...) 调用点不含 lockForUpdate 字面量，不误命中。
     local files
     files=$(git grep -l 'Task::' -- backend/app || true)
-    files=$(printf '%s\n' "$files" | grep -vE 'app/Models/Task\.php$|app/Jobs/TaskJob\.php$' || true)
+    files=$(printf '%s\n' "$files" | grep -vE 'app/Models/Task\.php$|app/Jobs/TaskJob\.php$|app/Console/Commands/SweepStaleTasksCommand\.php$' || true)
     [[ -z "$files" ]] && return 0
     # shellcheck disable=SC2086
     awk '/Task::/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ {

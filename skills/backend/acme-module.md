@@ -86,6 +86,29 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 > **`cancelled_at` 语义**：记录"订单已正式取消"的时间；仅在状态真正变为 cancelled/revoked 时写入，cancelling 阶段保持 null。
 
+## 卡单对账与取消退款闭合（P0-3 T6/T7）
+
+### T6 `schedule:reconcile-acme`（`ReconcileAcmeCommand`，镜像 Order reconcile）
+
+重发卡在 `pending` 且无 `api_id` 的 ACME 订单 commit（每 5 分钟，freeze 期 skip）。
+
+- **卡单成因**：`newAndCommit` / `pay+commit` 在扣费落 pending 后、上游提交完成前中断（响应丢失、进程死）。
+- **自愈**：`queueCommit` 重发同 `refer_id` → 上游 **Case A**（已成功建单、行有 EAB）幂等返回 order+EAB → `commitOrder` 回填 `api_id`/EAB/active。**Case B**（上游占位遗留、EAB 空）恒返通用可重试 msg，与瞬时并发不可区分 → **不做 msg 启发式**，只靠 `max_attempts` 有界退避 → 超限转人工（对齐排除项：manager↔上游幂等由 gateway 保证，T6 只兜 max_attempts）。
+- **cutoff 15min**：ACME 无 0~8h 延时正常态（commit 秒级），`acme_cutoff_minutes`（默认 15）远大于秒级 commit，不误触。
+- **两段式（镜像 T5）**：(a) 主扫描 `MAXED_COUNT_SUBQUERY < ?` 排除到顶（不占 limit，防批量卡单队头阻塞，锚 `acmes.created_at`——ACME 无重签周期，建单时间即锚）；(b) `alertMaxedAcmes` 到顶单逐条 SystemAlert `acme_reconcile`（固定指纹 TTL 24h→每日一封）。前移后主扫描不再触发告警，必须由 (b) 承载。
+- **仅 admin 转人工、不发 user**：ACME 无 `channel=auto` 续费语义（到期提醒属 P1-3），也无 O4 自动收尾。被 admin batchStart 重启的到顶单短暂进 (b)、每日一封外观噪音，可接受（对齐 Order alertMaxedOrders 取舍）。
+
+### T7 sync `cancelling`→上游终态补退款（`Acme\Action::sync`，D 评审孪生缺口）
+
+`sync` 的 cancelling 守卫原只堵 `(cancelling, upstream=active)` 半格；`(cancelling, upstream∈{cancelled,revoked,expired})` 三格原会写终态但**不退款**，延时 `cancel_acme` 到点撞「状态不是取消中」断死 → under-refund。T7 补退款闭合。
+
+- **锁序 task→acme（防 acme→task 反序死锁）**：上游响应终态判据用**事务外 HTTP 响应快照**（`$upstreamTerminal`，非本地行状态）决定是否先 `Task::lockForMutation($acmeId, ['cancel_acme'])`，再锁 acme 行。高频 `get` 常态 active 零 task 锁开销（仅上游终态才锁 cancel_acme，与执行条件对齐、无冗余锁）。
+- **终态判据前置 + 读写同行**：锁内重取 acme 行自身判 `status===cancelling && $upstreamTerminal`（ACME 无 latestCert 切换，天然满足「读=写同一行」红线）→ 预检 `acme_cancel` 未存在则 `refund` + 清孤儿 cancel_acme 任务（executing/stopped 二态）+ 写终态（`cancelled_at ??= now()`；有意不合并 vendor_id/period 等非状态字段，终态元数据以取消时刻为准）。
+- **N1（MUST-FIX）并发错误 rethrow 不告警**：`refund` catch 内，并发错误（`DeadlockException` 1213 / `MutationBusyException` 1205 / `causedByConcurrencyError`）**直接 rethrow、不置告警标记**，由 `runTaskMutationTransaction`（attempts=3）静默重试——**重试期零告警红线**（见 order-fund.md）。仅「终态失败」（非并发）才置 `$refundAlert`，延后到事务外一次性 SystemAlert `acme_refund`（事务已回滚、置键立即可达）。`Acme\Action` 因此 `use DetectsConcurrencyErrors`；`refund` 由 `private` 改 `protected` 供测试 Mockery 注入并发/终态异常。
+- **告警覆盖边界**：仅保证「refund 自身终态异常且重试耗尽」即时可见；其余回滚形态（refund 成功后 update 死锁耗尽）无专项告警，由 `finance:audit` daily 全量对账 + TaskJob sync failed 落库兜底。告警自身抛异常不得替换原始 `$e`（否则 TaskJob 收到的异常类型变化、破坏并发错误 release 判定）。
+
+**测试**：`ReconcileAcmeCommandTest`（T6 两段式 + maxed 不占 limit 仍告警）、`Unit/Services/Acme/ActionTest`（T7 并发错误零告警 + 终态失败事务外告警 + SQLSTATE 1213 模拟直击红线）。
+
 ## 提交通道 channel
 
 `acmes.channel` 记录订单来源通道，由创建入口决定：

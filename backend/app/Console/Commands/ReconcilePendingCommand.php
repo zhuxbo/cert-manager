@@ -60,6 +60,7 @@ class ReconcilePendingCommand extends Command
                 })
                 // 把「有 executing commit task」的订单下沉进 SQL 过滤，不占 limit 名额。与 hasExecutingCommitTask
                 // 逐字等价；shouldQueueCommit 内二次校验保留，兜住 SQL 查询与循环之间并发建 task 的竞态。
+                // cross-ref：与 SweepOrphanOrdersCommand::sweepPending 的 executing 排除语义同源，改动须两处同步。
                 ->whereNotExists(function ($query) {
                     $query->select(DB::raw(1))->from('tasks')
                         ->whereColumn('tasks.order_id', 'orders.id')

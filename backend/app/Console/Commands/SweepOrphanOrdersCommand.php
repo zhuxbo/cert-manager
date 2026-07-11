@@ -91,6 +91,7 @@ class SweepOrphanOrdersCommand extends Command
                         ->whereNull('api_id')
                         ->where('channel', 'auto');
                 })
+                // cross-ref：与 ReconcilePendingCommand::handle 的 executing 排除语义同源，改动须两处同步。
                 ->whereNotExists(function ($query) {
                     $query->select(DB::raw(1))->from('tasks')
                         ->whereColumn('tasks.order_id', 'orders.id')

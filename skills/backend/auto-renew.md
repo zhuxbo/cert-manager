@@ -39,6 +39,23 @@
 
 - `BalanceForecastCommand`（`schedule:balance-forecast`，周一 09:30，只读）：聚合每用户「未来 30 天到期 + 付费续费轨道」订单估价上限 vs 可用额（`balance + |credit_limit|`），不足则一封 `balance_forecast`（per-user 聚合、weekly 天然去重）。**权威判定单一源**：DB 粗筛（ssl 白名单 + `expires_at<now+30` + 非 api + auto 回落 + `period_till<=now+15`）+ PHP 层 `willAutoRenewExecute` 过滤，排除免费重签单（消除系统性高估）。`required` 是**预估上限**（委托将失败单仍计入），文案「预计最多需要」。三件套：`BalanceForecastNotificationBuilder` + seeder 模板 + config builder；**不入 `user_default_preferences`**（强制发，比照 `auto_renew_failed`，前端零改动）。JSON 查询助手 `whereJsonBoolEq`/`whereJsonKeyMissing` 抽入 `Concerns\QueriesUserJsonSettings` trait 两命令共用
 
+## 续费事务化与余额预检（O1/O2/O3，P0-1 包 O）
+
+- **O1 事务原子**：`processOrder` 把「创建续费/重签 + `pay(false)`」包进单个 `DB::transaction`，pay 段 charge 失败连同已翻转的旧证书（active→renewed）+ 新单一并回滚，杜绝「旧证书 renewed 终态 + 新单卡 unpaid」静默孤儿（P0-1 路径 1）；延时 commit 移**事务外**。**attempts=1 必需**（`checkDuplicate` SETNX 回滚不清键，事务级重试必自败）；`success()` 抛 `ApiResponseException` 是成功信号（取 order_id）、业务失败 rethrow 触发回滚。
+- **O2 余额预检实时化**：续费预检前 `$user->refresh()` 消 00:00 `with('user')` 预载的 stale balance（同用户多单共享内存实例、前序单 charge 改的是 DB 另取行）。
+- 事务边界 / O3 Deploy update 移植 / O4 sweep-orphan-orders 孤儿收尾 / PendingReconcileQuery 共享判据详见 `skills/backend/order-fund.md`「续费孤儿止血 + 卡单对账扩展」。
+
+## 续期停滞孤儿止血（cert_renew_stalled，P0-1 包 X）
+
+续费/重签把前驱证书**终态化**（renewed/reissued）后，接替证书长期卡在非 active 停滞态、前驱即将到期——`cert_expire` 对 renewed/reissued 前驱抑制、AutoRenew 因 active 前置不再处理 → 这是审计四条 critical 触发路径的**唯一止血**（尤其路径 3：DCV 长期不过的 processing 形态）。
+
+- **证书为轴、前驱侧扫描**（`Services/Order/StalledRenewalQuery`，非审计字面反查）：前驱状态集 `{renewed,reissued}` + `whereHas('nextCert', 停滞 5 态 + 48h 门槛)`。`Cert::nextCert`（HasOne，`last_cert_id` nullable UNIQUE → 至多一条接替）单点表达「存在接替」，避免多处裸 `whereExists` 拼写漂移。
+- **接替 5 态**（`SUCCESSOR_STALLED_STATUSES`，「非 active」的显式工程化非字面 `!= 'active'`）：`unpaid`（pay 前中断未扣费）/ `pending`（commit 卡单已扣费）/ `processing`/`approving`（DCV/审核长期不过已扣费）/ `failed`（CA 拒签终态）。排除 cancelled/revoked（已终止非停滞、误报不可静音）、renewed/reissued（链延长、接替曾签发）、expired（接替曾 active 走完生命周期）、cancelling（过渡态）。
+- **48h 在途年龄门槛**（`IN_FLIGHT_AGE_HOURS`）：接替 `created_at` 早于此才算停滞。挡两类误报——① 健康在途（续费当天创建当天 processing 正常、手工单跨日完成 DCV）② `auto_renew_failed` 当日重叠。对主人群（到期前 14 天建单的自动续费孤儿）首封恒落 node-7（age≫48h），零节点代价。
+- **markRenewed 结构性免疫**：手工标记单**无接替链**（nextCert EXISTS 恒 falsy）→ 结构性排除，绝不对存量已续签客户群发（比审计字面反查更强的双向互斥）。已完成续签接替=active（不在 5 态集）同理排除。
+- **节点窗口复发**：派发侧 `forDispatch` 施加离散节点窗口（14/7/3/1，防每日重复），停滞持续则随前驱逼近到期在各节点复发提醒。收件人经前驱 `order->user` 解析（certs 表无 user_id：续费前驱在旧订单、重签前驱在同订单，均正确指向本人）。三件套 / 双侧同源 / 5 态文案见 `skills/backend/notification.md`。
+- **与 O4 时序三 regime**：pending 卡单同时被 X（到期止血提醒）与 O4（arm 后自动取消退款）覆盖——**关闭期** X node-7/3/1 + T5 user 中性通知接住；**开启期** O4 到顶自动 `cancelPending` 后接替转 cancelled/删除（脱离 5 态）、X 自然停发；**armed 窄窗** X 与 O4 无冲突（X 只提醒不改状态）。
+
 ## 手工标记已续费
 
 - （`Order\Action::markRenewed`，admin/user 双端）：**订单到期前 30 天内**（按 `orders.period_till` 判定、非单张 `cert.expires_at`，与手工续费 gate 的 `period_till>now+30` 一致）、仅 active 证书可手工标记 `renewed` 终态。场景：用户**另开新订单**续了证书 → 标旧订单 `renewed` 止住到期通知+自动续费；"原订单内重签"靠重签后 expires_at 推远自动止通知、无需本操作。不用 cert.expires_at：多年期/中途重签订单证书将到期但订单未到期，会被自动重签接管（ExpireCommand 的 willBeHandledByAutoRenew 已排除其到期通知），不应允许标记。事务+行锁+锁内二次校验，User 端 UserScope 限本人
@@ -78,7 +95,7 @@
 
 ### AutoRenewCommand 执行流程
 
-**调度配置**：每小时执行（`routes/console.php`）
+**调度配置**：每天 00:00 执行（`routes/console.php`），commit 延时分散 0~8h
 
 **执行步骤**：
 
@@ -102,8 +119,9 @@
    - 强制使用 `delegation` 验证方法
    - 调用 `Action::renew()` 或 `Action::reissue()`
 
-4. `autoPayAndCommit()` 自动支付提交：
-   - 调用 `Action::pay($orderId, true)` 完成支付并提交到 CA
+4. 支付 + 延时提交（O1 事务化后）：
+   - 「创建续费/重签 + `Action::pay($orderId, false)`」包进单个 `DB::transaction`（原子，charge 失败连同旧证书翻转一并回滚）
+   - 事务外 `createTask($orderId, 'commit', $delay)`（随机 0~8h 延时提交，分散上游压力）——不再同步 `pay(true)` 立即 commit
 
 ### 相关命令
 

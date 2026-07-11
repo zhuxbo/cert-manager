@@ -45,10 +45,14 @@ class CertRenewStalledNotificationBuilder implements NotificationBuilderInterfac
         $certificates = [];
 
         foreach ($predecessors as $predecessor) {
-            // 接替证书（nextCert）：查询形态保证存在，异步重查间若接替恰好转 active（孤儿消解）则跳过——
-            // 语义正确（不再停滞），非漂移。expires_at 缺失（理论上不达，renewed/reissued 前驱恒有）时亦跳过。
+            // 接替证书（nextCert）：查询形态保证存在，异步重查间若接替恰好转出停滞态（转 active＝孤儿消解，
+            // 或被取消清理＝断链 null）则跳过——语义正确（不再停滞），非漂移。forUser 主查询已按 5 态 whereIn
+            // 过滤，此处对预载 nextCert 再判一次停滞态白名单（复用同一真相源常量），兜住「主查询通过后、nextCert
+            // 预载前」的毫秒级 race。expires_at 缺失（理论上不达，renewed/reissued 前驱恒有）时亦跳过。
             $successor = $predecessor->nextCert;
-            if (! $successor || ! $predecessor->expires_at) {
+            if (! $successor
+                || ! in_array($successor->status, StalledRenewalQuery::SUCCESSOR_STALLED_STATUSES, true)
+                || ! $predecessor->expires_at) {
                 continue;
             }
 

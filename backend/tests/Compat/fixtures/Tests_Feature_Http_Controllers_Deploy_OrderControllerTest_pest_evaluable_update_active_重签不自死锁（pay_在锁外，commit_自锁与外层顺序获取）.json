@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_续费通过_period_验证",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_重签不自死锁（pay_在锁外，commit_自锁与外层顺序获取）",
     "version": "1.0.0",
     "calls": [
         {

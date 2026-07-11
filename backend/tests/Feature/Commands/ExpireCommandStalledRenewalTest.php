@@ -424,8 +424,8 @@ test('[误伤防护] 已完成续签（前驱 renewed ← 接替 active，带链
     expect(dispatchedCodeForUser($captured, 'cert_renew_stalled', $user->id))->toBeFalse();
 });
 
-// ── 测试 13（r3/r2-N1）：排除态参数化钉死（cancelled/expired 接替不派发） ─────────
-test('[排除表] cancelled/expired 接替（带链、age>48h、前驱在窗）零派发——设计行为非遗漏', function (string $sucStatus) {
+// ── 测试 13（r3/r2-N1）：排除态参数化钉死（cancelled/expired/revoked/cancelling 接替不派发） ─────────
+test('[排除表] cancelled/expired/revoked/cancelling 接替（带链、age>48h、前驱在窗）零派发——设计行为非遗漏', function (string $sucStatus) {
     $user = User::factory()->create(['email' => 'excl-'.$sucStatus.'@example.com']);
     $product = Product::factory()->create();
 
@@ -440,7 +440,7 @@ test('[排除表] cancelled/expired 接替（带链、age>48h、前驱在窗）�
     $this->artisan('schedule:expire')->assertSuccessful();
 
     expect(dispatchedCodeForUser($captured, 'cert_renew_stalled', $user->id))->toBeFalse();
-})->with(['cancelled', 'expired']);
+})->with(['cancelled', 'expired', 'revoked', 'cancelling']);
 
 // ── 测试 14（I2 强制）：派发 ⇒ 可重查 + 双用户隔离 ──────────────────────────────
 test('[双侧同源] 派发 ⇒ Builder 可重查非空 + 双用户各自仅含本人条目（防跨用户串邮）', function () {

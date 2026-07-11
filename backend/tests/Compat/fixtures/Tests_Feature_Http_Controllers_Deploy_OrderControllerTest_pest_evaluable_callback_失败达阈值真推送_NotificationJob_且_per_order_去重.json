@@ -1,20 +1,21 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_续费通过_period_验证",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败达阈值真推送_NotificationJob_且_per_order_去重",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/deploy",
+            "uri_pattern": "/api/deploy/callback",
             "request_keys": [
-                "order_id"
+                "order_id",
+                "status"
             ],
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
                 "data": {
                     "order_id": "integer",
-                    "domains": "string",
                     "status": "string",
+                    "recorded": "boolean",
                     "renew_before_days": "integer"
                 }
             }
