@@ -34,32 +34,32 @@ skills/ # 开发规范（详细文档）
 
 详细规范见 `skills/SKILL.md`，按领域组织：
 
-| Skill                                 | 内容                                                       |
-| ------------------------------------- | ---------------------------------------------------------- |
-| **backend/**                          | 后端领域                                                   |
-| `skills/backend/core.md`              | 技术栈/架构/代码规范/Artisan/缓存日志/关键文件索引/测试    |
-| `skills/backend/order-fund.md`        | order 级互斥锁、下单韧性、资金四道网、支付验签、退款/Purge |
-| `skills/backend/auth.md`              | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据URL）   |
-| `skills/backend/upgrade.md`           | 升级系统、freeze 冻结契约、BinaryLocator 外部命令          |
-| `skills/backend/database.md`          | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容                 |
-| `skills/backend/delegation.md`        | 委托验证、S/MIME 验证字段                                  |
-| `skills/backend/acme-module.md`       | ACME 订阅管理（封装下单 + 交付 EAB 模式）                  |
-| `skills/backend/source-api.md`        | 新增上游来源（Order\\Api / Acme\\Api）                     |
-| `skills/backend/auto-renew.md`        | 自动续费/重签、算法继承防降级、失败兜底通知                |
-| `skills/backend/sm2-cert.md`          | 国密 SM2 双证书、能力探测、fail-closed、下载包             |
-| `skills/backend/certum-document.md`   | Certum 验证文档上传、异步转发上游、跨级去重                |
-| `skills/backend/enterprise-lookup.md` | 工商查询（阿里云）+ 邮编查询、企业-联系人绑定              |
-| `skills/backend/notification.md`      | 通知体系（主系统 mail、插件通道注入、携密安全）            |
-| **frontend/**                         | 前端领域                                                   |
-| `skills/frontend/frontend-dev.md`     | Vue 3、Monorepo、共享组件                                  |
-| **plugins/**                          | 插件领域                                                   |
-| `skills/plugins/plugin-dev.md`        | 插件系统、IIFE 打包、安装/更新/卸载                        |
-| **ops/**                              | 部署/发布                                                  |
-| `skills/ops/deploy-ops.md`            | 宝塔部署、安全基线                                         |
-| `skills/ops/build-release.md`         | 版本发布、打包、releases.json 校验链                       |
-| **根（跨领域）**                      |                                                            |
-| `skills/review-checklist.md`          | 设计期"杀手场景 + 对端检查" + finish-check 反模式扫描      |
-| `skills/acme-e2e-test/`               | certbot 端到端测试（Manager + 上游系统）                   |
+| Skill                                 | 内容                                                              |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| **backend/**                          | 后端领域                                                          |
+| `skills/backend/core.md`              | 技术栈/架构/代码规范/Artisan/缓存日志/关键文件索引/测试           |
+| `skills/backend/order-fund.md`        | order 级互斥锁、下单韧性、资金四道网、支付验签、退款/Purge        |
+| `skills/backend/auth.md`              | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据URL）          |
+| `skills/backend/upgrade.md`           | 升级系统、freeze 契约（unfreeze 先于 up/watchdog）、BinaryLocator |
+| `skills/backend/database.md`          | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容                        |
+| `skills/backend/delegation.md`        | 委托验证、S/MIME 验证字段                                         |
+| `skills/backend/acme-module.md`       | ACME 订阅管理（封装下单 + 交付 EAB 模式）                         |
+| `skills/backend/source-api.md`        | 新增上游来源（Order\\Api / Acme\\Api）                            |
+| `skills/backend/auto-renew.md`        | 自动续费/重签、算法继承防降级、失败兜底通知                       |
+| `skills/backend/sm2-cert.md`          | 国密 SM2 双证书、能力探测、fail-closed、下载包                    |
+| `skills/backend/certum-document.md`   | Certum 验证文档上传、异步转发上游、跨级去重                       |
+| `skills/backend/enterprise-lookup.md` | 工商查询（阿里云）+ 邮编查询、企业-联系人绑定                     |
+| `skills/backend/notification.md`      | 通知体系（mail/插件通道/携密安全/SystemAlert 运维告警）           |
+| **frontend/**                         | 前端领域                                                          |
+| `skills/frontend/frontend-dev.md`     | Vue 3、Monorepo、共享组件                                         |
+| **plugins/**                          | 插件领域                                                          |
+| `skills/plugins/plugin-dev.md`        | 插件系统、IIFE 打包、安装/更新/卸载                               |
+| **ops/**                              | 部署/发布                                                         |
+| `skills/ops/deploy-ops.md`            | 宝塔部署、安全基线、升级中断恢复 runbook                          |
+| `skills/ops/build-release.md`         | 版本发布、打包、releases.json 校验链                              |
+| **根（跨领域）**                      |                                                                   |
+| `skills/review-checklist.md`          | 设计期"杀手场景 + 对端检查" + finish-check 反模式扫描             |
+| `skills/acme-e2e-test/`               | certbot 端到端测试（Manager + 上游系统）                          |
 
 ## 知识积累与文档分层
 
@@ -97,7 +97,7 @@ skills/ # 开发规范（详细文档）
 - **取消/撤回**：Web 走延时 `commitCancel`→Task `cancel_acme`(123s)→`cancel`(退费)；下游 API 走 `cancelNow` 同步；`revokeCancel` 在 cancelling 且延时任务未执行时悲观锁回滚
 - **字段暴露**：User show/batchShow 与 Deploy/V2 get 走 `makeHidden`（Deploy/V2 **保留 `refer_id`**，contract 一部分），Admin 全字段；搜索支持 `eab_kid` 前缀匹配（走索引）
 - **批量操作**：7 个批量按钮（batch 详情/pay/commit/sync/commit-cancel/revoke-cancel/copy-eab）；上限 `config/batch.php`（`max_ids=100` / `max_upstream=20`）；`TaskJob` 去 `_acme` 后缀调 `Acme\Action::{commit,sync,cancel}`
-- **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由（仅 `default` 源），经 `ca.acme_url`/`ca.acme_token`（回落 `ca.url`/`ca.token`）调上游 `/api/v2/acme/*`；`directory_url` 按 CA `Cache::forever` 聚合、不落库
+- **Source API 层**：`Services/Acme/Api/` 按 `product.source` 路由（仅 `default` 源），经 `ca.acme_url`/`ca.acme_token`（回落 `ca.url`/`ca.token`）调上游 `/api/v2/acme/*`；`directory_url` 按 CA 聚合缓存（30 天 TTL 常量，过期经 show 读路径回源自刷）、不落库
 - **隔离**：`products.product_type='acme'`；产品 API 分离（`/api/v2/get-products` 排除 acme、`/api/v2/acme/get-products` 仅 acme）；ACME 与传统订单完全隔离，V2 `new`/`Order\Action::initParams` 拒 ACME 产品；`Transaction` 类型 `acme_order`/`acme_cancel`（一对一防重）
 - 详见 `skills/backend/acme-module.md`、`skills/backend/source-api.md`
 
@@ -163,6 +163,7 @@ skills/ # 开发规范（详细文档）
 - **用户偏好扁平按 code**：`users.notification_settings = {code: bool}`，`User::allowsNotification(code)`；Builder 按 code 单维度注册（`config/notification.builders`），输出 `NotificationPayload($data)`、mail-specific 放 `data._meta`
 - **安全·携密不入库**：`DefaultNotificationBuilder` 直通 `$intent->context` 入库、不过滤敏感字段；携密 code（如 `user_created`）必须走专用 Builder + `NotificationPayload` 第二参 `transient`（仅渲染入邮件、**绝不入库**）；`NotificationJob implements ShouldBeEncrypted` 防明文落 jobs/failed_jobs；`security` 走专用 `SecurityNotificationBuilder` 白名单入库；多通道临时附件 `handle` 末尾统一清理 `cleanup_paths`
 - **插件接入触点**（主系统承诺仅此）：ServiceProvider `register('feishu', new FeishuChannel)` + 实现 `ChannelInterface`（send/isAvailable/shouldSend）+ 偏好/UI/模板插件自治（主系统不预留 schema/UI/钩子）
+- **系统告警（SystemAlert）**：运维/健康 admin 告警共享件（监控命令/watchdog/备份等消费），本体三件套契约冻结；去重指纹（计数型必须固定指纹）、healthy 分支 clearDedupe、details 键名避 denylist——消费方适配契约见 skill
 - 详见 `skills/backend/notification.md`
 
 ### 国密 (SM2) 证书

@@ -125,7 +125,7 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 **数据模型**：
 
 - **权威源**：上游系统（CA 维护方）
-- **本地长期缓存**：Laravel Cache，key `acme_directory_url:{ca}`（小写 CA 名，如 `certum`、`letsencrypt`），`Cache::forever` 写入；**不使用 system_setting**（不需要后台配置项）
+- **本地长期缓存**：Laravel Cache，key `acme_directory_url:{ca}`（小写 CA 名，如 `certum`、`letsencrypt`），`Cache::put` + 30 天 TTL 写入（`Acme\Action::DIRECTORY_URL_CACHE_TTL_DAYS` 常量；D2 已弃 `Cache::forever`——过期自动纳入 `syncDirectoryUrl` 既有「缓存 miss 回源」分支，CA 极偶发换端点时错值最终被刷新）；**不使用 system_setting**（不需要后台配置项）
 - **按 `Product.ca`（签发机构）聚合**，而非 source（source 是 Manager→上游的路由属性，多 source 可共用同一 CA）
 
 **同步流程**（`Services/Acme/Action`）：

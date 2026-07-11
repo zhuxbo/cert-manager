@@ -304,6 +304,18 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 ## 升级注意事项
 
+### upgrade.sh 中断后的手工恢复（operator runbook）
+
+`upgrade.sh` 是 `set -e`：freeze 点火后、unfreeze 前任一危险步骤失败即退出，freeze + down 会滞留（现象：非白名单 API 503——freeze TTL 2h 后自解，但 queue worker / scheduler 停摆**不会自解**）。手工恢复顺序**必须先解冻再解维护**（与 `skills/backend/upgrade.md` 顺序契约一致；颠倒则 up 唤醒的 worker 在 freeze 下被 `release(60)` 烧 attempts）：
+
+```bash
+cd <站点>/backend
+php artisan upgrade:unfreeze   # ① 先解冻
+php artisan up                 # ② 再解除维护（恢复 worker/scheduler 消费）
+```
+
+随后看 `storage/upgrades/status.json` 与升级日志决定：重跑 `upgrade.sh` 或走 `upgrade.sh rollback`（rollback 自身已内置 unfreeze→up 配对）。
+
 ### Laravel 13 升级 release 部署
 
 部署含 Laravel 13 升级的 release（首次为升级 PR 合并后的 release）到生产时：

@@ -292,7 +292,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
    - **未签发**（Purge 主路径 processing、手动 processing/approving）：恢复 `last_cert.status='active'` + `order.latest_cert_id` 回切 + **删除** reissue cert（`certs.last_cert_id`/`orders.latest_cert_id` 均 UNIQUE，标 cancelled 占死槽位锁死后续 reissue）→ 旧证书自然重回 `cert_expire` 窗口（P1-12 解，不碰 ExpireCommand 孤儿补洞禁区）。
    - **已签发**（仅手动 `commitCancel(active)` 可达）：退增量 + `cert→cancelled` + `order.cancelled_at`，**维持现状状态语义**不恢复不删（旧证书可能已被上游 supersede、cloud-deploy 已推送 reissue cert）。
 
-**F1 fail-safe（前置于 `api->cancel`）**：`prepareReissueRefund` 先 `Transaction::where(type='cancel', transaction_id)->exists()`，命中即 error 转人工。唯一索引 `(type,transaction_id) WHERE type!='order'` 决定每单仅一条 cancel 流水，恢复旧证书打开的「二次 reissue → 二次取消」若不预检会在上游取消成功**之后**撞唯一冲突 → 卡 cancelling 无退款；预检挡在上游调用前杜绝该形态（每订单 reissue 取消退款仅一次，二次转人工，书面接受）。`cancelPending` reissue 块重构为共用同组 helper，行为不变 + 对称获得 F1 fail-safe。
+**F1 fail-safe（前置于 `api->cancel`）**：`prepareReissueRefund` 先 `Transaction::where(type='cancel', transaction_id)->exists()`，命中即 error 转人工。唯一索引 `(type,transaction_id) WHERE type!='order'` 决定每单仅一条 cancel 流水，恢复旧证书打开的「二次 reissue → 二次取消」若不预检会在上游取消成功**之后**撞唯一冲突 → 卡 cancelling 无退款；预检挡在上游调用前杜绝该形态（每订单 reissue 取消退款仅一次，二次转人工，书面接受）。`cancelPending` reissue 块重构为共用同组 helper，**已覆盖路径行为不变** + 对称获得 F1 fail-safe——二次 reissue-cancel 一律转人工（**含 amount=0**：exists() 预检先于 amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧而非静默成功）。
 
 ---
 

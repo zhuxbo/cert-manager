@@ -15,17 +15,17 @@
 #### freeze 接入生产升级路径（危险窗挡 HTTP 写）
 
 - **核心机理**：本仓已删 Laravel `PreventRequestsDuringMaintenance` 全局中间件，`artisan down` **对 HTTP 零拦截**（只暂停 worker/scheduler）；`freeze`（`MaintenanceMode` 中间件）才是唯一真正挡外部写请求（下单/支付回调/文档上传）的 HTTP 闸。
-- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 于 `apply` 前（危险窗起点），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
-- **顺序契约（两侧对称）**：`unfreeze` 必须**严格先于** `artisan up`——up 唤醒被 down 暂停的 worker 去 pop job，若 freeze 仍在则 `SkipWhenUpgradeFrozen` 的 `release(60)` 开始烧 job attempts。web/shell 均有行序保证 + 测试断言（`UpgradePerformUpgradeFreezeTest` 断 CommandStarting('up') 时 !isFrozen；`upgrade.sh` awk 行序）。
+- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 在危险动作前点火（web 于 `apply` 前全程有效；shell 于 down 后立即点火，但锁存 `storage/`、随 `mv storage → preserve` 离开规范路径——**切代码窗 [mv, 恢复] 内 `isFrozen()=false`，由 storage 缺失致 app 无法 bootstrap（500）兜底，HTTP-503 有效覆盖自 storage 恢复起的 migrate/seed 窗**，upgrade.sh 注释已按此校准），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
+- **顺序契约（两侧对称）**：`unfreeze` 必须**严格先于** `artisan up`——up 唤醒被 down 暂停的 worker 去 pop job，若 freeze 仍在则 `SkipWhenUpgradeFrozen` 的 `release(60)` 开始烧 job attempts（tries=5 的 job ~5min 全落 failed_jobs）。**全子系统 6 处 up 全部与 unfreeze 配对且序正确**：web 成功路径 / web catch(\Throwable) / web rollback 成功+catch 两入口 / shell perform / shell rollback / fatal shutdown handler。测试断言：`UpgradePerformUpgradeFreezeTest` H2-A 用 Artisan facade mock 捕获 'up' 调用时刻 `!isFrozen`（CommandStarting 事件在测试态被框架不桥接，只能走 facade mock）；`UpgradeRunCommandTest` 对 fatal 路径同款序断言；`upgrade.sh` 靠行序 + 注释固化。
 - **rollback 两入口补 unfreeze**（`UpgradeService::rollback` + `upgrade.sh rollback()`）：防失败升级滞留 freeze，先于 up；rollback 自身不 freeze。
-- **失败/中断兜底**：`performUpgradeWithStatus` catch 扩到 `\Throwable`（`\Error`/TypeError 也就地 unfreeze + up），且 unfreeze 无条件（与 maintenance_mode 解耦）；SIGKILL/OOM 由 watchdog 兜底；shell 失败 up 不跑属 P0-2 残留（freeze-TTL 只解 503，worker/scheduler 停摆待人工 up）。
+- **失败/中断兜底**：`performUpgradeWithStatus` catch 扩到 `\Throwable`（`\Error`/TypeError 也就地 unfreeze + up），且 unfreeze 无条件（与 maintenance_mode 解耦——freeze 点火无条件，若 unfreeze 挂在 `if($inMaintenanceMode)` 内，配置关维护时失败会滞留 freeze 到 TTL）；**真 fatal（OOM/E_PARSE/E_COMPILE_ERROR，catch 接不住）走 `UpgradeRunCommand::handleFatalShutdown`：`fail` → `unfreeze` → `up`**（曾漏 unfreeze：up 后 worker 醒来烧 attempts + 2h 503，且 fail 置 failed 后 watchdog 不再兜——shutdown 自愈必须自己配对 unfreeze）；SIGKILL 由 watchdog 兜底；shell 失败 up 不跑属 P0-2 残留（freeze-TTL 只解 503，worker/scheduler 停摆待人工，恢复指引见 `skills/ops/deploy-ops.md`）。
 - **发布说明须写明**：升级危险窗内非白名单 API 短暂 503（含支付回调，网关自带重试缓冲）——今天 down 期 HTTP 全通，这是可见行为变更。
 
 #### upgrade:watchdog（升级进程硬杀自愈）
 
 - **问题**：SIGKILL/OOM/`\Error` 打断升级 → `status.json` 卡 `running` + 维护/冻结无人解除 + `execute` 闸门永闭。
 - **stale 判定**（`UpgradeStatusManager`）：`isStale = status==='running' && isTimeStale && !isProcessAlive`。心跳 `updated_at`（`save()` 单入口注入 `now()`，Carbon 同源可测）+ `pid`（`start()` 写 `getmypid()`）。`isProcessAlive`：Linux 走 `/proc/{pid}`、回落 `posix_kill`。**PID 存活是「不动作」一票否决**——慢单步（大库 migrate/慢镜像 composer）超阈值但进程活着时绝不解维护（误 up 半迁移库 + 唤醒 worker pop 半迁移库比卡死更坏）。`isRunning() = running && !isStale`。
-- **watchdog**：`Schedule::command('upgrade:watchdog')->everyMinute()->evenInMaintenanceMode()`（不挂 freeze skip）。`running && stale`（超时且进程死）→ `fail` + `artisan up`（先解冻）+ `unfreeze` + 去重 `SystemAlert('upgrade', dedupeKey='upgrade_watchdog')`；`running && time-stale 但进程活` → 仅 `Log::warning`。恢复地板 = `upgrade.stale_seconds`（默认 3600s）+ 1min 周期；shell 卡死无 status.json、watchdog 不覆盖（P0-2 残留）。
+- **watchdog**：`Schedule::command('upgrade:watchdog')->everyMinute()->evenInMaintenanceMode()`（不挂 freeze skip）。`running && stale`（超时且进程死）→ `fail` → `unfreeze` → `artisan up`（先解冻再 up，与升级路径同序）→ 去重 `SystemAlert('upgrade', dedupeKey='upgrade_watchdog', ttl=24h)`；`running && time-stale 但进程活` → 仅 `Log::warning`。恢复地板 = `upgrade.stale_seconds`（默认 3600s）+ 1min 周期；shell 卡死无 status.json、watchdog 不覆盖（P0-2 残留）。**watchdog 只救 `status==='running'`**——已置 failed 的态（如 fatal shutdown 已处理）不再动作，因此 shutdown 自愈必须自己完成 unfreeze+up 配对（见上）。
 
 #### 定时备份互斥 + 失败告警（`schedule:backup`）
 
@@ -76,7 +76,7 @@
 - **后端 web 入口（管理后台触发）**：`UpgradeService::performUpgradeWithStatus()` 的 `check_environment` 步骤（extract 之后、apply 之前）。不通过抛 `PhpEnvironmentException`，catch 块把 `details` 写入 `status.json.error_details`，前端 ElDialog 弹窗展示
 - **cron/supervisor PHP 路径**：upgrade.sh 升级末尾调 `update_jobs_php_path`，扫 `bt_list_crontab_all` + `bt_list_supervisor_all` 中含 `/www/server/php/XX/bin/php`（或裸 `php` token）与当前 `$PHP_CMD` 不一致的项。对 install.sh 自管（cron 含 `$INSTALL_DIR/backend/artisan schedule:run`；supervisor 含 `artisan queue:work` 且 path=`$INSTALL_DIR/backend`）且类型内唯一的项，自动覆盖更新（cron 走"先删后加 + 失败用原 body 回滚"三段语义；supervisor 走 `bt_add_supervisor_process` 自带 Remove+Add，失败也回滚）。不满足"自管+唯一"的项保留列表 + 手工提示
 - **升级末尾 PHP-FPM reload（步骤 15b）**：upgrade.sh 在权限检查前显式调 `bt_reload_php_fpm`，让 web 入口清 opcache 加载新代码。失败提示手工到面板 reload；非宝塔 PHP 路径跳过
-- **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function`，捕获 `E_ERROR / E_PARSE` 等 fatal，若 status 仍 running 则写 failed，避免卡 running 死锁
+- **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function` → `handleFatalShutdown`（静态、注入 `error_get_last()`，便于直测），捕获 `E_ERROR / E_PARSE` 等 fatal：双守卫（非 fatal / 非 running 早退）后 `fail` → `unfreeze` → `artisan up`（序契约见「freeze 接入」节），避免卡 running 死锁 + freeze 滞留
 - **classmap 自愈**：upgrade.sh composer 块后**无条件**跑 `dump-autoload --optimize --no-scripts`，修复跨小版本升级时 vendor 路径变更（如 `Pdo\Mysql` polyfill / `ReflectsClosures` 跨目录）导致的 classmap 漂移
 
 ### 数据库结构校验

@@ -52,6 +52,7 @@
 ### sync 终态守卫（防复活）
 
 - `Order\Action::sync`/`Acme\Action::sync` 锁内用上游状态回写本地前，若本地已是终态（`cancelled`/`revoked`/`renewed`/`reissued`/`failed`）则 `unset($data['status'])`，防上游旧状态把已取消/已吊销订单复活回 active（与 commitCancel 串行化配合）
+- **Acme 侧另有 `(cancelling, active)` 单格拦截**（D1/P1-4）：本地 `cancelling` 时**仅挡上游滞后 `active` 回写**、放行终态（cancelled/revoked/expired），判定用锁内重取行（读=写同一行）——否则详情页 `syncDirectoryUrl` 只读回源就能把 cancelling 翻回 active，延时 `cancel_acme` 任务到点因状态非 cancelling 抛错 → 取消静默失败（不退费、订阅存活）。**Order 侧 cancelling→active 可回写是有意设计**（配合 `refundForSyncedCancel` 与 revokeCancel-后-sync 恢复链），两侧不对称是深思结果，勿顺手「对称化」
 
 ### sync 回调抑制（下游 pull 不冗余回调）
 
