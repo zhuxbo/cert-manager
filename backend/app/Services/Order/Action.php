@@ -9,6 +9,7 @@ use App\Http\Requests\Product\ImportCaProductRequest;
 use App\Http\Requests\Product\UpdateRequest;
 use App\Models\Callback;
 use App\Models\Cert;
+use App\Models\Chain;
 use App\Models\DomainValidationRecord;
 use App\Models\Order;
 use App\Models\Product;
@@ -18,12 +19,14 @@ use App\Services\Acme\Api\Api as AcmeApi;
 use App\Services\Delegation\AutoDcvTxtService;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
+use App\Services\Notification\SystemAlert;
 use App\Services\Order\Api\Api;
 use App\Services\Order\Traits\ActionBatchTrait;
 use App\Services\Order\Traits\ActionCallbackTrait;
 use App\Services\Order\Traits\ActionDocumentTrait;
 use App\Services\Order\Traits\ActionFileTrait;
 use App\Services\Order\Traits\ActionTrait;
+use App\Services\Order\Utils\ChainVerifier;
 use App\Services\Order\Utils\FindUtil;
 use App\Services\Order\Utils\OrderUtil;
 use App\Services\Order\Utils\VerifyUtil;
@@ -31,6 +34,7 @@ use App\Support\MutexLock;
 use App\Traits\ApiResponse;
 use App\Traits\RunsTaskMutationTransaction;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Throwable;
 
@@ -568,6 +572,14 @@ class Action
             return;
         }
 
+        // F2-4 证书链签名校验门禁（锁外，openssl exec 绝不落 DB 行锁内）：
+        // 上游返回 cert + intermediate + issuer 时，校验 intermediate 确实签发了 leaf，
+        // 防坏链静默入 chains 表致严格客户端 TLS 握手失败。裁决作用于 $data，锁内 :630-633 写回照旧、无新增 exec。
+        // 钉在 refundForSyncedCancel 分支（含 early-return）之后、runTaskMutationTransaction 之前：cancel 路径零 exec；
+        // 门禁输入（cert/intermediate_cert/issuer/encryption_alg）在 parseCert 后已就位；锁内终态守卫只 unset
+        // status+ENC_FIELDS（不含 intermediate_cert/issuer），裁决忠实存活到写回，TOCTOU 无洞。
+        $this->guardIntermediateChain($order, $data);
+
         // 锁内重取 + 终态守卫 + 写回：慢 IO（上游 get）已在锁外完成，此事务只包状态判定副作用 + 写回。
         // 锁序 task→order：与 commitCancel(active)/revokeCancel 统一。controller 直调 sync 时无前置 task 锁，
         // 必须在锁 order 前先按 task→order 顺序锁住本订单的 commit/sync/revalidate 任务（与下面 deleteTask 删除范围一致），
@@ -631,8 +643,10 @@ class Action
 
             $order->save();
             // 先把 issuer 落到模型，确保随后 update 触发 setIntermediateCertAttribute 时 issuer 已就位，
-            // 非空 intermediate_cert 在本轮即写入 chains。fill 顺序不保证 issuer 早于 intermediate_cert；
-            // 且国密（enc_cert 非空）已短路 retrieved 钩子，不能再靠"降级→次轮补写"兜底，故须签发轮确定性入 chains。
+            // 非空 intermediate_cert 在本轮即写入 chains。fill 顺序不保证 issuer 早于 intermediate_cert，
+            // 若 intermediate_cert 先 fill 则 mutator 见空 issuer 跳过写链，故此处强制 issuer 先落，签发轮确定性入 chains
+            // （Cert::retrieved 缺链降级 approving→次轮补写对全算法适用、无 enc_cert 门控，是兜底而非本轮依赖；
+            // 坏链已在上方锁外门禁 unset intermediate_cert，此处不会写入未过签名校验的链）。
             // 放在终态守卫之后安全：chains 是 CA 公共数据，setIntermediateCertAttribute 仅在该 issuer 无行时 create，
             // 不复活订单状态、不影响终态守卫语义。
             ! empty($data['issuer']) && $cert->issuer = $data['issuer'];
@@ -644,6 +658,83 @@ class Action
 
         // 强制更新不返回提示（success 抛 ApiResponseException 须在事务闭包外）
         $force || $this->success();
+    }
+
+    /**
+     * F2-4 证书链签名校验门禁（sync 锁外调用）。
+     *
+     * 上游返回 cert + intermediate + issuer 时，校验 intermediate 确实签发了 leaf（唯一自动写链点是
+     * Cert::setIntermediateCertAttribute mutator，无签名校验）。裁决作用于 $data（引用传入），
+     * 锁内 $cert->update($data) 写回照旧、不新增任何 exec/慢 IO。fail-open：
+     *  - 已有该 issuer 链 → 短路跳过 exec（已验过/人工管理，稳态命中率≈100%）。
+     *  - 'ok'          → 不动 $data，锁内照常写链。
+     *  - 'bad'         → unset intermediate_cert（落既有缺链→approving→重 sync 自愈闭环）+ Log::error + 告警。
+     *  - 'unverifiable' → 放行写链 + Log::error + 告警（响亮暴露环境问题，不硬阻塞交付）。
+     *
+     * 告警携密安全：context 白名单仅 order_id + issuer(CN) + reason，绝不携 PEM；openssl 原始输出只进 Log::error。
+     * 新增自动写链路径必须先经本门禁。
+     *
+     * @param  array<string, mixed>  $data  上游同步数据（引用：'bad' 时 unset intermediate_cert）
+     */
+    private function guardIntermediateChain(Order $order, array &$data): void
+    {
+        if (empty($data['cert']) || empty($data['intermediate_cert']) || empty($data['issuer'])) {
+            return;
+        }
+
+        // 已有该 issuer 链（已验过/人工管理）→ 短路跳过 exec
+        if (Chain::where('common_name', $data['issuer'])->exists()) {
+            return;
+        }
+
+        $verifier = app(ChainVerifier::class);
+        $verdict = $verifier->verifyIssued($data['cert'], $data['intermediate_cert'], $data['encryption_alg'] ?? '');
+
+        if ($verdict === 'ok') {
+            return;
+        }
+
+        $issuer = (string) $data['issuer'];
+
+        if ($verdict === 'bad') {
+            // 验签否决：拒写坏链，落缺链自愈路径（retrieved→approving→重 sync）
+            Log::error('证书链签名校验失败：中间证书未签发叶证书，拒写 chains', [
+                'order_id' => $order->id,
+                'issuer' => $issuer,
+                'openssl_output' => $verifier->lastOutput(),
+            ]);
+            unset($data['intermediate_cert']);
+
+            app(SystemAlert::class)->send(
+                'chain_verify',
+                '证书链签名校验失败（坏链已拒写）',
+                "订单 #{$order->id} 上游返回的中间证书未签发叶证书，已拒绝写入 chains，订单将转 approving 等待重新同步。",
+                ['order_id' => $order->id, 'issuer' => $issuer, 'reason' => 'chain_verify_failed'],
+                'chain_bad:'.$issuer,
+                24,
+                'bad'
+            );
+
+            return;
+        }
+
+        // 'unverifiable'：运行性失败（openssl 不可用/输出不可解析）→ fail-open 放行写链 + 响亮告警
+        Log::error('证书链签名校验无法执行（openssl 不可用或输出不可解析），已 fail-open 放行写链', [
+            'order_id' => $order->id,
+            'issuer' => $issuer,
+            'openssl_output' => $verifier->lastOutput(),
+        ]);
+
+        app(SystemAlert::class)->send(
+            'chain_verify',
+            '证书链签名校验无法执行（已放行写链）',
+            "订单 #{$order->id} 的证书链签名校验无法执行（openssl 不可用或输出异常），已按 fail-open 放行写入 chains。"
+                .'故障期间新写入的证书链建议人工复核（Admin 链管理）。',
+            ['order_id' => $order->id, 'issuer' => $issuer, 'reason' => 'openssl_unavailable'],
+            'chain_unverifiable',
+            24,
+            'unavailable'
+        );
     }
 
     /**
