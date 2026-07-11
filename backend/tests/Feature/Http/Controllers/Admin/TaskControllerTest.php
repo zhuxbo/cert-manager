@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\TaskJob;
 use App\Models\Acme;
 use App\Models\Admin;
 use App\Models\Product;
@@ -7,6 +8,7 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\Task;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Traits\ActsAsAdmin;
@@ -109,6 +111,50 @@ test('管理员可以批量启动已停止的任务', function () {
         $task->refresh();
         expect($task->status)->toBe('executing');
     }
+});
+
+test('T3：batchStart 恢复 cancel 任务补 delay（≈started_at+3s，消队头 no-op）', function () {
+    Queue::fake();
+    $task = Task::factory()->create(['status' => 'stopped', 'action' => 'cancel']);
+    $before = now();
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/task/batch-start', ['ids' => [$task->id]])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    // started_at 置 now+120（cancel 类），delay 跟随 started_at + 3s = now+123
+    $task->refresh();
+    expect($task->started_at->gt($before))->toBeTrue();
+    Queue::assertPushed(TaskJob::class, function (TaskJob $job) use ($before) {
+        expect($job->delay)->toBeInstanceOf(Carbon::class);
+        if (! $job->delay instanceof Carbon) {
+            return false;
+        }
+        // delay ≈ now+123（started_at now+120 + 3s 缓冲）；容忍执行耗时抖动
+        $expected = $before->copy()->addSeconds(123);
+        expect(abs($job->delay->diffInSeconds($expected)))->toBeLessThanOrEqual(3);
+
+        return true;
+    });
+});
+
+test('T3：batchStart 恢复 cancel_acme 任务补 delay', function () {
+    Queue::fake();
+    $task = Task::factory()->create(['status' => 'stopped', 'action' => 'cancel_acme']);
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/task/batch-start', ['ids' => [$task->id]])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    Queue::assertPushed(TaskJob::class, fn (TaskJob $job) => $job->delay instanceof Carbon);
+});
+
+test('T3：batchStart 恢复非取消类任务无 delay（现行为回归）', function () {
+    Queue::fake();
+    $task = Task::factory()->create(['status' => 'stopped', 'action' => 'commit']);
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/task/batch-start', ['ids' => [$task->id]])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    Queue::assertPushed(TaskJob::class, fn (TaskJob $job) => $job->delay === null);
 });
 
 test('管理员可以批量停止执行中的任务', function () {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Acme;
 
 use App\Exceptions\ApiResponseException;
+use App\Exceptions\MutationBusyException;
 use App\Jobs\TaskJob;
 use App\Models\Acme;
 use App\Models\Product;
@@ -12,17 +13,22 @@ use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Acme\Api\Api;
+use App\Services\Notification\SystemAlert;
 use App\Services\Order\Utils\OrderUtil;
 use App\Support\MutexLock;
 use App\Traits\ApiResponse;
 use App\Traits\RunsTaskMutationTransaction;
+use Illuminate\Database\DeadlockException;
+use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class Action
 {
     use ApiResponse;
+    use DetectsConcurrencyErrors;
     use MutexLock;
     use RunsTaskMutationTransaction;
 
@@ -336,10 +342,18 @@ class Action
 
     /**
      * 提交取消 — 标记 cancelling + 创建延时任务
+     *
+     * 并发安全：按 "task → acme" 的统一锁顺序拿锁（与 TaskJob/sync/revokeCancel 一致），
+     * 避免与 sync 的 cancel_acme 间隙锁形成反序死锁环；纯本地变更（上游调用在延时任务内），
+     * 由 runTaskMutationTransaction 对 1213/1205 静默重试。
      */
     public function commitCancel(int $acmeId): void
     {
-        DB::transaction(function () use ($acmeId) {
+        $this->runTaskMutationTransaction(function () use ($acmeId) {
+            // 锁顺序 1：先锁 task（Task::lockForMutation 强制复合索引，与 Order 侧统一）
+            Task::lockForMutation($acmeId, ['cancel_acme'])->get();
+
+            // 锁顺序 2：再锁 acme
             $acme = Acme::where('id', $acmeId)->lock()->firstOrFail();
 
             if (! in_array($acme->status, [Acme::STATUS_UNPAID, Acme::STATUS_ACTIVE, Acme::STATUS_PENDING])) {
@@ -550,6 +564,12 @@ class Action
         // 慢 IO（上游 Guzzle）放在行锁之外，避免长时间持锁。
         // 占位回滚：上游调用/写回失败时必须 Cache::forget 占位，否则 10s 内重试命中占位直接返回 success，
         // 把"实际未同步"的失败伪装成成功。成功路径不回滚（占位正是为了 10s 内防重复上游请求）。
+        // T7：退款失败告警穿透标记（声明在 try 外，catch 恒可读）。仅"终态失败"置值 → 事务外告警；
+        // 并发错误（1213/1205）不置值、由 runTaskMutationTransaction 静默重试（重试期零告警红线）。
+        // @var 注解：闭包经 use(&$refundAlert) 引用改写，phpstan 不追踪闭包副作用，显式标注可空。
+        /** @var array{acme_id: int, error: string}|null $refundAlert */
+        $refundAlert = null;
+
         try {
             $result = (new Api)->get($acme->id);
             $data = $result['data'] ?? [];
@@ -557,17 +577,71 @@ class Action
             // 锁内重取 + 终态守卫 + 写回：锁序 task→acme（sync_acme 经 TaskJob 已持 task 锁）。
             // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订阅复活。
             $directoryUrl = (string) ($data['directory_url'] ?? '');
-            $ca = $this->runTaskMutationTransaction(function () use ($acmeId, $data) {
+            // T7：上游响应终态判据（事务外，基于 HTTP 响应快照，非本地行状态）——决定是否先锁 cancel_acme，
+            // 避免"先锁 acme 判 cancelling 再锁 task"的 acme→task 反序死锁。高频 get 常态 active 零 task 锁开销。
+            $upstreamTerminal = in_array(
+                $data['status'] ?? null,
+                [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED],
+                true
+            );
+            $ca = $this->runTaskMutationTransaction(function () use ($acmeId, $data, $upstreamTerminal, &$refundAlert) {
+                $refundAlert = null; // 每次重试进入闭包重置（attempts=3 重试后成功不残留旧标记）
+
+                if ($upstreamTerminal) {
+                    // 锁序 1：先锁 cancel_acme task（镜像 revokeCancel），仅上游终态才触发（与执行条件对齐、无冗余锁）
+                    Task::lockForMutation($acmeId, ['cancel_acme'])->get();
+                }
+                // 锁序 2：锁 acme 行
                 $acme = Acme::where('id', $acmeId)->lock()->first();
                 if (! $acme) {
                     return '';
+                }
+
+                // T7：本地 cancelling + 上游终态 → 完成在途取消（退款 + 清孤儿 cancel_acme 任务）。
+                // 判据用锁内重取的 acme 行自身（读=写同一行）；ACME 无 latestCert 切换，天然满足红线。
+                // 缺口修复：D1 只堵 (cancelling, upstream=active) 半格，(cancelling, upstream∈终态) 三格原会写终态
+                // 但不退款、延时 cancel_acme 到点撞"状态不是取消中"断死 → under-refund。此处补退款闭合。
+                if ($acme->status === Acme::STATUS_CANCELLING && $upstreamTerminal) {
+                    // 预检 acme_cancel 已存在（边缘态：已退款但状态回滚卡 cancelling）→ 跳过退款只补状态，
+                    // 避免防重 throw 逸出致 sync 假失败；预检竞态残留由一对一防重 + 金额抵消双层物理阻断兜底。
+                    $alreadyRefunded = Transaction::where('type', Transaction::TYPE_ACME_CANCEL)
+                        ->where('transaction_id', $acme->id)
+                        ->exists();
+                    if (! $alreadyRefunded) {
+                        try {
+                            $this->refund($acme);
+                        } catch (\Throwable $e) {
+                            // N1（MUST-FIX）：并发错误（死锁 1213 / 锁等待 1205 / 序列化失败）不置告警标记、直接 rethrow，
+                            // 由 runTaskMutationTransaction（DB::transaction attempts=3）静默重试——重试期零告警红线
+                            // （order-fund.md:75-81）。仅"终态失败"（非并发）才置标记，延后到事务外一次性告警。
+                            if ($e instanceof DeadlockException
+                                || $e instanceof MutationBusyException
+                                || $this->causedByConcurrencyError($e)) {
+                                throw $e;
+                            }
+                            $refundAlert = ['acme_id' => $acme->id, 'error' => $e->getMessage()];
+                            throw $e; // 回滚整个事务，退款不落；告警延后到外层 catch（事务外）
+                        }
+                    }
+                    // 清孤儿 cancel_acme 任务（lockForMutation 已覆盖 executing/stopped 二态，锁与删同界）
+                    Task::where('order_id', $acme->id)
+                        ->where('action', 'cancel_acme')
+                        ->whereIn('status', ['executing', 'stopped'])
+                        ->delete();
+                    $acme->update([
+                        'status' => $data['status'],
+                        'cancelled_at' => $acme->cancelled_at ?? now(),
+                    ]);
+
+                    // T7 分支为终态收尾，有意不合并 vendor_id/period 等非状态字段（终态元数据以取消时刻为准）
+                    return (string) ($acme->product->ca ?? '');
                 }
 
                 $updateData = [];
                 $syncableStatuses = [Acme::STATUS_ACTIVE, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED, Acme::STATUS_CANCELLED];
                 // 终态守卫：本地已是终态（cancelled/revoked/expired）时拒绝上游 status 覆盖，防滞后 active 复活已退款订阅
                 $localTerminal = in_array($acme->status, [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED], true);
-                // cancelling 守卫：本地取消中时仅挡上游滞后 active 回写（上游终态 cancelled/revoked/expired 仍放行），
+                // cancelling 守卫：本地取消中时仅挡上游滞后 active 回写（上游终态 cancelled/revoked/expired 已由上方 T7 分支处理），
                 // 否则 active 覆盖后延时 cancel_acme 任务因状态非 cancelling 抛错、用户取消意图静默丢弃（P1-4）
                 $cancellingRevivedByActive = $acme->status === Acme::STATUS_CANCELLING
                     && ($data['status'] ?? null) === Acme::STATUS_ACTIVE;
@@ -601,6 +675,29 @@ class Action
             }); // runTaskMutationTransaction 统一 attempts=3：与 Order sync 对齐；上游 get 在事务外，重试只重跑锁+写回，不重复调上游
         } catch (\Throwable $e) {
             Cache::forget($cacheKey);
+            if ($refundAlert !== null) {
+                // 退款失败即时告警（reachability I-1 发出点）：事务已回滚、无事务上下文，SystemAlert 置键立即执行、可达。
+                // 覆盖边界：仅保证"refund 调用自身终态异常且重试耗尽"即时可见；其余回滚形态（如 refund 成功后
+                // 的 update 死锁耗尽，此时 $refundAlert 为 null 不发本告警）无专项告警，由 finance:audit daily 全量
+                // 对账事后兜底 + TaskJob sync failed 落库留痕。refund 自身并发错误经 N1 直接 rethrow、不置标记，故无 stale 告警。
+                try {
+                    app(SystemAlert::class)->send(
+                        'acme_refund',
+                        'ACME sync 完成取消的退款失败',
+                        "acme #{$refundAlert['acme_id']} 上游已取消但本地退款异常：{$refundAlert['error']}",
+                        ['acme_id' => $refundAlert['acme_id']],
+                        "acme_sync_refund_failed_$acmeId",
+                        24,
+                        "refund_failed_$acmeId"
+                    );
+                } catch (\Throwable $alertError) {
+                    // N2：告警自身抛异常不得替换原始 $e（否则 TaskJob 收到的异常类型变化，破坏并发错误 release 判定）
+                    Log::warning('ACME sync 退款失败告警派发异常', [
+                        'acme_id' => $acmeId,
+                        'error' => $alertError->getMessage(),
+                    ]);
+                }
+            }
             throw $e;
         }
 
@@ -887,8 +984,11 @@ class Action
 
     /**
      * 退费处理（内部方法）
+     *
+     * protected 而非 private：供 T7 sync 退款失败路径测试用 Mockery partial 注入并发/终态异常
+     * （验证 N1 并发错误重试期零告警 + 终态失败事务外告警）。无外部调用，封装不受影响。
      */
-    private function refund(Acme $acme): void
+    protected function refund(Acme $acme): void
     {
         $transaction = OrderUtil::getCancelTransaction(
             $acme->toArray(),
@@ -910,6 +1010,20 @@ class Action
         if ($exists) {
             $this->error('已存在处理中的任务，请稍后刷新页面');
         }
+    }
+
+    /**
+     * 为单个 ACME 订单入队 commit_acme 对账任务（T6 ReconcileAcmeCommand 复用）。
+     *
+     * 复用 createTasks 逐条幂等模式（skip-if-executing + afterCommit + onQueue(tasks)）；不用 checkRepeat
+     * （throw 语义不适合扫描循环）。重发同 refer_id 时上游 Case A（已成功建单、行有 EAB）幂等返回 order+EAB
+     * → commitOrder 回填 api_id/EAB/active 自愈；vendor_id/period 自愈瞬间为 null/本地近似，由后续 sync 从
+     * 上游回填校正（EAB 关键契约即时可达）。Case B（占位遗留、EAB 空）恒返通用可重试 msg，与瞬时并发不可
+     * 区分，靠 max_attempts 有界退避 → 超限 SystemAlert 转人工（不做 msg 启发式）。
+     */
+    public function queueCommit(int $acmeId): void
+    {
+        $this->createTasks([$acmeId], 'commit_acme');
     }
 
     /**

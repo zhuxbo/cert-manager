@@ -3,6 +3,7 @@
 use App\Exceptions\ApiResponseException;
 use App\Jobs\TaskJob;
 use App\Models\Acme;
+use App\Models\Admin;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\Setting;
@@ -10,6 +11,8 @@ use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Services\Acme\Action;
+use App\Services\Notification\DTOs\NotificationIntent;
+use App\Services\Notification\NotificationCenter;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -452,6 +455,42 @@ test('commitCancel rejects already cancelled order', function () {
         fn () => $this->service->commitCancel($acme->id),
         '当前状态不允许取消'
     );
+});
+
+test('commitCancel 先锁 cancel_acme task 再锁 acme 行（task→acme 锁序 + 复合索引，防与 sync 反序死锁）', function () {
+    Queue::fake();
+
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-lockorder',
+        'amount' => '100.00',
+    ]);
+
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = $query->sql;
+    });
+
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+
+    // 锁 cancel_acme task 走复合索引 + for update（lockForMutation 收窄间隙锁，与 Order/sync/revokeCancel 统一）
+    $taskLockIndex = collect($queries)->search(fn (string $sql) => str_contains($sql, 'from `tasks`')
+        && str_contains($sql, 'for update')
+        && str_contains($sql, 'force index (tasks_order_action_status_index)'));
+    expect($taskLockIndex)->not->toBeFalse();
+
+    // 锁 acmes 行 for update
+    $acmeLockIndex = collect($queries)->search(fn (string $sql) => str_contains($sql, 'from `acmes`')
+        && str_contains($sql, 'for update'));
+    expect($acmeLockIndex)->not->toBeFalse();
+
+    // 锁序：先锁 task 再锁 acme（与 sync/revokeCancel 统一，消除 acme→task 反序死锁面 ⑪）
+    expect($taskLockIndex)->toBeLessThan($acmeLockIndex);
 });
 
 // ==================== revokeCancel ====================
@@ -1759,4 +1798,259 @@ test('directory_url TTL 未到期时命中缓存不回源（防 TTL 设过短）
     $this->travel(1)->days();
     expect($this->service->syncDirectoryUrl($acme->fresh()))->toBe('https://acme.example.test/A/');
     Http::assertSentCount(1);
+});
+
+// ==================== T7: sync cancelling→terminal 补退款（D 评审孪生缺口，资金路径）====================
+
+test('T7：cancelling + 上游 cancelled → sync 退款 + 删 cancel_acme 任务 + 置 cancelled', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    // 真实 new+pay 造 acme_order 流水（账目恒等，过 FundInvariants）→ active → commitCancel → cancelling + task
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-cancelled']);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->where('status', 'executing')->count())->toBe(1);
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_CANCELLED)
+        ->and($acme->cancelled_at)->not->toBeNull();
+    // 退款流水（account 冲正）
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1);
+    // 孤儿 cancel_acme 任务被删（延时任务不再断死）
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+});
+
+test('T7：cancelling + 上游 revoked/expired 同样退款置终态并删任务', function (string $upstream) {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => "gw-t7-$upstream"]);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => $upstream]])]);
+
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    expect($acme->status)->toBe($upstream);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+})->with([Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED]);
+
+test('T7：已退款的 cancelling 单再 sync → 预检跳过退款、只补终态删任务、无二次流水', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-idem']);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id)); // cancelling + cancel_acme task
+
+    setupGatewaySettings();
+    // 先真实 cancel 一次：退款 + cancelled（acme_cancel 流水，task 仍 executing——cancel 不删 task）
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+    expectApiSuccess(fn () => $this->service->cancel($acme->id));
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1);
+
+    // 模拟状态回滚边缘态：cancelling 但 acme_cancel 已在
+    $acme->update(['status' => Acme::STATUS_CANCELLING]);
+
+    // 再 sync cancelled：预检 alreadyRefunded=true → 跳过退款，只补终态删任务
+    Cache::forget("acme_sync_$acme->id");
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1); // 无二次退款
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0); // 孤儿任务删除
+});
+
+test('T7 K5：revokeCancel 撤回(→active)后 sync 上游 active 不退款不写终态', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-k5']);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id)); // cancelling + task
+    expectApiSuccess(fn () => $this->service->revokeCancel($acme->id)); // → active + 删 task
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_ACTIVE);
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active']])]);
+    $this->service->sync($acme->id, true);
+
+    // T7 判据 status===cancelling 不命中（已 active）→ 不退款、不写终态
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_ACTIVE);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0);
+});
+
+test('T7 K6：并发 cancel 已退款置 cancelled → sync 上游终态不双退不复活', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-k6']);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+
+    setupGatewaySettings();
+    // 并发 cancel 先执行：退款 + cancelled
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+    expectApiSuccess(fn () => $this->service->cancel($acme->id));
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLED);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1);
+
+    // sync 上游 cancelled：本地已 cancelled（localTerminal）→ T7 判据 status===cancelling 不命中 → 不双退不复活
+    Cache::forget("acme_sync_$acme->id");
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1); // 无二次退款
+});
+
+test('T7 ⑦：上游 active（高频 get 常态）不触发 cancel_acme 锁路径（回归）', function () {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'gw-t7-active',
+    ]);
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active']])]);
+
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = $query->sql;
+    });
+
+    $this->service->sync($acme->id, true);
+
+    // upstreamTerminal=false → 不锁 cancel_acme task（零 task 锁开销）
+    $lockSql = collect($queries)->first(fn (string $sql) => str_contains($sql, 'from `tasks`') && str_contains($sql, 'for update'));
+    expect($lockSql)->toBeNull();
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_ACTIVE);
+});
+
+test('T7：退款终态异常 → sync 抛出 + SystemAlert acme_refund 发出（事务外可达）', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+    Admin::factory()->create(['email' => 'ops@example.test']);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-alert']);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+
+    // partial mock：refund 抛非并发终态异常
+    $service = Mockery::mock(Action::class)->makePartial()->shouldAllowMockingProtectedMethods();
+    $service->shouldReceive('refund')->andThrow(new RuntimeException('refund boom'));
+
+    $intents = [];
+    $ncMock = Mockery::mock(NotificationCenter::class);
+    $ncMock->shouldReceive('dispatch')->with(Mockery::on(function (NotificationIntent $intent) use (&$intents) {
+        $intents[] = $intent;
+
+        return true;
+    }));
+    $this->app->instance(NotificationCenter::class, $ncMock);
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+
+    try {
+        $service->sync($acme->id, true);
+        test()->fail('期望 sync 抛出退款异常');
+    } catch (RuntimeException $e) {
+        expect($e->getMessage())->toBe('refund boom');
+    }
+
+    // 退款失败即时告警（事务外可达）
+    $alerted = collect($intents)->contains(
+        fn (NotificationIntent $i) => $i->code === 'system_alert' && ($i->context['category'] ?? null) === 'acme_refund'
+    );
+    expect($alerted)->toBeTrue();
+    // 事务回滚：退款未落、状态仍 cancelling
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0);
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+});
+
+test('T7 N1：refund 抛并发错误 → 重试期不置告警标记 → SystemAlert 未发（重试期零告警红线）', function () {
+    Queue::fake();
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+    Admin::factory()->create(['email' => 'ops@example.test']);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->refresh();
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-n1']);
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+
+    // partial mock：refund 恒抛并发错误（deadlock message → causedByConcurrencyError=true）→
+    // runTaskMutationTransaction(attempts=3) 重试耗尽。并发分支不置 refundAlert，重试期零告警。
+    $service = Mockery::mock(Action::class)->makePartial()->shouldAllowMockingProtectedMethods();
+    $service->shouldReceive('refund')->andThrow(
+        new RuntimeException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction')
+    );
+
+    $intents = [];
+    $ncMock = Mockery::mock(NotificationCenter::class);
+    $ncMock->shouldReceive('dispatch')->with(Mockery::on(function (NotificationIntent $intent) use (&$intents) {
+        $intents[] = $intent;
+
+        return true;
+    }));
+    $this->app->instance(NotificationCenter::class, $ncMock);
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+
+    try {
+        $service->sync($acme->id, true);
+    } catch (Throwable $e) {
+        // 重试耗尽后抛并发错误（预期）
+    }
+
+    // 关键红线：并发错误重试期不发 acme_refund 告警（order-fund.md:75-81 重试期零告警）
+    $refundAlerted = collect($intents)->contains(
+        fn (NotificationIntent $i) => $i->code === 'system_alert' && ($i->context['category'] ?? null) === 'acme_refund'
+    );
+    expect($refundAlerted)->toBeFalse();
 });

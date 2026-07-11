@@ -1282,11 +1282,22 @@ trait ActionTrait
             $task = Task::create($data);
             // afterCommit 防止 worker 在外层事务提交前消费 job 导致 task 查无记录静默丢失
             // （默认 after_commit=false，配合 Redis 队列会让 revokeCancel/batchRevokeCancel 的 sync 任务丢失）
-            if ($later > 0) {
-                // 队列定时比可执行时间多3秒 避免任务在可执行时间之前执行
-                TaskJob::dispatch(['id' => $task->id])->afterCommit()->delay(now()->addSeconds($later + 3))->onQueue(config('queue.names.tasks'));
-            } else {
-                TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
+            try {
+                if ($later > 0) {
+                    // 队列定时比可执行时间多3秒 避免任务在可执行时间之前执行
+                    TaskJob::dispatch(['id' => $task->id])->afterCommit()->delay(now()->addSeconds($later + 3))->onQueue(config('queue.names.tasks'));
+                } else {
+                    TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
+                }
+            } catch (Throwable $e) {
+                // T4：最小 Log 留痕。afterCommit 把 push 推迟到 commit 后回调执行，同步 try/catch 捕不到事务内
+                // push 失败——本 catch 仅覆盖无事务上下文的同步 dispatch 失败；事务内遗留的 orphan executing task
+                // 权威兜底 = T1 sweep-stale-tasks（30min 后重派）。不删 task、不改状态、不 rethrow。
+                Log::error('createTask dispatch 失败', [
+                    'order_id' => $orderId,
+                    'task_action' => $action,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
     }

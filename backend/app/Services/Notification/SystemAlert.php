@@ -19,7 +19,7 @@ use Throwable;
  *
  * 关键契约（勿改）：
  *  - 去重时序固定「预检 → 解析 admin（无则不占键）→ dispatch 成功后才置键」，对齐
- *    ReconcilePendingCommand::alertMaxAttempts / FundAuditCommand::sendAlertEmail 的
+ *    ReconcilePendingCommand::alertMaxedOrders / FundAuditCommand::sendAlertEmail 的
  *    「先确认可达、后置去重标记」范式：dispatch 失败绝不占键，否则整个 TTL 静默丢告警。
  *  - 置键经 DB::afterCommit 包裹：无事务时 Laravel 立即执行闭包（console 调用方语义不变）；
  *    事务内调用（如 TaskJob 外层 DB::transaction 内告警）回滚时键不落——与 dispatch 的

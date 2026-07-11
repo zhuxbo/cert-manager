@@ -250,7 +250,7 @@ test('cancel_acme 业务失败（状态不是取消中）触发 fail() 且 task 
 
 test('commit 业务失败不触发 fail()（action 白名单未扩散，commit 由 reconcile 兜底告警）', function () {
     // 回归护栏：仅 cancel/cancel_acme 触发 fail()，commit 业务失败仍只标 failed、不 fail，
-    // 避免告警风暴（commit 由 ReconcilePendingCommand::alertMaxAttempts 兜底）。
+    // 避免告警风暴（commit 到顶由 ReconcilePendingCommand 转人工扫描 alertMaxedOrders 每日快照兜底）。
     $task = Task::factory()->create([
         'order_id' => 888888, // commit 不存在订单 → error(code=0)
         'action' => 'commit',

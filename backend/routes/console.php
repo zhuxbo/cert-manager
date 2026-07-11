@@ -109,6 +109,25 @@ Schedule::command('schedule:reconcile-pending')
     ->description('对账并重发卡在 pending 且无 api_id 的订单 commit')
     ->onFailure($logScheduleFailure('schedule:reconcile-pending'));
 
+// T1 僵尸 executing 任务重派兜底 - 每 5 分钟（恢复类，非心跳；freeze 期 skip、结束后追平，
+// 与 reconcile-pending 同挂 skip 无偏态窗口）
+Schedule::command('schedule:sweep-stale-tasks')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('sweep-stale-tasks')
+    ->description('重派卡死的僵尸 executing 任务（缺陷1/2 兜底）')
+    ->onFailure($logScheduleFailure('schedule:sweep-stale-tasks'));
+
+// T6 ACME 订单对账 - 每 5 分钟（镜像 reconcile-pending；恢复类，freeze 期 skip、结束后追平）
+Schedule::command('schedule:reconcile-acme')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('reconcile-acme-orders')
+    ->description('对账并重发卡在 pending 且无 api_id 的 ACME 订单 commit')
+    ->onFailure($logScheduleFailure('schedule:reconcile-acme'));
+
 // ============================================================
 // 健康监控命令群（包E：E1~E6）——freeze 期一律 skip（见计划 §0.3）
 // ============================================================
