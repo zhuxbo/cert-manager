@@ -98,3 +98,59 @@ Schedule::command('schedule:reconcile-pending')
     ->skip($skipWhenFrozen)
     ->name('reconcile-pending-orders')
     ->description('对账并重发卡在 pending 且无 api_id 的订单 commit');
+
+// ============================================================
+// 健康监控命令群（包E：E1~E6）——freeze 期一律 skip（见计划 §0.3）
+// ============================================================
+
+// E1 上游 CA 凭证健康心跳 - 每 15 分钟（只读探测，仅鉴权维度告警）
+Schedule::command('schedule:ca-healthcheck')
+    ->everyFifteenMinutes()
+    ->skip($skipWhenFrozen)
+    ->name('ca-healthcheck')
+    ->description('上游 CA 凭证健康心跳（凭证失效告警）');
+
+// E2 产品属性漂移同步 - 每天 04:30（错开 auto-renew 00:00 / backup 02:00 / finance 03:00）
+Schedule::command('schedule:import-product')
+    ->dailyAt('04:30')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('import-product')
+    ->description('逐来源同步产品属性漂移（仅 update，失败聚合告警）');
+
+// E3 充值渠道健康 - 每天 05:00（支付证书 notAfter + 配置完整性）
+Schedule::command('schedule:payment-health')
+    ->dailyAt('05:00')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('payment-health')
+    ->description('充值渠道支付证书到期与配置完整性监控');
+
+// E4 服务器时钟监控 - 每小时（HTTP Date 头 + 法定人数 ≥2 源一致）
+Schedule::command('schedule:clock-check')
+    ->hourly()
+    ->skip($skipWhenFrozen)
+    ->name('clock-check')
+    ->description('服务器时钟偏差监控（≥2 源一致才告警）');
+
+// E5 failed_jobs 阈值监控 - 每天 05:30（24h 窗口增量计数）
+Schedule::command('schedule:failed-jobs-check')
+    ->dailyAt('05:30')
+    ->skip($skipWhenFrozen)
+    ->name('failed-jobs-check')
+    ->description('failed_jobs 24h 窗口增量计数超阈告警');
+
+// E5 配套：failed_jobs 清理 - 每周（保留 prune_retention_hours 小时，默认 14 天）
+Schedule::command('queue:prune-failed', ['--hours' => (int) config('monitoring.failed_jobs.prune_retention_hours', 336)])
+    ->weekly()
+    ->skip($skipWhenFrozen)
+    ->name('prune-failed-jobs')
+    ->description('清理过期 failed_jobs（保留 14 天供排障）');
+
+// E6 卡单聚合告警 - 每天 06:30（processing/approving 分档，只读）
+Schedule::command('schedule:stuck-orders')
+    ->dailyAt('06:30')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('stuck-orders')
+    ->description('聚合 processing/approving 长期卡单告警（按 validation_type 分档）');

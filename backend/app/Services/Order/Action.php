@@ -59,8 +59,13 @@ class Action
     /**
      * 导入产品
      */
-    public function importProduct(string $source = '', string $brand = '', string $api_id = '', string $type = 'new'): void
+    public function importProduct(string $source = '', string $brand = '', string $api_id = '', string $type = 'new', bool $resilient = false): void
     {
+        if ($resilient) {
+            // resilient（cron）模式：本次运行前清空逐产品失败收集
+            $this->importIssues = [];
+        }
+
         $allProducts = [];
 
         // 查询传统 Order 产品
@@ -91,6 +96,13 @@ class Action
         }
 
         if (empty($allProducts)) {
+            // resilient（cron）：空结果不抛异常（成功路径不产生异常，命令侧 catch 不会误捕），记 warning 返回
+            if ($resilient) {
+                Log::warning('[import_product] 未获取到产品，跳过来源', ['source' => $source]);
+
+                return;
+            }
+
             $this->error('没有获取到产品');
         }
 
@@ -103,84 +115,137 @@ class Action
         $products = ['code' => 1, 'data' => array_values($unique)];
 
         foreach ($products['data'] as $item) {
-            $item['source'] = $source;
+            // resilient（cron）：单产品校验失败不中断整来源——收集 msg + Log::warning + continue
+            // （反模式16：ApiResponseException::getMessage() 恒空，取 getApiResponse()['msg']）
+            if ($resilient) {
+                try {
+                    $this->importProductItem($item, $source, $type);
+                } catch (ApiResponseException $e) {
+                    $this->importIssues[] = $e->getApiResponse()['msg'] ?? '';
+                    Log::warning('[import_product] 单产品同步失败，跳过', [
+                        'source' => $source,
+                        'code' => $item['code'] ?? '',
+                        'msg' => $e->getApiResponse()['msg'] ?? '',
+                    ]);
+                }
 
-            if (empty($item['code'])) {
-                $this->error('产品 code 不能为空', $item);
+                continue;
             }
 
-            $item['api_id'] = strval($item['code']);
-            unset($item['code']);
+            $this->importProductItem($item, $source, $type);
+        }
 
-            // 根据 api_id 查询产品
-            $product = Product::where('source', $source)->where('api_id', $item['api_id'])->first();
-            if ($product) {
-                if ($type === 'update' || $type === 'all') {
-                    // 使用 UpdateRequest 验证规则
-                    $updateRequest = new UpdateRequest;
-                    $updateRequest->setProductId($product->id);
-                    $updateRequest->skipSslDomainValidation();
-
-                    // 过滤 null 值，避免上游未设置的字段覆盖本地数据
-                    $item = array_filter($item, fn ($value) => $value !== null);
-
-                    // 将 $item 数据合并到请求中，以便 rules() 能正确判断产品类型
-                    $updateRequest->merge($item);
-
-                    $validator = Validator::make($item, $updateRequest->rules());
-                    $validator->after(function ($validator) use ($updateRequest) {
-                        $updateRequest->setValidator($validator);
-                        $updateRequest->withValidator($validator);
-                    });
-
-                    if ($validator->fails()) {
-                        $this->error('产品数据验证失败', $validator->errors()->toArray());
-                    }
-
-                    // 保留本地的 delegation 验证方法（上游 API 不包含此方法）
-                    if (isset($item['validation_methods']) && is_array($item['validation_methods'])) {
-                        $localMethods = $product->validation_methods ?? [];
-                        if (in_array('delegation', $localMethods) && ! in_array('delegation', $item['validation_methods'])) {
-                            $item['validation_methods'][] = 'delegation';
-                        }
-                    }
-
-                    // 保留本地已有的名称和备注，不被导入数据覆盖
-                    if (! empty($product->name)) {
-                        unset($item['name']);
-                    }
-                    if (! empty($product->remark)) {
-                        unset($item['remark']);
-                    }
-                    // 本地权重已人工设置（非默认 0）时，同步不覆盖
-                    if ((int) $product->weight !== 0) {
-                        unset($item['weight']);
-                    }
-
-                    $product->update($item);
-                }
-            } else {
-                if ($type === 'new' || $type === 'all') {
-                    $importRequest = new ImportCaProductRequest;
-                    $importRequest->merge($item);
-
-                    $validator = Validator::make($item, $importRequest->rules());
-                    $validator->after(function ($validator) use ($importRequest) {
-                        $importRequest->setValidator($validator);
-                        $importRequest->withValidator($validator);
-                    });
-
-                    if ($validator->fails()) {
-                        $this->error('产品数据验证失败', $validator->errors()->toArray());
-                    }
-
-                    $item = $importRequest->prepareForCreate($item);
-                    Product::create($item);
-                }
-            }
+        // resilient 终态直接 return，不调 success()：success() 抛 code=1 异常，
+        // 命令侧 catch(Throwable) 会把成功运行误报为失败（I1）
+        if ($resilient) {
+            return;
         }
 
         $this->success();
+    }
+
+    /**
+     * resilient 模式下逐产品失败收集（供 ImportProductCommand 汇总 admin 告警）。
+     *
+     * @var array<int, string>
+     */
+    protected array $importIssues = [];
+
+    /**
+     * resilient 导入的逐产品失败摘要（人工路径不产生、恒为空）。
+     *
+     * @return array<int, string>
+     */
+    public function getImportIssues(): array
+    {
+        return $this->importIssues;
+    }
+
+    /**
+     * 单产品导入处理体（update/create 分支），供人工路径与 resilient cron 复用（单一源，反模式4/6）。
+     *
+     * 校验失败经 $this->error() 抛 ApiResponseException：人工路径直接冒泡中断整来源；
+     * resilient 路径由 importProduct 循环 catch 收集后 continue，不中断其余产品。
+     *
+     * @param  array<string, mixed>  $item  上游产品项（含 code）
+     */
+    protected function importProductItem(array $item, string $source, string $type): void
+    {
+        $item['source'] = $source;
+
+        if (empty($item['code'])) {
+            $this->error('产品 code 不能为空', $item);
+        }
+
+        $item['api_id'] = strval($item['code']);
+        unset($item['code']);
+
+        // 根据 api_id 查询产品
+        $product = Product::where('source', $source)->where('api_id', $item['api_id'])->first();
+        if ($product) {
+            if ($type === 'update' || $type === 'all') {
+                // 使用 UpdateRequest 验证规则
+                $updateRequest = new UpdateRequest;
+                $updateRequest->setProductId($product->id);
+                $updateRequest->skipSslDomainValidation();
+
+                // 过滤 null 值，避免上游未设置的字段覆盖本地数据
+                $item = array_filter($item, fn ($value) => $value !== null);
+
+                // 将 $item 数据合并到请求中，以便 rules() 能正确判断产品类型
+                $updateRequest->merge($item);
+
+                $validator = Validator::make($item, $updateRequest->rules());
+                $validator->after(function ($validator) use ($updateRequest) {
+                    $updateRequest->setValidator($validator);
+                    $updateRequest->withValidator($validator);
+                });
+
+                if ($validator->fails()) {
+                    $this->error('产品数据验证失败', $validator->errors()->toArray());
+                }
+
+                // 保留本地的 delegation 验证方法（上游 API 不包含此方法）
+                if (isset($item['validation_methods']) && is_array($item['validation_methods'])) {
+                    $localMethods = $product->validation_methods ?? [];
+                    if (in_array('delegation', $localMethods) && ! in_array('delegation', $item['validation_methods'])) {
+                        $item['validation_methods'][] = 'delegation';
+                    }
+                }
+
+                // 保留本地已有的名称和备注，不被导入数据覆盖
+                if (! empty($product->name)) {
+                    unset($item['name']);
+                }
+                if (! empty($product->remark)) {
+                    unset($item['remark']);
+                }
+                // 本地权重已人工设置（非默认 0）时，同步不覆盖
+                if ((int) $product->weight !== 0) {
+                    unset($item['weight']);
+                }
+
+                $product->update($item);
+            }
+        } else {
+            if ($type === 'new' || $type === 'all') {
+                $importRequest = new ImportCaProductRequest;
+                $importRequest->merge($item);
+
+                $validator = Validator::make($item, $importRequest->rules());
+                $validator->after(function ($validator) use ($importRequest) {
+                    $importRequest->setValidator($validator);
+                    $importRequest->withValidator($validator);
+                });
+
+                if ($validator->fails()) {
+                    $this->error('产品数据验证失败', $validator->errors()->toArray());
+                }
+
+                $item = $importRequest->prepareForCreate($item);
+                Product::create($item);
+            }
+        }
     }
 
     /**
