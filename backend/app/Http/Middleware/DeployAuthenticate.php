@@ -6,6 +6,7 @@ use App\Models\Acme;
 use App\Models\DeployToken;
 use App\Models\Order;
 use App\Models\Scopes\UserScope;
+use App\Models\User;
 use App\Traits\ApiResponse;
 use Closure;
 use Illuminate\Http\Request;
@@ -34,6 +35,10 @@ class DeployAuthenticate
 
         if (! $deployToken->status) {
             $this->error('Deploy token is disabled');
+        }
+
+        if ($deployToken->user_id && (! $deployToken->user instanceof User || $deployToken->user->status === 0)) {
+            $this->error('Account is disabled');
         }
 
         if (! $deployToken->isIpAllowed($request->ip())) {

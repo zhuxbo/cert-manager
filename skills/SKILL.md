@@ -10,7 +10,7 @@
 | 后端·订单资金   | `backend/order-fund.md`                       | order 级互斥锁、下单韧性、资金四道网、支付验签、退款/Purge、续费孤儿止血/卡单对账                             |
 | 后端·认证安全   | `backend/auth.md`                             | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据 URL）                                                     |
 | 后端·升级       | `backend/upgrade.md`                          | 升级系统、freeze 冻结契约（unfreeze 先于 up/watchdog 自愈/备份互斥）、upgrade.sh 数据防删守卫、BinaryLocator  |
-| 后端·数据库     | `backend/database.md`                         | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容                                                                    |
+| 后端·数据库     | `backend/database.md`                         | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容、DB 时区固化                                                       |
 | 后端·委托验证   | `backend/delegation.md`                       | 委托验证、S/MIME 验证字段                                                                                     |
 | ACME 模块       | `backend/acme-module.md`                      | ACME 协议服务端、上游对接、订阅计费、状态流转                                                                 |
 | Source API 接入 | `backend/source-api.md`                       | 新增上游来源（Order\Api + Acme\Api）                                                                          |

@@ -45,6 +45,20 @@ test('DeployAuthenticate 禁用 token 返回错误', function () {
         ->assertJson(['code' => 0]);
 });
 
+test('DeployAuthenticate 所属用户禁用返回错误', function () {
+    // token 自身启用，但所属用户被禁用 → 拒绝（与 JWT 侧 Account is disabled 对齐）
+    $user = User::factory()->disabled()->create();
+    $deployToken = DeployToken::factory()->create([
+        'user_id' => $user->id,
+        'status' => 1,
+    ]);
+
+    $this->withHeaders(['Authorization' => "Bearer $deployToken->token"])
+        ->getJson('/api/deploy')
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
 test('DeployAuthenticate GET query token 通过', function () {
     $user = User::factory()->create();
     $deployToken = DeployToken::factory()->create([

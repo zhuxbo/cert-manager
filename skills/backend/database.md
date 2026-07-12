@@ -57,3 +57,17 @@ Schema::table('products', function (Blueprint $table) {
 ```
 
 ---
+
+## DB 时区固化（连接 session time_zone）
+
+**机制（已在，commit d9071e84）**：`AppServiceProvider::register()` 从 `config('app.timezone')`（Asia/Shanghai）推导数字偏移 `+08:00`，注入 Laravel 原生连接键 `database.connections.mysql.timezone`；建连时 `MySqlConnector::configureConnection()`（Laravel 13.8.0）把它并入**单条** `SET NAMES 'utf8mb4' ..., time_zone='+08:00', SESSION sql_mode='...'` 执行。**非静态 config、非 INIT_COMMAND** —— `config/database.php` 无静态 `timezone` 键是有意的，勿据此误判「缺失」。
+
+**要点**：
+
+1. **单一来源纪律**：偏移只在 `AppServiceProvider` 从 `app.timezone` 推导一次。**禁在 `config/database.php` 再推导/硬编码第二份**（双份 offset = 漂移风险）；PDO INIT_COMMAND（`innodb_lock_wait_timeout=50`）不掺时区
+2. **用数字偏移、不用命名时区**：`+08:00` 自 MySQL 4.1 全版本支持、不依赖时区表（`mysql_tzinfo_to_sql`）；命名形态 `Asia/Shanghai` 在裸装 5.7 / 精简镜像（无 tz 表）会 `Unknown or incorrect time zone` 报错
+3. **DST 无关**：偏移在 boot 时 `getOffset(new DateTime)` 快照一次；Asia/Shanghai 自 1991 年起无夏令时，`+08:00` 恒定正确。遗留局限（当前非风险）：若 `app.timezone` 改为含 DST 的时区，长驻 worker 内快照不随 DST 切换更新
+4. **覆盖面**：全 87 个 TIMESTAMP 列（0 datetime、0 `CURRENT_TIMESTAMP` 默认）+ 所有 SQL 侧时间函数（`NOW()/DATEDIFF/DATE_SUB/DATE()`，如 AutoRenew/Purge/Dashboard 的 `whereRaw/selectRaw`）随 session `+08:00` 统一到 app.timezone，无视 OS/global（实测 `SET GLOBAL time_zone='+00:00'` 后 Laravel 连接仍 `+08:00`）。PHP `now()`（小写 Carbon）与绑定参数本就走 app.timezone、同框
+5. **mysqldump tz-utc 安全**：`MysqlBackupHandler` 与升级备份均未加 `--skip-tz-utc`，默认发 `SET TIME_ZONE='+00:00'`，TIMESTAMP 以 UTC instant 落盘、恢复端同值复原，**恢复机 OS 时区无关**；全仓无裸 `new PDO`/`mysqli`，唯一 `mysql` 连接即被强制
+
+**测试锚点（伪绿 → 真绿）**：`tests/Feature/Timezone/TimezoneIntegrationTest.php`。只读 `config('database.connections.mysql.timezone')` 的断言对「config 正确而活连接漂移」零区分度（伪绿）；活连接用例查 `SELECT @@session.time_zone` 断言实际 session 偏移，堵该缺口。**变异自检必走 PSEUDO 漂移**：在活连接用例内临时 `DB::statement("SET time_zone='+00:00'")`（config 不变）→ 活连接用例红、config-only 用例仍绿 → 移除复归全绿。**禁用「删注入行」当自检**（删注入行会让 config key 变 null、config-only 用例 `new DateTimeZone('')` 直接 error，掩盖活连接用例的独有区分度）。

@@ -437,7 +437,7 @@ class ApiController extends Controller
             if ($order->latestCert->status === 'unpaid') {
                 try {
                     $this->action->pay($order_id);
-                } catch (ApiResponseException) {
+                } catch (ApiResponseException|MutationBusyException) {
                 }
             }
 

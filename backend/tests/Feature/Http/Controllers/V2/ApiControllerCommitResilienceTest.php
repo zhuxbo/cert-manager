@@ -239,6 +239,36 @@ test('get 命中 pending 且 commit 抢锁忙：不冒 503，返回 processing �
     expect($cert->fresh()->status)->toBe('pending');
 });
 
+test('get 命中 unpaid 且 pay 抢锁忙：不冒 503，返回 processing 展示态', function () {
+    $user = $this->createTestUser(['balance' => '200.00']);
+    $product = commitResProduct('100.00');
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'unpaid',
+        'api_id' => null,
+        'common_name' => 'get-busy-unpaid-v2.example.com',
+        'alternative_names' => 'get-busy-unpaid-v2.example.com',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('pay')->once()->with($order->id)->andThrow(
+        new MutationBusyException("order_mutate_{$order->id}")
+    );
+    app()->instance(Action::class, $action);
+
+    $response = $this->withHeaders(commitResAuthHeaders($user))
+        ->getJson('/api/v2/get?order_id='.$order->id);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.status'))->toBe('processing');
+    expect($cert->fresh()->status)->toBe('unpaid');
+});
+
 // ====================================================================
 // M5：refer_id 命中 pending 卡单时幂等重提 commit
 // ====================================================================
