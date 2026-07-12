@@ -37,6 +37,8 @@
 2. 实现 `ChannelInterface`：`send(Notification): array` + `isAvailable(): bool` + `shouldSend(Model $notifiable, string $code): bool`
 3. 用户偏好/UI/模板全部由插件自治：自己加表/字段读偏好，主系统不预留 schema/UI/API 钩子，不加 widget 插槽
 
+**前置门（引入第二通知通道前必须先解决）**：`notifications` 表当前无 channel 维度，「行复用启发式局限」（见「NotificationJob 失败重试分档」段）按「接收者+模板+时间窗」定位通知行——引入第二通知通道前**必须先解决通知行定位的 channel 维度**（届时评估「加 channel 列 + 含 channel 的唯一定位索引」vs「插件通道自治映射各自建表」两方案），否则 mail 重试会跨通道复用错行、覆盖插件通道记录。当前 mail-only 基座该局限休眠，不预建列（YAGNI）。
+
 ## 携密 / 附件安全（job 边界）
 
 - ① `NotificationJob implements ShouldBeEncrypted`——携密 context（如 user_created 密码经 `NotificationIntent.context` → Job 构造参数序列化）用 APP_KEY 加密整个 job payload，防明文落 `jobs`（执行前窗口）/`failed_jobs`（长期）表；`transient` 只防 `notifications.data`，二者互补。② 多通道临时附件：Builder 按通道各 build 一次，附件类 payload（CertIssued 含私钥证书 ZIP）每通道各生成一份，`NotificationJob::handle` 末尾统一清理 `data._meta.cleanup_paths`（覆盖所有通道 + 发送失败路径、与 MailChannel 内清理幂等），防非 mail 通道（插件注入）临时文件泄漏
@@ -58,7 +60,7 @@
 - **`tries=5` + `maxExceptions=1`**（幂等 ShouldQueue 约定，见 CLAUDE.md）：tries=5 给 `SkipWhenUpgradeFrozen` 的 `release(60)`（freeze 每分钟烧 1 个）留余量；瞬态重试走 `retryDelay()` backoff `[60,300,300,300]`。maxExceptions=1 只对「真·未捕获异常」（如建行时 DB 挂）快失败——本设计瞬态路径 catch 后 release/fail 均不抛，正是意图。
 - **retryable 契约**：`ChannelInterface::send` 返回 `array{code,msg?,retryable?}`；MailChannel 判档——**永久（retryable=false）**：空邮箱 / 未配置 / 附件问题（防新装机 failed_jobs 风暴 + CertIssued 每轮重生成含私钥 ZIP）；**瞬态（retryable=true）**：SMTP send 失败 / 发送异常（下轮 build 可自愈）。缺省不含该键（成功 code=1 / 插件通道）→ Job 视作 false（不重试）安全。
 - **分档收敛**：成功 / 永久失败 → 落 FAILED 行 + 清 build 产物 + `return`（不 release 不 throw）；瞬态失败 → 先清 build 产物（**cleanup-before-release**：防含私钥 ZIP 逐轮泄漏，下轮 handle 重跑 build 重生成）→ 未到上限 `release(retryDelay())`、末轮交 `fail()` 标终态 + `Log::error` 前置。
-- **行复用启发式（零迁移）+ 局限**：仅重试轮（`attempts()>1`）复用同接收者+模板+近 1h 的 sending/failed 行（按 `getMorphClass()` FQCN 定位，走 morphs+template_id+status 索引），避免「重试 N 次 = N 行」。**局限（观察项登记）**：`notifications` 表无 channel 列，多通道并存时可能跨通道复用行（mail 重试复用插件通道行）；当前基座 mail-only 该局限休眠，引入插件通道时升级为 `idempotency_key`（含 channel）+ 唯一索引。
+- **行复用启发式（零迁移）+ 局限**：仅重试轮（`attempts()>1`）复用同接收者+模板+近 1h 的 sending/failed 行（按 `getMorphClass()` FQCN 定位，走 morphs+template_id+status 索引），避免「重试 N 次 = N 行」。**局限（观察项登记）**：`notifications` 表无 channel 列，多通道并存时可能跨通道复用行（mail 重试复用插件通道行）；当前基座 mail-only 该局限休眠，引入插件通道时升级为 `idempotency_key`（含 channel）+ 唯一索引（引入前置门见「插件接入主系统的全部触点」段）。
 - **测试注入缝**：`MailChannel::makeMail()`（子类覆盖注入 mock，避免真实 SMTP）。`NotificationJobTest` 断言瞬态 release / 永久 FAILED / 末轮 fail() / build 产物每轮清理。
 
 ## NotificationJob build 阶段失败可见性（包V，M4 姊妹）

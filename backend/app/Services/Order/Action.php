@@ -1221,20 +1221,15 @@ class Action
                 // $lastTransaction=null（amount=0）跳过退款块。
                 $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
 
-                // 语义2：恢复 gate —— 判据 issued_at===null（上游契约依赖的代理：正常契约下 active 必经
-                // sync 写入证书体 + issued_at 原子共写，processing/approving 取消时恒为 null；破坏它需上游
-                // 解耦"证书体/issued_at"与"active 状态"，两方向均不产生资金错，见 skills/backend/order-fund.md）。
-                if ($cert->issued_at === null) {
-                    // 未签发（Purge 主路径 processing、手动 processing/approving 取消）：
-                    // 恢复旧证书 active + 回切 latest_cert_id + 删 reissue cert → 旧证书自然重回 cert_expire 窗口（P1-12 解）
-                    $this->restoreReissuedCert($order, $cert);
-                } else {
-                    // 已签发（F3，仅手动 commitCancel(active) 可达）：退增量 + cert→cancelled + cancelled_at，
-                    // 维持现状状态语义（旧证书可能已被上游 supersede、cloud-deploy 已推送 reissue cert，不恢复不删）
-                    $cert->update(['status' => 'cancelled']);
-                    $order->cancelled_at = now();
-                    $order->save();
-                }
+                // 语义2：订单终结——已提交上游（processing/approving，含已签发 active）取消一律不恢复前驱。
+                // 上游各家取消政策不一，恢复前驱 active 存在「被上游 supersede 后本地状态与实际不符」风险，
+                // 故 reissue cert 置 cancelled、前驱不恢复/不回切/不删（前驱保持 reissued 终态）。
+                // last_cert_id 保留不置 null：订单经 latestCert=cancelled 终结（重签/续费/取消前置门齐闭）后
+                // 该 UNIQUE 槽位对前驱 inert——无任何路径能再指向它，保留以维持「cancelled 接替 → reissued 前驱」取证链。
+                // 恢复窗口仅剩 unpaid（delete）/pending（cancelPending，恒未签发）；此处不再按 issued_at 分恢复分支。
+                $cert->update(['status' => 'cancelled']);
+                $order->cancelled_at = now();
+                $order->save();
             } else {
                 // new/renew：原逻辑逐字不变（getCancelTransaction 求和单笔口径，触点唯一、零影响）
                 //

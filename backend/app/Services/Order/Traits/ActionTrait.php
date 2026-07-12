@@ -112,6 +112,11 @@ trait ActionTrait
 
             $order || $this->error('订单或相关数据不存在');
 
+            // 接替单取消后 latestCert=cancelled、订单终结，重签专属提示（存量非 cancelled 路径文案不变）
+            if ($params['action'] == 'reissue' && $order->latestCert->status === 'cancelled') {
+                $this->error('订单已取消，无法重签');
+            }
+
             // 证书状态为 active 和 expired 都可以重签 只要订单没过期
             if (! in_array($order->latestCert->status, ['active', 'expired']) && $params['action'] == 'reissue') {
                 $this->error('订单状态错误');
@@ -1214,10 +1219,12 @@ trait ActionTrait
             }
 
             if ($cert->action === 'reissue') {
-                // 与 cancelLocked reissue 分支共享同一组 helper（反模式 4/6 消对称副本）：
-                // 增量退款口径 + 恢复旧证书。pending 恒未签发（未提交上游、api_id=null）→ 走恢复分支。
-                // 重构后已覆盖路径行为不变 + 对称获得 F1 fail-safe：二次 reissue-cancel 一律转人工
-                // （含 amount=0 —— exists() 预检先于 amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧）。
+                // 与 cancelLocked reissue 分支共享退款 helper（prepareReissueRefund/applyReissueIncrementRefund，
+                // 反模式 4/6 消对称副本）：增量退款口径统一。restoreReissuedCert 恢复旧证书为本路径专属——
+                // 恢复窗口仅 unpaid/pending，pending 恒未签发（未提交上游、api_id=null）故恢复前驱；
+                // cancelLocked（已提交上游）不恢复、置 cancelled 并终结订单。
+                // 对称获得 F1 fail-safe：二次 reissue-cancel 一律转人工（含 amount=0 —— exists() 预检先于
+                // amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧）。
                 $lastTransaction = $this->prepareReissueRefund($order, $cert);
                 $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
                 $this->restoreReissuedCert($order, $cert);

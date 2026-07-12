@@ -719,7 +719,7 @@ function mockCancelApi(string $mode = 'success'): MockInterface
     return $mockApi;
 }
 
-test('cancelLocked reissue 增域名（amount=20）：只退增量 20 非 120 + 旧证书恢复 active + latest_cert_id 回切 + reissue cert 删', function () {
+test('cancelLocked reissue 增域名（amount=20）：只退增量 20 非 120 + 前驱保持 reissued + latest_cert_id 不回切 + reissue cert=cancelled 不删 + last_cert_id 保留', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);
 
@@ -754,13 +754,16 @@ test('cancelLocked reissue 增域名（amount=20）：只退增量 20 非 120 + 
     $order->refresh();
     expect($order->purchased_standard_count)->toBe(1);
 
-    // 未签发（issued_at=null）：旧证书恢复 active + latest_cert_id 回切 + reissue cert 删
-    expect($oldCert->fresh()->status)->toBe('active');
-    expect($order->latest_cert_id)->toBe($oldCert->id);
-    expect(Cert::where('id', $reissueCert->id)->exists())->toBeFalse();
+    // 订单终结（收窄后）：前驱保持 reissued（不恢复）+ latest_cert_id 保持指向 reissue cert（不回切）
+    // + reissue cert 置 cancelled 不删 + last_cert_id 保留指向前驱（占槽 inert）
+    expect($oldCert->fresh()->status)->toBe('reissued');
+    expect($order->latest_cert_id)->toBe($reissueCert->id);
+    expect($reissueCert->fresh()->status)->toBe('cancelled');
+    expect(Cert::where('id', $reissueCert->id)->exists())->toBeTrue();
+    expect($reissueCert->fresh()->last_cert_id)->toBe($oldCert->id);
 });
 
-test('cancelLocked reissue 未增域名（amount=0）：无 cancel 流水 + 旧证书恢复照常', function () {
+test('cancelLocked reissue 未增域名（amount=0）：无 cancel 流水 + 前驱保持 reissued 不恢复不删', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);
 
@@ -772,10 +775,11 @@ test('cancelLocked reissue 未增域名（amount=0）：无 cancel 流水 + 旧�
     // amount=0：外层守卫整体跳过退款块，不建 cancel 流水（天然不触发 F1 唯一索引）
     expect(Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->count())->toBe(0);
 
-    // 旧证书恢复照常
-    expect($oldCert->fresh()->status)->toBe('active');
-    expect($order->fresh()->latest_cert_id)->toBe($oldCert->id);
-    expect(Cert::where('id', $reissueCert->id)->exists())->toBeFalse();
+    // 订单终结（收窄后）：前驱保持 reissued（不恢复）+ latest_cert_id 不回切 + reissue cert=cancelled 不删
+    expect($oldCert->fresh()->status)->toBe('reissued');
+    expect($order->fresh()->latest_cert_id)->toBe($reissueCert->id);
+    expect($reissueCert->fresh()->status)->toBe('cancelled');
+    expect(Cert::where('id', $reissueCert->id)->exists())->toBeTrue();
 });
 
 test('cancelLocked 已签发 reissue（issued_at 非 null）：退增量 + cert=cancelled + 旧证书保持 reissued + cert 不删 + cancelled_at', function () {
@@ -852,6 +856,89 @@ test('cancelLocked reissue 上游 cancel 失败 → 回滚、无退款、不置 
     expect($reissueCert->fresh()->status)->toBe('cancelling');
     expect($oldCert->fresh()->status)->toBe('reissued');
     expect(Cert::where('id', $reissueCert->id)->exists())->toBeTrue();
+});
+
+// —— 收窄后新增：订单终结门 + last_cert_id 保留 + 未签发仍退增量 ——
+
+test('cancelLocked reissue 取消后订单终结：再 reissue 报「订单已取消，无法重签」+ commitCancel 报「订单已取消」', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    [$order, $oldCert, $reissueCert] = makeReissueCancelling();
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-20.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
+
+    // 先取消 reissue 接替单 → reissue cert=cancelled、latest_cert_id 仍指向它（不回切）→ 订单终结
+    mockCancelApi('success');
+    expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
+    expect($reissueCert->fresh()->status)->toBe('cancelled');
+    expect($order->fresh()->latest_cert_id)->toBe($reissueCert->id);
+
+    // 门1：再对该订单 reissue → initParams 前置校验专属分支报错「订单已取消，无法重签」
+    expectOrderApiError(
+        fn () => $this->service->reissue(['action' => 'reissue', 'order_id' => $order->id]),
+        '订单已取消，无法重签'
+    );
+
+    // 门2：commitCancel → latestCert=cancelled 报「订单已取消」
+    expectOrderApiError(
+        fn () => $this->service->commitCancel($order->id),
+        '订单已取消'
+    );
+
+    // 订单终结不产生额外资金流水：仍只有首次的 1 笔 cancel（+20）
+    expect(Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->count())->toBe(1);
+});
+
+test('cancelLocked reissue 取消后 last_cert_id 保留：cancelled reissue cert 仍指向前驱（占槽 inert 不置 null）', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    [$order, $oldCert, $reissueCert] = makeReissueCancelling();
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-20.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
+
+    mockCancelApi('success');
+    expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
+
+    // 与 cancelPending renew 释放槽位（last_cert_id=null）相反：reissue 收窄保留 last_cert_id，
+    // 维持「cancelled 接替 → reissued 前驱」取证链；订单终结后该 UNIQUE 槽位对前驱 inert。
+    $reissueCert->refresh();
+    expect($reissueCert->status)->toBe('cancelled');
+    expect($reissueCert->last_cert_id)->toBe($oldCert->id);
+    expect($reissueCert->last_cert_id)->not->toBeNull();
+});
+
+test('cancelLocked reissue 未签发（issued_at=null，processing 语义）取消：仍退增量（cancel 流水 +20）+ cert=cancelled 不删', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    // makeReissueCancelling 默认 issued_at=null（processing/approving 语义，未签发）
+    [$order, $oldCert, $reissueCert] = makeReissueCancelling();
+    expect($reissueCert->issued_at)->toBeNull();
+
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-20.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
+
+    mockCancelApi('success');
+    expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
+
+    // 收窄前未签发走恢复分支不退增量地删 cert；收窄后与 F3 合流，未签发同样退增量口径
+    $cancelTx = Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->first();
+    expect($cancelTx)->not->toBeNull();
+    expect((float) $cancelTx->amount)->toBe(20.0);
+    expect($cancelTx->standard_count)->toBe(-1);
+
+    // cert=cancelled、不删、cancelled_at 写入
+    expect($reissueCert->fresh()->status)->toBe('cancelled');
+    expect(Cert::where('id', $reissueCert->id)->exists())->toBeTrue();
+    expect($order->fresh()->cancelled_at)->not->toBeNull();
 });
 
 test('cancelLocked new/renew 回归：仍走 getCancelTransaction 求和单笔口径（reissue 分支零影响）', function () {
