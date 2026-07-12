@@ -12,6 +12,7 @@ use App\Services\Notification\Builders\NotificationBuilderInterface;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
+use App\Services\Notification\Exceptions\TransientBuildException;
 use App\Services\Notification\NotificationRepository;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
@@ -46,6 +47,17 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
     public int $tries = 5;
 
     public int $maxExceptions = 1;
+
+    /**
+     * build 失败落 FAILED 记录的固定文案（notify I-1）。
+     *
+     * 一律用常量、绝不落异常 getMessage()：build catch 是通用路径（覆盖全部 Builder 及框架底层
+     * 异常），消息内容无法逐一审计（异常消息可能回显携密 context 值），常量是唯一「不做假设」的方案，
+     * 对齐 send 阶段常量范式（handle() 内「发送失败，请稍后重试」）。原始 getMessage() 仅进 error_logs。
+     */
+    protected const BUILD_FAILED_REASON = '通知内容生成失败';
+
+    protected const BUILD_FAILED_TRANSIENT_REASON = '通知内容生成失败（瞬态重试已耗尽）';
 
     public function __construct(
         protected string $notifiableType,
@@ -90,8 +102,10 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
         try {
             $payload = $builder->build($intent, $notifiable);
         } catch (Throwable $e) {
-            app(ApiExceptions::class)->logException($e);
-            $this->logSkip('构建通知数据失败');
+            // build 失败分档（M4 send 分档的姊妹）：瞬态（IO/磁盘满，唯一命中 CertIssued）未达上限
+            // release 自愈、末轮落 FAILED；永久（数据/校验错）直接落 FAILED。堵「签发成功但交付邮件
+            // 静默缺失、通知列表无行」的可见性洞（原实现 catch 后直接 return、不建行不重试）。
+            $this->handleBuildFailure($e, $notificationRepository, $notifiable, $template);
 
             return;
         }
@@ -175,6 +189,94 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
 
         // 末轮瞬态仍失败：交 failed() 标终态 + Log::error（真实 worker 触发；行已在 updateSendResult 落 FAILED）
         $this->fail(new RuntimeException($result['message'] ?? '通知发送失败'));
+    }
+
+    /**
+     * build 阶段失败分档（handle 内 build catch 委派）。
+     *
+     * - 瞬态（TransientBuildException，IO/磁盘满，恢复后重跑 build 自愈）：未达 tries 上限 → release
+     *   错峰重试、不落记录（前几轮瞬态失败不留行）；末轮（attempts>=tries）→ 落 FAILED 记录 + fail()。
+     * - 永久（数据/校验错，重试无益）→ 落 FAILED 记录 + warning 留痕、不重试。
+     *
+     * attempts 预算与 send 阶段、SkipWhenUpgradeFrozen 的 release(60) 共享 tries=5（notify M-1）：
+     * freeze 期每分钟烧 1 个 attempt，升级窗内磁盘满的瞬态重试窗口被压缩、可能提前末轮落 FAILED；
+     * 最坏况仍是可见 FAILED 行（可见性目标达成），与 send 阶段同权衡。
+     *
+     * build 抛异常时 $payload 未产出（=null），CertIssued 已在 build 抛异常前自清 tempDir，
+     * NotificationJob 侧无 cleanup_paths 可泄漏，故瞬态 release 前无需清理（无 payload 可传）。
+     */
+    protected function handleBuildFailure(
+        Throwable $e,
+        NotificationRepository $notificationRepository,
+        Model $notifiable,
+        NotificationTemplate $template
+    ): void {
+        // 原始异常（含 getMessage）仅进 error_logs 保排障，绝不落 notifications.data（notify I-1）
+        app(ApiExceptions::class)->logException($e);
+
+        if ($e instanceof TransientBuildException) {
+            if ($this->attempts() < $this->tries) {
+                $this->release($this->retryDelay());
+
+                return;
+            }
+
+            // 末轮瞬态仍失败：落 FAILED 记录（可见性）+ fail() 交终态兜底
+            $this->persistBuildFailure($notificationRepository, $notifiable, $template, self::BUILD_FAILED_TRANSIENT_REASON);
+            $this->fail($e);
+
+            return;
+        }
+
+        // 永久失败：落 FAILED 记录 + warning 留痕，不重试
+        $this->persistBuildFailure($notificationRepository, $notifiable, $template, self::BUILD_FAILED_REASON);
+        $this->logSkip('构建通知数据失败（永久）', 'warning');
+    }
+
+    /**
+     * 落 build 失败的 FAILED 通知记录（只存安全摘要、不携密、不复用行）。
+     *
+     * - $reason 一律固定常量（BUILD_FAILED_*），绝不落异常 getMessage()（notify I-1）。
+     * - 单写 FAILED（createNotification 传 status=FAILED）：不走 PENDING→markAsFailed 两步，
+     *   消除两写间进程死留 stuck-pending 行的窗口（保留期清理只清终态行）。
+     * - 直接 createNotification 新建、不走 findReusableRow：前几轮瞬态失败不落行、无前序行可复用，
+     *   直接新建杜绝误复用同接收者近 1h 内另一证书的通知行。
+     * - _meta 仅摘录 order_id（严格键白名单 + is_scalar 守卫）：非敏感整型标识，供 admin 定位缺失的
+     *   交付邮件。禁止扩成 context 直通（user_created 的 context 携密码明文）——未来新增摘录键须逐键
+     *   过携密评审。除白名单摘录外，payload 绝不含 $this->context 任何字段。
+     * - DB 写全程 try/catch，失败降级双日志（error_logs + 文件）、不上抛（避免 maxExceptions=1 误杀）。
+     */
+    protected function persistBuildFailure(
+        NotificationRepository $notificationRepository,
+        Model $notifiable,
+        NotificationTemplate $template,
+        string $reason
+    ): void {
+        try {
+            $meta = ['build_failed' => true, 'subject' => '通知构建失败'];
+
+            if (isset($this->context['order_id']) && is_scalar($this->context['order_id'])) {
+                $meta['order_id'] = $this->context['order_id'];
+            }
+
+            $payload = [
+                '_meta' => $meta,
+                'result' => [
+                    'status' => Notification::STATUS_FAILED,
+                    'message' => $reason,
+                    'timestamp' => now()->toDateTimeString(),
+                ],
+            ];
+
+            $notificationRepository->createNotification($notifiable, $template, $payload, Notification::STATUS_FAILED);
+        } catch (Throwable $dbError) {
+            app(ApiExceptions::class)->logException($dbError);
+            Log::error('[notification.build.failed] 落 failed 记录失败', [
+                'template_id' => $this->templateId,
+                'notifiable_type' => $this->notifiableType,
+                'notifiable_id' => $this->notifiableId,
+            ]);
+        }
     }
 
     /**

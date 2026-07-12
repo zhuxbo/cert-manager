@@ -25,6 +25,7 @@ Thumbs.db
 /storage/*.pem
 /storage/*.jks
 /storage/*.pfx
+/storage/temp-certs/
 /storage/pail
 /storage/logs/*
 /storage/framework/cache/*

@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\User;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
+use App\Services\Notification\Exceptions\TransientBuildException;
 use App\Services\Order\Traits\ActionFileTrait;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\File;
@@ -85,14 +86,22 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
             try {
                 mkdir($tempDir, 0755, true);
 
-                $zip = new ZipArchive;
-                $zip->open($attachmentPath, ZipArchive::CREATE);
+                $zip = $this->makeZip();
+                // ZipArchive::open()/close() 返回 bool/错误码、不抛异常。磁盘满（block 耗尽）最常在
+                // close() 写盘期静默失败（addFromString 仅缓存在内存、close 才压缩刷盘）——不显式检查
+                // 返回值会静默产出空/残 ZIP 标 SENT。故非 true 即抛 TransientBuildException（瞬态，可自愈）。
+                if ($zip->open($attachmentPath, ZipArchive::CREATE) !== true) {
+                    throw new TransientBuildException('创建证书压缩包失败');
+                }
                 $this->addCertToZip($order, $zip, $tempDir);
-                $zip->close();
+                if ($zip->close() !== true) {
+                    throw new TransientBuildException('写入证书压缩包失败');
+                }
             } catch (Throwable $e) {
                 File::deleteDirectory($tempDir);
                 app(ApiExceptions::class)->logException($e);
-                throw new RuntimeException('生成证书附件失败');
+                // IO 类失败一律归瞬态：inode 耗尽/盘满/临时 IO 异常，恢复后重跑 build 自愈。
+                throw new TransientBuildException('生成证书附件失败', 0, $e);
             }
 
             $data['_meta']['attachments'] = [
@@ -105,5 +114,14 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
         }
 
         return new NotificationPayload($data);
+    }
+
+    /**
+     * 构造 ZipArchive 实例（测试注入缝：子类可覆盖返回 close() 静默返 false 的桩，
+     * 精确验证「close 返回值检查 → 抛瞬态」。同 MailChannel::makeMail() 既有范式）。
+     */
+    protected function makeZip(): ZipArchive
+    {
+        return new ZipArchive;
     }
 }

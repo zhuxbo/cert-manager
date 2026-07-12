@@ -5,10 +5,14 @@ use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Models\User;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
+use App\Services\Notification\Builders\NotificationBuilderInterface;
 use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 use App\Services\Notification\ChannelManager;
 use App\Services\Notification\Channels\ChannelInterface;
 use App\Services\Notification\Channels\MailChannel;
+use App\Services\Notification\DTOs\NotificationIntent;
+use App\Services\Notification\DTOs\NotificationPayload;
+use App\Services\Notification\Exceptions\TransientBuildException;
 use App\Services\Notification\NotificationRepository;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
@@ -18,6 +22,39 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 uses(RefreshDatabase::class)->group('database');
+
+/**
+ * 测试专用 Builder：build 永久失败（数据/校验错，非瞬态）。
+ */
+class BuildFailsPermanentBuilder implements NotificationBuilderInterface
+{
+    public function build(NotificationIntent $intent, Model $notifiable): ?NotificationPayload
+    {
+        throw new RuntimeException('permanent build failure');
+    }
+}
+
+/**
+ * 测试专用 Builder：build 瞬态失败（IO/磁盘满，可自愈重试）。
+ */
+class BuildFailsTransientBuilder implements NotificationBuilderInterface
+{
+    public function build(NotificationIntent $intent, Model $notifiable): ?NotificationPayload
+    {
+        throw new TransientBuildException('transient build failure');
+    }
+}
+
+/**
+ * 测试专用 Builder：把 context 敏感值回显进异常消息，验证 getMessage() 绝不落库（notify I-1）。
+ */
+class BuildFailsWithSecretInMessageBuilder implements NotificationBuilderInterface
+{
+    public function build(NotificationIntent $intent, Model $notifiable): ?NotificationPayload
+    {
+        throw new RuntimeException('build fail: '.($intent->context['password'] ?? ''));
+    }
+}
 
 beforeEach(function () {
     $this->seed = true;
@@ -583,4 +620,182 @@ test('M4：failed() 定位行标 FAILED 终态并 Log::error 兜底', function (
     Log::shouldHaveReceived('error')
         ->withArgs(fn ($msg) => str_contains((string) $msg, '通知发送最终失败'))
         ->once();
+});
+
+// ==========================================
+// 包V：build 阶段失败可见性（永久/瞬态分档 + 落 FAILED 记录不携密 + 白名单摘录 + 降级）
+// ==========================================
+
+test('包V：build 永久失败 → 落 1 行 FAILED、不 release、无 pending 残留、failed_jobs=0', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], BuildFailsPermanentBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertNotReleased();
+    $job->assertNotFailed();
+
+    $rows = Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->get();
+    expect($rows)->toHaveCount(1)
+        ->and($rows->first()->status)->toBe(Notification::STATUS_FAILED)
+        ->and($rows->first()->data['result']['message'])->toBe('通知内容生成失败')
+        ->and($rows->first()->data['_meta']['build_failed'])->toBeTrue();
+
+    // 单写 FAILED，无 pending 中间态残留（消除 stuck-pending 窗口）
+    expect(Notification::where('status', Notification::STATUS_PENDING)->count())->toBe(0)
+        ->and(DB::table('failed_jobs')->count())->toBe(0);
+});
+
+test('包V：build 瞬态失败未达上限 → release(60)、不落记录', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], BuildFailsTransientBuilder::class);
+    $job->withFakeQueueInteractions(); // attempts=1 < tries=5
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertReleased();
+    $job->assertNotFailed();
+    expect($job->job->releaseDelay)->toBe(60); // backoff[0]
+
+    // 瞬态未末轮不落记录（前几轮不留行，避免噪声）
+    expect(Notification::where('notifiable_id', $user->id)->count())->toBe(0);
+});
+
+test('包V：build 瞬态失败第 2 轮 → release(300)（retryDelay backoff 对齐 send 阶段）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], BuildFailsTransientBuilder::class);
+    $job->withFakeQueueInteractions();
+    $job->job->attempts = 2; // backoff[max(0,2-1)]=backoff[1]=300
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertReleased();
+    expect($job->job->releaseDelay)->toBe(300); // backoff[1]（60→300 档切换）
+    expect(Notification::where('notifiable_id', $user->id)->count())->toBe(0);
+});
+
+test('包V：build 瞬态失败末轮（attempts=5=tries）→ 落 1 行 FAILED + fail()', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], BuildFailsTransientBuilder::class);
+    $job->withFakeQueueInteractions();
+    $job->job->attempts = 5; // 末轮：attempts<tries 为假 → 不 release，落记录 + fail()
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertNotReleased();
+    $job->assertFailed();
+
+    $rows = Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->get();
+    expect($rows)->toHaveCount(1)
+        ->and($rows->first()->status)->toBe(Notification::STATUS_FAILED)
+        ->and($rows->first()->data['result']['message'])->toBe('通知内容生成失败（瞬态重试已耗尽）');
+});
+
+test('包V：build 失败落 failed 记录不含 context 明文（异常 getMessage 绝不落库）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // 测试 Builder 把 context['password'] 嵌进抛出的异常消息——固定常量的测法（无敏感值入 message）
+    // 断言恒过、抓不到 getMessage() 落库回归，故必须敏感值入 message 才真验（notify I-1）
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', [
+        'username' => $user->username,
+        'password' => 'PlainSecret123',
+    ], BuildFailsWithSecretInMessageBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $notification = Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->first();
+    expect($notification)->not->toBeNull()
+        ->and($notification->status)->toBe(Notification::STATUS_FAILED)
+        // 固定常量文案，绝不含异常 getMessage 里回显的明文密码
+        ->and($notification->data['result']['message'])->toBe('通知内容生成失败');
+    // 入库 JSON 整体不出现明文（兜底防藏在 _meta/result 等子结构）
+    expect(json_encode($notification->data))->not->toContain('PlainSecret123');
+});
+
+test('包V：build 失败落记录直接新建、不误复用同接收者近1h 其他 failed 行', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // 预置一行「他证书」的 failed 记录（同 user + 同模板 + 近 1h，findReusableRow 会匹配）
+    $existing = $user->notifications()->create([
+        'template_id' => $template->id,
+        'data' => ['_meta' => ['order_id' => 999], 'result' => ['status' => Notification::STATUS_FAILED, 'message' => '他证书旧失败']],
+        'status' => Notification::STATUS_FAILED,
+    ]);
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username, 'order_id' => 123], BuildFailsPermanentBuilder::class);
+    $job->withFakeQueueInteractions();
+    $job->job->attempts = 2; // attempts>1：若误走 findReusableRow 会复用 $existing
+
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    // 直接新建（不走 findReusableRow）→ 2 行；原行 data 未被覆盖
+    expect(Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->count())->toBe(2)
+        ->and($existing->fresh()->data['result']['message'])->toBe('他证书旧失败');
+});
+
+test('包V：persistBuildFailure DB 写异常 → 降级 Log::error、job 不上抛', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // mock repository 使 createNotification 抛异常（handle 方法参数，注入缝干净）
+    $repo = Mockery::mock(NotificationRepository::class);
+    $repo->shouldReceive('createNotification')->andThrow(new RuntimeException('DB write failed'));
+
+    Log::spy();
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], BuildFailsPermanentBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    // 不上抛（persistBuildFailure DB 写 try/catch 降级双日志）
+    $job->handle($repo, app(ChannelManager::class));
+
+    Log::shouldHaveReceived('error')
+        ->withArgs(fn ($msg) => str_contains((string) $msg, '落 failed 记录失败'))
+        ->once();
+});
+
+test('包V：_meta.order_id 白名单标量摘录（三形态）+ data 不含 context 其他键', function () {
+    $template = createJobTemplate();
+
+    // 形态 A：order_id 为标量 → 摘录进 _meta；context 其他键（username/password）绝不入库
+    $userA = createJobUser();
+    $jobA = new NotificationJob('user', $userA->id, $template->id, 'mail', ['username' => $userA->username, 'order_id' => 123, 'password' => 'PlainSecret123'], BuildFailsPermanentBuilder::class);
+    $jobA->withFakeQueueInteractions();
+    $jobA->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $rowA = Notification::where('notifiable_id', $userA->id)->first();
+    expect($rowA->data['_meta']['order_id'])->toBe(123)
+        ->and($rowA->data)->not->toHaveKey('username')
+        ->and($rowA->data)->not->toHaveKey('password');
+    expect(json_encode($rowA->data))->not->toContain('PlainSecret123');
+
+    // 形态 B：无 order_id → _meta 无该键
+    $userB = createJobUser();
+    $jobB = new NotificationJob('user', $userB->id, $template->id, 'mail', ['username' => $userB->username], BuildFailsPermanentBuilder::class);
+    $jobB->withFakeQueueInteractions();
+    $jobB->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $rowB = Notification::where('notifiable_id', $userB->id)->first();
+    expect($rowB->data['_meta'])->not->toHaveKey('order_id');
+
+    // 形态 C：order_id 非标量（数组）→ is_scalar 守卫拦截，_meta 无该键
+    $userC = createJobUser();
+    $jobC = new NotificationJob('user', $userC->id, $template->id, 'mail', ['username' => $userC->username, 'order_id' => ['nested' => 1]], BuildFailsPermanentBuilder::class);
+    $jobC->withFakeQueueInteractions();
+    $jobC->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $rowC = Notification::where('notifiable_id', $userC->id)->first();
+    expect($rowC->data['_meta'])->not->toHaveKey('order_id');
 });
