@@ -335,7 +335,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 ## PurgeCommand 自动取消（临近退款期处理中订单）
 
-`schedule:purge` 每天 02:00 执行，扫描 `created_at` 在 `refund_period - 2 ~ refund_period` 天之间的处理中订单，调 `Order\Action::cancel` 取消并退款。
+`schedule:purge` 每天 02:00 执行，扫描 `created_at` 在 `refund_period - 2 ~ refund_period` 天之间的处理中订单，经 `commitCancel` 置 cancelling + 建 cancel task，由后续 cancel TaskJob 调 `Order\Action::cancel` 取消并退款。
 
 ### 限定条件
 
@@ -349,6 +349,22 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - 预同步 query（refund_period - 4 ~ refund_period - 2 天的订单创建 sync 预热任务）
 - 取消 query（refund_period - 2 ~ refund_period 天的订单走 sync + cancel）
+
+### 取消路径锁序对齐（P3 包R）
+
+取消分支已由「cert 置 cancelling → `deleteTask` → `createTask('cancel')`」三步裸调（order→task 反序、无事务无锁）**改为 `commitCancel($order->id)`**——锁序合规（`Task::lockForMutation` 先锁 sync/revalidate task 再锁 order，task→order）+ 锁内二次校验 status/refund_period。锁外仍保留 `syncImmediately`（含上游 HTTP 不进锁）+ `refresh` + `status==='processing'` 预检，锁内复检双保险。
+
+- **必须捕获 `ApiResponseException` 判 code**：`commitCancel` 成功末尾 `success()` 抛 `code=1`（DB 副作用已在 `runTaskMutationTransaction` 提交后才抛）。**绝不裸调**——裸调会落进外层 `catch (Throwable)` 把成功当失败打印、`canceledCount` 恒 0（假绿：DB 效果正确但取消健康度不可观测）。`code===1` 计成功、`code===0` 走 info 跳过不中断整批。回归用例断计数 + `doesntExpectOutputToContain('Failed to process')`（PurgeCommandTest）。
+- **知情差异（无害）**：`commitCancel` 删 `sync,revalidate`（不含 `commit`），残留 commit task 被 worker 拾取时 `commitLocked` 锁内首查 `status!='pending'` 即业务失败——不调上游、不重复下单/扣费，仅一条无害 failed commit task 噪音（随 90d 终态清理消除）。延时零变化：两路径都 `createTask($id,'cancel')` 无第三参，统一走 `ActionTrait` 内部 `max(120,…)`。
+
+### 三表保留期清理（P3 包R，终态行不冲突）
+
+`schedule:purge` 在自动取消前先清 `tasks`/`notifications` 超保留期的**终态历史行**（`config/purge.php`：`retention.tasks`/`notifications` 默认 90d、`chunk` 默认 1000）：
+
+- **清理集与业务锁定集不相交**：tasks 清 `{successful,failed}`、notifications 清 `{sent,failed}`；`Task::scopeLockForMutation`/`deleteTask` 的锁定/删除集恒为 `{executing,stopped}` → 清理 DELETE 不与任何持 task 锁的业务路径争同一行、**无锁序义务、不触发 Z12**。`failed` 可被 admin `batchStart` 复活（`failed→executing`），但 DELETE 与该 UPDATE 由 InnoDB 行锁串行、90d 窗口远大于人工重试窗口，近乎不可达。
+- **分批范式**：复用 `UserDataPurger::deleteInChunks` 范式（do-while + 每批独立 `DB::transaction` + `gc_collect_cycles` + maxIterations 护栏），单批 `LIMIT chunk` 避免长事务锁等待/撑爆 binlog。
+- **索引路径（EXPLAIN 实测，8.4 造 10 万行 95% 终态）**：`status IN(...) AND created_at<cutoff LIMIT 1000` 走 `status` 索引 `type=range`（**非全表扫**）+ LIMIT 收敛每批锁定上界；**不加 `ORDER BY id`**——会在 DELETE 路径引入 filesort（`type=range; Using filesort`）反而更差。零迁移不加 `created_at`/复合索引，量级证明需要时列后续批次观察项。
+- failed_jobs 不在此：走 Laravel 原生 `queue:prune-failed`（14d，M 包 E5 已落地）。
 
 ### cancelLocked reissue 分支（共享原语，两条正交语义）
 

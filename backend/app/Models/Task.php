@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Task extends BaseModel
 {
@@ -31,6 +32,18 @@ class Task extends BaseModel
         'last_execute_at' => 'datetime',
         'weight' => 'integer',
     ];
+
+    /**
+     * 关联订单（order_id → orders.id）。
+     *
+     * 供 PurgeCommand 判定「关联订单是否仍为 pending 卡单」以保护其终态 task 不被按 90 天保留期清理
+     * （否则失败 commit task 归零后到顶计数复位，卡单周期性复活重打上游 + 重发去重通知）。
+     * 孤儿 task（order_id 无对应订单）不影响：whereDoesntHave 对无关联行返回真、照常清理。
+     */
+    public function order(): BelongsTo
+    {
+        return $this->belongsTo(Order::class);
+    }
 
     // 写入时设置 weight 等于 id
     public static function boot(): void
