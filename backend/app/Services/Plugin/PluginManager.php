@@ -228,6 +228,9 @@ class PluginManager
                 $result['message'] .= '，请重载 Nginx 以使配置生效';
             }
 
+            // 流程成功终局：清理本次迁移 marker（失败路径的清理在 rollbackNewPluginMigrations 内）
+            $this->cleanupMigrationMarker($name);
+
             return $result;
         } catch (\Throwable $e) {
             $migrationsClean = true;
@@ -321,6 +324,9 @@ class PluginManager
                 $result['nginx_reload'] = true;
                 $result['message'] .= '，请重载 Nginx 以使配置生效';
             }
+
+            // 流程成功终局：清理本次迁移 marker（失败路径的清理在 rollbackNewPluginMigrations 内）
+            $this->cleanupMigrationMarker($name);
 
             return $result;
         } catch (\Throwable $e) {
@@ -480,6 +486,9 @@ class PluginManager
                 $result['nginx_reload'] = true;
                 $result['message'] .= '，请重载 Nginx 以使配置生效';
             }
+
+            // 流程成功终局：清理本次迁移 marker（失败路径的清理在 rollbackNewPluginMigrations 内）
+            $this->cleanupMigrationMarker($name);
 
             return $result;
         } catch (\Throwable $e) {
@@ -943,7 +952,9 @@ class PluginManager
                 $name,
                 "--marker=$markerPath",
             ], '插件迁移');
-            $this->cleanupMigrationMarker($name);
+            // marker 不在此清理，保留至安装/更新流程终局（三处成功 return 前）。迁移已提交
+            // 但后续 seeder 等步骤失败时，marker 是精确回滚本次迁移的唯一凭据——外层调用方处于
+            // 事务时，主连接快照看不到子进程已提交的 migrations 行，仅靠记录差集会漏回滚。
             Log::info("[Plugin] 迁移完成: $name");
         } catch (\Throwable $e) {
             Log::warning("[Plugin] 迁移失败: $name - {$this->safeError($e)}");
