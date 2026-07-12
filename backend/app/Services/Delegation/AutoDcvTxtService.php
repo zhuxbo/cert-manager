@@ -191,8 +191,11 @@ class AutoDcvTxtService
 
             // 匹配委托记录（CA 驱动，与 ActionTrait::generateValidation 同口径）：
             // 回落型 CA（sectigo/certum）委托记录建在根域，证书域名为子域时需回落根域匹配；
-            // 直接传 splitPrefixAndZone 得到的 zone（可能是子域），findDelegation 内部按 ca 回落
-            $ca = strtolower($order->product->ca ?? '');
+            // 直接传 splitPrefixAndZone 得到的 zone（可能是子域），findDelegation 内部按 ca 回落。
+            // ca 取值源对齐 generateValidation 的创建期冻结快照 dcv['ca']（委托本就按 dcv['ca']
+            // 派生的 prefix 建）：若订单创建后 product.ca 改指别家 CA，用实时 product->ca 会以新
+            // prefix 查不到旧委托 → 静默 miss、TXT 不写。回落 product->ca 兜 legacy 订单缺 dcv['ca']。
+            $ca = strtolower($cert->dcv['ca'] ?? $order->product->ca ?? '');
             $delegation = $this->delegationService->findDelegation(
                 $order->user_id,
                 $zone,
@@ -200,7 +203,14 @@ class AutoDcvTxtService
             );
 
             if (! $delegation) {
-                // 未命中委托配置
+                // 未命中委托配置（源分歧或真实配置缺口两种成因）：记 warning surface 静默 miss
+                Log::warning("订单 #$order->id validation[$index] 未命中委托配置，TXT 不写", [
+                    'order_id' => $order->id,
+                    'zone' => $zone,
+                    'domain' => $domain,
+                    'ca' => $ca,
+                ]);
+
                 $updatedValidation[$index] = $item;
 
                 continue;

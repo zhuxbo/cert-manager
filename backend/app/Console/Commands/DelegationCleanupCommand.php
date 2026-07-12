@@ -91,7 +91,17 @@ class DelegationCleanupCommand extends Command
             $this->info('应该保留的记录数: '.$keepLabels->count());
 
             // 5. 比对差值，找出需要删除的记录
+            //    删除判据在 keepLabels 白名单之上，前置「委托格式收敛」：仅删 label 形如 32 或
+            //    64 位 hex 的记录，护住 proxyZone 下用户自放的 SPF/DKIM/_dmarc/站点验证等非委托 TXT
+            //    （apex `@`、含点/下划线的名字均不匹配 → 永不进删除集）。委托 label 由
+            //    substr(hash('sha256', ...), 0, 32) 生成（当代恒 32-hex）；迁移列注释与前身仓历史
+            //    可能存在 64-hex 形态，故判据兼容两者（大小写不敏感防漂移）。孤儿委托（表内已删、
+            //    DNS 残留）label 仍为 hex 格式、不在 keepLabels → 仍被清理，格式过滤两全不漏清。
             $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels) {
+                if (preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', (string) $record['name']) !== 1) {
+                    return false;
+                }
+
                 return ! $keepLabels->contains($record['name']);
             });
 

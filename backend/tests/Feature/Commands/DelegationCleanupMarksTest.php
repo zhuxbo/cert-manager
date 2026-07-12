@@ -207,8 +207,10 @@ test('委托已删孤儿标记（delegation_id 指向不存在）→ 清标记 +
         ],
     ]);
 
-    // 有一条无关 label 被删 → 触发 cleanDatabaseMarks 全扫；孤儿单 guard(!$delegation) 清标记
-    $this->proxyDNS->shouldReceive('getAllTxtRecords')->andReturn([['id' => 1, 'name' => 'unrelated-label']]);
+    // 有一条委托格式（hex）孤儿 label 被删 → 触发 cleanDatabaseMarks 全扫；孤儿单 guard(!$delegation) 清标记。
+    // 注：删除判据仅收委托格式（32/64-hex），生产中孤儿委托 TXT 恒为 hex label，故触发记录用 hex。
+    $orphanHexLabel = str_repeat('c', 32);
+    $this->proxyDNS->shouldReceive('getAllTxtRecords')->andReturn([['id' => 1, 'name' => $orphanHexLabel]]);
     $this->proxyDNS->shouldReceive('batchDeleteRecords')->once();
 
     $this->artisan('delegation:cleanup')->assertSuccessful();

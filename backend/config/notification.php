@@ -9,6 +9,7 @@ use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\CertRenewStalledNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
+use App\Services\Notification\Builders\DelegationInvalidNotificationBuilder;
 use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
 use App\Services\Notification\Builders\SecurityNotificationBuilder;
 use App\Services\Notification\Builders\SystemAlertNotificationBuilder;
@@ -48,6 +49,10 @@ return [
         'cert_renew_stalled' => CertRenewStalledNotificationBuilder::class,
         // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）
         'acme_expire' => AcmeExpireNotificationBuilder::class,
+        // 委托失效提醒（周巡检确认无效 + 达阈值 + 有 active 证书）：专用 Builder 按 delegation_ids
+        // 重载过滤 valid=false、固定用户友好文案（不带 last_error）。不入 user_default_preferences
+        // （强制发，穿透用户已关的到期偏好——委托失效→自动续期静默失败→静默过期）
+        'delegation_invalid' => DelegationInvalidNotificationBuilder::class,
         'task_failed' => TaskFailedNotificationBuilder::class,
         'finance_audit' => FinanceAuditNotificationBuilder::class,
         // 账号安全变更（改密/重置）：专用 Builder 白名单 username/event/email 入库，

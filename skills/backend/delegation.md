@@ -51,6 +51,7 @@
 - `exact=false`：www 归一 + 子域优先 + **回落根域**，创建用根域（一条委托覆盖所有子域）。
 - **默认全 false（含 `_dnsauth` 系，为用户定稿决策）**；每家及 default 可由 `DELEGATION_<CA>_EXACT` env 覆盖为 true。
 - 一律经 `CnameDelegationService::getDelegationPrefixForCa($ca)` / `isExactForCa($ca)` / `resolveZone($domain,$ca)` 派生，**禁止 `prefix === '_dnsauth'` 推断**。手动创建委托（`DelegationController` store/batchStore）入参按 CA、内部派生 prefix+zone；委托记录仍按 `(user_id, zone, prefix)` 存储（无 ca 列，列表按 prefix 筛选）。`AutoDcvTxtService` 从 DCV host 解析 zone 后用 ca 驱动 `findDelegation`（带回落），与 `ActionTrait::generateValidation` 同口径。
+- **ca 取值源统一 `dcv['ca']`（创建期冻结快照）**：`AutoDcvTxtService::collectTxtRecords` 派生 prefix 的 ca 优先取 `cert.dcv['ca']`（回落 `product->ca` 兜 legacy 订单）——委托本就按创建期 `dcv['ca']` 派生的 prefix 建，若订单创建后 `product.ca` 被改指别家 CA，用实时 `product->ca` 会以新 prefix 查不到旧委托 → 静默 miss、TXT 不写。未命中一律 `Log::warning`（含 order_id/zone/domain/ca）surface 静默 miss。
 
 > ACME 通道证书由客户端自行验证，不走委托体系，不使用 `_acme-challenge` 前缀。
 
@@ -151,11 +152,23 @@ ValidateCommand 定时验证
 
 ### 委托 DNS 清理
 
-`DelegationCleanupCommand` 每天 06:00 清理无效的委托 TXT 记录：
+`DelegationCleanupCommand` 每天 06:00 清理无用的委托 TXT 记录：
 
-- **保留**：`processing` 状态订单使用的委托记录
-- **删除**：代理域名下所有其他 TXT 记录
-- **清理数据库标记**：移除已删除记录对应的 `auto_txt_written` 标记
+- **委托格式白名单（数据破坏防线）**：删除判据在 keepLabels 白名单之上前置「委托格式收敛」——只删 label 形如 **32 或 64 位 hex**（`preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', ...)`，大小写不敏感）的记录。当代 `generateLabel` 恒产 32-hex，64-hex 兼容前身仓历史存量 + 迁移列注释。护住 proxyZone 下用户自放的 SPF/DKIM/`_dmarc`/apex `@`/站点验证等**非委托 TXT**（含点/下划线/非 hex 长度的名字永不进删除集），防误删破坏邮件收发/域名验证。
+- **保留**：`processing`/`approving` 状态订单使用的委托记录（在途 label 恒在 keepLabels、`! contains` 结构性堵死误删方向）。
+- **删除**：代理域名下**委托格式**且不在 keepLabels 的记录（孤儿委托 label 仍为 hex、表内已删 → 仍被清理，格式过滤两全不漏清）。
+- **清理数据库标记**：移除已删除记录对应的 `auto_txt_written` 标记（`cleanDatabaseMarks` 全扫，含 delegation_id 指向已删委托的孤儿标记）。
+
+### 委托健康周巡检（`delegation:check`）
+
+`DelegationCheckCommand` 每周一 07:00 巡检全部委托，**两阶段 + 全局熔断**防 dnsTools 系统性停摆误报/误删：
+
+- **三态探测（分档核心）**：`CnameDelegationService::probeValidity` 经 `VerifyUtil::verifyCnameDelegationDetailed` 返 `valid|invalid|unreachable`。detailed 在既有「宽松匹配」上额外暴露 `authoritative`（本轮是否拿到任一权威 DNS 答案）——任一 dnsTools 节点 `code=1`（records 为空亦算权威「无记录」）或本地 `DnsResolver::cnameRecords` 返数组（含空数组）→ authoritative；全渠道失败且本地返 null（不可达）→ 非 authoritative。**本地渠道钉死三态 `cnameRecords`（`null`=不可达 / `[]`=权威无记录 / 非空=记录列表），绝不复用把二者塌缩的 `checkCnameRecordLocal`（已删）/ `DnsResolver::cname`（保留供 F2-1 命中即用场景）**——误接即 authoritative 恒真 → 熔断/冻结整体虚设。
+- **落库分档**：`applyProbeOutcome` 三态落库——`valid`→valid=true+归零；`invalid`→valid=false+`fail_count++`（硬截断 100）+固定 last_error；`unreachable`→**冻结计数**（不写 valid/fail_count/last_error，仅更新 last_checked_at 留痕）。`checkAndUpdateValidity` = probe+apply 组合、签名不变，既有消费方（AutoRenewService/DelegationController/ValidateCommand）零改动且同获「unreachable 不误计数」修复。
+- **两阶段 + 熔断**：阶段①逐条探测（不落库）跨 chunk 累积标量 outcome + `last_checked_at` 快照；阶段②轮末先判熔断——`unreachable 占比 ≥ 0.5 且样本 ≥ 5`（类常量 `CIRCUIT_BREAKER_RATIO`/`CIRCUIT_BREAKER_MIN_SAMPLE`）判系统性停摆，**本轮零落库/零删除/零通知** + `SystemAlert`（category `delegation_patrol`、固定指纹 `patrol_outage`、dedupeKey `delegation_patrol_outage`、TTL **504h=3×周巡检周期**）；未熔断轮 `clearDedupe` 复位。探测与落库分离使熔断在写库前拦截。
+- **阶段② TOCTOU CAS 落库（防陈旧覆盖）**：两阶段间隔可达数十分钟，窗口内 ValidateCommand（每分钟）/双端手动检查/AutoRenew 可能已写入更新鲜结论——巡检落库不走 `applyProbeOutcome`，走 `applyProbeOutcomeIfUnchanged`：单条原子 `UPDATE ... WHERE id = ? AND last_checked_at <=> 阶段①快照`（NULL-safe，MySQL 5.7/8.x 均支持），affected=0 即本条陈旧结论作废、跳过删除/通知 gate（统计「陈旧跳过」）；invalid 的 `fail_count` 用 DB 侧 `LEAST(fail_count+1,100)` 原子自增（顺带消多写者 lost update）；删除加 `valid=false` 条件（落库到删除的极窄窗被并发恢复则不删）。CAS 基准依赖不变式「`last_checked_at` 前移的全局唯一写点是 `applyProbeOutcome`（三态均写 now()）」——新增探测落库路径必须写结论同步写 `last_checked_at`，否则 CAS 误判。
+- **抖动 gate（post-apply 口径）**：无效委托的删除/通知统一 `fail_count ≥ 2`（类常量 `NOTIFY_FAIL_THRESHOLD`），gate 读**落库后**值（算术 `累积现值 + invalid?1:0`）——有 active 证书（active/unpaid/pending/processing/approving）→ 保留 + 达阈发用户通知；无 active 证书 → 达阈才删除（未达阈保留、等下轮确认）。`fail_count` 是多写者计数器（ValidateCommand 每分钟/双端手动/AutoRenew 每日均写），「≈2 周确认」是唯一写者情形的下界。
+- **失效通知（`delegation_invalid`）**：按 user 聚合（跨 chunk 累积 → 轮末 `groupBy(user_id)` per-user 一封），dispatch 显式传 `delegation_ids`；`DelegationInvalidNotificationBuilder` 按 ids 重载 + 过滤 `valid=false`（读持久列、不查 DNS、null-guard 已删行），全恢复/全删返 null 不发；payload 仅 zone/prefix/target_fqdn/fail_count + **固定用户友好文案（绝不含 last_error/原始异常，防 SQLSTATE 回显嵌套 SQL 入用户邮件）**；**强制发**（不入 `user_default_preferences`，穿透用户已关的到期偏好——委托失效→自动续期静默失败→静默过期）。
 
 ### 相关服务
 

@@ -267,7 +267,7 @@ class VerifyUtil
     }
 
     /**
-     * 验证 CNAME 委托记录
+     * 验证 CNAME 委托记录（bool 薄包装，行为与历史逐字保持）。
      *
      * 宽松策略：所有 dnsTools 节点 + 本地检测全部尝试，任一匹配即判定有效。
      * 目的是为自动续签放宽验证条件，尽可能发起续签，避免因 DNS 传播延迟
@@ -279,88 +279,137 @@ class VerifyUtil
      */
     public static function verifyCnameDelegation(string $host, string $expectedTarget): bool
     {
+        return self::verifyCnameDelegationDetailed($host, $expectedTarget)['matched'];
+    }
+
+    /**
+     * 验证 CNAME 委托记录（三态可达性变体，供委托健康巡检分档）。
+     *
+     * 在既有「宽松匹配」策略之上，额外向调用方暴露 `authoritative`（本轮是否拿到过任一权威 DNS
+     * 答案），据此区分「确认无效（拿到权威答案但无记录/不匹配）」与「不可达（全渠道失败/解析器
+     * 不可达）」——巡检对不可达冻结计数、并计入熔断分母，防 dnsTools 停摆误报/误删。
+     *
+     * authoritative 定义：任一 dnsTools 节点返回 `code=1`（records 为空亦算权威「无记录」），或本地
+     * `DnsResolver::cnameRecords` 返回数组（含空数组）；全渠道 HTTP/解析失败且本地返回 null（不可达）
+     * → authoritative=false。**本地渠道钉死三态 `cnameRecords`（禁复用把「不可达」并进「无记录」的
+     * 塌缩封装 `checkCnameRecordLocal` / `DnsResolver::cname`，误接即 authoritative 恒真 → 熔断/冻结
+     * 整体虚设）**。matched 与历史 `verifyCnameDelegation` 逐字等价（含 dnsTools 命中即返回、不查本地）。
+     *
+     * @param  string  $host  主机名（如 _dnsauth.example.com）
+     * @param  string  $expectedTarget  期望的 CNAME 目标
+     * @return array{matched: bool, authoritative: bool}
+     */
+    public static function verifyCnameDelegationDetailed(string $host, string $expectedTarget): array
+    {
+        $observations = [];
+
         $urls = self::getDnsToolsUrls();
-
-        // 检查是否有可用的 DNS Tools URLs
-        if (empty($urls)) {
-            Log::error('DNS Tools URLs 未配置');
-
-            // 回退到本地 dns_get_record
-            return self::checkCnameRecordLocal($host, $expectedTarget);
-        }
-
-        $client = new Client([
-            'timeout' => 3.0, // 设置超时时间为3秒
-            'verify' => false, // 关闭SSL证书验证
-        ]);
+        $client = ! empty($urls)
+            ? new Client(['timeout' => 3.0, 'verify' => false]) // 3 秒超时 + 关闭 SSL 校验（对齐历史）
+            : null;
 
         foreach ($urls as $url) {
-            try {
-                // 发送json数据到 /api/dns/query
-                $response = $client->post($url.'/api/dns/query', [
-                    'json' => [
-                        'domain' => $host,
-                        'type' => 'CNAME',
-                    ],
-                ]);
+            $observation = self::probeCnameViaDnsTools($client, $url, $host);
+            if ($observation === null) {
+                continue; // 该节点未给出权威答案（HTTP/解析失败或 code≠1）
+            }
 
-                $result = json_decode($response->getBody()->getContents(), true);
+            $observations[] = $observation;
 
-                if ($result === null) {
-                    Log::error('DNS Tools API 返回无效 JSON', ['url' => $url]);
-
-                    continue;
-                }
-
-                // 检查响应是否成功
-                if (($result['code'] ?? 0) !== 1) {
-                    // API 返回失败，尝试下一个
-                    continue;
-                }
-
-                // 解析 records 数组
-                $records = $result['data']['records'] ?? [];
-
-                if (empty($records)) {
-                    // 没有找到记录，尝试下一个 API
-                    continue;
-                }
-
-                // 规范化期望的目标：去除尾部的点，转小写
-                $expectedTarget = strtolower(rtrim($expectedTarget, '.'));
-
-                // 检查是否有匹配的 CNAME 记录
-                foreach ($records as $record) {
-                    if (($record['type'] ?? '') === 'CNAME' && isset($record['value'])) {
-                        $value = strtolower(rtrim($record['value'], '.'));
-                        if ($value === $expectedTarget) {
-                            return true;
-                        }
-                    }
-                }
-
-                // 记录不匹配，继续下一个节点（可能是 DNS 传播延迟或缓存过期）
-                Log::info('CNAME委托验证：当前节点不匹配，尝试下一个', [
-                    'host' => $host,
-                    'expected' => $expectedTarget,
-                    'url' => $url,
-                    'records' => $records,
-                ]);
-
-                continue;
-            } catch (GuzzleException $e) {
-                Log::error('DNS Tools CNAME验证API 请求失败', [
-                    'url' => $url,
-                    'error' => $e->getMessage(),
-                ]);
-
-                continue; // 尝试下一个API
+            // 尽早返回：某节点已给出匹配的权威答案 → 不再打后续节点/本地（保留历史「命中即返回」优化）
+            if (self::decideCnameOutcome([$observation], $expectedTarget)['matched']) {
+                return ['matched' => true, 'authoritative' => true];
             }
         }
 
-        // 所有 dnsTools 均未匹配（API 异常/无记录/不匹配），本地验证兜底
-        // 即使远程节点返回了不匹配的记录，仍给本地一次机会，最大化验证通过率
-        return self::checkCnameRecordLocal($host, $expectedTarget);
+        // 未匹配 → 本地三态兜底（钉死 cnameRecords：null=不可达 / []=权威无记录 / 非空=记录列表）
+        $localRecords = app(DnsResolver::class)->cnameRecords($host);
+        $observations[] = [
+            'authoritative' => $localRecords !== null,
+            'targets' => $localRecords ?? [],
+        ];
+
+        return self::decideCnameOutcome($observations, $expectedTarget);
+    }
+
+    /**
+     * 单个 dnsTools 节点探测 CNAME：返回该渠道观测 {authoritative, targets}。
+     * 节点 HTTP 失败 / 无效 JSON / code≠1 均返回 null（未提供权威答案、不计入 authoritative）。
+     *
+     * @return array{authoritative: bool, targets: array<int, string>}|null
+     */
+    private static function probeCnameViaDnsTools(?Client $client, string $url, string $host): ?array
+    {
+        if ($client === null) {
+            return null;
+        }
+
+        try {
+            $response = $client->post($url.'/api/dns/query', [
+                'json' => ['domain' => $host, 'type' => 'CNAME'],
+            ]);
+
+            $result = json_decode($response->getBody()->getContents(), true);
+
+            if ($result === null) {
+                Log::error('DNS Tools API 返回无效 JSON', ['url' => $url]);
+
+                return null;
+            }
+
+            if (($result['code'] ?? 0) !== 1) {
+                return null; // 节点未给出权威答案
+            }
+
+            // code=1：权威答案（records 为空亦算权威「无记录」）
+            $targets = [];
+            foreach ($result['data']['records'] ?? [] as $record) {
+                if (($record['type'] ?? '') === 'CNAME' && isset($record['value'])) {
+                    $targets[] = (string) $record['value'];
+                }
+            }
+
+            return ['authoritative' => true, 'targets' => $targets];
+        } catch (GuzzleException $e) {
+            Log::error('DNS Tools CNAME验证API 请求失败', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * 纯决策：由各渠道观测（authoritative + 该渠道 CNAME 目标列表）产出 {matched, authoritative}。
+     *
+     * - matched = 任一渠道目标（规范化去尾点、小写）命中 expectedTarget；
+     * - authoritative = 任一渠道给出权威答案。
+     *
+     * 二者均为 OR 归约；matched ⟹ authoritative（仅权威渠道有 targets）。无副作用、可直测四形态
+     * （权威匹配 / 权威不匹配 / 权威空记录 / 全渠道失败）。
+     *
+     * @param  array<int, array{authoritative: bool, targets: array<int, string>}>  $observations
+     * @return array{matched: bool, authoritative: bool}
+     */
+    private static function decideCnameOutcome(array $observations, string $expectedTarget): array
+    {
+        $expectedTarget = strtolower(rtrim($expectedTarget, '.'));
+        $matched = false;
+        $authoritative = false;
+
+        foreach ($observations as $observation) {
+            if ($observation['authoritative']) {
+                $authoritative = true;
+            }
+            foreach ($observation['targets'] as $target) {
+                if (strtolower(rtrim((string) $target, '.')) === $expectedTarget) {
+                    $matched = true;
+                }
+            }
+        }
+
+        return ['matched' => $matched, 'authoritative' => $authoritative];
     }
 
     /**
@@ -443,36 +492,5 @@ class VerifyUtil
         }
 
         return $txtValues;
-    }
-
-    /**
-     * 本地验证 CNAME 记录（使用 dns_get_record）
-     *
-     * @param  string  $host  主机名
-     * @param  string  $expectedTarget  期望的CNAME目标
-     * @return bool 是否匹配
-     */
-    private static function checkCnameRecordLocal(string $host, string $expectedTarget): bool
-    {
-        // 使用 dns_get_record 查询 CNAME 记录
-        $records = @dns_get_record($host, DNS_CNAME);
-
-        if (empty($records)) {
-            return false;
-        }
-
-        // 规范化：去除尾部的点，转小写
-        $expectedTarget = strtolower(rtrim($expectedTarget, '.'));
-
-        foreach ($records as $record) {
-            if (isset($record['target'])) {
-                $target = strtolower(rtrim($record['target'], '.'));
-                if ($target === $expectedTarget) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 }
