@@ -361,7 +361,9 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 `schedule:purge` 在自动取消前先清 `tasks`/`notifications` 超保留期的**终态历史行**（`config/purge.php`：`retention.tasks`/`notifications` 默认 90d、`chunk` 默认 1000）：
 
-- **清理集与业务锁定集不相交**：tasks 清 `{successful,failed}`、notifications 清 `{sent,failed}`；`Task::scopeLockForMutation`/`deleteTask` 的锁定/删除集恒为 `{executing,stopped}` → 清理 DELETE 不与任何持 task 锁的业务路径争同一行、**无锁序义务、不触发 Z12**。`failed` 可被 admin `batchStart` 复活（`failed→executing`），但 DELETE 与该 UPDATE 由 InnoDB 行锁串行、90d 窗口远大于人工重试窗口，近乎不可达。
+- **清理集与业务锁定集不相交**：tasks 清 `{successful,failed}`、notifications 清 `{sent,failed}`；`Task::scopeLockForMutation`/`deleteTask` 的锁定/删除集恒为 `{executing,stopped}` → 清理 DELETE 不与任何持 task 锁的业务路径争同一行、**无锁序义务、不触发 Z12**（行级不相交；InnoDB gap 级与 `createTask` insert-intent 存在 enum 边界窄死锁角，由 commitCancel 事务级重试自愈、purge 不触资金表，接受观察）。`failed` 可被 admin `batchStart` 复活（`failed→executing`），但 DELETE 与该 UPDATE 由 InnoDB 行锁串行、90d 窗口远大于人工重试窗口，近乎不可达。锚点用 `created_at`：终态化极晚于创建的行（长期重试后 failed）可能刚终态即超期被清——其排障价值已由过程中的告警/日志承接、admin 即时反馈不依赖历史行，时间窗只是次要护栏。
+- **清理抛错不中止主流程**：两清理调用外包 try/catch（与 `_logs` 动态清理对称）——清理是次要职责，异常仅 warn，不得跳过后续退款期自动取消。
+- **binlog 前提**：单批 `DELETE ... LIMIT` 无 `ORDER BY`，语句级复制不确定,依赖 `binlog_format=ROW`（MySQL 5.7.7+/8.x 默认；自建主从改过 STATEMENT 的部署需确认）。
 - **分批范式**：复用 `UserDataPurger::deleteInChunks` 范式（do-while + 每批独立 `DB::transaction` + `gc_collect_cycles` + maxIterations 护栏），单批 `LIMIT chunk` 避免长事务锁等待/撑爆 binlog。
 - **索引路径（EXPLAIN 实测，8.4 造 10 万行 95% 终态）**：`status IN(...) AND created_at<cutoff LIMIT 1000` 走 `status` 索引 `type=range`（**非全表扫**）+ LIMIT 收敛每批锁定上界；**不加 `ORDER BY id`**——会在 DELETE 路径引入 filesort（`type=range; Using filesort`）反而更差。零迁移不加 `created_at`/复合索引，量级证明需要时列后续批次观察项。
 - failed_jobs 不在此：走 Laravel 原生 `queue:prune-failed`（14d，M 包 E5 已落地）。

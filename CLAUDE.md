@@ -42,7 +42,7 @@ skills/ # 开发规范（详细文档）
 | `skills/backend/auth.md`              | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据URL）          |
 | `skills/backend/upgrade.md`           | 升级系统、freeze 契约（unfreeze 先于 up/watchdog）、BinaryLocator |
 | `skills/backend/database.md`          | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容、DB 时区固化           |
-| `skills/backend/delegation.md`        | 委托验证、S/MIME 验证字段                                         |
+| `skills/backend/delegation.md`        | 委托验证、S/MIME 验证字段、清理白名单、失效周巡检+熔断            |
 | `skills/backend/acme-module.md`       | ACME 订阅管理（封装下单 + 交付 EAB 模式）                         |
 | `skills/backend/source-api.md`        | 新增上游来源（Order\\Api / Acme\\Api）                            |
 | `skills/backend/auto-renew.md`        | 自动续费/重签、算法继承防降级、失败兜底通知                       |

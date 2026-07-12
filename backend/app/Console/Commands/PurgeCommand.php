@@ -127,8 +127,13 @@ class PurgeCommand extends Command
         $this->purgeStaleTempCerts();
 
         // 清理超保留期的终态运行时表行（对账痕迹 tasks / 交付记录 notifications）
-        $this->purgeTerminalTasks();
-        $this->purgeTerminalNotifications();
+        // 包裹与上方 _logs 清理对称：清理是次要职责，抛错不得中止后续退款期取消主流程
+        try {
+            $this->purgeTerminalTasks();
+            $this->purgeTerminalNotifications();
+        } catch (Throwable $e) {
+            $this->warn('Terminal rows cleanup failed: '.$e->getMessage());
+        }
 
         // 预同步：距退款期限2-4天的处理中订单，24小时内无同步则创建sync任务
         // 退款期限<5天的产品跳过由人工控制
