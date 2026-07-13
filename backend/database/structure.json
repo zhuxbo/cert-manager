@@ -2687,6 +2687,18 @@
                         null
                     ]
                 },
+                "error_logs_exception_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "exception",
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null
+                    ]
+                },
                 "error_logs_method_index": {
                     "unique": false,
                     "type": "BTREE",

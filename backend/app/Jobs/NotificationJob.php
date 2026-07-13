@@ -59,6 +59,18 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
 
     protected const BUILD_FAILED_TRANSIENT_REASON = '通知内容生成失败（瞬态重试已耗尽）';
 
+    /**
+     * 行复用指纹的携密键 denylist（只剔真凭据，保留 order_id/domain/email 等实体标识）：
+     * 与 SystemAlert Builder 净化 denylist 同宗但收窄至凭据类，避免误剔区分实体的键致隔离退化。
+     */
+    protected const FINGERPRINT_SECRET_PATTERN = '/password|passwd|secret|token|hmac|private|credential|bearer/i';
+
+    /**
+     * findReusableRow 候选行采样上限：同接收者+模板+近 1h 的 sending/failed 行天然极少，
+     * 加界防极端多证书场景无界拉取；即便被截断至多多落一行，无正确性/安全影响。
+     */
+    protected const REUSE_CANDIDATE_LIMIT = 50;
+
     public function __construct(
         protected string $notifiableType,
         protected int $notifiableId,
@@ -118,6 +130,8 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
         }
 
         $preparedPayload = $notificationRepository->preparePayload($template, $payload->data);
+        // 落实体指纹：把「行复用」限定为同一 job 自身的前序行，防同接收者近 1h 内另一实体的行被重试轮劫持（notify ④）
+        $preparedPayload['_meta']['context_fingerprint'] = $this->contextFingerprint();
         $notification = $this->resolveNotificationRow($notificationRepository, $notifiable, $template, $preparedPayload);
         $notification->status = Notification::STATUS_SENDING;
         $notification->setRelation('notifiable', $notifiable);
@@ -282,14 +296,15 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
     /**
      * 定位或新建通知记录行（行复用启发式，零迁移）。
      *
-     * 仅在重试轮（attempts()>1）尝试复用同接收者+模板+近 1h 的 sending/failed 行，避免
-     * 「重试 N 次 = N 行 notifications」；命中则 update 不 insert（首轮或未命中新建）。
-     * 查询按 $notifiable->getMorphClass()（存库为 FQCN，非 job 携带的短别名）定位，走
-     * morphs + template_id + status 索引。
+     * 仅在重试轮（attempts()>1）尝试复用同接收者+模板+近 1h+**同 context 指纹**的 sending/failed 行，
+     * 避免「重试 N 次 = N 行 notifications」；命中则 update 不 insert（首轮或未命中新建）。查询按
+     * $notifiable->getMorphClass()（存库为 FQCN，非 job 携带的短别名）定位，走 morphs + template_id +
+     * status 索引，实体维度由 findReusableRow 的指纹过滤兜底（notify ④）。
      *
-     * 局限（Mi2，观察项登记）：notifications 表无 channel 列，多通道并存时启发式可能跨通道
-     * 复用行（mail 重试复用插件通道行）——后果是跨通道行归属错乱而非仅少一行。当前基座
-     * mail-only，该局限休眠；引入插件通道时升级为 idempotency_key（含 channel）+唯一索引方案。
+     * 局限（Mi2，观察项登记）：notifications 表无 channel 列，多通道并存时启发式可能跨通道复用行
+     * （mail 重试复用插件通道行）——后果是跨通道行归属错乱而非仅少一行。当前基座 mail-only，该局限
+     * 休眠；引入插件通道时升级为 idempotency_key（含 channel）+唯一索引方案。实体维度劫持（同接收者近
+     * 1h 另一实体的行）已由 context 指纹隔离，与 channel 维度正交。
      */
     protected function resolveNotificationRow(
         NotificationRepository $notificationRepository,
@@ -310,10 +325,17 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
-     * 查找可复用的通知行（近 1h 内同接收者+模板的 sending/failed 行，最新优先）。
+     * 查找可复用的通知行（近 1h 内同接收者+模板+**同 context 指纹**的 sending/failed 行，最新优先）。
+     *
+     * 指纹过滤（notify ④）：接收者+模板+时间窗缺实体维度，同接收者近 1h 内另一实体（如另一张证书的
+     * cert_issued）的行会被误认领。按 data._meta.context_fingerprint 过滤后，复用严格限定为「同一 job
+     * 自身的前序行」。指纹在 PHP 侧比对（避免对 array-cast text 列做 JSON where 的跨版本脆弱性）；候选集
+     * 天然极小，采样上限兜底。缺指纹的历史行（升级过渡窗）不匹配 → 至多多落一行，不劫持、无安全影响。
      */
     protected function findReusableRow(Model $notifiable): ?Notification
     {
+        $fingerprint = $this->contextFingerprint();
+
         return Notification::query()
             ->where('notifiable_type', $notifiable->getMorphClass())
             ->where('notifiable_id', $notifiable->getKey())
@@ -321,7 +343,34 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
             ->whereIn('status', [Notification::STATUS_SENDING, Notification::STATUS_FAILED])
             ->where('created_at', '>=', now()->subHour())
             ->latest('id')
-            ->first();
+            ->limit(self::REUSE_CANDIDATE_LIMIT)
+            ->get()
+            ->first(fn (Notification $row): bool => ($row->data['_meta']['context_fingerprint'] ?? null) === $fingerprint);
+    }
+
+    /**
+     * 本次通知的 context 指纹：把「行复用」严格限定为「同一 job 自身的前序行」。
+     *
+     * findReusableRow 原仅按 接收者+模板+近1h+状态 定位、缺实体维度 → 同接收者近 1h 内另一实体
+     * （如另一张证书的 cert_issued）的 sending/failed 行会被重试轮（attempts>1）误认领、整包覆写并按
+     * 本 job 结果标记：抹除对方失败可见性记录、admin resend 重发错实体内容；failed() 亦会误清兄弟在途
+     * 行的 cleanup_paths（含私钥 ZIP）致其附件缺失。以指纹落 data._meta、复用查询按指纹过滤即隔离。零迁移。
+     *
+     * 剔除携密键再取摘要（携密不入库红线）：password 等凭据不喂进可离线爆破的 md5，仅以 order_id 等
+     * 非敏感实体标识区分。同一 job 跨重试 context 不变 → 指纹稳定，正常多轮复用（去重）不受影响。
+     */
+    protected function contextFingerprint(): string
+    {
+        $identity = [];
+        foreach ($this->context as $key => $value) {
+            if (is_string($key) && preg_match(self::FINGERPRINT_SECRET_PATTERN, $key)) {
+                continue;
+            }
+            $identity[$key] = is_scalar($value) || $value === null ? $value : json_encode($value);
+        }
+        ksort($identity);
+
+        return md5((string) json_encode($identity));
     }
 
     /**

@@ -56,6 +56,17 @@ class BuildFailsWithSecretInMessageBuilder implements NotificationBuilderInterfa
     }
 }
 
+/**
+ * 测试探针：暴露 protected contextFingerprint()，供构造「带指纹」的复用行 fixture（notify ④）。
+ */
+class FingerprintProbeJob extends NotificationJob
+{
+    public function fingerprintFor(): string
+    {
+        return $this->contextFingerprint();
+    }
+}
+
 beforeEach(function () {
     $this->seed = true;
     $this->seeder = DatabaseSeeder::class;
@@ -598,14 +609,16 @@ test('M4：failed() 定位行标 FAILED 终态并 Log::error 兜底', function (
     $user = createJobUser();
     $template = createJobTemplate();
 
-    // 模拟 handle 已落 sending 行 + 持久化 cleanup_paths
+    // 模拟 handle 已落 sending 行 + 持久化 cleanup_paths（含本 job 的 context 指纹，findReusableRow 据此认领自身行）
     $tempDir = storage_path('temp-certs/test_'.uniqid());
     mkdir($tempDir, 0755, true);
     file_put_contents($tempDir.'/cert.zip', 'zip');
 
+    $fingerprint = (new FingerprintProbeJob('user', $user->id, $template->id, 'mail', ['username' => $user->username], DefaultNotificationBuilder::class))->fingerprintFor();
+
     $notification = $user->notifications()->create([
         'template_id' => $template->id,
-        'data' => ['_meta' => ['cleanup_paths' => [$tempDir]]],
+        'data' => ['_meta' => ['cleanup_paths' => [$tempDir], 'context_fingerprint' => $fingerprint]],
         'status' => Notification::STATUS_SENDING,
     ]);
 
@@ -798,4 +811,101 @@ test('包V：_meta.order_id 白名单标量摘录（三形态）+ data 不含 co
 
     $rowC = Notification::where('notifiable_id', $userC->id)->first();
     expect($rowC->data['_meta'])->not->toHaveKey('order_id');
+});
+
+// ==========================================
+// ④：行复用启发式的实体维度隔离（context 指纹，防跨实体劫持）
+// ==========================================
+
+test('④：重试轮按 context 指纹隔离，不劫持同接收者近1h 另一实体的通知行', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // 通道：第 1 次调用（订单 B）永久失败落 FAILED；第 2 次（订单 A）成功
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->andReturn(
+            ['code' => 0, 'msg' => '附件缺失', 'retryable' => false], // 订单 B 永久失败
+            ['code' => 1, 'msg' => 'ok'],                              // 订单 A 成功
+        );
+    });
+
+    // 订单 B 先发（attempts=1）：永久失败 → 落 B 自己的 FAILED 行（带 B 的 context 指纹）
+    $jobB = new NotificationJob('user', $user->id, $template->id, 'mail',
+        ['username' => $user->username, 'order_id' => 200], DefaultNotificationBuilder::class);
+    $jobB->withFakeQueueInteractions();
+    $jobB->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $bRow = Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->firstOrFail();
+    expect($bRow->status)->toBe(Notification::STATUS_FAILED);
+
+    // 订单 A：升级 freeze 烧掉 attempt 1，首个真实执行即 attempts=2 → 进复用分支
+    $jobA = new NotificationJob('user', $user->id, $template->id, 'mail',
+        ['username' => $user->username, 'order_id' => 100], DefaultNotificationBuilder::class);
+    $jobA->withFakeQueueInteractions();
+    $jobA->job->attempts = 2;
+    $jobA->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    // GREEN：A 指纹 ≠ B 指纹 → 不复用 B 行 → 新建 A 行（共 2 行）；B 行仍 FAILED、order_id 未被覆写
+    // RED（修复前）：A attempts>1 复用 B 的最新行 → 覆写成 A 内容并标 SENT（仅 1 行，B 失败记录被抹除）
+    $rows = Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->get();
+    expect($rows)->toHaveCount(2);
+
+    $bFresh = $bRow->fresh();
+    expect($bFresh->status)->toBe(Notification::STATUS_FAILED)
+        ->and($bFresh->data['order_id'] ?? null)->toBe(200);
+});
+
+test('④：failed() 按 context 指纹只认领自身行，不误清同接收者在途兄弟行的 cleanup_paths', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    // 兄弟订单 B：在途 SENDING 行 + cleanup_paths 指向 B 的私钥 ZIP 临时目录（带 B 的 context 指纹）
+    $tempDirB = storage_path('temp-certs/test_'.uniqid());
+    mkdir($tempDirB, 0755, true);
+    file_put_contents($tempDirB.'/cert.zip', 'B-private-key');
+
+    $bFingerprint = (new FingerprintProbeJob('user', $user->id, $template->id, 'mail',
+        ['username' => $user->username, 'order_id' => 200], DefaultNotificationBuilder::class))->fingerprintFor();
+
+    $bRow = $user->notifications()->create([
+        'template_id' => $template->id,
+        'data' => ['order_id' => 200, '_meta' => ['cleanup_paths' => [$tempDirB], 'context_fingerprint' => $bFingerprint]],
+        'status' => Notification::STATUS_SENDING,
+    ]);
+
+    // 订单 A 的 job 末轮失败调 failed()：A 的指纹 ≠ B → 不该认领/清理 B 的在途行
+    $jobA = new NotificationJob('user', $user->id, $template->id, 'mail',
+        ['username' => $user->username, 'order_id' => 100], DefaultNotificationBuilder::class);
+    $jobA->failed(new RuntimeException('A 末轮失败'));
+
+    // GREEN：B 在途行未被 A 的 failed() 认领 → 仍 SENDING、cleanup_paths 未清、临时目录仍在
+    // RED（修复前）：A 的 failed() findReusableRow 拿到 B 的最新行 → markAsFailed + 删 B 的 cleanup_paths
+    expect($bRow->fresh()->status)->toBe(Notification::STATUS_SENDING)
+        ->and(is_dir($tempDirB))->toBeTrue();
+
+    @unlink($tempDirB.'/cert.zip');
+    @rmdir($tempDirB);
+});
+
+test('④：同一 job 跨重试 context 不变 → 指纹一致，仍复用自身行（去重不被指纹隔离破坏）', function () {
+    $user = createJobUser();
+    $template = createJobTemplate();
+
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldReceive('send')->andReturn(['code' => 0, 'msg' => 'SMTP 抖动', 'retryable' => true]);
+    });
+
+    $job = new NotificationJob('user', $user->id, $template->id, 'mail',
+        ['username' => $user->username, 'order_id' => 100], DefaultNotificationBuilder::class);
+    $job->withFakeQueueInteractions();
+
+    // 3 轮同一 job（context 不变 → 指纹恒定）：attempts 1→2→3 均瞬态失败，attempts>1 复用自身行
+    foreach ([1, 2, 3] as $attempt) {
+        $job->job->attempts = $attempt;
+        $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+    }
+
+    expect(
+        Notification::where('notifiable_id', $user->id)->where('template_id', $template->id)->count()
+    )->toBe(1);
 });

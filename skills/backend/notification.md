@@ -37,7 +37,7 @@
 2. 实现 `ChannelInterface`：`send(Notification): array` + `isAvailable(): bool` + `shouldSend(Model $notifiable, string $code): bool`
 3. 用户偏好/UI/模板全部由插件自治：自己加表/字段读偏好，主系统不预留 schema/UI/API 钩子，不加 widget 插槽
 
-**前置门（引入第二通知通道前必须先解决）**：`notifications` 表当前无 channel 维度，「行复用启发式局限」（见「NotificationJob 失败重试分档」段）按「接收者+模板+时间窗」定位通知行——引入第二通知通道前**必须先解决通知行定位的 channel 维度**（届时评估「加 channel 列 + 含 channel 的唯一定位索引」vs「插件通道自治映射各自建表」两方案），否则 mail 重试会跨通道复用错行、覆盖插件通道记录。当前 mail-only 基座该局限休眠，不预建列（YAGNI）。
+**前置门（引入第二通知通道前必须先解决）**：`notifications` 表当前无 channel 维度，「行复用启发式」按「接收者+模板+时间窗+context 指纹」定位通知行（实体维度已由 context 指纹隔离，见「NotificationJob 失败重试分档」段）——但仍缺 **channel 维度**，引入第二通知通道前**必须先解决**（届时评估「加 channel 列 + 含 channel 的唯一定位索引」vs「插件通道自治映射各自建表」两方案），否则 mail 重试会跨通道复用错行、覆盖插件通道记录。当前 mail-only 基座该局限休眠，不预建列（YAGNI）。
 
 ## 携密 / 附件安全（job 边界）
 
@@ -70,7 +70,7 @@
 - **`tries=5` + `maxExceptions=1`**（幂等 ShouldQueue 约定，见 CLAUDE.md）：tries=5 给 `SkipWhenUpgradeFrozen` 的 `release(60)`（freeze 每分钟烧 1 个）留余量；瞬态重试走 `retryDelay()` backoff `[60,300,300,300]`。maxExceptions=1 只对「真·未捕获异常」（如建行时 DB 挂）快失败——本设计瞬态路径 catch 后 release/fail 均不抛，正是意图。
 - **retryable 契约**：`ChannelInterface::send` 返回 `array{code,msg?,retryable?}`；MailChannel 判档——**永久（retryable=false）**：空邮箱 / 未配置 / 附件问题（防新装机 failed_jobs 风暴 + CertIssued 每轮重生成含私钥 ZIP）；**瞬态（retryable=true）**：SMTP send 失败 / 发送异常（下轮 build 可自愈）。缺省不含该键（成功 code=1 / 插件通道）→ Job 视作 false（不重试）安全。
 - **分档收敛**：成功 / 永久失败 → 落 FAILED 行 + 清 build 产物 + `return`（不 release 不 throw）；瞬态失败 → 先清 build 产物（**cleanup-before-release**：防含私钥 ZIP 逐轮泄漏，下轮 handle 重跑 build 重生成）→ 未到上限 `release(retryDelay())`、末轮交 `fail()` 标终态 + `Log::error` 前置。
-- **行复用启发式（零迁移）+ 局限**：仅重试轮（`attempts()>1`）复用同接收者+模板+近 1h 的 sending/failed 行（按 `getMorphClass()` FQCN 定位，走 morphs+template_id+status 索引），避免「重试 N 次 = N 行」。**局限（观察项登记）**：`notifications` 表无 channel 列，多通道并存时可能跨通道复用行（mail 重试复用插件通道行）；当前基座 mail-only 该局限休眠，引入插件通道时升级为 `idempotency_key`（含 channel）+ 唯一索引（引入前置门见「插件接入主系统的全部触点」段）。
+- **行复用启发式（零迁移）+ context 指纹隔离**：仅重试轮（`attempts()>1`）复用同接收者+模板+近 1h+**同 context 指纹**的 sending/failed 行（按 `getMorphClass()` FQCN 定位走 morphs+template_id+status 索引，指纹在 PHP 侧比对），避免「重试 N 次 = N 行」。**context 指纹（notify ④，零迁移）**：`contextFingerprint()` 剔除携密键（`password`/`token`/… denylist，护「携密不入库」不把凭据喂进可离线爆破的 md5）后取 `md5(json(context))`、落 `data._meta.context_fingerprint`，把复用严格限定为「同一 job 自身前序行」——否则同接收者近 1h 内另一实体（如另一张证书的 `cert_issued`）的 sending/failed 行会被重试轮误认领、整包覆写并按本 job 结果标记（抹除对方失败可见性、admin resend 重发错实体；`failed()` 亦误清兄弟在途行的 `cleanup_paths` 含私钥 ZIP）。**剩余局限（观察项）**：`notifications` 表无 channel 列，多通道并存时可能跨通道复用行（与实体维度正交）；当前基座 mail-only 休眠，引入插件通道时升级为 `idempotency_key`（含 channel）+ 唯一索引（引入前置门见「插件接入主系统的全部触点」段）。
 - **测试注入缝**：`MailChannel::makeMail()`（子类覆盖注入 mock，避免真实 SMTP）。`NotificationJobTest` 断言瞬态 release / 永久 FAILED / 末轮 fail() / build 产物每轮清理。
 
 ## NotificationJob build 阶段失败可见性（包V，M4 姊妹）
@@ -82,4 +82,4 @@ M4 分档在 **send 阶段**，管不到 **build 阶段**（Builder 产出 paylo
 - **落 FAILED 记录不携密（`persistBuildFailure`）**：① `reason` **一律固定常量**（`BUILD_FAILED_REASON`/`BUILD_FAILED_TRANSIENT_REASON`），**绝不落异常 `getMessage()`**——build catch 是通用路径（覆盖全部 Builder 及框架底层异常），消息内容无法逐一审计（异常消息可能回显携密 context 值），常量是唯一「不做假设」的方案，对齐 send 阶段常量范式；原始 `getMessage()` 仅进 error_logs（`logException`）。② `_meta.order_id` **严格键白名单 + `is_scalar` 守卫**摘录（非敏感整型、供 admin 定位缺失邮件）；除此一键外 payload **绝不含 `$this->context` 任何字段**（`user_created` context 携密码明文），禁 `array_merge($meta, $this->context)`，新增摘录键须逐键过携密评审。③ 单写 FAILED（`createNotification` 传 `status=FAILED`，不走 PENDING→markAsFailed 两步，消除 stuck-pending 窗口）；直接新建、**不走 findReusableRow**（前几轮瞬态失败不落行、无前序行可复用，杜绝误复用同接收者近 1h 其他证书行）。④ DB 写全程 try/catch，失败降级双日志（error_logs + `Log::error`）、**不上抛**（避免 maxExceptions=1 误杀）。
 - **前向约定（纵深防线）**：任何生成附件/临时文件的 Builder，其 IO 失败一律抛 `TransientBuildException`（含 ZipArchive 返回值检查），且**异常消息不得携密/PII**——`persistBuildFailure` reason 固定常量为主防线，Builder 侧不携密为纵深；且须在 build 抛异常前自清临时目录（`CertIssued` 已 `File::deleteDirectory($tempDir)`），故 build 失败无 `cleanup_paths` 可泄漏。
 - **测试**：`NotificationJobTest` 断言永久/瞬态分档（release 60/300、末轮 fail、FAILED 行、无 pending 残留）、getMessage 不落库（测试 Builder 把 context 敏感值嵌异常消息、断 json 无明文——固定消息测法断言恒过=伪绿，必须敏感值入 message 才真验）、白名单摘录三形态、DB 写异常降级；`CertIssuedNotificationBuilderTest` 经 `makeZip()` 桩验 close 返 false 抛瞬态 + 子类覆写 `addCertToZip` 验 IO 异常自清 tempDir。
-- **观察项**：build-failed 记录可能被后续 send 重试轮 `findReusableRow` 误复用 → 覆盖 data 随 send 成功翻 SENT、可见性记录被抹除（同 user/模板/1h 有界，随插件通道引入统一升级 idempotency_key）；build-failed 记录不支持专属手动重发（顶层无 order_id → resend 走永久失败 append-only 无害，补齐需存 context 破携密红线或建 idempotency 破零迁移）。
+- **观察项**：build-failed 记录经 `persistBuildFailure` 直建、不落 `context_fingerprint`，故 send 重试轮 `findReusableRow` 的指纹过滤（notify ④）恒不命中 → **不再被误复用翻 SENT**（原「可见性记录被抹除」观察项已随实体指纹关闭）；build-failed 记录不支持专属手动重发（顶层无 order_id → resend 走永久失败 append-only 无害，补齐需存 context 破携密红线或建 idempotency 破零迁移）。

@@ -19,6 +19,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 
@@ -857,6 +858,16 @@ test('callback 失败达阈值真推送 NotificationJob 且 per-order 去重', f
     Queue::assertPushed(NotificationJob::class, 1); // 仍恰 1 封（去重）
 
     $this->travelBack();
+});
+
+test('⑲：error_logs 有 (exception, created_at) 复合索引支撑回调失败 7 天滑窗计数', function () {
+    // recordCallbackFailure 按 WHERE exception=? AND message LIKE ? AND created_at>=? 做滑窗 count；
+    // 无复合索引时只能走 created_at 范围扫全部异常再逐行过滤 exception。此索引让优化器直接 seek
+    // 到该异常 + 时间范围（exception 高选择性）。RED（无迁移）：无此索引；GREEN（迁移后）：存在。
+    $composite = collect(Schema::getIndexes('error_logs'))
+        ->first(fn ($idx) => $idx['columns'] === ['exception', 'created_at']);
+
+    expect($composite)->not->toBeNull();
 });
 
 // ========================================
