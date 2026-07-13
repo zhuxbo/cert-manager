@@ -16,6 +16,9 @@ TEMP_DIR="/tmp/ssl-manager-upgrade-$$"
 PRESERVE_DIR="" # 保留目录绝对路径（安装目录同文件系统，非 TEMP_DIR 内）；perform_upgrade 内设定
 FREEZE_FIRED=0  # upgrade:freeze 已点火（决定失败路径是否打印恢复 runbook）
 UPGRADE_DONE=0  # 升级成功走到 artisan up 之后（避免尾部步骤失败误打 runbook）
+# 入口 _check_stranded_preserve 回迁了中断升级遗留的旧 vendor → 置 1，强制 composer 重装对齐新 lock
+# （backend/composer.json 已是新版本时新旧 hash 相等会误跳过 composer，回迁的旧 vendor 可能陈旧）
+NEED_COMPOSER_FORCE=0
 # release 服务 URL
 # - 部署到 release 服务时，__RELEASE_URL__ 会被替换为实际地址
 # - 如果未替换（本地运行），则需要通过 --url 参数或 version.json 配置
@@ -85,6 +88,21 @@ _check_stranded_preserve() {
             log_error "  rm -rf '$dir'"
             log_error "恢复完成后重跑 upgrade.sh。"
             exit 1
+        fi
+        # vendor-only 残留回迁：storage 已排除（上面命中即 exit），但中断落在「storage 移回 ~ vendor 移回」
+        # 窄窗时 preserve 仍留 vendor 唯一副本（备份 zip 不含 vendor）、backend/vendor 缺失。直接当空壳 rm
+        # 会毁唯一副本，且后续 composer 因 backend/composer.json 已是新版本、新旧 hash 相等而误跳过 →
+        # artisan fatal 砖机自循环。回迁保命并置 NEED_COMPOSER_FORCE，让后续 composer 强制重装对齐新 lock。
+        if [ -d "$dir/vendor" ] && [ ! -d "$INSTALL_DIR/backend/vendor" ]; then
+            log_warning "回迁上次升级中断遗留的 vendor 唯一副本：$dir/vendor → $INSTALL_DIR/backend/vendor"
+            if mv "$dir/vendor" "$INSTALL_DIR/backend/vendor"; then
+                NEED_COMPOSER_FORCE=1
+                log_success "vendor 已回迁（后续 composer 将强制重装以对齐新版本依赖）"
+            else
+                log_error "vendor 回迁失败，保留 preserve 目录不清理：$dir"
+                log_error "请手工执行：mv '$dir/vendor' '$INSTALL_DIR/backend/vendor'"
+                continue
+            fi
         fi
         # 空壳残留（storage 已被还原/消费，仅剩 .env / frontend_config / api_adapters 等副本）：清理防堆积。
         # 「:1559 storage 移回 ~ :1591 api_adapters 还原」窄窗被打断时，preserve 仅剩 api_adapters 副本
@@ -187,6 +205,48 @@ _restore_preserved_storage() {
     return "$failed"
 }
 
+# 还原 preserve 中的 api_adapters / frontend_config 副本到原位（幂等 cp，最佳努力）。
+# 与 _restore_preserved_storage 分离：storage/vendor 是 mv 的唯一副本（数据级），这两类是 cp 副本——
+# 但原件已被步骤 7 `rm -rf backend/app` / `rm frontend/{admin,user}` 删除，中断落在「rm 原件 ~ 步骤 9
+# 恢复保留文件」窗内时它们成为唯一在线副本（备份 zip 虽含之，但 rollback 自动选最新=绿灯重跑后生成的
+# 无适配器备份，救不回）。故 cleanup 删 preserve 前先经此还原；成功态则幂等重复无害。
+# 返回：0=全部就位或无副本可还原；1=有副本 cp 失败（调用方须保留 PRESERVE_DIR、不得删）。
+_restore_preserved_extras() {
+    [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] || return 0
+    local failed=0
+    # 自定义 API 适配器：按 bucket 还原到 Services/<X>/Api（与步骤 6 保留 / 步骤 9 还原对称）
+    local spec bucket rel bucket_dir api_adapter_dir
+    for spec in "order:Services/Order/Api" "acme:Services/Acme/Api"; do
+        bucket="${spec%%:*}"
+        rel="${spec#*:}"
+        bucket_dir="$PRESERVE_DIR/api_adapters/$bucket"
+        [ -d "$bucket_dir" ] && [ "$(ls -A "$bucket_dir" 2>/dev/null)" ] || continue
+        api_adapter_dir="$INSTALL_DIR/backend/app/$rel"
+        mkdir -p "$api_adapter_dir" 2>/dev/null || true
+        if cp -r "$bucket_dir"/* "$api_adapter_dir/" 2>/dev/null; then
+            log_warning "已还原中断升级遗留的自定义 API 适配器：$bucket"
+        else
+            log_error "自定义 API 适配器还原失败：$bucket_dir → $api_adapter_dir"
+            failed=1
+        fi
+    done
+    # 前端用户配置（logo / platform-config / qrcode）
+    if [ -d "$PRESERVE_DIR/frontend_config" ]; then
+        local file
+        for file in logo.svg platform-config.json; do
+            [ -f "$PRESERVE_DIR/frontend_config/admin_$file" ] || continue
+            mkdir -p "$INSTALL_DIR/frontend/admin" 2>/dev/null || true
+            cp "$PRESERVE_DIR/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file" 2>/dev/null || failed=1
+        done
+        for file in logo.svg platform-config.json qrcode.png; do
+            [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] || continue
+            mkdir -p "$INSTALL_DIR/frontend/user" 2>/dev/null || true
+            cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file" 2>/dev/null || failed=1
+        done
+    fi
+    return "$failed"
+}
+
 # 升级中断后的运维恢复指引（与 skills/ops/deploy-ops.md runbook + H2 顺序契约一致）
 _print_recovery_runbook() {
     log_error "═══════════════════════════════════════════════"
@@ -222,7 +282,13 @@ cleanup() {
     fi
 
     [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
-    [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] && rm -rf "$PRESERVE_DIR"
+    # 删 preserve 前先还原 api_adapters / frontend_config 副本：中断落在「rm 旧代码 ~ 恢复保留文件」窗内时
+    # 它们是唯一在线副本（原件已删），直接 rm preserve 会连副本一并静默销毁。还原失败则保留 preserve 供人工恢复。
+    if _restore_preserved_extras; then
+        [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] && rm -rf "$PRESERVE_DIR"
+    else
+        log_error "自定义 API 适配器 / 前端配置副本还原失败，已保留 preserve 供人工恢复：$PRESERVE_DIR"
+    fi
     exit "$rc"
 }
 trap cleanup EXIT
@@ -1627,6 +1693,35 @@ update_jobs_php_path() {
     log_warning "═══════════════════════════════════════════════════════"
 }
 
+# 判定是否需要跑 composer install（返回 0=需要 / 1=可跳过）。入参：old/new composer.json hash、old/new lock hash。
+# 判据（任一成立即需要）：
+#   ① vendor/autoload.php 缺失——中断升级把 vendor 唯一副本弄丢后重跑时，backend/composer.json 已是新版本、
+#      新旧 hash 相等会误跳过 composer → artisan fatal 砖机自循环，必须强制重装兜底（根治 ⑧ 砖机）；
+#   ② NEED_COMPOSER_FORCE=1——入口 _check_stranded_preserve 回迁了中断遗留的旧 vendor，须重装对齐新 lock；
+#   ③ composer.json / composer.lock hash 变化（常规依赖变更）。
+# 从新 composer.lock 重建始终正确且幂等；宁可多装一次也不留砖机自循环。
+_need_composer_install() {
+    local old_json="$1" new_json="$2" old_lock="$3" new_lock="$4"
+    if [ ! -f "$INSTALL_DIR/backend/vendor/autoload.php" ]; then
+        log_warning "vendor/autoload.php 缺失，强制重装 composer 依赖（防中断升级后 hash 相等跳过致砖机）"
+        return 0
+    fi
+    if [ "${NEED_COMPOSER_FORCE:-0}" = "1" ]; then
+        log_warning "已回迁中断升级遗留的 vendor，强制重装 composer 依赖以对齐新 composer.lock"
+        return 0
+    fi
+    if [ -z "$old_json" ] || [ "$old_json" != "$new_json" ]; then
+        log_info "composer.json 已变化，需要更新依赖"
+        return 0
+    fi
+    if [ -z "$old_lock" ] || [ "$old_lock" != "$new_lock" ]; then
+        log_info "composer.lock 已变化，需要更新依赖"
+        return 0
+    fi
+    log_info "依赖未变化，跳过 composer install"
+    return 1
+}
+
 # 执行升级
 perform_upgrade() {
     local target_version="$1"
@@ -1924,16 +2019,11 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         log_info "新版本 composer.lock hash: ${new_composer_lock_hash:0:16}..."
     fi
 
+    # 依赖变化判定收口到 _need_composer_install（vendor 缺失 / 回迁强制 / hash 变化 → 需要安装）
     local need_composer=false
-    # 检查 composer.json 或 composer.lock 是否有变化
-    if [ -z "$old_composer_json_hash" ] || [ "$old_composer_json_hash" != "$new_composer_json_hash" ]; then
+    if _need_composer_install "$old_composer_json_hash" "$new_composer_json_hash" \
+        "$old_composer_lock_hash" "$new_composer_lock_hash"; then
         need_composer=true
-        log_info "composer.json 已变化，需要更新依赖"
-    elif [ -z "$old_composer_lock_hash" ] || [ "$old_composer_lock_hash" != "$new_composer_lock_hash" ]; then
-        need_composer=true
-        log_info "composer.lock 已变化，需要更新依赖"
-    else
-        log_info "依赖未变化，跳过 composer install"
     fi
 
     # 探测 composer phar 路径（无论 install/dump-autoload 都要用，提前到 if 块外）

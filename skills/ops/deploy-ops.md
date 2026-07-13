@@ -366,6 +366,8 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 `upgrade.sh` 是 `set -e`：freeze 点火后、unfreeze 前任一危险步骤失败/中断即退出。**数据侧已自动兜底**（P0-2 包U）：
 
 - **storage 自动还原**：切代码窗内把活的 `backend/storage`（含 `storage/databak` 全部本地 DB 备份）`mv` 到安装目录同文件系统的 `.upgrade-preserve-$$`；失败退出 / `Ctrl-C` / `SSH 断连`（SIGINT/TERM/HUP）均由 `cleanup` trap **先把 storage 移回原位再清理**——storage 与 databak 不丢。保留目录在持久盘（非 `/tmp`），故即便 `SIGKILL`/断电（trap 跑不了）数据也存活在 `.upgrade-preserve-*/storage`。
+- **自定义适配器 / 前端配置自动还原**：`cleanup` 删 preserve 前先 `_restore_preserved_extras` 把 `api_adapters`（自定义 Order/Acme 源）与 `frontend_config`（logo/platform-config/qrcode）副本还原到原位——中断落在「rm 旧代码 ~ 恢复保留文件」窗内时它们是唯一在线副本（原件已删），不再被连同 preserve 静默销毁；还原失败则保留 preserve 供人工恢复。
+- **vendor 砖机兜底**：vendor 以 `mv` 进 preserve（备份 zip 不含 vendor）。若中断丢了 vendor 唯一副本，重跑时入口 `_check_stranded_preserve` 优先把 vendor-only 残留**回迁**到原位；即便回迁不上（preserve 已被 rm），composer 触发判定 `_need_composer_install` 见 `vendor/autoload.php` 缺失即**强制重装**（不因新旧 hash 相等误跳过），把原先「artisan fatal + 每次重跑必失败」的砖机自循环化为「重跑即自愈」。
 - **搁浅数据入口拦截**：SIGKILL/断电后 storage 滞留 `.upgrade-preserve-*/storage` 而 `backend/storage` 缺失时，**重跑 `upgrade.sh` 会在入口被拦截并中止**（否则会新建空 storage 把真数据连同 databak 静默埋掉）。按终端指引先手工把 storage 移回、删除残留目录，再重跑：
 
   ```bash
@@ -373,7 +375,7 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
   rm -rf '<站点>/.upgrade-preserve-<pid>'
   ```
 
-  （无 storage 子目录的空壳残留会被入口顺手清理并留痕日志，无需人工。）
+  （无 storage 子目录的空壳残留会被入口顺手清理并留痕日志，vendor-only 残留则自动回迁，均无需人工。）
 
 - **same-fs 断言**：`backend/storage` 与安装目录不在同一文件系统时（异构挂载），mv-out 前断言失败**中止升级、原地未破坏**，需调整挂载布局后重试。
 
