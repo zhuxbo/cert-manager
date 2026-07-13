@@ -91,7 +91,7 @@ _check_stranded_preserve() {
         # （另存于本次备份 backend.zip、可恢复）——rm 前列出内容物留痕，防静默清走无迹可查。
         local shell_contents
         shell_contents=$(ls -A "$dir" 2>/dev/null | tr '\n' ' ')
-        log_warning "清理上次升级遗留的空 preserve 目录: $dir（残留内容: ${shell_contents}）"
+        log_warning "清理上次升级遗留的空 preserve 目录: ${dir}（残留内容: ${shell_contents}）"
         rm -rf "$dir"
     done
 }
@@ -615,7 +615,7 @@ detect_php_cmd() {
             log_info "请手工指定: export PHP_CMD=/www/server/php/<ver>/bin/php"
             return 1
         else
-            log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+            log_error "未检测到符合要求的 PHP 版本（需要 >= ${php_min}）"
             log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
             return 1
         fi
@@ -993,10 +993,10 @@ _php_env_print_manual() {
         log_error "  1. PHP 版本：宝塔 → 软件商店 → 安装 PHP ${PHP_ENV_PHP_RECOMMENDED:-${PHP_ENV_PHP_MIN%.*}}+，网站设置切换 PHP 版本"
     fi
     if [ -n "$PHP_ENV_MISSING_EXT" ]; then
-        log_error "  - 扩展：宝塔 → 软件商店 → PHP 管理 → 安装扩展（$PHP_ENV_MISSING_EXT）"
+        log_error "  - 扩展：宝塔 → 软件商店 → PHP 管理 → 安装扩展（${PHP_ENV_MISSING_EXT}）"
     fi
     if [ -n "$PHP_ENV_DISABLED_FN" ]; then
-        log_error "  - 函数：编辑对应 PHP 版本的 php.ini / php-cli.ini / php-fpm.ini（凡含该函数的文件都要改），从 disable_functions 删除（$PHP_ENV_DISABLED_FN），保存后重启 PHP-FPM"
+        log_error "  - 函数：编辑对应 PHP 版本的 php.ini / php-cli.ini / php-fpm.ini（凡含该函数的文件都要改），从 disable_functions 删除（${PHP_ENV_DISABLED_FN}），保存后重启 PHP-FPM"
     fi
 }
 
@@ -1097,7 +1097,7 @@ check_php_environment() {
 
     # 推荐项警告（每次都输出，不阻断）
     if [ -n "$PHP_ENV_MISSING_REC" ]; then
-        log_warning "缺失推荐扩展: $PHP_ENV_MISSING_REC（不阻断升级，但建议安装以获得最佳性能/功能）"
+        log_warning "缺失推荐扩展: ${PHP_ENV_MISSING_REC}（不阻断升级，但建议安装以获得最佳性能/功能）"
     fi
 
     if [ "$PHP_ENV_OK" = true ]; then
@@ -1109,7 +1109,7 @@ check_php_environment() {
     log_error "═══════════════════════════════════════════════════════"
     log_error "PHP 环境校验失败："
     if [ "$PHP_ENV_VERSION_ERROR" = true ]; then
-        log_error "  - PHP 版本过低：当前 $PHP_ENV_CURRENT_PHP，需要 >= $PHP_ENV_PHP_MIN"
+        log_error "  - PHP 版本过低：当前 ${PHP_ENV_CURRENT_PHP}，需要 >= ${PHP_ENV_PHP_MIN}"
     fi
     if [ -n "$PHP_ENV_MISSING_EXT" ]; then
         log_error "  - 缺失必需扩展: $PHP_ENV_MISSING_EXT"
@@ -1183,7 +1183,7 @@ $logdir/probe.log {
     create 0664 www www
 }
 EOF
-    log_success "logrotate 配置已写入: $conf（weekly rotate 4）"
+    log_success "logrotate 配置已写入: ${conf}（weekly rotate 4）"
 }
 
 # 修复单条 install.sh 自管 cron 的 PHP 路径（schedule 组另追加 one-shot /dev/null → schedule.log 迁移）
@@ -1208,7 +1208,7 @@ _fix_installer_cron() {
     if [ "$new_body" = "$cbody" ]; then
         return 1
     fi
-    log_step "自动更新 cron [$cname] PHP 路径/日志重定向（install.sh 自管，唯一；保留频率 $ctype=$cwhere1）"
+    log_step "自动更新 cron [${cname}] PHP 路径/日志重定向（install.sh 自管，唯一；保留频率 ${ctype}=${cwhere1}）"
     # 防止 DelCrontab 成功 + AddCrontab 失败的窗口里 cron 静默消失
     if _bt_api_post "/crontab?action=DelCrontab" "--data-urlencode 'id=$cid'" >/dev/null 2>&1; then
         sleep 1

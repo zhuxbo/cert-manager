@@ -45,15 +45,15 @@ assert_identical() {
     a="$(extract_fn "$COMMON" "$fn")"
     b="$(extract_fn "$UPGRADE" "$fn")"
     if [ -z "$a" ] || [ -z "$b" ]; then
-        echo "✗ $fn：在 common.sh 或 upgrade.sh 未提取到函数体"
+        echo "✗ ${fn}：在 common.sh 或 upgrade.sh 未提取到函数体"
         FAIL=$((FAIL + 1))
         return
     fi
     if [ "$a" = "$b" ]; then
-        echo "✓ $fn：两副本字节一致"
+        echo "✓ ${fn}：两副本字节一致"
         PASS=$((PASS + 1))
     else
-        echo "✗ $fn：两副本已漂移："
+        echo "✗ ${fn}：两副本已漂移："
         diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") || true
         FAIL=$((FAIL + 1))
     fi
@@ -72,15 +72,15 @@ assert_identical_files() {
     b="$(extract_fn "$f2" "$fn")"
     # 提取自愈校验：函数体必须以顶格 } 结尾（防 heredoc/引号状态误判致截断，截断的两侧比较无意义）
     if [ -z "$a" ] || [ -z "$b" ] || [ "${a##*$'\n'}" != "}" ] || [ "${b##*$'\n'}" != "}" ]; then
-        echo "✗ $fn：函数体提取失败或不完整（未闭合于顶格 }）"
+        echo "✗ ${fn}：函数体提取失败或不完整（未闭合于顶格 }）"
         FAIL=$((FAIL + 1))
         return
     fi
     if [ "$a" = "$b" ]; then
-        echo "✓ $fn：两副本字节一致"
+        echo "✓ ${fn}：两副本字节一致"
         PASS=$((PASS + 1))
     else
-        echo "✗ $fn：两副本已漂移："
+        echo "✗ ${fn}：两副本已漂移："
         diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") || true
         FAIL=$((FAIL + 1))
     fi

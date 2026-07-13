@@ -115,6 +115,8 @@ deploy/ # 部署脚本
 
 续费/重签接替单在已提交上游后被取消时不会恢复前驱证书；普通取消以及启用 `autoRefundOnSync` 后由同步发现上游取消的续费单，都会发送一次性 `cert_renew_cancelled` 提醒，避免前驱证书脱离续期监控后静默过期。
 
+仓库 Shell 脚本兼容 Linux Bash 与 macOS Bash 3.2；变量后紧跟中文等非 ASCII 字符时统一使用 `${var}` 明确边界，避免 UTF-8 locale 配合 `set -u` 将后续字节误解析为变量名。
+
 ## 自动化部署
 
 ### CNAME 委托

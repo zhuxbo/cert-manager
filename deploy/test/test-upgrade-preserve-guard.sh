@@ -93,7 +93,7 @@ test_a1() {
     if [ "$ok" -eq 1 ]; then
         pass "A1 还原生效：databak 字节一致回原位 + preserve/storage 消费 + vendor 还原 + rc=0"
     else
-        fail "A1 还原生效（rc=$rc）"
+        fail "A1 还原生效（rc=${rc}）"
     fi
     rm -rf "$base"
 }
@@ -117,7 +117,7 @@ test_a2() {
     if [ "$ok" -eq 1 ]; then
         pass "A2 成功态不误还原：no-op、原位 storage 未被动、rc=0"
     else
-        fail "A2 成功态不误还原（rc=$rc）"
+        fail "A2 成功态不误还原（rc=${rc}）"
     fi
     rm -rf "$base"
 }
@@ -144,7 +144,7 @@ test_a3() {
     if [ "$ok" -eq 1 ]; then
         pass "A3 守卫失败不吞：返回 1 + PRESERVE_DIR/storage 保留（数据可手工恢复）"
     else
-        fail "A3 守卫失败不吞（rc=$rc）"
+        fail "A3 守卫失败不吞（rc=${rc}）"
     fi
     rm -rf "$base"
 }
@@ -168,7 +168,7 @@ test_a4() {
     if [ "$ok" -eq 1 ]; then
         pass "A4 搁浅拦截：rc≠0 中止 + 搁浅 storage 未动 + backend/storage 未被创建"
     else
-        fail "A4 搁浅拦截（rc=$rc）"
+        fail "A4 搁浅拦截（rc=${rc}）"
     fi
     rm -rf "$base"
 }
@@ -189,7 +189,7 @@ test_a5() {
     if [ "$ok" -eq 1 ]; then
         pass "A5 空壳清理：rc=0 放行 + 空壳被清（防堆积）"
     else
-        fail "A5 空壳清理（rc=$rc）"
+        fail "A5 空壳清理（rc=${rc}）"
     fi
     rm -rf "$base"
 }
@@ -245,7 +245,7 @@ STATEOF
     if [ "$ok" -eq 1 ]; then
         pass "A6 same-fs 断言：跨设备中止(rc=$rc_diff) + 同设备放行 + 真实同 fs 放行"
     else
-        fail "A6 same-fs 断言（diff=$rc_diff same=$rc_same real=$rc_real）"
+        fail "A6 same-fs 断言（diff=${rc_diff} same=${rc_same} real=${rc_real}）"
     fi
     rm -rf "$base" "$stubdir"
 }
@@ -325,9 +325,9 @@ run_signal_test() {
     [ -f "$target" ] || ok=0                                     # storage 已还原回原位
     [ "$(cat "$target" 2>/dev/null || true)" = "$sent" ] || ok=0 # databak 字节一致（同一份非新建空）
     if [ "$ok" -eq 1 ]; then
-        pass "$label：信号后 storage/databak 字节完好还原（已移出内容被守卫还原）"
+        pass "${label}：信号后 storage/databak 字节完好还原（已移出内容被守卫还原）"
     else
-        fail "$label：storage=$([ -f "$target" ] && echo 存在 || echo 缺失) 内容匹配=$([ "$(cat "$target" 2>/dev/null || true)" = "$sent" ] && echo 是 || echo 否)"
+        fail "${label}：storage=$([ -f "$target" ] && echo 存在 || echo 缺失) 内容匹配=$([ "$(cat "$target" 2>/dev/null || true)" = "$sent" ] && echo 是 || echo 否)"
     fi
     rm -rf "$base"
 }
@@ -374,7 +374,7 @@ test_b4() {
     if [ "$ok2" -eq 1 ]; then
         pass "B4b SIGKILL 后重跑被 _check_stranded_preserve 拦截、真数据未被埋（Important-2 闭环）"
     else
-        fail "B4b 重跑拦截（rc=$rc）"
+        fail "B4b 重跑拦截（rc=${rc}）"
     fi
     rm -rf "$base"
 }

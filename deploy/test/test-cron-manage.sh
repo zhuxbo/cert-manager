@@ -186,7 +186,7 @@ _fix_installer_cron "9|site|-|minute-n|1|$SCHED_NEW" schedule
 rc=$?
 [ ! -s "$CALL_LOG" ] && [ "$rc" -ne 0 ] &&
     pass "场景4：new_body==原 body → skip（无 Del/Add，返回非 0）" ||
-    fail "场景4：no-op 守卫未生效（rc=$rc，log=$(cat "$CALL_LOG")）"
+    fail "场景4：no-op 守卫未生效（rc=${rc}，log=$(cat "$CALL_LOG")）"
 
 echo "=== 场景 5（负向）：bt_list_crontab_all 空列表 → ensure skip，不误新增 ==="
 reset_scenario
@@ -200,7 +200,7 @@ echo "=== 场景 6（grep）：bt-install 重定向 + 拨测 cron + 两脚本 lo
 sched_redir=$(grep -cF 'schedule:run >> $INSTALL_DIR/backend/storage/logs/schedule.log 2>&1' "$BTINSTALL")
 [ "$sched_redir" -ge 2 ] &&
     pass "场景6：bt-install 两处 schedule.log 重定向（cron 注册 + 手工提示）" ||
-    fail "场景6：bt-install schedule.log 重定向不足 2 处（得 $sched_redir）"
+    fail "场景6：bt-install schedule.log 重定向不足 2 处（得 ${sched_redir}）"
 grep -qF 'monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1' "$BTINSTALL" &&
     pass "场景6：bt-install 含拨测 cron probe.log 重定向" ||
     fail "场景6：bt-install 缺拨测 cron"

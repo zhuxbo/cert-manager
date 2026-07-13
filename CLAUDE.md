@@ -25,6 +25,7 @@ skills/ # 开发规范（详细文档）
   - Markdown：`git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --write`
   - Shell：`git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -w`（`brew install shfmt`）
 - **PHP 8.3+** - 双引号变量不加大括号（如 `"$var"` 而非 `"{$var}"`）；例外：变量后紧跟中文等非 ASCII 字符时必须加花括号（`"{$var}，中文"` 而非 `"$var，中文"`），因为 PHP 变量名匹配 `\x80-\xff` 字节
+- **Shell 变量边界** - 变量后紧跟中文等非 ASCII 字符时必须写 `${var}`，禁止 `$var，中文`；macOS Bash 3.2 + UTF-8 locale 会把后续字节并入变量名，`set -u` 下直接退出
 - **测试发现 bug 必须修复代码** - 测试的目的是发现 bug 并修复，绝不修改测试去迎合错误的代码
 - **Plan 文档必须含杀手场景 + 对端检查** - 写 `.superpowers/` 下 plan 前先填这两栏（见 `skills/review-checklist.md` 设计期清单）；回答不出来视为设计未完成，不开始写代码
 - **完成检查必跑 reviewer 循环** - `/finish-check` 阶段 8 强制委派 reviewer subagent，每轮报告落盘 `.superpowers/reviews/<run>/round-N.md`，对**落盘文件** `grep -F "REVIEW_PASS:"` 命中前缀签字才算通过（自己写一行再 grep 自己 = 流程未执行）；签字行随 commit/PR body 落库，`review-pass-gate.yml` 在 PR→main 时校验

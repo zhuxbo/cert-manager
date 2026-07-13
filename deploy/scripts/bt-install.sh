@@ -197,13 +197,13 @@ check_environment() {
         log_warning "未能识别宝塔面板版本（common.py 不可读 / 格式异常）"
         log_warning "请确保面板版本 ≥ $BT_MIN_VERSION 后再继续"
     elif ! _version_ge "$bt_version" "$BT_MIN_VERSION"; then
-        log_error "宝塔面板版本过低：$bt_version（需要 ≥ $BT_MIN_VERSION）"
+        log_error "宝塔面板版本过低：${bt_version}（需要 ≥ ${BT_MIN_VERSION}）"
         log_info "请到宝塔面板首页升级后再装："
         log_info " bt update # 命令行升级"
         log_info " 或面板首页 → 一键升级"
         exit 1
     else
-        log_info "宝塔面板版本: $bt_version（≥ $BT_MIN_VERSION）"
+        log_info "宝塔面板版本: ${bt_version}（≥ ${BT_MIN_VERSION}）"
     fi
 
     log_success "检测到宝塔面板环境"
@@ -240,7 +240,7 @@ select_php_version() {
     fi
 
     if [ ${#php_versions[@]} -eq 0 ]; then
-        log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+        log_error "未检测到符合要求的 PHP 版本（需要 >= ${php_min}）"
         log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
         exit 1
     elif [ ${#php_versions[@]} -eq 1 ]; then
@@ -386,7 +386,7 @@ select_install_dir() {
             # 站点已存在则询问是否复用（默认 y），否则将由 try_bt_automation 自动建站
             local existing_path=""
             if existing_path=$(bt_get_site_path "$SITE_DOMAIN" 2>/dev/null) && [ -n "$existing_path" ]; then
-                log_warning "BT 已有站点 '$SITE_DOMAIN'（路径: $existing_path）"
+                log_warning "BT 已有站点 '${SITE_DOMAIN}'（路径: ${existing_path}）"
                 if confirm "是否复用该站点？" "y"; then
                     INSTALL_DIR="$existing_path"
                     log_info "复用已有站点目录: $INSTALL_DIR"
@@ -447,7 +447,7 @@ select_install_dir() {
 
     log_success "安装目录: $INSTALL_DIR"
     if [ -n "${SITE_DOMAIN:-}" ]; then
-        log_success "站点域名: $SITE_DOMAIN（将用于 BT 自动建站 + vhost include 注入）"
+        log_success "站点域名: ${SITE_DOMAIN}（将用于 BT 自动建站 + vhost include 注入）"
     fi
 }
 
@@ -773,7 +773,7 @@ select_db_driver() {
     log_step "数据库驱动"
 
     if [ -n "$DB_DRIVER" ] && [ "$DB_DRIVER" != "mysql" ]; then
-        log_error "无效的 --db 值: $DB_DRIVER（仅支持 mysql）"
+        log_error "无效的 --db 值: ${DB_DRIVER}（仅支持 mysql）"
         exit 1
     fi
     DB_DRIVER="mysql"
@@ -1020,7 +1020,7 @@ generate_env_file() {
     local db_collation
     db_collation=$(_detect_db_collation)
     _set_env_var "$env_file" "DB_COLLATION" "$db_collation"
-    log_info "DB_COLLATION=$db_collation（按数据库版本自动选择）"
+    log_info "DB_COLLATION=${db_collation}（按数据库版本自动选择）"
 
     # CACHE_DRIVER / QUEUE_CONNECTION / SESSION_DRIVER 不写入 — 已是 config 默认值
 
@@ -1190,7 +1190,7 @@ $logdir/probe.log {
     create 0664 www www
 }
 EOF
-    log_success "logrotate 配置已写入: $conf（weekly rotate 4）"
+    log_success "logrotate 配置已写入: ${conf}（weekly rotate 4）"
 }
 
 # 显示 BT 站点 nginx include 手工提示（vhost 注入失败时）
@@ -1254,7 +1254,7 @@ try_bt_automation() {
     fi
 
     # ==== 2. vhost include 注入（不依赖 BT_KEY；依赖 vhost 文件存在）====
-    # 第 3 参 expected_root=$INSTALL_DIR：校验 BT vhost root 与 INSTALL_DIR 一致
+    # 第 3 参 expected_root=${INSTALL_DIR}：校验 BT vhost root 与 INSTALL_DIR 一致
     # 不一致时 -y 模式失败，交互模式询问（防止 SPA 资源 404 部署陷阱）
     local include_injected=false
     if [ -n "${SITE_DOMAIN:-}" ]; then
@@ -1319,7 +1319,7 @@ try_bt_automation() {
         { [ -n "${SITE_DOMAIN:-}" ] && echo "✗ vhost include 未注入"; }
     [ "$supervisor_ok" = true ] && echo "✓ supervisor 已添加: $SITE_DOMAIN" ||
         echo "✗ supervisor 未自动添加"
-    [ "$cron_ok" = true ] && echo "✓ cron 已添加: $SITE_DOMAIN（每分钟）" ||
+    [ "$cron_ok" = true ] && echo "✓ cron 已添加: ${SITE_DOMAIN}（每分钟）" ||
         echo "✗ cron 未自动添加"
     [ "$probe_ok" = true ] && echo "✓ 拨测 cron 已添加: $SITE_DOMAIN-probe（每 5 分钟）" ||
         echo "✗ 拨测 cron 未自动添加"
