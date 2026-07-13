@@ -374,6 +374,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 `schedule:purge` 在自动取消前先清 `tasks`/`notifications` 超保留期的**终态历史行**（`config/purge.php`：`retention.tasks`/`notifications` 默认 90d、`chunk` 默认 1000）：
 
 - **清理集与业务锁定集不相交**：tasks 清 `{successful,failed}`、notifications 清 `{sent,failed}`；`Task::scopeLockForMutation`/`deleteTask` 的锁定/删除集恒为 `{executing,stopped}` → 清理 DELETE 不与任何持 task 锁的业务路径争同一行、**无锁序义务、不触发 Z12**（行级不相交；InnoDB gap 级与 `createTask` insert-intent 存在 enum 边界窄死锁角，由 commitCancel 事务级重试自愈、purge 不触资金表，接受观察）。`failed` 可被 admin `batchStart` 复活（`failed→executing`），但 DELETE 与该 UPDATE 由 InnoDB 行锁串行、90d 窗口远大于人工重试窗口，近乎不可达。锚点用 `created_at`：终态化极晚于创建的行（长期重试后 failed）可能刚终态即超期被清——其排障价值已由过程中的告警/日志承接、admin 即时反馈不依赖历史行，时间窗只是次要护栏。
+- **排除 pending 卡单的终态 task（防到顶计数复活）**：`purgeTerminalTasks` 追加 `whereDoesntHave('order', whereHas('latestCert', status=pending))`——关联订单仍是 pending 卡单（未收尾）的 failed commit task 是对账「到顶」判据（`PendingReconcileQuery::MAXED_COUNT_SUBQUERY`，锚 `latestCert.created_at`、**下界无上界**）的计数集。若按 90d 清掉 → 计数归零 → 订单重回 `actionable` → reconcile 重打上游 ≤3 次 + 重发 `auto_renew_failed`（去重键 `reconcile_user_alerted_at` 存 task.result JSON、随行删丢失）→ auto 渠道用户每约 90d 重收一封。订单**收尾**（cancelled/active/renewed 等非 pending）后其历史 task 才进入清理、不永久堆积；孤儿 task（order 不存在）`whereDoesntHave` 返真、照常清理。`config/purge.php` 的「90d ≫ 对账依赖窗口」仅对**已收尾**订单成立。
 - **清理抛错不中止主流程**：两清理调用外包 try/catch（与 `_logs` 动态清理对称）——清理是次要职责，异常仅 warn，不得跳过后续退款期自动取消。
 - **binlog 前提**：单批 `DELETE ... LIMIT` 无 `ORDER BY`，语句级复制不确定,依赖 `binlog_format=ROW`（MySQL 5.7.7+/8.x 默认；自建主从改过 STATEMENT 的部署需确认）。
 - **分批范式**：复用 `UserDataPurger::deleteInChunks` 范式（do-while + 每批独立 `DB::transaction` + `gc_collect_cycles` + maxIterations 护栏），单批 `LIMIT chunk` 避免长事务锁等待/撑爆 binlog。
@@ -407,7 +408,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 1. 上游返回 `data.status === 'cancelled'`
 2. `cert.status ∈ {processing, approving, cancelling}`（过渡态；排除 active 已签发 / 终态）
-3. `cert.action ∈ {new, renew}`（排除 reissue 重签）
+3. `cert.action ∈ {new, renew, reissue}`（reissue 走**增量退款口径**，helper 内按 action 分流，见资金路径）
 4. 开关 `site.autoRefundOnSync === true`
 
 ### 资金路径
@@ -417,15 +418,18 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 1. `DB::transaction` 闭包
 2. `Order::with('latestCert')->whereHas('latestCert')->lock()->find($order->id)` 加 order 行锁
 3. 锁内二次校验触发条件 2/3/4（data.status 已外层校验）
-4. 防重检查 `Transaction::where(['type'=>'cancel','transaction_id'=>$order->id])->exists()`
-5. 若不重复且 amount > 0：调 `OrderUtil::getCancelTransaction($order->toArray())` + `Transaction::create($tx)`（`Transaction::creating` 钩子内自带 user.lockForUpdate + balance 增加）
-6. `$cert->update($certData + [status='cancelled', cancelled_at=now()])`
-7. `$order->cancelled_at = now(); $order->save();`
-8. callback task / deleteTask（复用 sync L532-538 副作用，createTask 内部已 `->afterCommit()`）
+4. **退款按 action 分流**：
+   - `reissue`：`prepareReissueRefund`（含 F1 exists 预检 + 金额校验）→ `applyReissueIncrementRefund`（**只退当次增量、前驱不恢复保持 reissued**，与 cancelLocked reissue 分支共享 helper、口径一致，防 `getCancelTransaction` 求和超退原始全额）；amount=0 零增量返回 null → 跳过退款、不建流水
+   - `new/renew`：防重 `exists` 预检 + `OrderUtil::getCancelTransaction` 单笔求和 + `Transaction::create`（`Transaction::creating` 钩子内自带 user.lockForUpdate + balance 增加）
+5. `$cert->update($certData + [status='cancelled', cancelled_at=now()])`
+6. `$order->cancelled_at = now(); $order->save();`（reissue 的 purchased\_\* 增量递减随此持久化）
+7. 有前驱（`last_cert_id`）时 `dispatchRenewCancelledNotification` 派发 `cert_renew_cancelled`（前驱脱监控止血）
+8. callback task / deleteTask（createTask 内部已 `->afterCommit()`）
 
-### sync 集成
+### sync 集成（退款分支 + 通用写回通知收口）
 
-`Order\Action::sync` 在 `$hasStatusChanged` 计算之后、邮件通知/callback 之前插入四条件 if：命中后调 `refundForSyncedCancel($order, $data, $suppressCallback)` 并 `$this->success()` 提前结束 sync。Helper 内已接管 cert.update / order.save / callback / deleteTask 所有副作用（callback 受 `$suppressCallback` 透传 gate，下游 pull 入口抑制，见"sync 回调抑制"小节）。
+- **退款分支**：`Order\Action::sync` 在 `$hasStatusChanged` 计算之后插入四条件 if：命中后调 `refundForSyncedCancel($order, $data, $suppressCallback)` 并 `$force || $this->success()` 提前结束 sync（force 模式不抛 success，避免打断 get）。
+- **通用写回通知收口**：**未命中退款四条件**的 cancelled 落终态路径（`autoRefundOnSync=false` 的 new/renew/reissue、active→cancelled 等）走 sync 锁内**通用写回**——补一条 `hasStatusChanged && data.status==='cancelled' && $cert->last_cert_id → dispatchRenewCancelledNotification`。与退款分支**互斥**（退款分支命中即 early-return、不走通用写回），防重由 `hasStatusChanged` 保证（二次 sync 终态守卫 unset status → 不再派发）。**无退款是开关语义（可接受），无通知才是洞**——本收口只补通知、不改退款开关语义。revoked 落终态同样让前驱脱监控，但复用 `cert_renew_cancelled`（"取消"文案）语义不贴切，宜另立 `cert_revoked` code（未实现，属 notification 域后续）。
 
 ### 设计决策
 
@@ -435,9 +439,18 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 ### 测试覆盖
 
-- `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：12 个用例覆盖开关开/关 / status / action / 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发
+- `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：18 个用例覆盖开关开/关 / status / action（含 **reissue 增量退款 + 通知**）/ 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发 / **通用写回通知收口**（开关关 renew·reissue 有前驱发通知不退款 + 防重）
 - `tests/Feature/Commands/PurgeCommandTest.php`：编排断言 reissue 取消（置 cancelling + cancel task）/ new 仍取消（不跑资金）
 - `tests/Unit/Services/Order/ActionTest.php`：cancelLocked reissue 分支资金断言（增量退款 20 非 120 / amount=0 无流水 / 订单终结门（取消后再 reissue、commitCancel 均报错）/ last_cert_id 保留占槽 inert / processing 语义仍退增量 / F1 二次预检 / 上游失败回滚 / new-renew 回归 / cancelPending F1），落 `fundAuditGuardedTestPaths()` 守门
+
+### TaskJob 取消告警幂等判据（②，与 sync 收口互补）
+
+cancel/cancel_acme task 业务失败（code=0）时，`TaskJob::cancellationTargetTerminal` 判「退款已发生的幂等 no-op」vs「真·CA 失败」决定是否发 `task_failed` admin 告警。order 侧判据收窄（同根因「终态⇒退款已发生」假设为假）：
+
+- **豁免集剔除 `failed`**：failed 全系统无任何退款路径（commitCancel/V2 cancel 均拒 failed），「failed 但退款已发生」不存在合法形态；force sync 可把上游 failed 写过 cancelling → cancel task 撞「订单状态不是取消中」读到 failed = 真失败必须告警。**与 sync 终态守卫的差异**：那里 failed 属【防复活】集（防上游旧 active 覆盖终态），语义不同于此处【退款幂等】判定，两集合不可混用。
+- **cancelled 辅以流水判定**：不无条件豁免（③ 揭示 sync 开关关/reissue 穿透可直写 cancelled 而未退款）——有 cancel 流水（已退款）或应退金额=0（0 元/reissue 零增量、本就不建流水）才豁免；应退>0 却无 cancel 流水 = 退款未发生的真失败、告警。应退口径按 action：reissue=`cert.amount`、new/renew=`order.amount`。
+- revoked/renewed/reissued（吊销/被接替）保留豁免；acme 侧（cancelled/revoked/expired，无 failed）不在收窄范围、保持原样。
+- 判据必须在 `handle()` 事务内、持 task+order 行锁时调用（Transaction 查询同事务快照）。测试 `tests/Unit/Jobs/TaskJobTest.php` Imp-1 节（failed 告警 / cancelled 未退款告警 / 0 元·reissue 零增量豁免）。
 
 ### 部署注意
 

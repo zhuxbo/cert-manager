@@ -671,11 +671,13 @@ class Action
         // 该分支自身锁 order 行并在锁内二次校验四条件，外层粗筛不会造成误退款）
         $hasStatusChanged = isset($data['status']) && $data['status'] !== $cert->status;
 
-        // 同步退款分支：上游 cancelled + 过渡态 + new/renew + 开关开 → 专用 helper 处理退款
+        // 同步退款分支：上游 cancelled + 过渡态 + new/renew/reissue + 开关开 → 专用 helper 处理退款。
+        // reissue 走增量退款口径（refundForSyncedCancel 内按 action 分流，对齐 cancelLocked：只退当次增量、
+        // 前驱不恢复保持 reissued），避免 getCancelTransaction 求和超退原始全额。
         if ($hasStatusChanged
             && ($data['status'] ?? null) === 'cancelled'
             && in_array($cert->status, ['processing', 'approving', 'cancelling'])
-            && in_array($cert->action, ['new', 'renew'])
+            && in_array($cert->action, ['new', 'renew', 'reissue'])
             && get_system_setting('site', 'autoRefundOnSync')
         ) {
             // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
@@ -744,6 +746,17 @@ class Action
                         'email' => $user->email,
                     ]
                 ));
+            }
+
+            // 接替单（有前驱 last_cert_id）被上游同步为终态 cancelled：前驱证书（renewed/reissued 终态）就此
+            // 脱离 cert_expire / AutoRenew / cert_renew_stalled 三重监控——原证书物理上仍在有效期却不再收到
+            // 任何续期/到期提醒。发一次性通知止血（与 cancelLocked / refundForSyncedCancel 分支对称收口）。
+            // 本处专覆盖未进退款分支的 cancelled 路径：autoRefundOnSync=false 的 new/renew/reissue、active→cancelled 等
+            // （命中退款分支的 refundForSyncedCancel 已 early-return、不走本通用写回，两处互斥不重复）。
+            // 防重由 hasStatusChanged 保证：二次 sync 终态守卫 unset data.status → hasStatusChanged=false → 不再派发。
+            // $cert->last_cert_id 一经建单即不变，可安全直读（外层 $cert 即写回目标接替单证书自身）。
+            if ($hasStatusChanged && $data['status'] === 'cancelled' && $cert->last_cert_id) {
+                $this->dispatchRenewCancelledNotification($order, $cert);
             }
 
             // 签发 取消 吊销 发起回调（suppressCallback=true 跳过：下游经 V1/V2 get 主动 pull 触发同步，
@@ -1383,29 +1396,36 @@ class Action
             if (! in_array($cert->status, ['processing', 'approving', 'cancelling'])) {
                 return;
             }
-            if (! in_array($cert->action, ['new', 'renew'])) {
+            if (! in_array($cert->action, ['new', 'renew', 'reissue'])) {
                 return;
             }
             if (! get_system_setting('site', 'autoRefundOnSync')) {
                 return;
             }
 
-            // 防双退两道协作（详见下方 cancel() 注释，二者必须同时保留）：
-            //   ① 此处应用层 exists 仅作预检，避免无谓的 getCancelTransaction 计算；它不是物理底线
-            //      —— 锁外 exists+INSERT 非原子，并发 sync 仍可能两条都通过。
-            //   ② 物理底线 = transactions 表 DB 唯一索引 transactions_dedup_unique（虚拟列
-            //      dedup_key=CONCAT(type,':',transaction_id) WHERE type!='order'，迁移
-            //      2026_05_07_120000_add_fund_transaction_unique_indexes）+ Transaction::creating
-            //      钩子的二次 exists——任一并发漏过预检，唯一索引会让第二条 INSERT 抛错回滚。
-            // 重构者注意：删除应用层 exists 不会双退（索引兜底），但删除唯一索引会破坏物理底线。
-            $alreadyRefunded = Transaction::where('type', 'cancel')
-                ->where('transaction_id', $order->id)
-                ->exists();
+            if ($cert->action === 'reissue') {
+                // reissue 增量退款口径（对齐 cancelLocked reissue）：只退当次增量、前驱不恢复保持 reissued。
+                // prepareReissueRefund 内含 F1 exists 预检（已退款→error 转人工）+ 金额校验，是防双退第一道；
+                // 物理底线仍为 transactions_dedup_unique 唯一索引。amount=0（零增量）返回 null → 跳过退款、不建流水。
+                $lastTransaction = $this->prepareReissueRefund($order, $cert);
+                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
+            } else {
+                // new/renew：getCancelTransaction 单笔求和口径（原逻辑不变）。
+                // 防双退两道协作（详见下方 cancel() 注释，二者必须同时保留）：
+                //   ① 应用层 exists 仅作预检（锁外 exists+INSERT 非原子，并发 sync 仍可能两条都通过），非物理底线；
+                //   ② 物理底线 = transactions 表 DB 唯一索引 transactions_dedup_unique（虚拟列
+                //      dedup_key=CONCAT(type,':',transaction_id) WHERE type!='order'，迁移
+                //      2026_05_07_120000_add_fund_transaction_unique_indexes）+ Transaction::creating 钩子二次 exists。
+                // 重构者注意：删除应用层 exists 不会双退（索引兜底），但删除唯一索引会破坏物理底线。
+                $alreadyRefunded = Transaction::where('type', 'cancel')
+                    ->where('transaction_id', $order->id)
+                    ->exists();
 
-            if (! $alreadyRefunded) {
-                $transaction = OrderUtil::getCancelTransaction($order->toArray());
-                // amount=0 时 Transaction::creating 钩子返回 false 短路，不创建记录
-                Transaction::create($transaction);
+                if (! $alreadyRefunded) {
+                    $transaction = OrderUtil::getCancelTransaction($order->toArray());
+                    // amount=0 时 Transaction::creating 钩子返回 false 短路，不创建记录
+                    Transaction::create($transaction);
+                }
             }
 
             // 更新 cert（合并上游数据 + 强制 status=cancelled + cancelled_at）
@@ -1413,7 +1433,7 @@ class Action
             $certData['cancelled_at'] = now();
             $cert->update($certData);
 
-            // 记录取消时间
+            // 记录取消时间（reissue 的 purchased_* 增量递减随此 save 持久化）
             $order->cancelled_at = now();
             $order->save();
 
