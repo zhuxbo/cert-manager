@@ -265,39 +265,33 @@ class ApiController extends Controller
                 $updateParams['action'] = 'reissue';
             }
 
-            // order 级互斥 + 订单行锁：把本地 renew/reissue（终态化旧证书 + 建新单）+ pay(false)（扣费落 pending）
+            // order 级互斥 + 外层事务：把本地 renew/reissue（终态化旧证书 + 建新单）+ pay(false)（扣费落 pending）
             // 串行且原子，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
             // 关键设计约束：
             //  1) 与 Action::commit/cancel 共用 order_mutate_{id} 键（下划线格式），撞进行中
             //     commit/cancel 抢不到抛 MutationBusyException→503（与 V1/V2 同步入口语义一致）；
-            //  2) O3：pay(false) 进事务与 renew/reissue 原子（charge 纯本地扣费、无上游、无 mutex → 安全嵌套），
+            //  2) O3-A：pay(false) 进事务与 renew/reissue 原子（charge 纯本地扣费、无上游、无 mutex → 安全嵌套），
             //     charge 失败即整体回滚，杜绝「旧证书终态 + 新单卡 unpaid」孤儿（P0-1 路径 2）；
             //  3) commit 移到互斥锁「外」——reissue 复用同一 orderId，commit 自带同键互斥锁，
             //     若在锁内则二次抢锁必失败自死锁；且 commit 含上游 HTTP，锁内不做上游调用（红线）。
+            //  4) 【锁纪律】不在此处对订单行做「先于 renew/reissue 的显式 FOR UPDATE 预锁」：
+            //     renew/reissue 的 initParams（CSR keygen + 委托 TXT 逐 token 上游 DNS 写，ProxyDNS 单 token 15s）
+            //     在其内部【源订单行锁之前】执行；并发双开的串行主体是 renew(persistOrder)/reissue 内的
+            //     「源订单行锁 + 前驱翻转 affected-rows CAS」（CAS 是锁定写 current read，不受 initParams 前置
+            //     一致读建立的 RR view 影响，无需外层再叠一把预锁）。此前的预锁会把 keygen + 委托 DNS HTTP 全
+            //     罩进订单行锁内——DNSPod 劣化时 ≥4 token 即超 innodb_lock_wait_timeout=50，同订单 sync/renew
+            //     抢锁 1205，违反锁内不做上游 HTTP 红线。移除后对齐 V2/AutoRenew「CSR/委托生成先于行锁」范式。
             $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew) {
                 $resolved = $orderId;
 
                 DB::transaction(function () use (&$resolved, $orderId, $action, $updateParams, $isRenew) {
-                    // 【不变量：本行 ->lock()->find 必须是本事务闭包的第一条 DB 语句，其前不得有任何一致读】
-                    // REPEATABLE READ 下 read view 由首个非锁定一致读建立；FOR UPDATE 是锁定读、不建 view。
-                    // 首语句即 ->lock()->find：第二请求在 orders 行锁上阻塞至先到者提交，随后 latestCert
-                    // eager-load（独立非锁定 SELECT）在提交后才建 view → 读到 renewed/unpaid 新值被守卫挡下。
-                    // 若在其前插入任何一致读（含 get_system_setting 触发的 DB 读），view 前移 → 再读见旧
-                    // active → 双开复活。与既有 commitLocked（Action.php）同构。
-                    $locked = Order::with('latestCert')->whereHas('user')->whereHas('latestCert')->lock()->find($orderId);
-
-                    // 【load-bearing：真正串行主体是上面 orders 行 FOR UPDATE。下面守卫与 new()/reissue()
-                    //  内 initParams 的 active 校验都是行锁之上的再读（冗余防御 + 友好文案 + 早失败省一次
-                    //  CSR 生成）。三者中 ->lock() 不可删——删锁只留守卫会退回 racy（非锁定读见并发前旧值）。】
-                    (! $locked || $locked->latestCert->status !== 'active')
-                        && $this->error('订单状态已变更（可能正在被其他请求续费），请重新查询');
-
                     if ($isRenew) {
-                        // 本地：建新订单 + 旧证书翻 renewed（无上游）；code=1 成功由 getData 吸收返回 data
+                        // renew→new：initParams（CSR+委托，锁前）→ persistOrder 锁源订单行 + 前驱 active→renewed CAS。
+                        // code=1 成功由 getData 吸收返回 data；并发抢先则内部 CAS affected=0 抛「订单已续费」回滚。
                         $result = $this->getData($action, 'renew', [$updateParams]);
                         $resolved = $result['data']['order_id'] ?? $orderId;
                     } else {
-                        // 本地：旧证书翻 reissued + 建新 cert（无上游）
+                        // reissue：initParams（CSR+委托，锁前）→ 事务内锁源订单行 + latest_cert_id 基线比对 + 前驱 CAS 翻 reissued。
                         $this->getData($action, 'reissue', [$updateParams]);
                     }
 

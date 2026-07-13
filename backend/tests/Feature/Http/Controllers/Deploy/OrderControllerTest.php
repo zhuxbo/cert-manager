@@ -1105,10 +1105,11 @@ test('update active 续费占锁时立即 503（抢锁早于建新单，Order �
     expect(Order::count())->toBe($before);
 });
 
-test('update active 续费锁内再读非 active 命中守卫返回 {code:0}', function () {
-    // 守卫路径（行锁再读层）：并发续费已把 latestCert 翻 renewed 的场景。
-    // 用 DB::listen 在锁内 FOR UPDATE 查询执行后、latestCert eager-load 之前把证书翻 renewed，
-    // 确定性复现「外层读到 active 进入分支、锁内再读见 renewed」被守卫挡下（非真并发、预设态）。
+test('update active 续费并发前驱翻 renewed：内部 O1 CAS 挡下 {code:0}，不双开', function () {
+    // 移除 Deploy 显式预锁后（对齐 V2 一条龙，把 initParams 的 CSR/委托移出订单行锁），
+    // 防并发双开改由 renew 内部 persistOrder 的「源订单行锁 + 前驱翻转 affected-rows CAS」承担。
+    // 用 DB::listen 在锁内首条 orders FOR UPDATE 执行后把前驱证书翻 renewed，确定性复现
+    // 「CAS 读到 status!='active' → affected=0 → 三态守卫 '订单已续费' code=0 回滚」（非真并发、预设态）。
     config(['cache.default' => 'array']);
     Cache::store('array')->flush();
 
@@ -1129,9 +1130,10 @@ test('update active 续费锁内再读非 active 命中守卫返回 {code:0}', f
         'validation_methods' => ['delegation', 'txt'],
     ]);
 
+    $before = Order::count();
     $flipped = false;
     DB::listen(function ($query) use (&$flipped, $cert) {
-        // 锁内首条语句 orders 行 FOR UPDATE 执行后、latestCert eager-load 之前翻转证书状态
+        // 锁内首条 orders 行 FOR UPDATE（persistOrder）执行后翻转前驱证书状态
         if (! $flipped
             && str_contains(strtolower($query->sql), 'for update')
             && str_contains(strtolower($query->sql), 'orders')) {
@@ -1142,9 +1144,10 @@ test('update active 续费锁内再读非 active 命中守卫返回 {code:0}', f
 
     deployPost($token, '/api/deploy/', ['order_id' => $order->id])
         ->assertOk()->assertJson(['code' => 0])
-        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '订单状态已变更'));
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '订单已续费'));
 
-    expect($flipped)->toBeTrue(); // 确认守卫路径确实被触发
+    expect($flipped)->toBeTrue();          // 确认 CAS 路径确实被触发
+    expect(Order::count())->toBe($before); // 无逃逸接替单（内部 CAS 挡下双开）
 });
 
 test('update active 重签不自死锁（pay 在锁外，commit 自锁与外层顺序获取）', function () {
