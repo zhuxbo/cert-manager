@@ -121,8 +121,25 @@ $pid = $d["pid"] ?? null;
 $alive = false;
 if (is_numeric($pid) && (int) $pid > 0) {
     $pid = (int) $pid;
-    $alive = is_dir("/proc") ? file_exists("/proc/$pid")
-        : (function_exists("posix_kill") && posix_kill($pid, 0));
+    if (is_dir("/proc")) {
+        $alive = file_exists("/proc/$pid");
+        // PID 复用防护（镜像 UpgradeStatusManager::isProcessAlive）：/proc/{pid} 存在只证明
+        // 有进程占用该 PID。有记录 pid_starttime 时校验 /proc/{pid}/stat 第 22 字段（starttime）——
+        // 不符即原升级进程已死、PID 被长寿进程复用 → 判死（放行本次 shell 升级，归档残留 status）。
+        // 无记录（旧格式）或 starttime 读不到 → 保持只判存在（兼容、保守不误放行并发真升级）。
+        $rec = $d["pid_starttime"] ?? null;
+        if ($alive && $rec !== null && $rec !== "") {
+            $stat = @file_get_contents("/proc/$pid/stat");
+            $rp = $stat === false ? false : strrpos($stat, ")");
+            if ($rp !== false) {
+                $f = preg_split("/\\s+/", trim(substr($stat, $rp + 1)));
+                $act = $f[19] ?? null;
+                if ($act !== null && (string) $act !== (string) $rec) { $alive = false; }
+            }
+        }
+    } else {
+        $alive = function_exists("posix_kill") && posix_kill($pid, 0);
+    }
 }
 echo $alive ? "running_alive" : "running_dead";
 ' 2>/dev/null) || verdict="other"

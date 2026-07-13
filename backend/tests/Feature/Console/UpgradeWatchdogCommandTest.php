@@ -273,3 +273,36 @@ test('⑨ stale 且无冻结锁 → 自愈照旧（shell 升级结束解锁后�
         ->and($spy->sendCount)->toBe(1)
         ->and($spy->lastArgs[4])->toBe('upgrade_watchdog');
 });
+
+test('⑩ 活 PID 但 starttime 不符（PID 复用）→ 不再一票否决，watchdog 照常自愈', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux，无 /proc，starttime 校验不适用');
+    }
+    Artisan::call('down', ['--retry' => 60]);
+
+    // 死升级的 PID 在 stale 窗内被长寿进程复用：/proc/{pid} 存在（本测试进程恒活），
+    // 但 status.json 记录的 pid_starttime 与该进程真实 starttime 不符 = 原升级进程已死。
+    // 修复前：仅判 /proc 存在 → 误判「进程活」→ 走②分支永不自愈、execute 闸门永闭；
+    // 修复后：starttime 不符判死 → stale 成立 → fail + unfreeze + up + 告警。
+    $reusedPid = getmypid();
+    wdWriteLock([
+        'frozen_at' => now()->subHours(2)->toIso8601String(),
+        'owner_source' => 'web',
+        'owner_pid' => $reusedPid,
+    ]);
+    wdWriteStatus([
+        'pid' => $reusedPid,
+        'pid_starttime' => '1', // boot 后 1 tick，不可能等于本进程真实 starttime
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+    ]);
+    $spy = wdSpySystemAlert();
+
+    $this->artisan('upgrade:watchdog')->assertSuccessful();
+
+    expect((new UpgradeStatusManager)->get()['status'])->toBe('failed')
+        ->and($this->app->isDownForMaintenance())->toBeFalse()
+        ->and(UpgradeFreezeLock::isFrozen())->toBeFalse()
+        ->and($spy->sendCount)->toBe(1)
+        ->and($spy->lastArgs[4])->toBe('upgrade_watchdog');
+});

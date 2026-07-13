@@ -370,3 +370,83 @@ test('H1 缺 pid（旧格式 status.json）+ 超时 → 按不存活处理 → s
 
     expect($this->statusManager->isRunning())->toBeFalse();
 });
+
+// ============================================================
+// PID 复用防护——isProcessAlive 在 /proc/{pid} 存在后再校验 starttime，
+// 避免死升级 PID 被长寿进程复用时误判「进程活」→ watchdog 永不自愈 + execute 闸门永闭。
+// 仅 Linux(/proc) 生效；生产恒 Linux、测试容器为 Linux。
+// ============================================================
+
+test('⑯ start() 写入 pid_starttime（Linux）', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux，无 /proc，starttime 校验不适用');
+    }
+
+    $this->statusManager->start('v1.0.0');
+
+    $status = $this->statusManager->get();
+    expect($status)->toHaveKey('pid_starttime')
+        ->and($status['pid_starttime'])->not->toBeNull()
+        // starttime 是 /proc/{pid}/stat 第 22 字段（自 boot 的 clock ticks），数字串
+        ->and(ctype_digit((string) $status['pid_starttime']))->toBeTrue();
+});
+
+test('⑯ isProcessAlive：活 PID + 记录 starttime 匹配 → true', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+
+    // start() 写本进程真实 pid + starttime；本进程恒活、starttime 自匹配
+    $this->statusManager->start('v1.0.0');
+    $data = $this->statusManager->get();
+
+    expect($this->statusManager->isProcessAlive($data))->toBeTrue();
+});
+
+test('⑯ isProcessAlive：活 PID 但记录 starttime 不符（PID 复用）→ false', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+
+    // 本进程恒活（/proc/{pid} 存在），但记录一个不可能匹配的 starttime →
+    // 等价于「原升级进程已死、该 PID 被本进程复用」→ 应判死
+    $data = [
+        'status' => 'running',
+        'pid' => getmypid(),
+        'pid_starttime' => '1', // boot 后 1 tick，几乎不可能等于任何真实进程 starttime
+    ];
+
+    expect($this->statusManager->isProcessAlive($data))->toBeFalse();
+});
+
+test('⑯ isProcessAlive：活 PID + 旧格式无 pid_starttime → true（兼容回落）', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+
+    // 旧格式 status.json 无 pid_starttime → 不因缺字段误判，回落只判 /proc 存在
+    $data = [
+        'status' => 'running',
+        'pid' => getmypid(),
+        // 无 pid_starttime
+    ];
+
+    expect($this->statusManager->isProcessAlive($data))->toBeTrue();
+});
+
+test('⑯ 杀手场景：running + 超时 + 活 PID 但 starttime 不符（复用）→ isRunning()===false（闸门重开）', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+    Config::set('upgrade.stale_seconds', 3600);
+
+    // 活 PID（本进程）但记录 starttime 对不上 = PID 复用 → 不再一票否决
+    h1WriteStatus([
+        'pid' => getmypid(),
+        'pid_starttime' => '1',
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+    ]);
+
+    expect($this->statusManager->isRunning())->toBeFalse();
+});

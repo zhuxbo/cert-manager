@@ -10,11 +10,12 @@ use Illuminate\Support\Facades\Artisan;
  * UpgradeRunCommand::handleFatalShutdown —— 真 fatal（OOM / Class not found / E_PARSE /
  * E_COMPILE_ERROR）退出时经 register_shutdown_function 触发的兜底自愈。
  *
- * 契约：fail(status=failed) → unfreeze（严格先于 up）→ up。
+ * 契约：unfreeze（严格先于 up）→ up → fail(status=failed)。fail 置终态放最后——up 在 shutdown
+ * 阶段二次 fatal 时 fail 未执行、status 保持 running，交 watchdog 接管重试。
  * up 解除 down 并唤醒被暂停的 worker 去 pop job；若 freeze 仍在，SkipWhenUpgradeFrozen 的
- * release(60) 会每 60s 烧一次 attempts、非白名单 HTTP 503 滞留至 freeze TTL，且 fail() 置
- * status=failed 后 watchdog 不再兜。故此路径必须解冻。用真实 down/freeze + isDownForMaintenance
- * 观测（对齐 UpgradeWatchdogCommandTest），机器验证「解冻 + 解维护」双落地。
+ * release(60) 会每 60s 烧一次 attempts、非白名单 HTTP 503 滞留至 freeze TTL。故此路径必须先解冻。
+ * 用真实 down/freeze + isDownForMaintenance 观测（对齐 UpgradeWatchdogCommandTest），机器验证
+ * 「解冻 + 解维护」双落地。
  */
 beforeEach(function () {
     (new UpgradeStatusManager)->clear();
@@ -41,7 +42,7 @@ function urcFatalErr(): array
     ];
 }
 
-test('running 期 fatal：fail + 解冻 + 解维护（unfreeze 严格先于 up）', function () {
+test('running 期 fatal：解冻 + 解维护 + fail（unfreeze 严格先于 up）', function () {
     // 危险窗态：down + freeze + status=running
     Artisan::call('down', ['--retry' => 60]);
     UpgradeFreezeLock::freeze('v1.0.0', 'v1.1.0', 3600);

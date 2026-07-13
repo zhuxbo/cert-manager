@@ -17,6 +17,7 @@
 #   B2 running + 活 pid（本测试进程）→ rc=1
 #   B3 completed → 原样
 #   B4 损坏 JSON → 原样
+#   B5 running + 活 pid 但 pid_starttime 不符（PID 复用）→ Linux 判死归档 / 非 Linux 保守中止
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -214,6 +215,26 @@ if command -v php >/dev/null 2>&1; then
         pass "B4 真 php：损坏 JSON → 原样"
     else
         fail "B4 真 php：损坏 JSON 应原样保留"
+    fi
+
+    # B5 running + 活 pid 但 pid_starttime 不符（PID 复用）
+    #   Linux(/proc)：starttime 校验判死 → 归档；非 Linux：无 /proc 不校验，保守判活 → rc=1 中止
+    SB="$(fresh_sandbox b5)"
+    printf '{"status":"running","pid":%d,"pid_starttime":"1"}' "$$" >"$(status_of "$SB")"
+    if [ -d /proc ]; then
+        if run_guard "$SB" "$REAL_PHP" &&
+            [ ! -f "$(status_of "$SB")" ] &&
+            ls "$(status_of "$SB")".stale.* >/dev/null 2>&1; then
+            pass "B5 真 php：活 pid 但 starttime 不符（PID 复用）→ 判死归档"
+        else
+            fail "B5 真 php：PID 复用应判 running_dead 并归档"
+        fi
+    else
+        if run_guard "$SB" "$REAL_PHP"; then
+            fail "B5 真 php：非 Linux 无 starttime 校验，活 pid 应 rc=1 中止"
+        else
+            pass "B5 真 php：非 Linux 回落保守判活 → rc=1 中止"
+        fi
     fi
 else
     echo "! B 组跳过：PATH 无 php（CI 由 setup-php 保证执行；本地可在带 php 的环境重跑）"

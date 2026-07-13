@@ -47,13 +47,16 @@ class UpgradeStatusManager
      */
     public function start(string $version): void
     {
+        $pid = getmypid();
         $this->save([
             'status' => 'running',
             'version' => $version,
             'started_at' => date('Y-m-d H:i:s'),
-            // 记录升级进程自身 PID（web 路径下 upgrade:run 后台进程即调用方）——
-            // watchdog 据此探测「进程死否」，区分 SIGKILL/OOM（该解维护）与慢单步（不该解维护）。
-            'pid' => getmypid(),
+            // 记录升级进程自身 PID（web 路径下 upgrade:run 后台进程即调用方）+ 进程启动时刻——
+            // watchdog 据此探测「进程死否」，区分 SIGKILL/OOM（该解维护）与慢单步（不该解维护）；
+            // pid_starttime 与 pid 二元校验防「死升级 PID 被长寿进程复用致误判进程活、永不自愈」。
+            'pid' => $pid,
+            'pid_starttime' => is_int($pid) && $pid > 0 ? self::readProcStarttime($pid) : null,
             'current_step' => null,
             'steps' => [],
             'progress' => 0,
@@ -276,12 +279,29 @@ class UpgradeStatusManager
             return false;
         }
 
-        // Linux 生产恒有 /proc：/proc/{pid} 存在 = 进程活
+        // Linux 生产恒有 /proc：/proc/{pid} 存在 = 有进程占用该 PID
         if (is_dir('/proc')) {
-            return file_exists("/proc/$pid");
+            if (! file_exists("/proc/$pid")) {
+                return false;
+            }
+
+            // PID 复用防护：/proc/{pid} 存在只证明「有进程占用该 PID」，不证明是原升级进程。
+            // 有记录 starttime 时二次校验 /proc/{pid}/stat 的 starttime——不符即原进程已死、PID 被复用 → 判死。
+            // 旧格式无 pid_starttime → 回落只判存在（兼容，不因缺字段误判）；starttime 读不到（罕见竞态）→
+            // 保守判活（不据读取失败推断复用，维持「进程真活就一票否决」不误 up 半迁移库）。
+            $recorded = $data['pid_starttime'] ?? null;
+            if ($recorded !== null && $recorded !== '') {
+                $actual = self::readProcStarttime($pid);
+                if ($actual !== null && (string) $actual !== (string) $recorded) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
-        // 非 Linux（macOS 开发机）回落 posix_kill($pid, 0)：发信号成功即进程存活
+        // 非 Linux（macOS 开发机）回落 posix_kill($pid, 0)：发信号成功即进程存活。
+        // 无 /proc 无法取 starttime，starttime 校验仅 Linux 生效（生产恒 Linux，开发机 PID 复用无危害）。
         if (function_exists('posix_kill')) {
             return posix_kill($pid, 0);
         }
@@ -291,6 +311,31 @@ class UpgradeStatusManager
         ]);
 
         return false;
+    }
+
+    /**
+     * 读取 Linux 进程启动时刻（/proc/{pid}/stat 第 22 字段 starttime，自 boot 的 clock ticks）。
+     *
+     * 用于 PID 复用防护：pid 相同但 starttime 不同 = 原进程已死、PID 被复用。
+     * comm（第 2 字段）可能含空格/括号，取最后一个 ')' 之后再切分，规避 comm 干扰。
+     * 非 Linux / 不可读 / 解析失败 → null（调用方回落只判 /proc 存在）。
+     */
+    private static function readProcStarttime(int $pid): ?string
+    {
+        $stat = @file_get_contents("/proc/$pid/stat");
+        if ($stat === false || $stat === '') {
+            return null;
+        }
+
+        $rparen = strrpos($stat, ')');
+        if ($rparen === false) {
+            return null;
+        }
+
+        // ')' 之后从 state（第 3 字段）起，starttime=第 22 字段 → 索引 19
+        $fields = preg_split('/\s+/', trim(substr($stat, $rparen + 1)));
+
+        return $fields[19] ?? null;
     }
 
     /**
