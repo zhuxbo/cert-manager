@@ -264,25 +264,47 @@ class Action
         $latestCert = $this->getCert($params);
         $orderData['amount'] = $latestCert['amount'] = OrderUtil::getLatestCertAmount($orderData, $latestCert, $params['product']);
 
-        DB::beginTransaction();
-        try {
+        // 内层事务 attempts 固定 1：本闭包经 AutoRenew O1 / V1V2 一条龙外层事务嵌套为 savepoint，
+        // 嵌套死锁不可事务级重试（同 commitLocked 先例——非 checkDuplicate，它在事务外）。
+        // 有意不套 order_mutate 互斥：事务内零上游调用（上游 commit 由事务外承载）、与 commit/cancel
+        // 状态互斥（renew 要求源证书 active，commit 要求 pending、cancel 要求 cancelling，同订单不可能同时满足），
+        // 源订单行锁 + affected-rows 守卫即保证正确性（极窄竞态下至多一方拿到 active，另一方被拒）。
+        $orderId = null;
+        DB::transaction(function () use ($params, $orderData, $latestCert, &$orderId) {
+            // renew：先锁源订单行，串行化毫秒级并发双开；plain new（无源订单）不锁、行为不变。
+            if (($latestCert['action'] ?? '') === 'renew') {
+                $sourceOrder = Order::whereHas('latestCert')->lock()->find($params['order_id']);
+                $sourceOrder || $this->error('订单或相关数据不存在');
+            }
+
             $order = Order::create($orderData);
             $latestCert['order_id'] = $order->id;
 
-            if ($latestCert['action'] == 'renew') {
-                Cert::where(['status' => 'active', 'order_id' => $params['order_id']])->update(['status' => 'renewed']);
+            if (($latestCert['action'] ?? '') === 'renew') {
+                // 前驱翻转 CAS：保留 WHERE status='active' 取影响行数。命中 0 行 = 源证书已被并发
+                // 续费/重签/取消抢先翻走 → 重读源证书权威状态分三态 error 后回滚（此时 pay 尚未执行、扣费从未发生）。
+                $affected = Cert::where(['status' => 'active', 'order_id' => $params['order_id']])
+                    ->update(['status' => 'renewed']);
+
+                if ($affected === 0) {
+                    $sourceStatus = Cert::where('id', $params['last_cert_id'] ?? 0)->value('status');
+                    $this->error(match ($sourceStatus) {
+                        'renewed' => '订单已续费',
+                        'reissued' => '订单已重签',
+                        'cancelled' => '订单已取消',
+                        default => '订单状态已变化，请刷新重试',
+                    });
+                }
             }
 
             $cert = Cert::create($latestCert);
             $order->update(['latest_cert_id' => $cert->id]);
 
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+            $orderId = $order->id;
+        }, 1);
 
-        $this->success(['order_id' => $order->id]);
+        // success 抛 ApiResponseException 会触发回滚 → 必须在事务闭包外
+        $this->success(['order_id' => $orderId]);
     }
 
     /**
@@ -356,9 +378,11 @@ class Action
 
         $params = $this->initParams($params);
 
+        // 锁前只读：amount 预检 + 产品禁用校验（位置不变）。organization 覆盖捕获后带入锁内持久化，
+        // 不写回本无锁 $order（避免 stale 写）。
         $order = Order::find($params['order_id']);
-
         $order->organization = $params['organization'] ?? $order->organization;
+        $organization = $order->organization;
         $latestCert = $this->getCert($params);
 
         $amount = OrderUtil::getLatestCertAmount($order->toArray(), $latestCert, $params['product']);
@@ -371,14 +395,43 @@ class Action
             }
         }
 
-        DB::beginTransaction();
-        try {
-            Cert::where('id', $order->latest_cert_id)->update(['status' => 'reissued']);
+        // 内层事务 attempts 固定 1：本闭包经 AutoRenew O1 / V1V2 一条龙外层事务嵌套为 savepoint，
+        // 嵌套死锁不可事务级重试（同 commitLocked 先例——非 checkDuplicate，它在事务外）。
+        // 有意不套 order_mutate 互斥：事务内零上游调用、与 commit/cancel 状态互斥（reissue 要求源证书
+        // active/expired），本订单行锁 + affected-rows 守卫即够；reissue 源=本订单，与取消路径先锁同一 order 行天然串行。
+        $orderId = null;
+        DB::transaction(function () use ($params, $latestCert, $amount, $organization, &$orderId) {
+            // 锁本订单行
+            $order = Order::whereHas('latestCert')->lock()->find($params['order_id']);
+            $order || $this->error('订单或相关数据不存在');
 
+            // 锁内重读 latest_cert_id，与 initParams 捕获的基线 last_cert_id 比对：不等 = 并发 reissue 已推进接替，拒绝
+            if ((int) $order->latest_cert_id !== (int) ($params['last_cert_id'] ?? 0)) {
+                $this->error('订单已重签');
+            }
+
+            // 前驱翻转 CAS：WHERE id=前驱 AND status IN('active','expired') 取影响行数。命中 0 行 = 被并发抢先 →
+            // 重读前驱权威状态分三态 error 后回滚（此时 pay 尚未执行、扣费从未发生）。
+            $affected = Cert::where('id', $params['last_cert_id'] ?? 0)
+                ->whereIn('status', ['active', 'expired'])
+                ->update(['status' => 'reissued']);
+
+            if ($affected === 0) {
+                $predecessorStatus = Cert::where('id', $params['last_cert_id'] ?? 0)->value('status');
+                $this->error(match ($predecessorStatus) {
+                    'renewed' => '订单已续费',
+                    'reissued' => '订单已重签',
+                    'cancelled' => '订单已取消',
+                    default => '订单状态已变化，请刷新重试',
+                });
+            }
+
+            $order->organization = $organization;
             $latestCert['order_id'] = $order->id;
             $latestCert['amount'] = $amount;
             $latestCert['status'] = 'unpaid';
 
+            // certs.last_cert_id UNIQUE 是物理底线：双开第二个 INSERT（last_cert_id 撞已占槽位）触 1062 回滚
             $cert = Cert::create($latestCert);
             $order->latest_cert_id = $cert->id;
             $order->save();
@@ -390,13 +443,11 @@ class Action
             // 的重置语义对称；事务内删除，reissue 失败 rollback 一并回滚，无孤儿。
             DomainValidationRecord::where('order_id', $order->id)->delete();
 
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+            $orderId = $order->id;
+        }, 1);
 
-        $this->success(['order_id' => $order->id]);
+        // success 抛 ApiResponseException 会触发回滚 → 必须在事务闭包外
+        $this->success(['order_id' => $orderId]);
     }
 
     /**
@@ -1253,9 +1304,44 @@ class Action
                 // 保存取消时间
                 $order->update(['cancelled_at' => now()]);
             }
+
+            // 接替单（续费/重签，last_cert_id 非空）取消后：前驱证书（renewed/reissued 终态）就此脱离
+            // cert_expire / AutoRenew / cert_renew_stalled 三重监控——原证书物理上仍在有效期却不再收到任何
+            // 续期/到期提醒。发一次性通知告知用户「接替单已取消、原证书不再受续期监控，如需继续使用请手动续期」。
+            // plain new（last_cert_id=null）无前驱，不发。afterCommit 由 NotificationCenter 内部
+            // NotificationJob->afterCommit() 保证（本闭包经 TaskJob 外层事务嵌套时同样只在最外层提交后入队）。
+            if ($cert->last_cert_id) {
+                $this->dispatchRenewCancelledNotification($order, $cert);
+            }
         }, 1);
 
         $this->success();
+    }
+
+    /**
+     * 接替单取消一次性通知（cert_renew_cancelled，renew+reissue 对称）。
+     *
+     * 携密纪律：context 仅白名单标量（前驱域名 / 到期日 / 订单号 / 动作类型中文文案），绝不 toArray 整包；
+     * 收件人 = 订单所属 user。前驱终态不再变动，故取消现场直接读值塞入、Builder 事件驱动无需重查。
+     */
+    private function dispatchRenewCancelledNotification(Order $order, Cert $cert): void
+    {
+        $predecessor = Cert::where('id', $cert->last_cert_id)->first();
+        if (! $predecessor) {
+            return;
+        }
+
+        app(NotificationCenter::class)->dispatch(new NotificationIntent(
+            'cert_renew_cancelled',
+            'user',
+            (int) $order->user_id,
+            [
+                'common_name' => (string) $predecessor->common_name,
+                'expires_at' => $predecessor->expires_at?->format('Y-m-d') ?? '',
+                'order_id' => (int) $order->id,
+                'action' => $cert->action === 'renew' ? '续费' : '重签',
+            ]
+        ));
     }
 
     /**
@@ -1330,6 +1416,10 @@ class Action
             // 记录取消时间
             $order->cancelled_at = now();
             $order->save();
+
+            if ($cert->last_cert_id) {
+                $this->dispatchRenewCancelledNotification($order, $cert);
+            }
 
             // 副作用：发起回调 + 清理相关 task
             // TaskJob::dispatch 内部已加 ->afterCommit()，事务安全

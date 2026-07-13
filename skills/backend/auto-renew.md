@@ -56,6 +56,12 @@
 - **节点窗口复发**：派发侧 `forDispatch` 施加离散节点窗口（14/7/3/1，防每日重复），停滞持续则随前驱逼近到期在各节点复发提醒。收件人经前驱 `order->user` 解析（certs 表无 user_id：续费前驱在旧订单、重签前驱在同订单，均正确指向本人）。三件套 / 双侧同源 / 5 态文案见 `skills/backend/notification.md`。
 - **与 O4 时序三 regime**：pending 卡单同时被 X（到期止血提醒）与 O4（arm 后自动取消退款）覆盖——**关闭期** X node-7/3/1 + T5 user 中性通知接住；**开启期** O4 到顶自动 `cancelPending` 后接替转 cancelled/删除（脱离 5 态）、X 自然停发；**armed 窄窗** X 与 O4 无冲突（X 只提醒不改状态）。
 
+## 接替单取消止血（cert_renew_cancelled）
+
+接替单（续费/重签）在**已提交上游**（processing/approving，含已签发 active）状态被取消后一律置 cancelled、前驱不恢复（收窄语义见 `skills/backend/order-fund.md`）——前驱证书（renewed/reissued 终态）同样脱离三重监控：`cert_expire` 对其抑制、AutoRenew 因前驱非 active 前置不处理、`cert_renew_stalled` 因接替已置 cancelled 脱离停滞 5 态集（`SUCCESSOR_STALLED_STATUSES` 明确排除 cancelled）不再覆盖。故取消现场发一次性 `cert_renew_cancelled` 止血：`Action::cancelLocked` 对有前驱的 renew/reissue 对称派发，启用 `autoRefundOnSync` 后 `refundForSyncedCancel` 对有前驱的 renew 同样派发，均经 `NotificationCenter` afterCommit 投递。
+
+- **与 cert_renew_stalled 的分工**：stalled 针对接替**卡停滞态**（在途 5 态），周期强制发、随前驱逼近到期在 14/7/3/1 节点复发；cert_renew_cancelled 针对接替被**取消终结**，事件驱动一次性发。二者互补堵住前驱脱监控的两条路径（接替停滞 / 接替取消），通知三件套侧见 `skills/backend/notification.md`。
+
 ## 手工标记已续费
 
 - （`Order\Action::markRenewed`，admin/user 双端）：**订单到期前 30 天内**（按 `orders.period_till` 判定、非单张 `cert.expires_at`，与手工续费 gate 的 `period_till>now+30` 一致）、仅 active 证书可手工标记 `renewed` 终态。场景：用户**另开新订单**续了证书 → 标旧订单 `renewed` 止住到期通知+自动续费；"原订单内重签"靠重签后 expires_at 推远自动止通知、无需本操作。不用 cert.expires_at：多年期/中途重签订单证书将到期但订单未到期，会被自动重签接管（ExpireCommand 的 willBeHandledByAutoRenew 已排除其到期通知），不应允许标记。事务+行锁+锁内二次校验，User 端 UserScope 限本人

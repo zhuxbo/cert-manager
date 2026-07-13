@@ -5,6 +5,7 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\Transaction;
+use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
 use Illuminate\Support\Facades\Cache;
@@ -196,12 +197,31 @@ test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：
     // 用户充值 80，createOrderTransaction(-80) 扣费 → balance=0，退款+80 → balance=80
     $user = $this->createTestUser(['balance' => '80.00']);
     $product = $this->createTestProduct(['refund_period' => 30]);
+    $sourceOrder = $this->createTestOrder($user, $product);
+    $sourceCert = $this->createTestCert($sourceOrder, [
+        'status' => 'renewed',
+        'action' => 'new',
+        'common_name' => 'sync-renew-source.example.com',
+        'expires_at' => now()->addDays(60),
+    ]);
     $order = $this->createTestOrder($user, $product, [
         'amount' => '80.00',
         'purchased_standard_count' => 1,
         'purchased_wildcard_count' => 0,
     ]);
-    $this->createTestCert($order, ['status' => 'processing', 'action' => 'renew', 'api_id' => 'test-api-id-5']);
+    $this->createTestCert($order, [
+        'status' => 'processing',
+        'action' => 'renew',
+        'api_id' => 'test-api-id-5',
+        'last_cert_id' => $sourceCert->id,
+    ]);
+
+    $captured = new ArrayObject;
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->andReturnUsing(function ($intent) use ($captured) {
+        $captured->append($intent);
+    });
+    app()->instance(NotificationCenter::class, $notificationCenter);
 
     createOrderTransaction($user->id, $order->id, '-80.00');
     mockOrderApiGet('cancelled');
@@ -211,6 +231,17 @@ test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：
     expect($order->latestCert()->first()->status)->toBe('cancelled');
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
     expect($user->refresh()->balance)->toBe('80.00');
+
+    $intents = collect($captured)
+        ->filter(fn ($intent) => $intent->code === 'cert_renew_cancelled')
+        ->values();
+    expect($intents)->toHaveCount(1);
+    expect($intents[0]->notifiableId)->toBe($user->id)
+        ->and($intents[0]->context)->toMatchArray([
+            'common_name' => 'sync-renew-source.example.com',
+            'order_id' => $order->id,
+            'action' => '续费',
+        ]);
 });
 
 test('#6 开关开 + 上游 cancelled + action=reissue：不触发退款', function () {

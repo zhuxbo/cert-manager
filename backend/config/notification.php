@@ -7,6 +7,7 @@ use App\Services\Notification\Builders\AutoRenewFailedNotificationBuilder;
 use App\Services\Notification\Builders\BalanceForecastNotificationBuilder;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
+use App\Services\Notification\Builders\CertRenewCancelledNotificationBuilder;
 use App\Services\Notification\Builders\CertRenewStalledNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
 use App\Services\Notification\Builders\DelegationInvalidNotificationBuilder;
@@ -47,6 +48,10 @@ return [
         // 续期停滞孤儿提醒（续费/重签把前驱终态化后接替卡停滞态、前驱即将到期）：专用 Builder 注入
         // site.url、按接替状态映射文案；不入 user_default_preferences（强制发，穿透用户已关的到期提醒偏好）
         'cert_renew_stalled' => CertRenewStalledNotificationBuilder::class,
+        // 接替单取消一次性通知（续费/重签接替单在 processing/approving 等非恢复态取消后，前驱脱离
+        // cert_expire/AutoRenew/cert_renew_stalled 三重监控）：事件驱动、专用 Builder 白名单构造域名/日期/
+        // 订单号/动作，不携密。不入 user_default_preferences（强制发，与 cert_renew_stalled 成对）
+        'cert_renew_cancelled' => CertRenewCancelledNotificationBuilder::class,
         // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）
         'acme_expire' => AcmeExpireNotificationBuilder::class,
         // 委托失效提醒（周巡检确认无效 + 达阈值 + 有 active 证书）：专用 Builder 按 delegation_ids

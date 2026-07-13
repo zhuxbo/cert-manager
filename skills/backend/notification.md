@@ -53,6 +53,16 @@
 - **双侧同源（防「派发了 user、Builder 重查为空 → 静默漏发」）**：派发侧 `forDispatch`（前驱 expires_at 离散节点窗口 14/7/3/1）与重查侧 `forUser`（连续 14 天超集窗口，防 NotificationJob 异步延迟跨窗漏发）共用 `StalledRenewalQuery` 单一形态；`SUCCESSOR_STALLED_STATUSES` 5 态常量 `public`，Builder 重查后对预载 `nextCert` 再判一次停滞态白名单（复用同一真相源、禁手写第二份清单，兜「主查询通过后 nextCert 预载前」毫秒级 race）。
 - **5 态可行动文案**（`actionHint`，模板只渲染不做逻辑）：`unpaid` 中性化（未扣费、不硬承诺去支付，避免与 O4 自动清理冲突）；`pending`/`processing`/`approving` 已扣费（勿重复支付）；`failed` 指「重新购买」（failed/renewed/reissued 三态均进不了 renew/reissue gate、唯一动作是另开新单）。携密不入库（仅域名/日期/停滞标签/文案）。
 
+## 接替单取消一次性提醒（cert_renew_cancelled）
+
+续费/重签接替单在已提交上游（processing/approving，含已签发 active）状态被取消后，前驱证书（renewed/reissued 终态）就此脱离 `cert_expire` / `AutoRenew` / `cert_renew_stalled` 三重监控——原证书物理上仍在有效期服役、却不再收到任何到期/续期提醒。本一次性通知是唯一止血：告知用户接替单已取消、原证书不再受续期监控，如需继续使用请手动续期。触发形态源（`cancelLocked` 非恢复分支，或启用 `autoRefundOnSync` 后 `refundForSyncedCancel` 终结续费单；均要求有前驱）见 `skills/backend/order-fund.md`；此处记通知三件套侧。
+
+- **三件套**：`config/notification.builders['cert_renew_cancelled' => CertRenewCancelledNotificationBuilder]` + seeder 模板（`variables: [username,email,common_name,expires_at,order_id,action]`，`site_url/site_name` 由 Builder 从系统设置注入）+ 专用 Builder。
+- **一次性事件驱动（≠ cert_renew_stalled 周期重查）**：数据在取消发生时即确定、前驱处终态不再变动，Builder 直接读派发点 context 白名单标量、不重查 DB（cert_renew_stalled 走 `StalledRenewalQuery` 周期重查，是因停滞态随时间演进）。
+- **触发点完整**：`Action::cancelLocked` 非恢复分支对有前驱的 renew + reissue **对称派发**（`action` 文案「续费」/「重签」）；启用 `autoRefundOnSync` 后，`refundForSyncedCancel` 对有前驱的 renew 同样派发。两条路径均由 `NotificationCenter` afterCommit 投递；plain new（`last_cert_id=null`、无前驱）不派。
+- **强制发（不入 `user_default_preferences`）**：涉及服务连续性风险，穿透用户可能已关的常规到期偏好；机制同 cert_renew_stalled——code 不铺进用户偏好 UI = 永不写入 settings = `User::allowsNotification` 对缺席 code 恒返回默认 `true` 恒发（与 cert_renew_stalled 成对）。
+- **携密白名单**：派发点仅白名单塞入 4 标量（前驱域名 `common_name` / 到期日 `expires_at` / 订单号 `order_id` / 动作类型 `action`），专用 Builder 逐键取用、**绝不整包直通 `$intent->context`**；config 注册专用 Builder、不回落 `DefaultNotificationBuilder`（Default 直通红线见「携密 / 附件安全」段）。
+
 ## NotificationJob 失败重试分档（M4）
 
 `NotificationJob`（`implements ShouldQueue`）对发送失败按**瞬态可重试 / 永久不重试**分档，改动点在 Job + MailChannel 返回值，**不动 MailChannel 发信主体**。

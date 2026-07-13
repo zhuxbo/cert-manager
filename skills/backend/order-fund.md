@@ -122,6 +122,18 @@ pending 订单「到顶(maxed-out) / 产品缺失(product-missing)」判据是 r
 - **attempts=1 是必需约束、非从简**：`renew()/reissue()` 入口 `checkDuplicate` 是 `Cache::add`（SETNX，10s TTL）且回滚不清缓存；若事务级重试（attempts>1），重入命中自己首轮残留键 → error → 必自败。故用 `DB::transaction` 默认 attempts=1，勿改大；死锁 → 回滚 → `processOrders` catch 兜底通知 → 次日自愈。
 - **闭包内零上游 HTTP**：new/reissue 全本地 SQL、charge 纯本地扣费；含上游的 commit 由事务外延时任务异步执行（不违反「锁内不做上游调用」红线；CSR 生成 openssl fork 落事务内但先于首个行锁）。
 
+### 续费/重签锁下沉（防并发双开）
+
+O1 把 new(renew)/reissue 建单 + 扣费包进单事务后，同一源订单的**毫秒级并发双开**（两个 renew、或 renew×reissue 同时读到源证书 `active`）仍会各自建接替单、重复扣费。锁下沉在**同一事务闭包内**加行锁 + 前驱翻转 CAS 守卫串行化：
+
+- **锁源订单行**：`new`（`action=renew`）与 `reissue` 事务闭包首步 `Order::whereHas('latestCert')->lock()->find($order_id)` 锁源订单行；plain new（无源订单）不锁、行为不变。同一源订单的并发变更就此在行锁上串行。
+- **前驱翻转 CAS + affected-rows 三态守卫**：翻前驱证书状态用带 `WHERE` 条件的 UPDATE 取影响行数——renew 走 `WHERE status='active' → renewed`、reissue 走 `WHERE id=前驱 AND status IN('active','expired') → reissued`。**命中 0 行 = 前驱已被并发续费/重签/取消抢先翻走**，重读前驱权威状态分三态 `error` 回滚：`renewed`→「订单已续费」、`reissued`→「订单已重签」、`cancelled`→「订单已取消」、其余→「订单状态已变化，请刷新重试」。守卫落在 pay 之前，回滚时扣费从未发生。**禁盲 UPDATE**（无 `WHERE` 状态条件翻状态会让第二个并发者也翻成功、双开成单）。
+- **reissue 锁内 re-read 基线比对**：reissue 额外在锁内重读 `order.latest_cert_id`，与锁前 `initParams` 捕获的基线 `params['last_cert_id']` 比对，不等即「订单已重签」回滚——挡「stale 比 stale」（两并发者锁前读到同一旧 `latest_cert_id`，先提交者已推进接替，后者翻转 CAS 若恰好仍能命中需此关兜底）。
+- **`certs.last_cert_id` UNIQUE 物理底线**：即便应用层守卫被极窄竞态绕过，reissue 第二个 `INSERT`（`last_cert_id` 撞已占槽位）也会触 `1062` 回滚——双开的确定性兜底。
+- **有意不套 `order_mutate` 互斥**：与 commit/cancel 不同，本路径**事务内零上游调用**（上游 commit 由事务外延时任务承载）、且与 commit/cancel **状态互斥**（renew/reissue 要求源证书 active/expired，commit 要求 pending、cancel 要求 cancelling，同订单不可能同时满足）——源订单行锁 + 前驱翻转守卫已足，无需再叠 Cache 互斥（落点表「一条龙 ❌ withMutex」的安全性正由此保证）。锁序 Order → Cert → User 正序，契合全局 Cache < Task < Order < Cert < User 无环。
+- **内层事务 `DB::transaction(closure, 1)`（attempts=1）**：本闭包经 AutoRenew O1 / V1V2 一条龙外层事务嵌套为 savepoint，**嵌套死锁不可事务级重试**（同 `commitLocked` 先例——嵌套层 Laravel 直接抛 `DeadlockException` 到最外层、不在内层重试）；且入口 `checkDuplicate`（SETNX，回滚不清键）遇事务级重试必命中自身残留键自败（见 O1）。死锁 → 回滚 → 外层 catch 兜底通知 → 次日自愈。
+- **`checkDuplicate` 保留作同参挡板**：锁下沉解决并发不同请求的双开，`checkDuplicate`（入口 `Cache::add` SETNX 10s）继续挡「同参数重复提交」，二者正交、都保留。
+
 ### O2 / O3-D 余额预检实时化
 
 AutoRenew 续费预检前 `$user->refresh()`（O2）：`getRenewOrders` 一次性 `with('user')` 预载，同 user 多订单共享同一 User 实例、balance 停在查询时刻值；前序单 charge 改的是 DB 另取的行，内存实例不更新 → 不 refresh 则后续同用户单读旧值误放行（07-07 断言 1）。Deploy update（O3-D）`$order->user` 懒加载现取现读，单请求内 balance 新鲜、无需 refresh；口径与 AutoRenew 预检逐字一致（`getLatestCertAmount` + `balance + |credit_limit|` 比对，仅 renew 检查）。
@@ -340,7 +352,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 ### 限定条件
 
 - `cert.status = 'processing'`
-- `cert.action IN ('new', 'renew', 'reissue')`（**B3/审计 P1-12**：reissue 原被排除致退款期到期卡 processing、无兜底取消；现纳入，退款/恢复由 `cancelLocked` reissue 分支处理，见下节）
+- `cert.action IN ('new', 'renew', 'reissue')`（**B3/审计 P1-12**：reissue 原被排除致退款期到期卡 processing、无兜底取消；现纳入，退款由 `cancelLocked` reissue 分支处理，processing+ 已提交上游不再恢复前驱、置 cancelled 终结，见下节）
 - `products.refund_period >= 5`（退款期 < 5 天的产品跳过）
 
 ### 实现位置
@@ -370,12 +382,12 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 ### cancelLocked reissue 分支（共享原语，两条正交语义）
 
-`Action::cancelLocked`（Purge / 手动 `commitCancel` / `batchCommitCancel` 三入口经 cancel task 汇入的唯一原语）按 `cert.action==='reissue'` 分流，与 `cancelPending` 共享一组 helper（`prepareReissueRefund` 只读预检 + `applyReissueIncrementRefund` 写 + `restoreReissuedCert` 恢复），**对所有 reissue 取消入口生效**：
+`Action::cancelLocked`（Purge / 手动 `commitCancel` / `batchCommitCancel` 三入口经 cancel task 汇入的唯一原语）按 `cert.action==='reissue'` 分流，与 `cancelPending` 共享退款 helper（`prepareReissueRefund` 只读预检 + `applyReissueIncrementRefund` 写），**对所有 reissue 取消入口生效**；`restoreReissuedCert` 恢复旧证书是 `cancelPending` 专属（恢复窗口仅 unpaid/pending），cancelLocked 处理已提交上游的 reissue、不再恢复：
 
 1. **退款口径修复（对所有入口）**：reissue 只更 `cert.amount` 不更 `order.amount`、交易含「原始 new + reissue 增量」两笔，若走 `getCancelTransaction`（求和）会**超退原始全额**（latent over-refund，手动 `commitCancel`/`batchCommitCancel` 无 action 守卫、现行可达）。改 **last_transaction 增量口径**：只退当次 reissue 增量、cancel 流水 counts 取 `-last_transaction.*_count`（增量非累计）、`order.purchased_*` 同步递减。new/renew 仍走 `getCancelTransaction` 单笔口径（触点唯一 `Action.php`，零影响）。
-2. **恢复 gate（判据 `issued_at === null`）**：`issued_at` 为上游契约依赖的代理——正常契约下 active 必经 sync 写入证书体 + issued_at 原子共写，processing/approving 取消时恒 null；`cancelling` 迁移只改 status 保留 issued_at。
-   - **未签发**（Purge 主路径 processing、手动 processing/approving）：恢复 `last_cert.status='active'` + `order.latest_cert_id` 回切 + **删除** reissue cert（`certs.last_cert_id`/`orders.latest_cert_id` 均 UNIQUE，标 cancelled 占死槽位锁死后续 reissue）→ 旧证书自然重回 `cert_expire` 窗口（P1-12 解，不碰 ExpireCommand 孤儿补洞禁区）。
-   - **已签发**（仅手动 `commitCancel(active)` 可达）：退增量 + `cert→cancelled` + `order.cancelled_at`，**维持现状状态语义**不恢复不删（旧证书可能已被上游 supersede、cloud-deploy 已推送 reissue cert）。
+2. **订单终结（收窄后一律 cancelled，不再按 `issued_at` 分恢复分支）**：`cancelLocked` 处理的 reissue 恒已提交上游（processing/approving，含已签发 active）——上游各家取消政策不一，恢复前驱 `active` 存在「被上游 supersede 后本地状态与实际不符」风险（旧证书可能已被上游作废、cloud-deploy 已推送 reissue cert），故**不区分是否签发、一律**置 `cert.status='cancelled'` + 增量退款 + `order.cancelled_at`，前驱**不恢复/不回切/不删**（保持 `reissued` 终态）。
+   - **`last_cert_id` 保留占槽 inert**：不置 null——订单经 `latestCert=cancelled` 终结后（重签/续费/取消三门前置校验齐闭、无任何路径能再指向前驱），该 UNIQUE 槽位对前驱惰性无害，保留以维持「cancelled 接替 → reissued 前驱」取证链。
+   - **恢复窗口仅剩 unpaid / pending**：`delete`（unpaid，恒未签发）手写恢复分支 + `cancelPending`（pending，恒未签发、经 `restoreReissuedCert`）恢复旧证书 `active`——二者都恒在上游签发前，恢复安全；cancelLocked（processing+，已提交上游）不属恢复窗口。
 
 **F1 fail-safe（前置于 `api->cancel`）**：`prepareReissueRefund` 先 `Transaction::where(type='cancel', transaction_id)->exists()`，命中即 error 转人工。唯一索引 `(type,transaction_id) WHERE type!='order'` 决定每单仅一条 cancel 流水，恢复旧证书打开的「二次 reissue → 二次取消」若不预检会在上游取消成功**之后**撞唯一冲突 → 卡 cancelling 无退款；预检挡在上游调用前杜绝该形态（每订单 reissue 取消退款仅一次，二次转人工，书面接受）。`cancelPending` reissue 块重构为共用同组 helper，**已覆盖路径行为不变** + 对称获得 F1 fail-safe——二次 reissue-cancel 一律转人工（**含 amount=0**：exists() 预检先于 amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧而非静默成功）。
 
@@ -425,7 +437,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 - `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：12 个用例覆盖开关开/关 / status / action / 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发
 - `tests/Feature/Commands/PurgeCommandTest.php`：编排断言 reissue 取消（置 cancelling + cancel task）/ new 仍取消（不跑资金）
-- `tests/Unit/Services/Order/ActionTest.php`：cancelLocked reissue 分支资金断言（增量退款 20 非 120 / amount=0 / 已签发 gate / F1 二次预检 / 上游失败回滚 / new-renew 回归 / cancelPending F1 / issued_at 代理前提），落 `fundAuditGuardedTestPaths()` 守门
+- `tests/Unit/Services/Order/ActionTest.php`：cancelLocked reissue 分支资金断言（增量退款 20 非 120 / amount=0 无流水 / 订单终结门（取消后再 reissue、commitCancel 均报错）/ last_cert_id 保留占槽 inert / processing 语义仍退增量 / F1 二次预检 / 上游失败回滚 / new-renew 回归 / cancelPending F1），落 `fundAuditGuardedTestPaths()` 守门
 
 ### 部署注意
 
