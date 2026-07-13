@@ -122,3 +122,26 @@ test('邮件未配置时不占去重键（先确认可达后置键，下轮重�
     // mail 未发出 → 不占键，下轮再来立即重试
     expect(Cache::has('monitor:probe:down'))->toBeFalse();
 });
+
+// ⑦ 最后防线：CACHE_DRIVER=redis 且 redis 宕机时，probe 判 down 后仍须发出告警。
+// 修复前：alertDown 首行 Cache::get 抛 RedisException（在 handle 的 try/catch 外）→ 命令中止、
+// sendAlertMail 永不执行；加重项 sendAlertMail 里 get_system_setting 走 Cache::remember 也抛。
+test('cache 后端故障时（redis 宕机）probe 判 down 仍不崩溃并同步发信一次', function () {
+    Http::fake(['127.0.0.1/*' => Http::response(['status' => 'error'], 503)]);
+    // send()->once() 在 Mockery::close（afterEach）校验：命令若崩在发信前，该期望不满足即报错
+    $mail = probeMockSendableMail();
+
+    // 模拟 redis 全故障：dedupe 的 Cache::get、settings 的 Cache::remember 全抛
+    Cache::swap(throwingCacheRepository());
+
+    try {
+        // 关键：命令不崩（dedupe fail-open），退出码成功
+        $this->artisan('monitor:probe')->assertSuccessful();
+    } finally {
+        // 恢复 cache 供 afterEach 的 Cache::forget 安全清理（无论断言成败）
+        restoreArrayCache();
+    }
+
+    // Timeout=15 证明 sendAlertMail 走到底（adminEmail 经 Setting 回落 DB 读到、未静默丢告警）
+    expect($mail->Timeout)->toBe(15);
+});

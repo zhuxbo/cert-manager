@@ -30,6 +30,7 @@ class HealthController extends Controller
      *   "freeze": bool,
      *   "checks": {
      *     "db": { "ok": bool, "latency_ms": int },
+     *     "cache": { "ok": bool },
      *     "queue_lag_seconds": int,
      *     "disk_free_gb": float,
      *     "heartbeat_age_seconds": int|null
@@ -37,7 +38,7 @@ class HealthController extends Controller
      * }
      *
      * HTTP 状态码：error → 503；ok / degraded → 200。
-     * - error（db 挂 / 磁盘不足 / queue_lag 超阈 / 心跳过旧 stale）→ 503。
+     * - error（db 挂 / cache 后端故障 / 磁盘不足 / queue_lag 超阈 / 心跳过旧 stale）→ 503。
      * - degraded（心跳键缺失：新装机未跑调度 / cache:clear 清键）→ 200（不 503，避免误报）。
      * freeze 期间 queue_lag_seconds 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止）。
      */
@@ -47,6 +48,7 @@ class HealthController extends Controller
 
         $checks = [
             'db' => $this->dbCheck(),
+            'cache' => $this->cacheCheck(),
             'queue_lag_seconds' => $this->queueLag(),
             'disk_free_gb' => $this->diskFree(),
             'heartbeat_age_seconds' => $this->heartbeatAge(),
@@ -84,6 +86,27 @@ class HealthController extends Controller
             return ['ok' => true, 'latency_ms' => $elapsed];
         } catch (Throwable) {
             return ['ok' => false, 'latency_ms' => 0];
+        }
+    }
+
+    /**
+     * Cache 后端探活
+     *
+     * 心跳年龄（heartbeatAge）与 health 阈值（aggregate/queueThreshold 经 get_system_setting →
+     * Cache::remember）均依赖 Cache（driver=redis 时）。Cache 后端故障绝不能让 /api/health 白屏
+     * 500 丢弃结构化输出——须显式探活并结构化上报 error（503）。用只读 get 探连通性（不写键，
+     * 避免 probe / 外部监控高频拨测频繁写 cache）；不抛异常，失败 ok=false。
+     *
+     * @return array{ok: bool}
+     */
+    protected function cacheCheck(): array
+    {
+        try {
+            Cache::get('schedule:heartbeat');
+
+            return ['ok' => true];
+        } catch (Throwable) {
+            return ['ok' => false];
         }
     }
 
@@ -171,7 +194,14 @@ class HealthController extends Controller
      */
     protected function heartbeatAge(): ?int
     {
-        $stored = Cache::get('schedule:heartbeat');
+        try {
+            $stored = Cache::get('schedule:heartbeat');
+        } catch (Throwable) {
+            // Cache 后端故障：cacheCheck 已判 error（503），此处返 null 不参与 degraded
+            // （aggregate 的 cache error 分支先于 degraded return，故不会被误判 degraded 200）。
+            return null;
+        }
+
         if ($stored === null) {
             return null;
         }
@@ -200,18 +230,27 @@ class HealthController extends Controller
      * 判定序固化：所有 error 分支必须全部先于 degraded 分支 return，否则「心跳缺失 → degraded 200」
      * 会掩盖真错误（如 db 挂时误判 200）。
      * - ① DB ping 失败 → error（503）
-     * - ② disk_free_gb < 阈值 → error（503）
-     * - ③ freeze=false 时：queue_lag 超阈 → error；心跳存在且过旧（stale）→ error
-     * - ④ 心跳缺失（null）→ degraded（200）——排在全部 error 检查之后
-     * - ⑤ 其他 → ok（200）
+     * - ② cache 后端故障 → error（503）——必须先于下方任何 get_system_setting（其读取经
+     *      Cache::remember，cache 故障时会抛异常）
+     * - ③ disk_free_gb < 阈值 → error（503）
+     * - ④ freeze=false 时：queue_lag 超阈 → error；心跳存在且过旧（stale）→ error
+     * - ⑤ 心跳缺失（null）→ degraded（200）——排在全部 error 检查之后
+     * - ⑥ 其他 → ok（200）
      *
-     * freeze=true 时 queue_lag 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止）。
+     * freeze=true 时 queue_lag 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止）；
+     * cache 后端故障不受 freeze 豁免（cache 是独立于升级流程的基础设施）。
      *
-     * @param  array{db: array{ok: bool, latency_ms: int}, queue_lag_seconds: int, disk_free_gb: float, heartbeat_age_seconds: int|null}  $checks
+     * @param  array{db: array{ok: bool, latency_ms: int}, cache: array{ok: bool}, queue_lag_seconds: int, disk_free_gb: float, heartbeat_age_seconds: int|null}  $checks
      */
     protected function aggregate(array $checks, bool $freeze): string
     {
         if ($checks['db']['ok'] !== true) {
+            return 'error';
+        }
+
+        // Cache 后端故障 → error（503）。必须早于下方 get_system_setting（disk/queue/heartbeat 阈值
+        // 读取经 Cache::remember，cache 故障时会抛），且早于 degraded 分支（error 先于 degraded 红线）。
+        if ($checks['cache']['ok'] !== true) {
             return 'error';
         }
 

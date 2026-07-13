@@ -128,6 +128,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 `GET /api/health`（无鉴权、命名空间无关、不受维护模式拦截）返回 `status` 与 `checks`：
 
 - `db`：连接探活失败 → `error`（503）。
+- `cache`：后端探活（只读 `Cache::get`）失败 → `error`（503，redis 宕机）。排在 db 之后、其余维度之前——disk/queue/heartbeat 阈值经 `Cache::remember` 读取，cache 故障时先 return 规避二次抛异常，避免整个 `/api/health` 变非结构化 500。
 - `disk_free_gb`：低于 `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）。
 - `queue_lag_seconds`：redis 驱动=各队列就绪深度 + **已到期**延时之和（阈 `health.queue_depth_threshold`，默认 500 条）；database 驱动=积压秒数（阈 `health.queue_lag_threshold`，默认 600 秒）。超阈 → `error`（503）。
 - `heartbeat_age_seconds`：`schedule:heartbeat` 每分钟写 `Cache::forever`；**过旧**（> `health.heartbeat_stale_seconds`，默认 300）→ `error`（503，死 scheduler）；**缺失**（null）→ `degraded`（**200**，新装机未跑调度 / `cache:clear` 清键，不误报）。
@@ -137,7 +138,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 ### 外部站点监控（部署必选项，非可选兜底）
 
-本机 `monitor:probe` 拨测独立于 Laravel 队列，可检出 **worker 死 / scheduler 死**（打破同生共死）；但 **crond 死 / 机器死 / 断电 / PHP fatal** 层本机无内部兜底——此层唯一兜底是外部监控，同时兜 F1 死角。**另 `db 死` 场景**：`/api/health` 虽返 503，但本机拨测发信端要解析 admin 邮箱（查 DB）也随之失败——邮件发不出（catch 后不占去重键、每 5min 重试到 DB 恢复），故 db 故障下本机拨测邮件可能同不可用，外部监控是该层唯一可靠信号。
+本机 `monitor:probe` 拨测独立于 Laravel 队列，可检出 **worker 死 / scheduler 死**（打破同生共死）；但 **crond 死 / 机器死 / 断电 / PHP fatal** 层本机无内部兜底——此层唯一兜底是外部监控，同时兜 F1 死角。**另 `db 死` 场景**：`/api/health` 虽返 503，但本机拨测发信端要解析 admin 邮箱（查 DB）也随之失败——邮件发不出（catch 后不占去重键、每 5min 重试到 DB 恢复），故 db 故障下本机拨测邮件可能同不可用，外部监控是该层唯一可靠信号。**对照 `cache 死` 场景**：`monitor:probe` 去重键读写 fail-open、发信链 settings（admin 邮箱 / mail 配置）经 `Setting` 在 cache 故障时回落 DB 直读，故 redis 全故障下本机拨测**仍能发信**（DB 存活即可），不随 cache 死而哑火。
 
 **部署必做**：宝塔面板 → 监控报警 / 网站监控，为本站配置外部站点监控拨测 `https://<域名>/api/health`，非 2xx 告警。存量机器升级后同样必须核对此项已配置。
 

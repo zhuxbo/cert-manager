@@ -64,7 +64,7 @@ class HealthProbeCommand extends Command
 
         if (! $down) {
             // 健康 → 清去重键（恢复后再 down 立即告警）
-            Cache::forget(self::DEDUPE_KEY);
+            $this->clearDedupe();
 
             return self::SUCCESS;
         }
@@ -81,7 +81,7 @@ class HealthProbeCommand extends Command
      */
     private function alertDown(string $url, string $reason): void
     {
-        if (Cache::get(self::DEDUPE_KEY) === true) {
+        if ($this->dedupeActive()) {
             // down 去重窗内不重发（仅留痕）
             Log::warning('[monitor.probe] 健康拨测失败（去重窗内不重发）', ['url' => $url, 'reason' => $reason]);
 
@@ -92,7 +92,48 @@ class HealthProbeCommand extends Command
 
         if ($this->sendAlertMail($url, $reason)) {
             $ttlHours = max(1, (int) config('monitoring.probe.dedupe_ttl_hours', 1));
+            $this->markDedupe($ttlHours);
+        }
+    }
+
+    /**
+     * 去重键是否已占（down 去重窗内）。
+     *
+     * Cache 后端故障（redis 宕机——正是本命令要告警的头号场景）→ fail-open 当未占键：
+     * 宁可 down 期每周期重发一封，绝不因 cache 死而静默丢告警（本命令是脱离 worker 的最后防线）。
+     */
+    private function dedupeActive(): bool
+    {
+        try {
+            return Cache::get(self::DEDUPE_KEY) === true;
+        } catch (Throwable $e) {
+            Log::warning('[monitor.probe] 去重键读取失败（cache 故障），按未占键处理', ['error' => $e->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /**
+     * 占去重键（发信成功后）。Cache 故障时占键失败 → down 期下周期可能重发一封，可接受。
+     */
+    private function markDedupe(int $ttlHours): void
+    {
+        try {
             Cache::put(self::DEDUPE_KEY, true, now()->addHours($ttlHours));
+        } catch (Throwable $e) {
+            Log::warning('[monitor.probe] 去重键写入失败（cache 故障），down 期下周期可能重发', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * 清去重键（恢复后）。Cache 故障时清键失败无害（键 TTL 到期自然消失）。
+     */
+    private function clearDedupe(): void
+    {
+        try {
+            Cache::forget(self::DEDUPE_KEY);
+        } catch (Throwable $e) {
+            Log::warning('[monitor.probe] 去重键清除失败（cache 故障）', ['error' => $e->getMessage()]);
         }
     }
 

@@ -79,6 +79,11 @@ function bindFakeHealthController(array $overrides): void
                     ? $this->overrides['heartbeat_age_seconds']
                     : parent::heartbeatAge();
             }
+
+            protected function cacheCheck(): array
+            {
+                return $this->overrides['cache'] ?? parent::cacheCheck();
+            }
         };
     });
 }
@@ -525,4 +530,50 @@ test('redis 队列深度超 queue_depth_threshold 时 status=error 503', functio
         ->and($response->json('checks.queue_lag_seconds'))->toBeGreaterThan(500);
 
     resetRedisQueueKeys();
+});
+
+// ==========================================
+// M4. cache 后端故障 → 结构化 error 503（非白屏 500 / 非 degraded 200 掩盖）
+// ==========================================
+
+test('cache 探针故障时 status=error 503（cache error 先于 degraded，不被误判 200）', function () {
+    // 心跳缺失（null）：若判定序把 cache error 排在 degraded 之后，会被误判 degraded 200，掩盖 cache 故障。
+    bindFakeHealthController([
+        'db' => ['ok' => true, 'latency_ms' => 1],
+        'cache' => ['ok' => false],
+        'queue_lag_seconds' => 0,
+        'disk_free_gb' => 50.0,
+        'heartbeat_age_seconds' => null,
+    ]);
+
+    $response = $this->getJson('/api/health');
+
+    $response->assertStatus(503);
+    expect($response->json('status'))->toBe('error')
+        ->and($response->json('checks.cache.ok'))->toBeFalse();
+});
+
+test('cache 后端崩溃时 /api/health 返回结构化 503 而非白屏 500', function () {
+    // 不 bind controller，走真实探针；swap 一个所有操作抛异常的 cache（模拟 redis 全故障）。
+    // heartbeatAge/cacheCheck 的 Cache::get 抛异常必须被降级为结构化输出，而非冒泡成 500。
+    Cache::swap(throwingCacheRepository());
+
+    $response = $this->getJson('/api/health');
+
+    $response->assertStatus(503);
+    $response->assertJsonStructure([
+        'status',
+        'freeze',
+        'checks' => [
+            'db' => ['ok', 'latency_ms'],
+            'cache' => ['ok'],
+            'queue_lag_seconds',
+            'disk_free_gb',
+            'heartbeat_age_seconds',
+        ],
+    ]);
+    expect($response->json('status'))->toBe('error')
+        ->and($response->json('checks.cache.ok'))->toBeFalse();
+
+    restoreArrayCache();
 });

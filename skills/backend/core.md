@@ -119,11 +119,12 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 `aggregate()` 判定序**固化**：所有 error 分支必须全部先于 degraded 分支 return，否则「心跳缺失→degraded 200」会掩盖真 error（如 db 挂时误判 200）。
 
 - ① db ping 失败 → `error`（503）
-- ② `disk_free_gb` < `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）
-- ③ freeze=false 时：`queue_lag` 超阈 → error；心跳**存在且过旧**（stale，> `health.heartbeat_stale_seconds` 默认 300）→ `error`（503，死 scheduler）
-- ④ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，判 degraded 而非 stale 503，防误报卡外部监控）
-- ⑤ 其他 → `ok`（200）
-- **freeze 期**：`queue_lag` 与心跳 stale 均不参与 503（worker/scheduler 已按升级流程停止），避免升级窗误报（双保险：console.php 侧心跳不挂 skip、health 侧 freeze 期不评估 stale）
+- ② **cache 后端故障** → `error`（503）：`cacheCheck` 只读 `Cache::get('schedule:heartbeat')` 探连通性（redis 宕机时抛）。**必须先于下方 disk/queue/heartbeat**——它们经 `get_system_setting`→`Cache::remember` 读阈值/心跳，cache 故障时会抛，早 return 规避二次抛异常；`heartbeatAge` 的 `Cache::get` 亦 try/catch 返 null（不误判 degraded，因 cache error 已先 return）
+- ③ `disk_free_gb` < `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）
+- ④ freeze=false 时：`queue_lag` 超阈 → error；心跳**存在且过旧**（stale，> `health.heartbeat_stale_seconds` 默认 300）→ `error`（503，死 scheduler）
+- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，判 degraded 而非 stale 503，防误报卡外部监控）
+- ⑥ 其他 → `ok`（200）
+- **freeze 期**：`queue_lag` 与心跳 stale 均不参与 503（worker/scheduler 已按升级流程停止），避免升级窗误报（双保险：console.php 侧心跳不挂 skip、health 侧 freeze 期不评估 stale）；**cache 后端故障不受 freeze 豁免**（cache 是独立于升级流程的基础设施）
 
 ### schedule:heartbeat（M1，第二个有意 freeze 存活者）
 
