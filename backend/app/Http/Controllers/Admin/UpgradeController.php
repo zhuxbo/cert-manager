@@ -265,6 +265,7 @@ class UpgradeController extends BaseController
             $request->input('version_from'),
             $request->input('version_to'),
             (int) $request->input('ttl_seconds', 7200),
+            'manual', // watchdog 不清 manual 锁（TTL 兜底），手动冻结不被自动机构拆除
         );
 
         if (! $ok) {

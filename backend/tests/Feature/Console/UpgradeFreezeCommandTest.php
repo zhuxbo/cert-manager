@@ -113,3 +113,23 @@ test('upgrade:unfreeze 在未 freeze 状态下也成功', function () {
 
     expect(UpgradeFreezeLock::isFrozen())->toBeFalse();
 });
+
+// ==========================================
+// 5. 锁归属：--source 缺省 shell、白名单校验
+// ==========================================
+
+test('upgrade:freeze 默认 source=shell，--source 白名单校验', function () {
+    $this->artisan('upgrade:freeze')->assertSuccessful();
+
+    $info = UpgradeFreezeLock::info();
+    expect($info['owner_source'])->toBe('shell')
+        ->and($info['owner_pid'])->toBeInt();
+
+    UpgradeFreezeLock::unfreeze();
+    $this->artisan('upgrade:freeze', ['--source' => 'web'])->assertSuccessful();
+    expect(UpgradeFreezeLock::info()['owner_source'])->toBe('web');
+
+    UpgradeFreezeLock::unfreeze();
+    $this->artisan('upgrade:freeze', ['--source' => 'bogus'])->assertFailed();
+    expect(UpgradeFreezeLock::isFrozen())->toBeFalse();
+});

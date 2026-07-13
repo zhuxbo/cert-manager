@@ -96,6 +96,56 @@ _check_stranded_preserve() {
     done
 }
 
+# 入口残留升级状态处置：status.json 是 web 升级的进度/心跳记录（upgrade.sh 自身不写它）。
+# 残留 running 的三种形态：
+#   - 进程活：另一场 web 升级真在跑 → 中止本次 shell 升级（并发双升级必互毁）；
+#     确认为 PID 复用误判时，可 UPGRADE_IGNORE_RUNNING=1 重跑跳过本检查。
+#   - 进程死：SIGKILL/OOM 残留 → 归档改名（.stale.<epoch>），消除 upgrade:watchdog 在本次升级
+#     危险窗内把它判 stale 而拆闸（unfreeze+up）的触发源（纵深第二道；第一道 = watchdog 冻结锁归属校验）。
+#   - 解析不出 running 语义（缺文件/损坏/终态）：不动，交后端锁归属防线。
+# PID 探活镜像 UpgradeStatusManager::isProcessAlive（Linux /proc、非 Linux posix_kill 回落）。
+_handle_stale_upgrade_status() {
+    local status_file="$INSTALL_DIR/backend/storage/upgrades/status.json"
+    [ -f "$status_file" ] || return 0
+
+    if [ "${UPGRADE_IGNORE_RUNNING:-0}" = "1" ]; then
+        log_warning "UPGRADE_IGNORE_RUNNING=1：跳过残留升级状态检查"
+        return 0
+    fi
+
+    local verdict
+    verdict=$(STATUS_FILE="$status_file" "$PHP_CMD" -r '
+$d = @json_decode((string) @file_get_contents(getenv("STATUS_FILE")), true);
+if (! is_array($d) || (($d["status"] ?? null) !== "running")) { echo "other"; exit; }
+$pid = $d["pid"] ?? null;
+$alive = false;
+if (is_numeric($pid) && (int) $pid > 0) {
+    $pid = (int) $pid;
+    $alive = is_dir("/proc") ? file_exists("/proc/$pid")
+        : (function_exists("posix_kill") && posix_kill($pid, 0));
+}
+echo $alive ? "running_alive" : "running_dead";
+' 2>/dev/null) || verdict="other"
+
+    case "$verdict" in
+        running_alive)
+            log_error "检测到另一场升级疑似正在进行（status.json 为 running 且进程存活），已中止。"
+            log_error "  - 若确有后台升级在跑：等它结束后再执行本脚本；"
+            log_error "  - 若确认是残留（如 PID 被复用）：手动删除 ${status_file} 后重跑，"
+            log_error "    或 UPGRADE_IGNORE_RUNNING=1 重跑跳过本检查。"
+            exit 1
+            ;;
+        running_dead)
+            if mv "$status_file" "${status_file}.stale.$(date +%s)" 2>/dev/null; then
+                log_warning "已归档中断升级残留状态：${status_file}.stale.*（防看门狗在升级窗内误自愈）"
+            else
+                log_warning "残留升级状态归档失败（已忽略，看门狗锁归属校验兜底）：$status_file"
+            fi
+            ;;
+        *) : ;;
+    esac
+}
+
 # 纯还原：把 PRESERVE_DIR 里尚未移回的 storage/vendor 移回原位。
 # 返回 0 = 成功或无需还原；返回 1 = 还原失败（调用方须保留 PRESERVE_DIR、不得删）。
 _restore_preserved_storage() {
@@ -1617,6 +1667,8 @@ perform_upgrade() {
     # 5. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
     cd "$INSTALL_DIR/backend"
+    # 残留升级状态处置（必须在 down/freeze 之前：running_alive 中止时未动任何状态）
+    _handle_stale_upgrade_status
     "$PHP_CMD" artisan down --retry=60 || true
     # freeze：down 只暂停 worker/scheduler、不挡 HTTP（本仓已删 PreventRequestsDuringMaintenance）；
     # freeze 才是挡外部写请求（下单/支付回调/文档上传）的 HTTP-503 闸，锁文件 storage/framework/upgrade.lock。

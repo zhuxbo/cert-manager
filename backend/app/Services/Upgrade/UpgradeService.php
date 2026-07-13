@@ -170,7 +170,7 @@ class UpgradeService
             // 危险窗起点：切代码 + 迁移前 freeze —— 本仓已删 PreventRequestsDuringMaintenance，
             // artisan down 不挡 HTTP（只暂停 worker/scheduler），freeze 才是唯一真正挡外部写请求
             // （下单/支付回调/文档上传）的 HTTP 闸。写锁失败仅告警继续（不新增失败模式，保护缺失可接受）。
-            if (! UpgradeFreezeLock::freeze($currentVersion, $targetVersion, 7200)) {
+            if (! UpgradeFreezeLock::freeze($currentVersion, $targetVersion, 7200, 'web')) {
                 Log::warning('[Upgrade] freeze 写锁失败，升级继续但危险窗未挡 HTTP 写');
             }
 

@@ -684,3 +684,6 @@ jobs:
 
       - name: upgrade cron 管理段（M3/M6 §1.5）mock 演练
         run: bash deploy/test/test-cron-manage.sh
+
+      - name: upgrade 入口残留升级状态处置演练
+        run: bash deploy/test/test-upgrade-stale-status.sh

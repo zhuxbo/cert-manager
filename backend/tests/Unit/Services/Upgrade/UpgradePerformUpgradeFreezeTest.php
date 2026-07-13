@@ -98,8 +98,10 @@ test('H2-A 成功升级：apply 期间 freeze 生效，unfreeze 严格先于 up�
         return 0;
     });
 
-    $service = h2MakeService(function () use (&$frozenDuringApply) {
+    $lockDuringApply = null;
+    $service = h2MakeService(function () use (&$frozenDuringApply, &$lockDuringApply) {
         $frozenDuringApply = UpgradeFreezeLock::isFrozen();
+        $lockDuringApply = UpgradeFreezeLock::info();
 
         return true; // applyUpgrade(): bool
     });
@@ -110,6 +112,9 @@ test('H2-A 成功升级：apply 期间 freeze 生效，unfreeze 严格先于 up�
 
     expect($result['success'])->toBeTrue()
         ->and($frozenDuringApply)->toBeTrue();          // 危险窗内 freeze 已点火
+    // 锁归属：web 升级进程本体持锁（owner_pid == 本进程 == status.pid），watchdog 据此判自愈资格
+    expect($lockDuringApply['owner_source'])->toBe('web')
+        ->and($lockDuringApply['owner_pid'])->toBe(getmypid());
     expect(UpgradeFreezeLock::isFrozen())->toBeFalse(); // 结束已解冻
 
     // 顺序契约：'up' 调用时刻 freeze 必须已解除（否则 up 唤醒 worker → release 烧 attempts）
