@@ -115,6 +115,8 @@ deploy/ # 部署脚本
 
 续费/重签接替单在已提交上游后被取消时不会恢复前驱证书；普通取消以及启用 `autoRefundOnSync` 后由同步发现上游取消的续费单，都会发送一次性 `cert_renew_cancelled` 提醒，避免前驱证书脱离续期监控后静默过期。
 
+Certum 非 DV 产品在订单进入 processing 后提供验证文档处理入口；入口按产品签发机构 `product.ca` 判断，不受订单品牌字段影响。
+
 仓库 Shell 脚本兼容 Linux Bash 与 macOS Bash 3.2；变量后紧跟中文等非 ASCII 字符时统一使用 `${var}` 明确边界，避免 UTF-8 locale 配合 `set -u` 将后续字节误解析为变量名。
 
 ## 自动化部署

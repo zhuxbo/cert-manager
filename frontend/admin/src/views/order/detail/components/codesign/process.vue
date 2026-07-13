@@ -34,7 +34,7 @@
         <tr
           v-if="
             order.product.validation_type !== 'dv' &&
-            order.brand?.toLowerCase() === 'certum' &&
+            order.product.ca?.toLowerCase() === 'certum' &&
             cert?.status === 'processing'
           "
         >

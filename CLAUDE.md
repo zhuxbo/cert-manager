@@ -125,7 +125,7 @@ skills/ # 开发规范（详细文档）
 ### Certum 验证文档上传
 
 - **独立表**：`order_documents`（本地上传文档）；`Cert.documents` 只存 Certum 同步回的审核状态（只读、职责不同）；多级代理 base64 经 `POST /api/v2/upload-document` 逐级到上游 → Certum SOAP
-- **显示/限制**：`brand==='certum'` 且 `validation_type!=='dv'`；单文件 5MB，类型 PDF/JPG/PNG/XADES；Admin/User 均可提交
+- **显示/限制**：产品签发机构 `product.ca==='certum'`、`validation_type!=='dv'` 且证书状态为 `processing`（不按订单品牌判断）；单文件 5MB，类型 PDF/JPG/PNG/XADES；Admin/User 均可提交
 - **安全·签发后禁止上传**：`latestCert.status==='active'` 后 `ActionDocumentTrait::uploadDocument`/`uploadDocumentFromBase64` 单点拦截（覆盖 UI + V2 三入口、全仓写 `order_documents` 仅此二方法），前端 active 态隐藏入口
 - **上传即自动异步转发上游**：存档后自动派发 `SubmitDocumentJob`（`tries=3`、`backoff=[60,300]`、`->afterCommit()`），`content_hash`(sha256) + 唯一索引 `(order_id, content_hash)` 跨级去重（纯接收端、对端对称）；**依赖 queue worker 常驻**，无 worker 则文档不到上游
 - 详见 `skills/backend/certum-document.md`

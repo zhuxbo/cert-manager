@@ -10,7 +10,7 @@ Certum（及 OV/EV 等非 DV 产品）的验证文档上传：用户/Admin 上�
 - **不改 Cert.documents**：该字段仅存 Certum 同步回来的审核状态（只读），职责不同
 - **多级代理传递**：用户/Admin 上传 → `order_documents` 表 → 提交到上游（base64 via V2 API）→ 逐级到 上游系统 → Certum SOAP
 - **V2 端点**：`POST /api/v2/upload-document`（接收下游 base64）
-- **显示条件**：`brand.toLowerCase() === 'certum'` 且 `validation_type !== 'dv'`
+- **显示条件**：产品签发机构 `product.ca.toLowerCase() === 'certum'`、`validation_type !== 'dv'` 且证书状态为 `processing`；不按订单品牌判断
 - **文件限制**：单文件 5MB，类型 PDF/JPG/JPEG/PNG/XADES，控制器层 `mimes` 验证
 - **提交权限**：Admin 和 User 均可提交文档到上游
 - **新增列**：`submitted_at` / `submit_attempts` / `submit_error` / `content_hash`（迁移 `2026_05_31_100000_*`，幂等 `hasColumn` 守护）
