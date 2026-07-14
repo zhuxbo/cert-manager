@@ -192,6 +192,13 @@ class CnameDelegationService
     public const INVALID_LAST_ERROR = 'CNAME记录不匹配或未配置';
 
     /**
+     * fail_count 硬截断上限：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出。
+     * 单一来源供三处 +1 自增共用（applyProbeOutcome PHP 侧 / applyProbeOutcomeIfUnchanged DB 侧
+     * LEAST / DelegationCheckCommand post-apply gate），消除上限魔数多处裸写漂移。
+     */
+    public const FAIL_COUNT_MAX = 100;
+
+    /**
      * 纯探测委托有效性（三态，不写库）。
      *
      * 经 VerifyUtil 三态可达性变体区分：
@@ -255,8 +262,8 @@ class CnameDelegationService
 
             case 'invalid':
                 $delegation->valid = false;
-                // 硬截断 100：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出
-                $delegation->fail_count = min($delegation->fail_count + 1, 100);
+                // 硬截断（见 FAIL_COUNT_MAX）：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出
+                $delegation->fail_count = min($delegation->fail_count + 1, self::FAIL_COUNT_MAX);
                 $delegation->last_error = self::INVALID_LAST_ERROR;
                 Log::warning('CNAME委托健康检查失败', [
                     'id' => $delegation->id,
@@ -305,8 +312,8 @@ class CnameDelegationService
             'valid' => ['valid' => true, 'fail_count' => 0, 'last_error' => ''],
             'invalid' => [
                 'valid' => false,
-                // 硬截断 100：与 applyProbeOutcome 同语义，DB 侧原子自增免 lost update
-                'fail_count' => DB::raw('LEAST(fail_count + 1, 100)'),
+                // 硬截断（见 FAIL_COUNT_MAX）：与 applyProbeOutcome 同语义，DB 侧原子自增免 lost update
+                'fail_count' => DB::raw('LEAST(fail_count + 1, '.self::FAIL_COUNT_MAX.')'),
                 'last_error' => self::INVALID_LAST_ERROR,
             ],
             // unreachable：冻结计数（不写 valid/fail_count/last_error），仅 last_checked_at 留痕

@@ -298,6 +298,61 @@ test('小基数全 unreachable（<样本下限）不熔断，冻结层独立生�
     $this->artisan('delegation:check')->assertSuccessful();
 });
 
+// ── 增量熔断：阶段①滚动判定 + 提前终止（达样本下限即判，命中停探测）──────────
+
+test('增量熔断：达样本下限后立即命中 → 提前终止本轮探测（不对满表逐条付满价）', function () {
+    $user = User::factory()->create();
+    $ids = [];
+    for ($i = 0; $i < 6; $i++) {
+        $ids[] = checkDelegationRow($user, ['zone' => "burst$i.com"])->id;
+    }
+
+    // 6 条全 unreachable：达 MIN_SAMPLE=5 即熔断 → 第 5 条后提前终止，第 6 条不再探测。
+    // 收敛前（扫完再判）probeValidity 被调 6 次 → times(5) 期望失败=红。
+    $this->delegationService->shouldReceive('probeValidity')->times(5)->andReturn('unreachable');
+    $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->never(); // 熔断轮零落库
+
+    $systemAlert = Mockery::mock(SystemAlert::class);
+    $systemAlert->shouldReceive('send')
+        ->once()
+        ->withArgs(function ($category, $title, $message, $details) {
+            // 提前终止 → partial 计数（只探测了 5 条），方向正确
+            return $category === 'delegation_patrol'
+                && $details['total'] === 5
+                && $details['unreachable'] === 5;
+        })
+        ->andReturn(true);
+    $systemAlert->shouldReceive('clearDedupe')->never();
+    app()->instance(SystemAlert::class, $systemAlert);
+
+    $state = checkCaptureCenter();
+
+    $this->artisan('delegation:check')->assertSuccessful();
+
+    // 6 条全在（零删除）+ 零通知
+    expect(CnameDelegation::whereIn('id', $ids)->count())->toBe(6)
+        ->and($state->count)->toBe(0);
+});
+
+test('增量熔断边界：占比未达阈值不提前终止 → 全量探测 + 正常落库（不误熔断）', function () {
+    $user = User::factory()->create();
+    for ($i = 0; $i < 6; $i++) {
+        checkDelegationRow($user, ['zone' => "mix$i.com"]);
+    }
+
+    // 前 2 条 unreachable + 后 4 条 valid：任一检查点占比 ≤ 2/5=0.4 < 0.5 → 不熔断、全量探测
+    $this->delegationService->shouldReceive('probeValidity')->times(6)
+        ->andReturnValues(['unreachable', 'unreachable', 'valid', 'valid', 'valid', 'valid']);
+    $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->times(6)->andReturn(true);
+
+    $systemAlert = Mockery::mock(SystemAlert::class);
+    $systemAlert->shouldReceive('send')->never();      // 未熔断
+    $systemAlert->shouldReceive('clearDedupe')->once(); // healthy 轮清键
+    app()->instance(SystemAlert::class, $systemAlert);
+
+    $this->artisan('delegation:check')->assertSuccessful();
+});
+
 // ── TOCTOU CAS 守卫：partial mock 只桩 probeValidity，落库走真实 CAS SQL ────
 
 test('TOCTOU：探测后落库前被并发写新鲜 valid → 陈旧 invalid 不覆盖、不删、不通知', function () {

@@ -470,27 +470,15 @@ class VerifyUtil
             }
         }
 
-        // 回退到本地 dns_get_record
-        // direct 模式：先查 CNAME，存在则说明 TXT 来自 CNAME 目标（dns_get_record 无法区分 owner name）
-        if ($direct) {
-            $cnameRecords = @dns_get_record($host, DNS_CNAME);
-            if (! empty($cnameRecords)) {
-                return [];
-            }
-        }
+        // 回退到本地解析：收编到 DnsResolver，与 verifyValidationLocal 共用同一份可注入本地解析，
+        // 单测经 app()->instance(DnsResolver::class, $stub) 注桩、不打本机真实 DNS（反模式 15）。
+        // direct 模式：先查 CNAME，存在则说明 TXT 来自 CNAME 目标（本地解析无法区分 owner name）。
+        $resolver = app(DnsResolver::class);
 
-        $records = @dns_get_record($host, DNS_TXT);
-        if (empty($records)) {
+        if ($direct && ! empty($resolver->cname($host))) {
             return [];
         }
 
-        $txtValues = [];
-        foreach ($records as $record) {
-            if (isset($record['txt'])) {
-                $txtValues[] = $record['txt'];
-            }
-        }
-
-        return $txtValues;
+        return $resolver->txt($host);
     }
 }

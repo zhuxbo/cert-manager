@@ -115,6 +115,13 @@ class DelegationCheckCommand extends Command
                     $errorCount++;
                     $this->error("✗ 委托 #$delegation->id ($delegation->zone) - 检查异常: {$e->getMessage()}");
                 }
+
+                // 增量熔断：达样本下限即滚动判定不可达占比，命中即提前终止本轮探测——系统性停摆下免对
+                // 满表逐条付满价探测（每条 invalid/unreachable 会打满全部 dnsTools 节点各 3s）。语义等价于
+                // 扫完再判：熔断轮本就零落库/零删除/零通知，阶段②仍以（偏 partial）计数复判并 reportOutage。
+                if ($this->isCircuitBroken(count($outcomes), $unreachableCount)) {
+                    return false; // 停止 chunkById，剩余委托本轮不探测
+                }
             }
         });
 
@@ -169,8 +176,9 @@ class DelegationCheckCommand extends Command
                     continue;
                 }
 
-                // outcome === 'invalid'：post-apply fail_count（CAS 命中时与 DB 侧 LEAST 自增等价）
-                $postFailCount = min($o['fail_count'] + 1, 100);
+                // outcome === 'invalid'：post-apply fail_count（CAS 命中时与 DB 侧 LEAST 自增等价，
+                // 共用 CnameDelegationService::FAIL_COUNT_MAX 上限、防两处上限魔数漂移）
+                $postFailCount = min($o['fail_count'] + 1, CnameDelegationService::FAIL_COUNT_MAX);
                 $hasActiveCert = $this->hasActiveCertForDomain($o['user_id'], $o['zone']);
 
                 if ($hasActiveCert) {

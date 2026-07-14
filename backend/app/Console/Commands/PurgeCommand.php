@@ -199,7 +199,6 @@ class PurgeCommand extends Command
                     // 必须捕获判 code 计数——绝不裸调：裸调会被外层 catch 把成功当失败打印、canceledCount 恒 0。
                     try {
                         $action->commitCancel($order->id);
-                        $canceledCount++; // 正常不达（success 抛出）；防御性保留
                     } catch (ApiResponseException $e) {
                         ($e->getApiResponse()['code'] ?? 0) === 1
                             ? $canceledCount++ // 成功：success() 抛 code=1
