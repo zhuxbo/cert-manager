@@ -63,6 +63,18 @@
 - **强制发（不入 `user_default_preferences`）**：涉及服务连续性风险，穿透用户可能已关的常规到期偏好；机制同 cert_renew_stalled——code 不铺进用户偏好 UI = 永不写入 settings = `User::allowsNotification` 对缺席 code 恒返回默认 `true` 恒发（与 cert_renew_stalled 成对）。
 - **携密白名单**：派发点仅白名单塞入 4 标量（前驱域名 `common_name` / 到期日 `expires_at` / 订单号 `order_id` / 动作类型 `action`），专用 Builder 逐键取用、**绝不整包直通 `$intent->context`**；config 注册专用 Builder、不回落 `DefaultNotificationBuilder`（Default 直通红线见「携密 / 附件安全」段）。
 
+## 证书吊销一次性提醒（cert_revoked）
+
+Order sync 发现上游把证书同步为 `revoked` 终态（证书被 CA 吊销：域名验证撤销 / 合规问题 / 主动吊销）时触发。被吊销证书立即失去 CA 信任、浏览器拦截访问，用户须知悉并按需重新申请。原 sync 通用写回落 revoked 仅触发 callback + deleteTask、**零通知**（可见性洞）；本通知补齐。触发形态源（`Order/Action::sync` 通用写回分支，锁内终态守卫之后、与 `cert_renew_cancelled` 分支并列）见 `skills/backend/order-fund.md`；此处记通知三件套侧。
+
+- **三件套**：`config/notification.builders['cert_revoked' => CertRevokedNotificationBuilder]` + seeder 模板（`variables: [username,email,common_name,expires_at,order_id,is_successor]`，`site_url/site_name` 由 Builder 从系统设置注入）+ 专用 Builder。派发经 `Action::dispatchRevokedNotification`。
+- **吊销事件本位（宽口径 P2）**：对**所有** revoked（含 plain new）派发——吊销是独立于续费的重大服务中断事件，plain new 证书被吊销时用户同样须知悉。主体为**被吊销证书自身**（`common_name`/`expires_at` 取写回目标 `$cert`，≠ cert_renew_cancelled 取前驱）；`is_successor`（`(bool) $cert->last_cert_id`）标记被吊销的是否续费/重签接替单，为 true 时前驱亦脱离 `cert_expire`/`AutoRenew`/`cert_renew_stalled` 三重监控 → 模板 `@if($is_successor)` 附带「原证书亦不再受监控、请手动续期」文案（只影响文案、不影响是否发）。
+- **一次性事件驱动**：数据在吊销发生时即确定、终态不再变动，Builder 直接读派发点 context 白名单标量、不重查 DB（同 cert_renew_cancelled 范式）。
+- **强制发（不入 `user_default_preferences`）**：吊销属服务中断类事件，穿透用户可能已关的常规到期偏好；机制同 cert_renew_cancelled/cert_renew_stalled——code 不铺进用户偏好 = `User::allowsNotification` 对缺席 code 恒返回默认 `true` 恒发。
+- **防重靠 hasStatusChanged**：分支必须落在 `runTaskMutationTransaction` 闭包内、终态守卫之后——二次 force-sync 已 revoked 的订单，终态守卫 `unset($data['status'])` → `hasStatusChanged=false` → 不再派发（与 cert_renew_cancelled 同一防重路径，放守卫外会重复发）。与 cancelled 分支按 status 值天然互斥、不双发。revoked 从不进 `refundForSyncedCancel`（后者强制 cancelled），故通用写回单点覆盖全部 revoked。
+- **携密白名单**：仅 `common_name`/`expires_at`/`order_id`/`is_successor`（bool 结构标志）；专用 Builder 逐键取用、config 注册**不回落 `DefaultNotificationBuilder`**（Default 直通红线）。
+- **Acme 侧不适用**：ACME 无接替单前驱链、自身不直发证书（certbot 发），`Acme\Action` 落 revoked 不需本通知。**仅 Order 侧**。
+
 ## NotificationJob 失败重试分档（M4）
 
 `NotificationJob`（`implements ShouldQueue`）对发送失败按**瞬态可重试 / 永久不重试**分档，改动点在 Job + MailChannel 返回值，**不动 MailChannel 发信主体**。

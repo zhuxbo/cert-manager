@@ -564,7 +564,9 @@ test('#14 唯一索引物理底线：cancelled 订单强行 create 第二条 can
     expect($user->refresh()->balance)->toBe('200.00');
 });
 
-test('#12 上游 revoked + action=new + 开关开：走 sync 默认路径，不触发退款分支', function () {
+test('#12 上游 revoked + action=new（plain new）+ 开关开：走 sync 默认路径不退款 + 发 cert_revoked（is_successor=false）', function () {
+    // revoked 是独立于续费的重大服务中断事件：plain new 证书被 CA 吊销，用户须知悉并按需重新申请。
+    // 修复前该路径零通知（仅 callback+deleteTask）；本用例锁定 revoked → cert_revoked 派发 + 不进退款分支。
     Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 用户充值 100，下单扣 100 → balance=0；revoked 不触发 cancelled 退款分支
@@ -575,18 +577,130 @@ test('#12 上游 revoked + action=new + 开关开：走 sync 默认路径，不�
         'purchased_standard_count' => 1,
         'purchased_wildcard_count' => 0,
     ]);
-    $this->createTestCert($order, ['status' => 'active', 'action' => 'new', 'api_id' => 'test-api-id-12']);
+    $this->createTestCert($order, [
+        'status' => 'active',
+        'action' => 'new',
+        'api_id' => 'test-api-id-12',
+        'common_name' => 'revoked-plain.example.com',
+        'expires_at' => '2027-01-15 08:00:00',
+    ]);
 
     // order Transaction 扣 100：balance 100 → 0
     createOrderTransaction($user->id, $order->id, '-100.00');
+
+    $captured = new ArrayObject;
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->andReturnUsing(function ($intent) use ($captured) {
+        $captured->append($intent);
+    });
+    app()->instance(NotificationCenter::class, $notificationCenter);
+
     mockOrderApiGet('revoked');
 
     syncOrder(app(Action::class), $order->id);
 
     expect($order->latestCert()->first()->status)->toBe('revoked');
+    // revoked 不进退款分支（refundForSyncedCancel 只处理 cancelled）：无退款、余额仍为 0
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(0);
-    // revoked 无退款：余额仍为 0
     expect($user->refresh()->balance)->toBe('0.00');
+
+    // cert_revoked 通知：主体为被吊销证书自身，plain new → is_successor=false
+    $intents = collect($captured)->filter(fn ($intent) => $intent->code === 'cert_revoked')->values();
+    expect($intents)->toHaveCount(1);
+    expect($intents[0]->notifiableId)->toBe($user->id)
+        ->and($intents[0]->context)->toMatchArray([
+            'common_name' => 'revoked-plain.example.com',
+            'expires_at' => '2027-01-15',
+            'order_id' => $order->id,
+            'is_successor' => false,
+        ]);
+});
+
+test('#19 上游 revoked + action=renew 有前驱：通用写回落 revoked + 发 cert_revoked（is_successor=true，前驱保持 renewed）', function () {
+    // 接替单签发 active 后被 CA 吊销，前驱已 renewed 脱离 cert_expire/AutoRenew/cert_renew_stalled 三重监控 →
+    // 双重静默（前驱不受监控 + 接替单吊销无告知）。cert_revoked 是唯一告知；is_successor=true 触发前驱脱监控文案。
+    $user = $this->createTestUser(['balance' => '80.00']);
+    $product = $this->createTestProduct(['refund_period' => 30]);
+
+    // 前驱证书（renewed 终态，跨订单）
+    $sourceOrder = $this->createTestOrder($user, $product);
+    $sourceCert = $this->createTestCert($sourceOrder, [
+        'status' => 'renewed',
+        'action' => 'new',
+        'common_name' => 'revoked-successor.example.com',
+        'expires_at' => now()->addDays(60),
+    ]);
+
+    // renew 接替单（last_cert_id 指向前驱），签发 active 后被上游吊销
+    $order = $this->createTestOrder($user, $product, ['amount' => '80.00']);
+    $this->createTestCert($order, [
+        'status' => 'active',
+        'action' => 'renew',
+        'api_id' => 'test-api-id-19',
+        'last_cert_id' => $sourceCert->id,
+        'common_name' => 'revoked-successor.example.com',
+        'expires_at' => '2027-02-20 00:00:00',
+    ]);
+    createOrderTransaction($user->id, $order->id, '-80.00');
+
+    $captured = new ArrayObject;
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->andReturnUsing(function ($intent) use ($captured) {
+        $captured->append($intent);
+    });
+    app()->instance(NotificationCenter::class, $notificationCenter);
+
+    mockOrderApiGet('revoked');
+
+    syncOrder(app(Action::class), $order->id);
+
+    expect($order->latestCert()->first()->status)->toBe('revoked');
+    // revoked 不走退款/前驱恢复分支：前驱保持 renewed 不恢复
+    expect($sourceCert->fresh()->status)->toBe('renewed');
+
+    // cert_revoked 通知：接替单被吊销 → is_successor=true
+    $intents = collect($captured)->filter(fn ($intent) => $intent->code === 'cert_revoked')->values();
+    expect($intents)->toHaveCount(1);
+    expect($intents[0]->notifiableId)->toBe($user->id)
+        ->and($intents[0]->context)->toMatchArray([
+            'common_name' => 'revoked-successor.example.com',
+            'expires_at' => '2027-02-20',
+            'order_id' => $order->id,
+            'is_successor' => true,
+        ]);
+});
+
+test('#20 revoked 通知防重：revoked 落定后再次 force sync 不重复派发 cert_revoked', function () {
+    // 防重由 hasStatusChanged 保证：二次 sync 终态守卫 unset data.status → hasStatusChanged=false → 不再派发。
+    // 与 cert_renew_cancelled 同一防重路径（对照 #18）。
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = $this->createTestProduct(['refund_period' => 30]);
+    $order = $this->createTestOrder($user, $product, ['amount' => '100.00']);
+    $this->createTestCert($order, [
+        'status' => 'active',
+        'action' => 'new',
+        'api_id' => 'test-api-id-20',
+        'common_name' => 'revoked-dedup.example.com',
+    ]);
+    createOrderTransaction($user->id, $order->id, '-100.00');
+
+    $captured = new ArrayObject;
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->andReturnUsing(function ($intent) use ($captured) {
+        $captured->append($intent);
+    });
+    app()->instance(NotificationCenter::class, $notificationCenter);
+
+    mockOrderApiGet('revoked');
+
+    // 第一次：active → revoked，发通知
+    syncOrder(app(Action::class), $order->id);
+    // 第二次：force sync（revoked 不在非 force 允许列表），终态守卫 unset status → 不重复派发
+    clearSyncDuplicateCache($order->id);
+    syncOrder(app(Action::class), $order->id, true);
+
+    $intents = collect($captured)->filter(fn ($intent) => $intent->code === 'cert_revoked')->values();
+    expect($intents)->toHaveCount(1);
 });
 
 test('#15 force=true 退款分支静默返回：V1/V2 get 直调 sync(force) 不被 success 异常打断', function () {

@@ -759,6 +759,15 @@ class Action
                 $this->dispatchRenewCancelledNotification($order, $cert);
             }
 
+            // 上游同步为终态 revoked：证书被 CA 吊销（域名验证撤销 / 合规问题 / 主动吊销），立即失去信任、
+            // 浏览器拦截访问。吊销是独立于续费的重大服务中断事件，对所有 revoked（含 plain new）发一次性
+            // 通知告知用户；若被吊销的是续费/重签接替单（last_cert_id 非空），前驱证书亦脱离三重监控，文案
+            // 附带说明。与 cancelled 分支按 status 值天然互斥；防重同样靠 hasStatusChanged（二次 sync 终态
+            // 守卫 unset data.status → hasStatusChanged=false → 不再派发），须与本分支同处终态守卫之后。
+            if ($hasStatusChanged && $data['status'] === 'revoked') {
+                $this->dispatchRevokedNotification($order, $cert);
+            }
+
             // 签发 取消 吊销 发起回调（suppressCallback=true 跳过：下游经 V1/V2 get 主动 pull 触发同步，
             // get 已把新状态同步返回，无需再异步回调下游；deleteTask 不受影响，照常清理）
             if ($hasStatusChanged && in_array($data['status'] ?? '', ['active', 'cancelled', 'revoked'], true)) {
@@ -1353,6 +1362,32 @@ class Action
                 'expires_at' => $predecessor->expires_at?->format('Y-m-d') ?? '',
                 'order_id' => (int) $order->id,
                 'action' => $cert->action === 'renew' ? '续费' : '重签',
+            ]
+        ));
+    }
+
+    /**
+     * 证书吊销一次性通知（cert_revoked，Order sync 直写 revoked 终态时触发）。
+     *
+     * 吊销是独立于续费的重大服务中断事件：被吊销证书立即失去 CA 信任、浏览器拦截访问，用户须知悉并按需
+     * 重新申请。对所有 revoked（含 plain new）派发，主体为被吊销证书自身（common_name / expires_at 取
+     * 外层 $cert）；is_successor 标记被吊销的是否续费/重签接替单（last_cert_id 非空），为 true 时前驱亦
+     * 脱离 cert_expire / AutoRenew / cert_renew_stalled 三重监控，供模板文案分支。
+     *
+     * 携密纪律：context 仅白名单标量（被吊销证书域名 / 到期日 / 订单号 / 接替单标志），绝不 toArray 整包；
+     * 收件人 = 订单所属 user。吊销终态不再变动，故派发现场直接读值塞入、Builder 事件驱动无需重查。
+     */
+    private function dispatchRevokedNotification(Order $order, Cert $cert): void
+    {
+        app(NotificationCenter::class)->dispatch(new NotificationIntent(
+            'cert_revoked',
+            'user',
+            (int) $order->user_id,
+            [
+                'common_name' => (string) $cert->common_name,
+                'expires_at' => $cert->expires_at?->format('Y-m-d') ?? '',
+                'order_id' => (int) $order->id,
+                'is_successor' => (bool) $cert->last_cert_id,
             ]
         ));
     }
