@@ -5,6 +5,7 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -16,7 +17,7 @@ use Throwable;
  * 插件模型：usesRemoteCertStore=true + 复用 AliyunCasUploader（store_kind=cas，RemoteCertStore 去重），
  * bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader) 完成，本端点无后续绑定。
  */
-class AliyunCasDeployer extends AbstractDeployer
+class AliyunCasDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     use BuildsAliyunConfig;
 

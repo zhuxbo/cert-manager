@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Vercel;
 
 use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -19,7 +20,7 @@ use Throwable;
  *
  * config：[]（无资源配置，纯上传）。team_id 是账号级凭证，归 credentialSchema。
  */
-class CertificateDeployer extends AbstractDeployer
+class CertificateDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     private const BASE_URI = 'https://api.vercel.com/v8/';
 

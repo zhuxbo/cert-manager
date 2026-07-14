@@ -51,6 +51,8 @@ plugins/
 
 ## 后端开发
 
+插件后端应维护独立 PHPStan 配置并以 0 errors 为准入要求。服务返回 Eloquent 查询时用 `Builder<Model>` PHPDoc 保留模型泛型；注册表、工厂等公共入口返回接口类型，可选能力在调用点用 `instanceof` 收窄，不要把内部实现基类泄漏到公共参数契约。
+
 ### ServiceProvider
 
 每个插件有一个 ServiceProvider，由 `PluginServiceProvider` 自动扫描注册。
@@ -83,8 +85,9 @@ class {Name}ServiceProvider extends ServiceProvider
 ### 数据库
 
 - 迁移文件放 `backend/migrations/`，ServiceProvider `boot()` 中调 `$this->loadMigrationsFrom("$basePath/backend/migrations")`，主系统 `php artisan migrate` 会自动包含
+- 插件 migration 创建通知模板时必须同时写 `variables` 元数据并与对应 Builder payload 字段一致；插件独占模板在 `down()` 删除，使“保留数据/完全清除”语义与卸载选项一致
 - 表名建议加插件前缀（如 `{name}_logs`）避免冲突
-- 卸载时可选回滚迁移（`remove_data=true`）
+- 卸载时可选回滚迁移（`remove_data=true`）；完全清除必须用 `migrate:reset --path` 覆盖插件全部历史 batch，不能用只处理全局最后 batch 的单次 `migrate:rollback`
 - **插件表独立管理**：主系统 `db:structure --export` 通过 `--path=database/migrations` 排除插件迁移，`structure.json` 仅包含主系统表
 - **从主系统迁移分离时注意**：如果原来某些表在主系统迁移文件中，拆分到插件时必须确保主系统迁移文件仍保留主系统自己的表（不能整个删除包含多张表的迁移文件）
 
@@ -419,6 +422,8 @@ bash plugins/release-plugin.sh {name} --remote --server cn
 系统管理 → 插件管理页面操作。
 
 页面只展示执行中和失败的插件任务，成功安装/更新只刷新插件列表、不保留成功记录。安装/更新任务失败后，同插件会被失败记录阻塞，避免重复创建安装任务；管理员需在失败记录上选择「重试」重新入队，或选择「卸载」清理失败安装记录。
+
+卸载选择“完全清除”时，`PluginManager` 重置该插件路径下所有已执行迁移，并执行可选 Seeder `clear()` 钩子。迁移重置或 Seeder 清理失败都必须 fail-closed：抛出错误、中止目录删除并保留插件文件供重试，禁止吞掉异常后返回“数据已清除”。
 
 带 `backend/composer.json` 的插件安装/更新时会在插件 `backend/` 目录内运行 `composer install --no-dev --no-interaction --optimize-autoloader --no-scripts`。`PluginComposerRunner` 会为 Composer 子进程显式设置 `HOME`、`COMPOSER_HOME` 和 `COMPOSER_CACHE_DIR` 到 `storage/app/plugin-composer`，不要依赖队列/FPM 环境自带 HOME。
 

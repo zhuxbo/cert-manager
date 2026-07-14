@@ -58,6 +58,85 @@ test('创建纯上传目标时允许空 config', function () {
     expect($target->config)->toBe([]);
 });
 
+test('同一凭证的纯上传目标允许绑定不同订单', function () {
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $this->order->id,
+            'product' => 'cas',
+            'config' => [],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $order2 = Order::factory()->create(['user_id' => $this->user->id]);
+    $cert2 = Cert::factory()->active()->create([
+        'order_id' => $order2->id,
+        'common_name' => 'upload-only-2.example.com',
+    ]);
+    $order2->update(['latest_cert_id' => $cert2->id]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $order2->id,
+            'product' => 'cas',
+            'config' => [],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->count())->toBe(2);
+});
+
+test('Dokploy 证书库纯上传目标允许绑定不同订单', function () {
+    $access = CloudDeployAccess::create([
+        'user_id' => $this->user->id,
+        'name' => 'Dokploy',
+        'provider' => 'dokploy',
+        'credentials' => ['server_url' => 'https://dokploy.example.com', 'api_key' => 'key'],
+    ]);
+    $order2 = Order::factory()->create(['user_id' => $this->user->id]);
+    $cert2 = Cert::factory()->active()->create(['order_id' => $order2->id]);
+    $order2->update(['latest_cert_id' => $cert2->id]);
+
+    foreach ([$this->order, $order2] as $order) {
+        $this->actingAsUser($this->user)
+            ->postJson('/api/cloud-deploy/target', [
+                'access_id' => $access->id,
+                'order_id' => $order->id,
+                'product' => 'certificate',
+                'config' => [],
+            ])
+            ->assertOk()
+            ->assertJson(['code' => 1]);
+    }
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->where('access_id', $access->id)->count())->toBe(2);
+});
+
+test('纯上传目标同一订单仍拒绝重复创建并兼容存量配置哈希', function () {
+    CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cas',
+        'config' => [],
+    ]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $this->order->id,
+            'product' => 'cas',
+            'config' => [],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->count())->toBe(1);
+});
+
 test('拒绝同一凭证产品配置重复绑定到另一个订单', function () {
     CloudDeployTarget::create([
         'user_id' => $this->user->id,

@@ -22,6 +22,12 @@ return new class extends Migration
             'code' => $this->code,
             'name' => '云部署失败',
             'content' => base64_encode($blade),
+            'variables' => json_encode([
+                'product',
+                'domain',
+                'access_name',
+                'error_code',
+            ], JSON_THROW_ON_ERROR),
             'status' => 1,
             'created_at' => now(),
             'updated_at' => now(),

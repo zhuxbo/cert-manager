@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Jdcloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -12,7 +13,7 @@ use Throwable;
  * 对齐 certimate jdcloud-ssl：仅把证书上传到京东云 SSL 证书中心（走 RemoteCertStore 去重），
  * 不绑定任何资源。usesRemoteCertStore=true + 复用 JdcloudSslUploader（storeKind=jdcloud_ssl）。
  */
-class JdcloudSslDeployer extends AbstractDeployer
+class JdcloudSslDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

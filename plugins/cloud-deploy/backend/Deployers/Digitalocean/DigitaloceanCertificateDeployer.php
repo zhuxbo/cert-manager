@@ -5,6 +5,7 @@ namespace Plugins\CloudDeploy\Deployers\Digitalocean;
 use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -16,7 +17,7 @@ use Throwable;
  * 插件模型：usesRemoteCertStore=true + DigitaloceanCertUploader（storeKind=digitalocean_certificate，
  * RemoteCertStore 去重），bind 为 no-op —— 上传即部署。
  */
-class DigitaloceanCertificateDeployer extends AbstractDeployer
+class DigitaloceanCertificateDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     private const BASE_URI = 'https://api.digitalocean.com/v2/';
 

@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Volcengine;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -14,7 +15,7 @@ use Throwable;
  * usesRemoteCertStore=true + 复用 VolcCertCenterUploader（storeKind=volc_certcenter）；bind 收 InstanceId 但不做事。
  * region 默认 cn-beijing（证书中心默认区域，与 certimate 一致）。
  */
-class VolcCertCenterDeployer extends AbstractDeployer
+class VolcCertCenterDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     use ResolvesVolcRegion;
 

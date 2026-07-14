@@ -37,3 +37,12 @@ test('pending job 以数组持久化且不进入序列化结果', function () {
     expect($fresh->pending_job)->toBe($pending);
     expect($fresh->toArray())->not->toHaveKey('pending_job');
 });
+
+test('纯上传作用域哈希按订单隔离且保持配置规范化', function () {
+    $order100Hash = CloudDeployTarget::scopedConfigHash(['b' => 2, 'a' => 1], 100);
+
+    expect($order100Hash)
+        ->toBe(CloudDeployTarget::scopedConfigHash(['a' => 1, 'b' => 2], 100))
+        ->not->toBe(CloudDeployTarget::scopedConfigHash(['a' => 1, 'b' => 2], 101))
+        ->not->toBe(CloudDeployTarget::configHash(['a' => 1, 'b' => 2]));
+});

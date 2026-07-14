@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Dokploy;
 
 use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -18,7 +19,7 @@ use Throwable;
  * （Dokploy 自身按内容去重）。无 config 字段——服务地址/API Key 归凭证（provider 级）。
  * 鉴权 X-Api-Key（凭证含自建服务地址 server_url + allow_insecure_connections）。
  */
-class CertificateDeployer extends AbstractDeployer
+class CertificateDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

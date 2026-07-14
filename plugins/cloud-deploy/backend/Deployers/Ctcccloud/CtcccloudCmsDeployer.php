@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Ctcccloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -18,7 +19,7 @@ use Throwable;
  *
  * certUploader 空 config 不抛（CMS 全局、无 region 依赖）—— 元信息探测 / catalog 渲染时 config 为空也能构造上传器。
  */
-class CtcccloudCmsDeployer extends AbstractDeployer
+class CtcccloudCmsDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

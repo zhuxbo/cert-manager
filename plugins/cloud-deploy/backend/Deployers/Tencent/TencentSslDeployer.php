@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Tencent;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use TencentCloud\Common\Credential;
 use TencentCloud\Common\Profile\ClientProfile;
 use TencentCloud\Common\Profile\HttpProfile;
@@ -19,7 +20,7 @@ use Throwable;
  * 插件模型：usesRemoteCertStore=true + 复用 TencentSslUploader（store_kind=tencent_ssl，RemoteCertStore
  * 去重），bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader) 完成。
  */
-class TencentSslDeployer extends AbstractDeployer
+class TencentSslDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

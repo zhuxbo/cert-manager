@@ -2,6 +2,7 @@
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployerInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Tests\TestCase;
 
@@ -123,6 +124,48 @@ test('实际注册集与期望集逐键一致（无漏注册、无误删/改名�
     unset($products);
 
     expect($actual)->toEqual($expected);
+});
+
+test('纯上传部署器显式标记订单级唯一性且资源部署器不误标', function () {
+    $registry = app(Registry::class);
+    $expectedUploadOnly = [
+        'aliyun.cas', 'aws.acm', 'aws.iam', 'azure.keyvault',
+        'baidu.cert', 'byteplus.certcenter', 'cachefly.certificate',
+        'ctcccloud.cms', 'digitalocean.certificate', 'dokploy.certificate',
+        'googlecloud.certificatemanager', 'huaweicloud.scm', 'jdcloud.ssl', 'ksyun.kcm',
+        'oraclecloud.certificatesmgmt', 'tencent.ssl', 'vercel.certificate',
+        'volcengine.certcenter', 'wangsu.certificate',
+    ];
+    sort($expectedUploadOnly);
+
+    $actualUploadOnly = [];
+    $emptySchemaResourceExceptions = [
+        'baotapanelgo.console',
+        'baotawaf.console',
+        'ratpanel.console',
+    ];
+
+    foreach ($registry->allDeployers() as ['provider' => $provider, 'product' => $product]) {
+        $deployer = $registry->resolveDeployer($provider, $product);
+        $key = "$provider.$product";
+
+        if ($deployer instanceof UploadOnlyDeployerInterface) {
+            $actualUploadOnly[] = $key;
+        }
+
+        if ($deployer->configSchema() === []) {
+            expect(in_array($key, $expectedUploadOnly, true) || in_array($key, $emptySchemaResourceExceptions, true))
+                ->toBeTrue("$key 配置为空，必须明确归类为纯上传或固定资源例外");
+        }
+    }
+    sort($actualUploadOnly);
+
+    expect($actualUploadOnly)->toBe($expectedUploadOnly);
+
+    foreach ([['aliyun', 'cdn'], ['flyio', 'certificate'], ['rainyun', 'sslcenter'], ['s3', 's3']] as [$provider, $product]) {
+        expect($registry->resolveDeployer($provider, $product))
+            ->not->toBeInstanceOf(UploadOnlyDeployerInterface::class, "$provider.$product 有明确资源目标，不应按订单放宽唯一性");
+    }
 });
 
 test('每个注册端点都能 resolveDeployer 且元信息 + configSchema 合法', function () {

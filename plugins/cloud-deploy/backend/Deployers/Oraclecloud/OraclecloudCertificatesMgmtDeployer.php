@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Oraclecloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -22,7 +23,7 @@ use Throwable;
  *
  * config：compartment_ocid（必填）。region + API Key 走凭证。
  */
-class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer
+class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

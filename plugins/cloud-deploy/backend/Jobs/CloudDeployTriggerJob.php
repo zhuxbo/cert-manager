@@ -14,6 +14,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
+use Plugins\CloudDeploy\Services\TargetMutationService;
 use Throwable;
 
 class CloudDeployTriggerJob implements ShouldQueue
@@ -53,11 +54,7 @@ class CloudDeployTriggerJob implements ShouldQueue
                     // 跨用户守卫：仅迁移与新订单同 user 的 target（防 last_cert_id 链跨用户脏数据把
                     // A 的凭证 target 迁到 B 的订单 → 越权推送/凭证串用）。续费恒同 user，守卫只挡脏数据。
                     $newUserId = (int) DB::table('orders')->where('id', $orderId)->value('user_id');
-                    CloudDeployTarget::withoutGlobalScopes()
-                        ->where('order_id', $prevOrderId)
-                        ->where('user_id', $newUserId)
-                        ->lockForUpdate()
-                        ->update(['order_id' => $orderId]);
+                    app(TargetMutationService::class)->rebindRenewedOrderTargets($prevOrderId, $orderId, $newUserId);
                 }
             }
 

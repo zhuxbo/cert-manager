@@ -2,7 +2,10 @@
 
 use App\Services\Plugin\PluginManager;
 use App\Services\Upgrade\VersionManager;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -512,6 +515,163 @@ test('update 未安装的插件时抛出异常', function () {
 });
 
 // ==================== uninstall ====================
+
+test('rollbackPluginMigrations 重置插件全部迁移批次', function () {
+    $manager = new class(Mockery::mock(VersionManager::class)) extends PluginManager
+    {
+        public array $artisanCalls = [];
+
+        public function rollbackForTest(string $name): void
+        {
+            $this->rollbackPluginMigrations($name);
+        }
+
+        protected function runArtisanProcess(array $arguments, string $context): string
+        {
+            $this->artisanCalls[] = [$arguments, $context];
+
+            return '';
+        }
+    };
+
+    $manager->rollbackForTest('cloud-deploy');
+
+    expect($manager->artisanCalls)->toBe([[
+        ['migrate:reset', '--path=../plugins/cloud-deploy/backend/migrations', '--force'],
+        '插件迁移重置',
+    ]]);
+});
+
+test('migrate reset 实际清理插件跨批次迁移且保留全局最新批次', function () {
+    $suffix = strtolower(substr(str_replace('.', '', uniqid('', true)), -10));
+    $pluginName = "test-reset-$suffix";
+    $migrationDir = base_path("../plugins/$pluginName/backend/migrations");
+    $migrationOne = "2099_01_01_000001_create_pm_reset_a_$suffix";
+    $migrationTwo = "2099_01_01_000002_create_pm_reset_b_$suffix";
+    $unrelated = "2099_01_01_000003_unrelated_latest_$suffix";
+    $tableOne = "pm_reset_a_$suffix";
+    $tableTwo = "pm_reset_b_$suffix";
+
+    File::ensureDirectoryExists($migrationDir);
+    foreach ([[$migrationOne, $tableOne], [$migrationTwo, $tableTwo]] as [$migration, $table]) {
+        File::put("$migrationDir/$migration.php", <<<PHP
+<?php
+
+use Illuminate\\Database\\Migrations\\Migration;
+use Illuminate\\Support\\Facades\\Schema;
+
+return new class extends Migration
+{
+    public function up(): void {}
+
+    public function down(): void
+    {
+        Schema::dropIfExists('$table');
+    }
+};
+PHP);
+        Schema::create($table, fn ($blueprint) => $blueprint->id());
+    }
+    DB::table('migrations')->insert([
+        ['migration' => $migrationOne, 'batch' => 1],
+        ['migration' => $migrationTwo, 'batch' => 2],
+        ['migration' => $unrelated, 'batch' => 3],
+    ]);
+
+    try {
+        $exitCode = Artisan::call('migrate:reset', [
+            '--path' => "../plugins/$pluginName/backend/migrations",
+            '--force' => true,
+        ]);
+
+        expect($exitCode)->toBe(0)
+            ->and(Schema::hasTable($tableOne))->toBeFalse()
+            ->and(Schema::hasTable($tableTwo))->toBeFalse()
+            ->and(DB::table('migrations')->whereIn('migration', [$migrationOne, $migrationTwo])->count())->toBe(0)
+            ->and(DB::table('migrations')->where('migration', $unrelated)->exists())->toBeTrue();
+    } finally {
+        Schema::dropIfExists($tableOne);
+        Schema::dropIfExists($tableTwo);
+        DB::table('migrations')
+            ->whereIn('migration', [$migrationOne, $migrationTwo, $unrelated])
+            ->delete();
+        File::deleteDirectory(base_path("../plugins/$pluginName"));
+    }
+});
+
+test('rollbackPluginMigrations 失败时抛出异常阻止卸载继续', function () {
+    $manager = new class(Mockery::mock(VersionManager::class)) extends PluginManager
+    {
+        public function rollbackForTest(string $name): void
+        {
+            $this->rollbackPluginMigrations($name);
+        }
+
+        protected function runArtisanProcess(array $arguments, string $context): string
+        {
+            throw new RuntimeException('reset failed');
+        }
+    };
+
+    expect(fn () => $manager->rollbackForTest('cloud-deploy'))
+        ->toThrow(RuntimeException::class, '插件 cloud-deploy 迁移重置失败：reset failed');
+});
+
+test('cleanupPluginSeeders 失败时抛出异常阻止卸载误报数据已清除', function () {
+    $seeder = new class
+    {
+        public function clear(): void
+        {
+            throw new RuntimeException('clear failed');
+        }
+    };
+    $seederClass = $seeder::class;
+    app()->instance($seederClass, $seeder);
+
+    $manager = new class(Mockery::mock(VersionManager::class), $seederClass) extends PluginManager
+    {
+        public function __construct(VersionManager $versionManager, private readonly string $seederClass)
+        {
+            parent::__construct($versionManager);
+        }
+
+        public function cleanupSeedersForTest(string $name): void
+        {
+            $this->cleanupPluginSeeders($name);
+        }
+
+        protected function loadPluginSeederClass(string $name): ?string
+        {
+            return $this->seederClass;
+        }
+    };
+
+    expect(fn () => $manager->cleanupSeedersForTest('cloud-deploy'))
+        ->toThrow(RuntimeException::class, '插件 cloud-deploy Seed 清理失败：clear failed');
+});
+
+test('完全清除失败时保留插件目录以便重试', function () {
+    $pluginsPath = sys_get_temp_dir().'/test_plugins_'.uniqid();
+    $pluginDir = "$pluginsPath/test-plugin";
+    mkdir($pluginDir, 0755, true);
+    file_put_contents("$pluginDir/plugin.json", json_encode(['name' => 'test-plugin']));
+
+    $manager = new class(Mockery::mock(VersionManager::class)) extends PluginManager
+    {
+        protected function rollbackPluginMigrations(string $name): void
+        {
+            throw new RuntimeException('reset failed');
+        }
+    };
+    $reflection = new ReflectionClass($manager);
+    $reflection->getProperty('pluginsPath')->setValue($manager, $pluginsPath);
+
+    expect(fn () => $manager->uninstall('test-plugin', true))
+        ->toThrow(RuntimeException::class, 'reset failed')
+        ->and(is_dir($pluginDir))->toBeTrue();
+
+    File::deleteDirectory($pluginsPath);
+});
 
 test('uninstall 不存在的插件时抛出异常', function () {
     $versionManager = Mockery::mock(VersionManager::class);

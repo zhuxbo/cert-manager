@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Cachefly;
 
 use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -18,7 +19,7 @@ use Throwable;
  *
  * config：[]（无资源配置，纯上传）。
  */
-class CertificateDeployer extends AbstractDeployer
+class CertificateDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     private const BASE_URI = 'https://api.cachefly.com/api/2.5/';
 

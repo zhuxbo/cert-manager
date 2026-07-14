@@ -5,6 +5,7 @@ namespace Plugins\CloudDeploy\Deployers\Aws;
 use Aws\Iam\IamClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -17,7 +18,7 @@ use Throwable;
  * 插件模型：usesRemoteCertStore=true + AwsIamUploader（store_kind="iam"），bind 为 no-op ——
  * 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader($config)) 完成。
  */
-class AwsIamDeployer extends AbstractDeployer
+class AwsIamDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     use BuildsAwsClientConfig;
 

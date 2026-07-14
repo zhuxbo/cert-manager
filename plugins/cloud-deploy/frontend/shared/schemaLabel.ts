@@ -5,6 +5,15 @@ export interface SchemaFieldLike {
   tip?: string;
 }
 
+export interface TextOverflowMetrics {
+  scrollWidth: number;
+  clientWidth: number;
+}
+
+export function isTextTruncated(element: TextOverflowMetrics): boolean {
+  return element.scrollWidth > element.clientWidth;
+}
+
 function splitLabel(label: string): { label: string; hint: string } {
   const match = label.match(/^(.*?)\s*[（(]([^（）()]*)[）)]\s*$/);
   if (!match) return { label, hint: "" };

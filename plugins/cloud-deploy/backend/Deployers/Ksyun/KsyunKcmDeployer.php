@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Ksyun;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -16,7 +17,7 @@ use Throwable;
  * 去重），bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader) 完成
  * （同 TencentSslDeployer / BaiduCertDeployer）。
  */
-class KsyunKcmDeployer extends AbstractDeployer
+class KsyunKcmDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

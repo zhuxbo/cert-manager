@@ -963,7 +963,7 @@ class PluginManager
     }
 
     /**
-     * 回滚插件迁移
+     * 重置插件全部迁移。失败时必须中止卸载，避免删掉插件文件后留下无法清理的数据。
      */
     protected function rollbackPluginMigrations(string $name): void
     {
@@ -974,32 +974,18 @@ class PluginManager
             return;
         }
 
-        // 收集迁移文件名（不含扩展名），用于清理 migrations 表记录
-        $migrationNames = collect(File::files($fullPath))
-            ->filter(fn ($f) => $f->getExtension() === 'php')
-            ->map(fn ($f) => $f->getFilenameWithoutExtension())
-            ->values()
-            ->all();
-
         try {
-            $rolledBack = false;
             $this->runArtisanProcess([
-                'migrate:rollback',
+                'migrate:reset',
                 "--path=../$migrationsPath",
                 '--force',
-            ], '插件迁移回滚');
-            $rolledBack = true;
-            Log::info("[Plugin] 回滚迁移完成: $name");
-        } catch (\Exception $e) {
-            Log::warning("[Plugin] 回滚迁移失败: $name - {$this->safeError($e)}");
-        }
+            ], '插件迁移重置');
+            Log::info("[Plugin] 重置迁移完成: $name");
+        } catch (\Throwable $e) {
+            $error = $this->safeError($e);
+            Log::warning("[Plugin] 重置迁移失败: $name - $error");
 
-        // 确保 migrations 表记录被清理（防止 rollback 失败后残留，导致重装跳过迁移）
-        if ($rolledBack && ! empty($migrationNames)) {
-            $deleted = DB::table('migrations')->whereIn('migration', $migrationNames)->delete();
-            if ($deleted > 0) {
-                Log::info("[Plugin] 清理迁移记录: $name ($deleted 条)");
-            }
+            throw new RuntimeException("插件 $name 迁移重置失败：$error");
         }
     }
 
@@ -1177,8 +1163,11 @@ class PluginManager
                 $seeder->clear();
                 Log::info("[Plugin] Seed 清理完成: $name ($class)");
             }
-        } catch (\Exception $e) {
-            Log::warning("[Plugin] Seed 清理失败: $name - {$this->safeError($e)}");
+        } catch (\Throwable $e) {
+            $error = $this->safeError($e);
+            Log::warning("[Plugin] Seed 清理失败: $name - $error");
+
+            throw new RuntimeException("插件 $name Seed 清理失败：$error");
         }
     }
 

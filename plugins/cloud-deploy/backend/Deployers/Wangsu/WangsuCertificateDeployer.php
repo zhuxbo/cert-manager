@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Wangsu;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -20,7 +21,7 @@ use Throwable;
  * 本插件证书服务型统一经 RemoteCertStore 上传新证书并按 fingerprint 去重（不引用既有 certId 原地替换），
  * 与现有 Baidu/DigitalOcean 证书端点一致；故不暴露 certificate_id 配置，恒走 create（去重）。
  */
-class WangsuCertificateDeployer extends AbstractDeployer
+class WangsuCertificateDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

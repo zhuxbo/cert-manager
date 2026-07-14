@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Azure;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -22,7 +23,7 @@ use Throwable;
  *
  * config：vault_name（必填）。cloud_name 走凭证。
  */
-class AzureKeyVaultDeployer extends AbstractDeployer
+class AzureKeyVaultDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

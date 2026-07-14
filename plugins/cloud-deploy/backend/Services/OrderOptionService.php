@@ -68,6 +68,7 @@ class OrderOptionService
         return $this->selectableQuery($userId, false)->whereKey($orderId)->exists();
     }
 
+    /** @return Builder<Order> */
     private function selectableQuery(?int $userId, bool $withGlobalScopes): Builder
     {
         $query = $withGlobalScopes ? Order::query() : Order::withoutGlobalScopes();

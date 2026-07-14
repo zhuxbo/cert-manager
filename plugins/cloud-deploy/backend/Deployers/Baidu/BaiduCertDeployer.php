@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Baidu;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -15,7 +16,7 @@ use Throwable;
  * 插件模型：usesRemoteCertStore=true + 复用 BaiduCertUploader（store_kind=baidu_cert，RemoteCertStore
  * 去重），bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader) 完成（同 TencentSslDeployer）。
  */
-class BaiduCertDeployer extends AbstractDeployer
+class BaiduCertDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {

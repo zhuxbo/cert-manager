@@ -48,6 +48,114 @@ test('续费：迁移原订单所有 target 到新订单并推送', function () 
     Queue::assertPushed(CloudDeployJob::class, 1);
 });
 
+test('续费迁移纯上传目标时同步订单作用域哈希', function () {
+    Queue::fake();
+    $oldOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $oldCert = Cert::factory()->create(['order_id' => $oldOrder->id, 'status' => 'renewed']);
+    $newOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $newCert = Cert::factory()->create([
+        'order_id' => $newOrder->id,
+        'status' => 'active',
+        'action' => 'renew',
+        'last_cert_id' => $oldCert->id,
+    ]);
+    $newOrder->update(['latest_cert_id' => $newCert->id]);
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $oldOrder->id,
+        'product' => 'cas',
+        'config' => [],
+        'config_hash' => CloudDeployTarget::scopedConfigHash([], $oldOrder->id),
+        'enabled' => true,
+    ]);
+
+    (new CloudDeployTriggerJob($newCert->id))->handle();
+
+    $fresh = $target->fresh();
+    expect($fresh->order_id)->toBe($newOrder->id)
+        ->and($fresh->config_hash)->toBe(CloudDeployTarget::scopedConfigHash([], $newOrder->id));
+});
+
+test('续费迁移遇到新订单已有同一纯上传目标时停用旧目标', function () {
+    Queue::fake();
+    $oldOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $oldCert = Cert::factory()->create(['order_id' => $oldOrder->id, 'status' => 'renewed']);
+    $newOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $newCert = Cert::factory()->create([
+        'order_id' => $newOrder->id,
+        'status' => 'active',
+        'action' => 'renew',
+        'last_cert_id' => $oldCert->id,
+    ]);
+    $newOrder->update(['latest_cert_id' => $newCert->id]);
+    $oldTarget = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $oldOrder->id,
+        'product' => 'cas',
+        'config' => [],
+        'config_hash' => CloudDeployTarget::scopedConfigHash([], $oldOrder->id),
+        'enabled' => true,
+    ]);
+    $newTarget = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $newOrder->id,
+        'product' => 'cas',
+        'config' => [],
+        'config_hash' => CloudDeployTarget::scopedConfigHash([], $newOrder->id),
+        'enabled' => true,
+    ]);
+
+    (new CloudDeployTriggerJob($newCert->id))->handle();
+
+    expect($oldTarget->fresh()->order_id)->toBe($oldOrder->id)
+        ->and($oldTarget->fresh()->enabled)->toBeFalse()
+        ->and($newTarget->fresh()->order_id)->toBe($newOrder->id);
+    Queue::assertPushed(CloudDeployJob::class, 1);
+});
+
+test('续费迁移兼容新订单存量配置哈希并停用旧目标', function () {
+    Queue::fake();
+    $oldOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $oldCert = Cert::factory()->create(['order_id' => $oldOrder->id, 'status' => 'renewed']);
+    $newOrder = Order::factory()->create(['user_id' => $this->user->id]);
+    $newCert = Cert::factory()->create([
+        'order_id' => $newOrder->id,
+        'status' => 'active',
+        'action' => 'renew',
+        'last_cert_id' => $oldCert->id,
+    ]);
+    $newOrder->update(['latest_cert_id' => $newCert->id]);
+    $oldTarget = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $oldOrder->id,
+        'product' => 'cas',
+        'config' => [],
+        'config_hash' => CloudDeployTarget::scopedConfigHash([], $oldOrder->id),
+        'enabled' => true,
+    ]);
+    $legacyTarget = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $newOrder->id,
+        'product' => 'cas',
+        'config' => [],
+        'config_hash' => CloudDeployTarget::configHash([]),
+        'enabled' => true,
+    ]);
+
+    (new CloudDeployTriggerJob($newCert->id))->handle();
+
+    expect($oldTarget->fresh()->order_id)->toBe($oldOrder->id)
+        ->and($oldTarget->fresh()->enabled)->toBeFalse()
+        ->and($legacyTarget->fresh()->order_id)->toBe($newOrder->id)
+        ->and(CloudDeployTarget::withoutGlobalScopes()->where('order_id', $newOrder->id)->count())->toBe(1);
+    Queue::assertPushed(CloudDeployJob::class, 1);
+});
+
 test('G1 迁移跨用户守卫：prevOrder 混入他用户脏 target → 只迁同 user', function () {
     Queue::fake();
     $userB = User::factory()->create();

@@ -84,7 +84,7 @@ skills/ # 开发规范（详细文档）
 
 - **目录/加载**：`plugins/{name}/plugin.json`，`PluginServiceProvider` 自动扫描注册命名空间 + ServiceProvider；autoload 走 `realpath()` 防路径遍历，公共端点仅返回 bundle/css 路径
 - **前端加载**：公共 `GET /api/plugins` 返回 bundle 路径、管理端返回完整信息；`plugin-loader.ts` 统一加载（URL 必须以 `/` 开头）；`exposeSharedDeps()` 暴露 Vue/Router/ElementPlus/Pinia + `getAccessToken()`；`__registerPlugin.widgets` 向已有页面注入组件（插槽如 `user-dashboard-top`）
-- **管理**：`PluginManager` 安装/更新/卸载/检查更新（`/api/admin/plugin/*`），管理端 `/plugin` 页面操作；仅展示执行中/失败任务，失败需「重试」或「卸载」后再继续，避免堆叠失败任务
+- **管理**：`PluginManager` 安装/更新/卸载/检查更新（`/api/admin/plugin/*`），管理端 `/plugin` 页面操作；仅展示执行中/失败任务，失败需「重试」或「卸载」后再继续；完全清除用 `migrate:reset --path` 回滚插件全部迁移并执行 Seeder 清理钩子，任一清理失败必须保留插件文件并中止卸载
 - **vendor 运行时安装**：带 `backend/composer.json` 的插件安装/更新时 `PluginManager` 自动 `composer install --no-dev`（`App\Services\Plugin\PluginComposerRunner`），vendor **不入 git、不进发布包**；无 composer.json 的插件跳过（零影响）
 - **解耦/兼容**：主系统不硬引用插件代码/表，动态扫描（`_logs` 后缀表、`user_id` 字段）兼容；`checkCompatibility()` 按 `requires` 校版本；更新地址 `plugin.json.release_url`（第三方）→ `{release_url}/plugins/{name}`（官方）
 - **数据库约定**：仅 MySQL/MariaDB，禁 `->json()` 列（用 `text`+`array` cast）、禁 raw 方言字面量；各插件 CI 独立 job（`backend-{name}-plugin-test`）
@@ -183,8 +183,10 @@ skills/ # 开发规范（详细文档）
 - **用途/架构**：证书 `latestCert.status=active` 后自动推送到各云平台资源（CDN/负载均衡/WAF/对象存储/函数计算等）。`plugins/cloud-deploy`（命名空间 `Plugins\CloudDeploy`），certimate 式封装（每 `(provider, product)` 一个 deployer，`AbstractDeployer` + `makeClient` 注入缝 + schema 驱动校验 + guardSdk 脱敏 + uploader 去重），**已对齐 certimate 149 端点 / 55 provider**（ssh/ftp/local 产品决策不做）；官方 SDK aliyun/tencent/aws/qiniu/baidu + 手写 `<Provider>RestClient` 签名（HMAC/JWT/OAuth2/OCI），古董依赖用 composer `replace` 挡在 vendor 外（0.0.1 曾因 psr/log 1.x 污染 Monolog 全站 500）
 - **vendor 运行时安装**：`backend/vendor/`（云 SDK ~80M）**不入 git、不进发布 zip**（仅打包 composer.json/lock）；`PluginManager` 通用 composer hook 安装（见「插件系统」），缺 vendor 时 `loadPluginVendor`/`guardSdk` 降级不 fatal
 - **主系统足迹**：backend 仅 `PluginManager` composer hook + `PluginComposerRunner`；功能侧复用既有 widget 插槽 `{admin,user}-order-detail-ssl-actions`（order 详情「云部署」卡片）
-- **双端管理**：user/admin 共享 `Services\DeployService` 推送（`order_id` 按订单推 enabled / `target_ids` 直查两模式，admin `crossUser` 跨用户、空筛选 fail-closed）；target/access 双端增删改 + 启停 + 手动推送 + 部署历史；同用户同 `access_id+product+config_hash` 唯一（DB 唯一索引兜底）；admin targets 列表按 schema 逐键脱敏 `secret=true`、详情返回完整 config 供编辑
+- **双端管理**：user/admin 共享 `Services\DeployService` 推送（`order_id` 按订单推 enabled / `target_ids` 直查两模式，admin `crossUser` 跨用户、空筛选 fail-closed）；target/access 双端增删改 + 启停 + 手动推送 + 部署历史；资源部署按 config 跨订单唯一，`UploadOnlyDeployerInterface` 纯上传按 `config+order_id` 唯一，均由原 DB 唯一索引兜底；续费迁移由 `TargetMutationService` 同步纯上传 scoped hash，新订单已有相同目标时停用旧目标；admin targets 列表按 schema 逐键脱敏 `secret=true`、详情返回完整 config 供编辑；双端 schema 字段标签仅在实际被省略时悬浮显示完整文本，说明图标继续独立展示字段帮助。cloud-deploy manifest 未声明 `user_css/admin_css`，关键布局样式必须内联；若新增 `<style>`，须同时声明并验证双端 CSS 产物加载
 - **异步任务续查**：jobId 成功写入 target 数据库记录后，常规清缓存不影响后续续查同一任务
+- **失败通知模板**：插件 migration 创建 `cloud_deploy_failed` 时必须同步声明 Builder 白名单变量 `product/domain/access_name/error_code`；保留数据卸载不动模板，完全清除由该 migration 的 `down()` 删除
+- **静态类型边界**：`Registry::resolveDeployer()` 的公共契约保持 `DeployerInterface`，可选能力统一用 `instanceof` 收窄；返回 Eloquent 查询的服务方法必须用 `Builder<Model>` PHPDoc 保留模型泛型，cloud-deploy 独立 PHPStan 必须 0 errors
 - **nginx 路由自定义**：`nginx/{default,custom,enabled}/` 三层，`render.sh` 合并渲染（custom 同名优先、抑制 duplicate location、`--reload` 带 `nginx -t`+回滚）；`custom/`+`enabled/` 不入发布包
 - 详见 `plugins/cloud-deploy/skills/development.md`、`skills/ops/deploy-ops.md`（nginx）
 

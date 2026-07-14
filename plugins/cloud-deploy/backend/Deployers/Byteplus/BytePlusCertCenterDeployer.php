@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Byteplus;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -18,7 +19,7 @@ use Throwable;
  * region：证书中心默认 ap-singapore-1（新加坡，对齐 certimate createSDKClient 默认）；用户可在 config 指定。
  * certUploader 据 config.region 构造对应签名 region 的 client（与阿里 SLB 按 region 构造同思路）。
  */
-class BytePlusCertCenterDeployer extends AbstractDeployer
+class BytePlusCertCenterDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     use ResolvesBytePlusRegion;
 

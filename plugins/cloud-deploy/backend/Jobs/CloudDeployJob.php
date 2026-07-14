@@ -16,9 +16,9 @@ use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployerInterface;
 use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
@@ -205,7 +205,7 @@ class CloudDeployJob implements ShouldQueue
      *
      * @return array{job_id:string,cert_id:int,remote_cert_id:?string,expires_at:int}|null
      */
-    private function readPending(CloudDeployTarget $target, int $certId, ResumesRemoteJob|AbstractDeployer $deployer): ?array
+    private function readPending(CloudDeployTarget $target, int $certId, DeployerInterface $deployer): ?array
     {
         if ($target->getRawOriginal('pending_job') === null) {
             return null;

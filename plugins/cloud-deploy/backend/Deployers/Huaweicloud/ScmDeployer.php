@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Huaweicloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -18,7 +19,7 @@ use Throwable;
  *
  * 证书服务型在空 config 探活时不抛：region 用 `$config['region'] ?? ''` 优雅默认（回落 cn-north-4），真实 region 由 config 注入。
  */
-class ScmDeployer extends AbstractDeployer
+class ScmDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     use ResolvesHuaweiProjectId;
 

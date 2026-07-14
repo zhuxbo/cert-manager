@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Googlecloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
 
 /**
@@ -21,7 +22,7 @@ use Throwable;
  *
  * config：location（选填，默认 global）。project 走凭证（缺省从 service account JSON 的 project_id 派生）。
  */
-class GooglecloudCertificateManagerDeployer extends AbstractDeployer
+class GooglecloudCertificateManagerDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
     public function provider(): string
     {
