@@ -2,8 +2,6 @@
 
 namespace App\Http\Controllers\Deploy;
 
-use App\Exceptions\ApiResponseException;
-use App\Exceptions\MutationBusyException;
 use App\Http\Controllers\Controller;
 use App\Models\Cert;
 use App\Models\ErrorLog;
@@ -11,6 +9,7 @@ use App\Models\Order;
 use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
+use App\Services\Order\OrderCommitResilience;
 use App\Services\Order\Utils\OrderUtil;
 use App\Support\MutexLock;
 use App\Utils\LogScrubber;
@@ -256,7 +255,7 @@ class ApiController extends Controller
                     ['standard_count' => $cert->standard_count, 'wildcard_count' => $cert->wildcard_count, 'action' => 'renew'],
                     $order->product->toArray()
                 );
-                $availableBalance = bcadd((string) $payer->balance, (string) abs((float) $payer->credit_limit), 2);
+                $availableBalance = $payer->availableBalance();
                 bccomp($availableBalance, $estimatedAmount, 2) < 0 && $this->error('余额不足，请充值后再续费');
 
                 $updateParams['action'] = 'renew';
@@ -554,32 +553,15 @@ class ApiController extends Controller
      */
     private function getData(Action $action, string $method, array $params = []): array
     {
-        try {
-            $action->$method(...$params);
-        } catch (ApiResponseException $e) {
-            $result = $e->getApiResponse();
-            if ($result['code'] === 0) {
-                // O3-C：commit 段超时/失败（SDK code=0）不冒泡——订单停 pending、已扣费保留，靠 reconcile 自愈，
-                // update 响应返回既有 status=pending 展示态（下游轮询容忍，见 deploy.yaml）。镜像 V2 getData。
-                // 其它段（renew/reissue/pay）保持原样：建单/扣费失败照常报错，触发本次请求失败。
-                if ($method === 'commit') {
-                    return [];
-                }
-                $this->error($result['msg'], $result['errors'] ?? null);
-            }
-            // code===1（commit 成功由 success 抛出）落到末尾 return $result
-        } catch (MutationBusyException $e) {
-            // commit 段抢锁忙 = 成功态，不外抛 503（靠 reconcile/pull 自愈）；其它经 mutex 路径保持向上抛。
-            // 注（M-2 知情不对称）：unpaid resume 分支走 pay(autoCommit=true)，其 MutationBusyException 经此
-            // method='pay'≠'commit' 仍上抛 503——与 active 分支 commit 段吞不对称；既有行为、有意不改（O3 范围
-            // 仅 active 分支 + getData commit 段），下游重试即收敛。
-            if ($method === 'commit') {
-                return [];
-            }
-            throw $e;
-        }
-
-        return $result ?? [];
+        // commit 段吞并守卫收敛至 OrderCommitResilience（V1/V2/Deploy 单一真相源）；镜像 V2 getData。
+        // 注（M-2 知情不对称）：unpaid resume 分支走 pay(autoCommit=true)，其 MutationBusyException 经此
+        // method='pay'≠'commit' 仍上抛 503——与 active 分支 commit 段吞不对称；既有行为、有意不改（O3 范围
+        // 仅 active 分支 + commit 段），下游重试即收敛。该不对称由传入 $method 值天然保留，收敛未触碰。
+        return OrderCommitResilience::run(
+            fn () => $action->$method(...$params),
+            $method,
+            fn (array $result) => $this->error($result['msg'], $result['errors'] ?? null),
+        );
     }
 
     /**

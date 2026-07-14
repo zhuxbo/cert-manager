@@ -36,11 +36,6 @@ final class PendingReconcileQuery
      */
     public const PRODUCT_NOT_FOUND_SIGNAL = 'Product not found';
 
-    // 到顶 count 标量子查询（correlated，锚 lc.created_at）。绑定参数：action, status（比较值另附）。
-    private const MAXED_COUNT_SUBQUERY =
-        '(SELECT COUNT(*) FROM tasks t WHERE t.order_id = orders.id '
-        .'AND t.action = ? AND t.status = ? AND t.last_execute_at >= lc.created_at)';
-
     // 产品缺失 EXISTS 子查询（correlated，锚 lc.created_at）。绑定参数：action, status, like。
     private const PRODUCT_MISSING_EXISTS =
         'EXISTS (SELECT 1 FROM tasks t2 WHERE t2.order_id = orders.id '
@@ -55,7 +50,7 @@ final class PendingReconcileQuery
     public static function actionable(Builder $query, int $maxAttempts): Builder
     {
         return self::withCertAnchor($query)
-            ->whereRaw(self::MAXED_COUNT_SUBQUERY.' < ?', ['commit', 'failed', $maxAttempts])
+            ->whereRaw(self::maxedCountSubquery('orders', 'lc.created_at').' < ?', ['commit', 'failed', $maxAttempts])
             ->whereRaw('NOT '.self::PRODUCT_MISSING_EXISTS, ['commit', 'failed', self::likePattern()]);
     }
 
@@ -70,7 +65,7 @@ final class PendingReconcileQuery
     {
         return self::withCertAnchor($query)
             ->where(function (Builder $q) use ($maxAttempts) {
-                $q->whereRaw(self::MAXED_COUNT_SUBQUERY.' >= ?', ['commit', 'failed', $maxAttempts])
+                $q->whereRaw(self::maxedCountSubquery('orders', 'lc.created_at').' >= ?', ['commit', 'failed', $maxAttempts])
                     ->orWhereRaw(self::PRODUCT_MISSING_EXISTS, ['commit', 'failed', self::likePattern()]);
             });
     }
@@ -89,7 +84,7 @@ final class PendingReconcileQuery
     public static function maxedAndNotProductMissing(Builder $query, int $maxAttempts): Builder
     {
         return self::withCertAnchor($query)
-            ->whereRaw(self::MAXED_COUNT_SUBQUERY.' >= ?', ['commit', 'failed', $maxAttempts])
+            ->whereRaw(self::maxedCountSubquery('orders', 'lc.created_at').' >= ?', ['commit', 'failed', $maxAttempts])
             ->whereRaw('NOT '.self::PRODUCT_MISSING_EXISTS, ['commit', 'failed', self::likePattern()]);
     }
 
@@ -126,5 +121,21 @@ final class PendingReconcileQuery
     private static function likePattern(): string
     {
         return '%'.self::PRODUCT_NOT_FOUND_SIGNAL.'%';
+    }
+
+    /**
+     * 到顶 count 标量子查询片段（correlated，绑定参数顺序：action, status；比较值 `< ?`/`>= ?` 另附）。
+     *
+     * 参数化「owner 表 + 锚点表达式」使 Order 与 ACME 对账共用同一子查询结构（单一真相源）——
+     * Order 侧锚 JOIN 出的 certs 周期起点 `lc.created_at`（`maxedCountSubquery('orders', 'lc.created_at')`），
+     * ACME 侧无重签周期、建单即锚 `acmes.created_at`（`maxedCountSubquery('acmes', 'acmes.created_at')`）。
+     * 到顶子查询结构将来演进（如换 count 逻辑）单点改此，强制传导两侧，杜绝 ACME 手抄漂移。
+     *
+     * $ownerTable / $anchorExpr 仅接受调用方代码内硬编码字面量（表名/列名），非用户输入，无注入面。
+     */
+    public static function maxedCountSubquery(string $ownerTable, string $anchorExpr): string
+    {
+        return "(SELECT COUNT(*) FROM tasks t WHERE t.order_id = {$ownerTable}.id "
+            ."AND t.action = ? AND t.status = ? AND t.last_execute_at >= {$anchorExpr})";
     }
 }

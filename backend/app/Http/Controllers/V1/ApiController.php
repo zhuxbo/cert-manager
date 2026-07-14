@@ -10,6 +10,7 @@ use App\Models\ApiToken;
 use App\Models\Order;
 use App\Models\Product;
 use App\Services\Order\Action;
+use App\Services\Order\OrderCommitResilience;
 use App\Services\Order\Utils\OrderUtil;
 use DB;
 use Exception;
@@ -560,30 +561,13 @@ class ApiController extends Controller
      */
     private function getData(string $action, array $params): array
     {
-        try {
-            $this->action->$action(...$params);
-        } catch (ApiResponseException $e) {
-            $result = $e->getApiResponse();
-            if ($result['code'] === 0) {
-                // commit 段：超时/失败（SDK code=0）不冒泡 —— 订单停 pending、已扣费保留，
-                // 靠对账/下游 pull get 自愈，返回既有 processing 展示态（M1）。
-                // 其它段（new/renew/reissue/pay）保持原样：建单/扣费失败照常报错，触发本次请求失败。
-                if ($action === 'commit') {
-                    return [];
-                }
-                $this->error($result['msg'], $result['errors'] ?? null);
-            }
-            // code===1（commit 成功由 success 抛出）落到末尾 return $result
-        } catch (MutationBusyException $e) {
-            // commit 段抢锁忙：统一成功态，不外抛 503（同 code=0 处理，靠 pull/对账自愈）；
-            // 其它经 withMutex 的路径保持向上抛（前端已适配 503）。
-            if ($action === 'commit') {
-                return [];
-            }
-            throw $e;
-        }
-
-        return $result ?? [];
+        // commit 段吞并守卫收敛至 OrderCommitResilience（V1/V2/Deploy 单一真相源）；
+        // 吞并边界（仅 commit 吞 code=0 + MutationBusyException、扣费不回滚）是 P0 红线，勿在此另写分叉。
+        return OrderCommitResilience::run(
+            fn () => $this->action->$action(...$params),
+            $action,
+            fn (array $result) => $this->error($result['msg'], $result['errors'] ?? null),
+        );
     }
 
     /**

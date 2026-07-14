@@ -100,8 +100,8 @@ class BalanceForecastCommand extends Command
                 ];
             }
 
-            // 可用额 = balance + |credit_limit|，与 AutoRenewCommand 余额预检逐字一致
-            $available = bcadd($user->balance, (string) abs((float) $user->credit_limit), 2);
+            // 可用额 = balance + |credit_limit|，与 AutoRenewCommand/Deploy 余额预检共用 User::availableBalance()
+            $available = $user->availableBalance();
             if (bccomp($available, $required, 2) >= 0) {
                 continue;
             }

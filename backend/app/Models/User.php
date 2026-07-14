@@ -209,6 +209,19 @@ class User extends BaseModel implements AuthenticatableContract, JWTSubject
     }
 
     /**
+     * 可用额度 = balance + |credit_limit|（credit_limit 负数存储，取绝对值）。
+     *
+     * 续费余额预检的单一口径：AutoRenewCommand / BalanceForecastCommand / Deploy update 三处调用，
+     * 避免公式手抄漂移致「预检放行但锁内 charge 拒绝」或「前瞻预警与实际扣费长期不符」。
+     * 注：锁内实际扣费的权威判定是 ActionTrait::charge 的 `balance_after < credit_limit` CAS（移项等价、
+     * 事务锁内），与本 fail-fast 预检口径数学一致但表达/时机不同，各自独立、勿合并。
+     */
+    public function availableBalance(): string
+    {
+        return bcadd((string) $this->balance, (string) abs((float) $this->credit_limit), 2);
+    }
+
+    /**
      * 获取通知配置
      */
     public function getNotificationSettingsAttribute($value): array

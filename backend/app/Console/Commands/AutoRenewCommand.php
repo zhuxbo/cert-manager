@@ -237,7 +237,7 @@ class AutoRenewCommand extends Command
             // DB 另取的 user 行，内存实例不更新 → 不 refresh 则后续同用户单读旧值必误放行（07-07 断言 1）。
             $user->refresh();
 
-            $availableBalance = bcadd($user->balance, (string) abs((float) $user->credit_limit), 2);
+            $availableBalance = $user->availableBalance();
 
             $estimatedAmount = OrderUtil::getLatestCertAmount(
                 ['user_id' => $user->id, 'product_id' => $product->id, 'period' => $order->period,

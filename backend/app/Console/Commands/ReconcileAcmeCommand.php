@@ -6,6 +6,7 @@ use App\Models\Acme;
 use App\Models\Task;
 use App\Services\Acme\Action;
 use App\Services\Notification\SystemAlert;
+use App\Services\Order\PendingReconcileQuery;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -26,11 +27,13 @@ class ReconcileAcmeCommand extends Command
 
     protected $description = 'Requeue paid pending ACME orders without upstream api_id';
 
-    // 到顶 count 标量子查询（correlated，锚 acmes.created_at —— ACME 无重签周期，建单时间即周期锚）。
+    // 到顶 count 标量子查询锚 acmes.created_at（ACME 无重签周期，建单时间即周期锚）；结构复用 Order 侧
+    // 单一真相源 PendingReconcileQuery::maxedCountSubquery，参数化 owner 表/锚点，防两侧手抄漂移。
     // (a) 主扫描用 `< ?` 排除到顶、(b) 转人工扫描用 `>= ?` 选中到顶：正反同源，防内部漂移。
-    private const MAXED_COUNT_SUBQUERY =
-        '(SELECT COUNT(*) FROM tasks t WHERE t.order_id = acmes.id '
-        .'AND t.action = ? AND t.status = ? AND t.last_execute_at >= acmes.created_at)';
+    private static function maxedCountSubquery(): string
+    {
+        return PendingReconcileQuery::maxedCountSubquery('acmes', 'acmes.created_at');
+    }
 
     public function handle(): int
     {
@@ -43,7 +46,7 @@ class ReconcileAcmeCommand extends Command
         $acmes = Acme::where('status', Acme::STATUS_PENDING)
             ->whereNull('api_id')
             ->where('created_at', '<=', $cutoff)
-            ->whereRaw(self::MAXED_COUNT_SUBQUERY.' < ?', ['commit_acme', 'failed', $maxAttempts])
+            ->whereRaw(self::maxedCountSubquery().' < ?', ['commit_acme', 'failed', $maxAttempts])
             ->orderBy('id')
             ->limit($limit)
             ->get();
@@ -128,7 +131,7 @@ class ReconcileAcmeCommand extends Command
         $acmes = Acme::where('status', Acme::STATUS_PENDING)
             ->whereNull('api_id')
             ->where('created_at', '<=', $cutoff)
-            ->whereRaw(self::MAXED_COUNT_SUBQUERY.' >= ?', ['commit_acme', 'failed', $maxAttempts])
+            ->whereRaw(self::maxedCountSubquery().' >= ?', ['commit_acme', 'failed', $maxAttempts])
             ->get();
 
         foreach ($acmes as $acme) {
