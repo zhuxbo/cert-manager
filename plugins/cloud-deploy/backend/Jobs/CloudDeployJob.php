@@ -14,9 +14,9 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
@@ -41,7 +41,7 @@ class CloudDeployJob implements ShouldQueue
     // 与既有 --timeout 60 同前提）。各长轮询 deployer 的 bind 最坏耗时 ≤50s（CloudDeployPollBudgetTest 锁死）。
     public int $timeout = 55;
 
-    /** pending jobId 的 Cache 键 TTL：> sweep-B 7 天节流 + freeze/延迟余量；每次 catch 续期。 */
+    /** pending jobId 的数据库 TTL：> sweep-B 7 天节流 + freeze/延迟余量；每次 catch 续期。 */
     private const PENDING_TTL_DAYS = 10;
 
     public function __construct(
@@ -131,16 +131,15 @@ class CloudDeployJob implements ShouldQueue
         $deployer = app(Registry::class)->resolveDeployer($access->provider, $target->product);
         $credentials = $access->credentials; // encrypted:array → decrypted
 
-        // G2：读 pending jobId（cert/product 匹配才续查；不匹配即 forget 走正常 bind，绝不跨 cert 复用 jobId）
-        $pending = $this->readPending((int) $cert->id, (string) $target->product);
+        // G2：只从 target 数据库字段读 pending；无效内容先清库再走 bind。
+        $pending = $this->readPending($target, (int) $cert->id, $deployer);
         $remoteCertId = is_array($pending) && is_string($pending['remote_cert_id'] ?? null) ? $pending['remote_cert_id'] : null;
 
         try {
             if (is_array($pending) && $deployer instanceof ResumesRemoteJob) {
                 // 续查**同一** jobId（不重建云端任务）：成功收敛 / 终态失败转业务终态 / 仍 pending 再抛续期
                 $deployer->resumePoll((string) $pending['job_id'], $credentials, $target->config ?? []);
-                Cache::forget($this->pendingCacheKey());
-                $target->update(['last_cert_id' => $cert->id, 'last_status' => 'success', 'last_error' => null, 'last_deployed_at' => now()]);
+                $target->update(['pending_job' => null, 'last_cert_id' => $cert->id, 'last_status' => 'success', 'last_error' => null, 'last_deployed_at' => now()]);
                 $this->writeLog($target, $cert, $access, 'success', true, $remoteCertId, null, null);
 
                 return;
@@ -161,27 +160,31 @@ class CloudDeployJob implements ShouldQueue
                 );
             }
 
-            Cache::forget($this->pendingCacheKey());
             $target->update([
+                'pending_job' => null,
                 'last_cert_id' => $cert->id, 'last_status' => 'success',
                 'last_error' => null, 'last_deployed_at' => now(),
             ]);
             $this->writeLog($target, $cert, $access, 'success', true, $remoteCertId, null, null);
         } catch (DeployPollPendingException $e) {
             // 云端任务已提交、未在窗口内达终态：持久化 jobId 供重试/sweep-B 续查（不重建），占 attempt 退避重试。
-            Cache::put($this->pendingCacheKey(), [
-                'cert_id' => (int) $cert->id, 'product' => (string) $target->product,
-                'job_id' => $e->remoteJobId, 'remote_cert_id' => is_string($remoteCertId) ? $remoteCertId : null,
-            ], now()->addDays(self::PENDING_TTL_DAYS));
             // 复用 failed 态（不加新枚举/不迁移）；写 last_cert_id + last_deployed_at 使 sweep 走 B（7 天）而非 A（每天）
-            $target->update(['last_status' => 'failed', 'last_cert_id' => $cert->id, 'last_error' => '云端部署任务处理中，待确认', 'last_deployed_at' => now()]);
+            $target->update([
+                'pending_job' => [
+                    'job_id' => is_array($pending) ? $pending['job_id'] : $e->remoteJobId,
+                    'cert_id' => (int) $cert->id,
+                    'remote_cert_id' => is_string($remoteCertId) ? $remoteCertId : null,
+                    'expires_at' => now()->addDays(self::PENDING_TTL_DAYS)->timestamp,
+                ],
+                'last_status' => 'failed', 'last_cert_id' => $cert->id,
+                'last_error' => '云端部署任务处理中，待确认', 'last_deployed_at' => now(),
+            ]);
             $this->writeLog($target, $cert, $access, 'failed', false, null, 'poll_pending', '云端部署任务处理中，待确认');
 
             throw $e; // 占 attempt 走 backoff 重试（下次 resumePoll 续查同一 jobId）
         } catch (DeployBusinessException $e) {
-            Cache::forget($this->pendingCacheKey()); // 业务终态：清 pending
             $msg = $e->getMessage() ?: $e::class;
-            $target->update(['last_status' => 'failed', 'last_cert_id' => $cert->id, 'last_error' => mb_substr($msg, 0, 255), 'last_deployed_at' => now()]);
+            $target->update(['pending_job' => null, 'last_status' => 'failed', 'last_cert_id' => $cert->id, 'last_error' => mb_substr($msg, 0, 255), 'last_deployed_at' => now()]);
             $this->writeLog($target, $cert, $access, 'failed', true, null, 'business_error', $msg);
             $this->notifyBusinessFailure($target, $access, 'business_error');
 
@@ -197,26 +200,33 @@ class CloudDeployJob implements ShouldQueue
         }
     }
 
-    /** pending jobId 的 Cache 键（按 target 隔离）。 */
-    private function pendingCacheKey(): string
-    {
-        return "cloud-deploy:pending-job:$this->targetId";
-    }
-
     /**
-     * 读 pending jobId：cert/product 匹配才返回（供 resumePoll 续查同一云端任务）；
-     * 不匹配（重签发换证 / target 改配）即 forget 并返回 null——旧任务弃查，绝不跨 cert 复用 jobId。
+     * 读取且严格校验数据库 pending jobId；任一字段或续查能力无效时先清库。
      *
-     * @return array<string,mixed>|null
+     * @return array{job_id:string,cert_id:int,remote_cert_id:?string,expires_at:int}|null
      */
-    private function readPending(int $certId, string $product): ?array
+    private function readPending(CloudDeployTarget $target, int $certId, ResumesRemoteJob|AbstractDeployer $deployer): ?array
     {
-        $pending = Cache::get($this->pendingCacheKey());
-        if (! is_array($pending) || ! isset($pending['job_id'])) {
+        if ($target->getRawOriginal('pending_job') === null) {
             return null;
         }
-        if ((int) ($pending['cert_id'] ?? 0) !== $certId || (string) ($pending['product'] ?? '') !== $product) {
-            Cache::forget($this->pendingCacheKey());
+
+        $pending = $target->pending_job;
+        $valid = is_array($pending)
+            && is_string($pending['job_id'] ?? null)
+            && trim($pending['job_id']) !== ''
+            && is_int($pending['cert_id'] ?? null)
+            && $pending['cert_id'] > 0
+            && $pending['cert_id'] === $certId
+            && array_key_exists('remote_cert_id', $pending)
+            && ($pending['remote_cert_id'] === null || is_string($pending['remote_cert_id']))
+            && is_int($pending['expires_at'] ?? null)
+            && $pending['expires_at'] > 0
+            && $pending['expires_at'] > now()->timestamp
+            && $deployer instanceof ResumesRemoteJob;
+
+        if (! $valid) {
+            $target->update(['pending_job' => null]);
 
             return null;
         }
@@ -242,7 +252,7 @@ class CloudDeployJob implements ShouldQueue
     {
         $msg = $e->getMessage() ?: $e::class;
         // poll_pending 耗尽：区分 error_code（通知文案通用，上下文表明「任务已提交云端待确认」降误报感）；
-        // **不清 pending cache**——留给 sweep-B 续查同一 jobId（收敛链关键，§G2.2 / §G2.5）。
+        // **不清 pending_job**——留给 sweep-B 续查同一 jobId（收敛链关键，§G2.2 / §G2.5）。
         $errorCode = $e instanceof DeployPollPendingException ? 'poll_pending' : 'retries_exhausted';
 
         $target = CloudDeployTarget::withoutGlobalScopes()->find($this->targetId);

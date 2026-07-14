@@ -228,6 +228,12 @@ test('admin target update/delete 保持 user access order 一致并支持改绑'
         'last_status' => 'success',
         'last_cert_id' => $certA->id,
         'last_deployed_at' => now(),
+        'pending_job' => [
+            'job_id' => 'job-123',
+            'cert_id' => (int) $certA->id,
+            'remote_cert_id' => 'cert-456',
+            'expires_at' => now()->addDays(10)->timestamp,
+        ],
     ]);
 
     $this->actingAsAdmin($this->admin)
@@ -244,6 +250,7 @@ test('admin target update/delete 保持 user access order 一致并支持改绑'
     expect((int) $fresh->access_id)->toBe((int) $accessB->id);
     expect((int) $fresh->order_id)->toBe((int) $orderB->id);
     expect($fresh->last_status)->toBeNull();
+    expect($fresh->pending_job)->toBeNull();
 
     $this->actingAsAdmin($this->admin)
         ->deleteJson("/api/admin/cloud-deploy/target/{$target->id}")
@@ -251,6 +258,80 @@ test('admin target update/delete 保持 user access order 一致并支持改绑'
         ->assertJson(['code' => 1]);
 
     expect(CloudDeployTarget::withoutGlobalScopes()->whereKey($target->id)->exists())->toBeFalse();
+});
+
+test('admin 仅切 enabled 保留 pending job', function () {
+    $owner = User::factory()->create();
+    $access = CloudDeployAccess::create([
+        'user_id' => $owner->id,
+        'name' => 'aliyun',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'S'],
+    ]);
+    $order = Order::factory()->create(['user_id' => $owner->id]);
+    $cert = Cert::factory()->active()->create(['order_id' => $order->id, 'common_name' => 'admin-enabled.example.com']);
+    $order->update(['latest_cert_id' => $cert->id]);
+    $pending = [
+        'job_id' => 'job-123',
+        'cert_id' => (int) $cert->id,
+        'remote_cert_id' => 'cert-456',
+        'expires_at' => now()->addDays(10)->timestamp,
+    ];
+    $target = CloudDeployTarget::create([
+        'user_id' => $owner->id,
+        'access_id' => $access->id,
+        'order_id' => $order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'admin-enabled.example.com'],
+        'enabled' => true,
+        'pending_job' => $pending,
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->putJson("/api/admin/cloud-deploy/target/{$target->id}", ['enabled' => false])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $fresh = CloudDeployTarget::withoutGlobalScopes()->findOrFail($target->id);
+    expect($fresh->enabled)->toBeFalse();
+    expect($fresh->pending_job)->toBe($pending);
+});
+
+test('pending job 不出现在 admin 目标详情和列表响应', function () {
+    $owner = User::factory()->create();
+    $access = CloudDeployAccess::create([
+        'user_id' => $owner->id,
+        'name' => 'aliyun',
+        'provider' => 'aliyun',
+        'credentials' => ['access_key_id' => 'AK', 'access_key_secret' => 'S'],
+    ]);
+    $order = Order::factory()->create(['user_id' => $owner->id]);
+    $cert = Cert::factory()->active()->create(['order_id' => $order->id, 'common_name' => 'admin-hidden.example.com']);
+    $order->update(['latest_cert_id' => $cert->id]);
+    $target = CloudDeployTarget::create([
+        'user_id' => $owner->id,
+        'access_id' => $access->id,
+        'order_id' => $order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'admin-hidden.example.com'],
+        'pending_job' => [
+            'job_id' => 'secret-job-id',
+            'cert_id' => (int) $cert->id,
+            'remote_cert_id' => 'secret-cert-id',
+            'expires_at' => now()->addDays(10)->timestamp,
+        ],
+    ]);
+
+    $show = $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/cloud-deploy/target/{$target->id}")
+        ->assertOk()
+        ->assertJsonMissingPath('data.pending_job');
+    $list = $this->actingAsAdmin($this->admin)
+        ->getJson('/api/admin/cloud-deploy/target')
+        ->assertOk()
+        ->assertJsonMissingPath('data.items.0.pending_job');
+
+    expect(json_encode([$show->json(), $list->json()]))->not->toContain('secret-job-id');
 });
 
 test('admin 新增和改绑 target 时拒绝非候选订单', function () {

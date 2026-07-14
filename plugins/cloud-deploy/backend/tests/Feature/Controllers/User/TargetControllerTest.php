@@ -258,6 +258,12 @@ test('存量 target 仅切 enabled（不重提 config）放行，向后兼容', 
 });
 
 test('更新结构字段清空 last 状态', function () {
+    $pending = [
+        'job_id' => 'job-123',
+        'cert_id' => (int) $this->cert->id,
+        'remote_cert_id' => 'cert-456',
+        'expires_at' => now()->addDays(10)->timestamp,
+    ];
     $target = CloudDeployTarget::create([
         'user_id' => $this->user->id,
         'access_id' => $this->access->id,
@@ -268,6 +274,7 @@ test('更新结构字段清空 last 状态', function () {
         'last_status' => 'success',
         'last_error' => 'old',
         'last_deployed_at' => now(),
+        'pending_job' => $pending,
     ]);
 
     $this->actingAsUser($this->user)
@@ -280,9 +287,16 @@ test('更新结构字段清空 last 状态', function () {
     expect($fresh->last_status)->toBeNull();
     expect($fresh->last_error)->toBeNull();
     expect($fresh->last_deployed_at)->toBeNull();
+    expect($fresh->pending_job)->toBeNull();
 });
 
 test('仅切 enabled 不清空 last 状态', function () {
+    $pending = [
+        'job_id' => 'job-123',
+        'cert_id' => (int) $this->cert->id,
+        'remote_cert_id' => 'cert-456',
+        'expires_at' => now()->addDays(10)->timestamp,
+    ];
     $target = CloudDeployTarget::create([
         'user_id' => $this->user->id,
         'access_id' => $this->access->id,
@@ -293,6 +307,7 @@ test('仅切 enabled 不清空 last 状态', function () {
         'last_cert_id' => $this->cert->id,
         'last_status' => 'success',
         'last_deployed_at' => now(),
+        'pending_job' => $pending,
     ]);
 
     $this->actingAsUser($this->user)
@@ -304,6 +319,7 @@ test('仅切 enabled 不清空 last 状态', function () {
     expect($fresh->enabled)->toBeFalse();
     expect($fresh->last_status)->toBe('success');
     expect((int) $fresh->last_cert_id)->toBe((int) $this->cert->id);
+    expect($fresh->pending_job)->toBe($pending);
 });
 
 test('更新 order_id 时拒绝非候选订单', function () {
@@ -370,6 +386,33 @@ test('按 order_id 过滤目标列表', function () {
 
     $res = $this->actingAsUser($this->user)->getJson("/api/cloud-deploy/target?order_id={$this->order->id}")->assertOk();
     expect($res->json('data.total'))->toBe(1);
+});
+
+test('pending job 不出现在用户目标详情和列表响应', function () {
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id,
+        'access_id' => $this->access->id,
+        'order_id' => $this->order->id,
+        'product' => 'cdn',
+        'config' => ['domain' => 'hidden.example.com'],
+        'pending_job' => [
+            'job_id' => 'secret-job-id',
+            'cert_id' => (int) $this->cert->id,
+            'remote_cert_id' => 'secret-cert-id',
+            'expires_at' => now()->addDays(10)->timestamp,
+        ],
+    ]);
+
+    $show = $this->actingAsUser($this->user)
+        ->getJson("/api/cloud-deploy/target/{$target->id}")
+        ->assertOk()
+        ->assertJsonMissingPath('data.pending_job');
+    $list = $this->actingAsUser($this->user)
+        ->getJson('/api/cloud-deploy/target')
+        ->assertOk()
+        ->assertJsonMissingPath('data.items.0.pending_job');
+
+    expect(json_encode([$show->json(), $list->json()]))->not->toContain('secret-job-id');
 });
 
 test('last_status=success 等值过滤', function () {

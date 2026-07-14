@@ -21,6 +21,7 @@ return new class extends Migration
             $table->text('config')->comment('资源参数 JSON: 域名/region/实例ID 等');
             $table->char('config_hash', 64)->comment('规范化 config SHA-256');
             $table->boolean('enabled')->default(true)->comment('是否启用自动推送');
+            $table->text('pending_job')->nullable()->comment('待续查远程任务 JSON');
             $table->unsignedBigInteger('last_cert_id')->nullable()->comment('最近成功推送的证书ID(幂等键)');
             $table->string('last_status', 20)->nullable()->index()->comment('最近尝试结果: success/failed');
             $table->text('last_error')->nullable()->comment('最近尝试错误摘要');

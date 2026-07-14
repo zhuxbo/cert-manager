@@ -184,6 +184,7 @@ skills/ # 开发规范（详细文档）
 - **vendor 运行时安装**：`backend/vendor/`（云 SDK ~80M）**不入 git、不进发布 zip**（仅打包 composer.json/lock）；`PluginManager` 通用 composer hook 安装（见「插件系统」），缺 vendor 时 `loadPluginVendor`/`guardSdk` 降级不 fatal
 - **主系统足迹**：backend 仅 `PluginManager` composer hook + `PluginComposerRunner`；功能侧复用既有 widget 插槽 `{admin,user}-order-detail-ssl-actions`（order 详情「云部署」卡片）
 - **双端管理**：user/admin 共享 `Services\DeployService` 推送（`order_id` 按订单推 enabled / `target_ids` 直查两模式，admin `crossUser` 跨用户、空筛选 fail-closed）；target/access 双端增删改 + 启停 + 手动推送 + 部署历史；同用户同 `access_id+product+config_hash` 唯一（DB 唯一索引兜底）；admin targets 列表按 schema 逐键脱敏 `secret=true`、详情返回完整 config 供编辑
+- **异步任务续查**：jobId 成功写入 target 数据库记录后，常规清缓存不影响后续续查同一任务
 - **nginx 路由自定义**：`nginx/{default,custom,enabled}/` 三层，`render.sh` 合并渲染（custom 同名优先、抑制 duplicate location、`--reload` 带 `nginx -t`+回滚）；`custom/`+`enabled/` 不入发布包
 - 详见 `plugins/cloud-deploy/skills/development.md`、`skills/ops/deploy-ops.md`（nginx）
 

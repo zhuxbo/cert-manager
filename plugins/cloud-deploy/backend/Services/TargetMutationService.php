@@ -89,6 +89,7 @@ class TargetMutationService
             $validated['last_status'] = null;
             $validated['last_error'] = null;
             $validated['last_deployed_at'] = null;
+            $validated['pending_job'] = null;
         }
 
         return $validated;

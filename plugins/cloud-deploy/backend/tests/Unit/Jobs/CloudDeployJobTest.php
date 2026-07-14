@@ -10,6 +10,7 @@ use App\Services\Notification\NotificationCenter;
 use Darabonba\OpenApi\Exceptions\ClientException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunErrorSanitizer;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
@@ -811,18 +812,18 @@ test('ServiceProvider 注册了 cloud_deploy_failed 专用 Builder', function ()
 
 /*
 |--------------------------------------------------------------------------
-| G2：jobId 持久化 + resumePoll 续查（job-id 型 deployer 长轮询超窗）
-| G4：failed() 补写 last_deployed_at + 不清 pending cache
+| G2：jobId 数据库持久化 + resumePoll 续查（job-id 型 deployer 长轮询超窗）
+| G4：failed() 补写 last_deployed_at + 保留 pending_job
 | G5：业务终态失败发通知（复用 cloud_deploy_failed）+ sweep-B 复扫再发（有界）
 |--------------------------------------------------------------------------
 */
 
 /** ResumesRemoteJob fake deployer：bind 可抛 poll_pending；resumePoll 行为注入。 */
-function jobResumableDeployer(?string $bindJobId, ?callable $resume = null): AbstractDeployer
+function jobResumableDeployer(?string $bindJobId, ?callable $resume = null, ?callable $bind = null): AbstractDeployer
 {
-    return new class($bindJobId, $resume) extends AbstractDeployer implements ResumesRemoteJob
+    return new class($bindJobId, $resume, $bind) extends AbstractDeployer implements ResumesRemoteJob
     {
-        public function __construct(private ?string $bindJobId, private $resume) {}
+        public function __construct(private ?string $bindJobId, private $resume, private $bind) {}
 
         public function provider(): string
         {
@@ -847,6 +848,9 @@ function jobResumableDeployer(?string $bindJobId, ?callable $resume = null): Abs
         public function bind(string|array $certRef, array $credentials, array $config): void
         {
             CloudDeployJobTestSpy::$binds[] = ['cert' => $certRef, 'config' => $config];
+            if ($this->bind !== null) {
+                ($this->bind)();
+            }
             if ($this->bindJobId !== null) {
                 throw new DeployPollPendingException($this->bindJobId, '云端部署任务处理中');
             }
@@ -872,41 +876,132 @@ function jobResumableDeployer(?string $bindJobId, ?callable $resume = null): Abs
     };
 }
 
-test('G2 bind 抛 poll_pending → 写 Cache pending + target failed/last_deployed_at + log poll_pending(is_final=false) + 重抛', function () {
+/** @return array{job_id:string,cert_id:int,remote_cert_id:?string,expires_at:int} */
+function validPendingJob(int $certId, array $overrides = []): array
+{
+    return array_replace([
+        'job_id' => 'job-123',
+        'cert_id' => $certId,
+        'remote_cert_id' => null,
+        'expires_at' => now()->addDays(10)->timestamp,
+    ], $overrides);
+}
+
+test('G2 bind 抛 poll_pending → pending_job 与 failed 状态同一次 update 落库并重抛', function () {
     bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer('job-123'));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+    $thrown = null;
+    $expiresAtLowerBound = now()->addDays(10)->timestamp;
+    try {
+        (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+    } catch (DeployPollPendingException $e) {
+        $thrown = $e;
+    }
+    $expiresAtUpperBound = now()->addDays(10)->timestamp;
+    $targetUpdates = collect(DB::getQueryLog())->filter(
+        fn (array $query) => str_starts_with($query['query'], 'update `cloud_deploy_targets` set')
+    )->values();
+    DB::disableQueryLog();
+
+    expect($thrown)->toBeInstanceOf(DeployPollPendingException::class);
+    $target->refresh();
+    $pending = $target->pending_job;
+    expect($pending)->toBeArray();
+    expect($pending['job_id'])->toBe('job-123');
+    expect($pending['cert_id'])->toBe($cert->id);
+    expect($pending['remote_cert_id'])->toBeNull();
+    expect($pending['expires_at'])
+        ->toBeGreaterThanOrEqual($expiresAtLowerBound)
+        ->toBeLessThanOrEqual($expiresAtUpperBound);
+
+    expect($target->last_status)->toBe('failed');
+    expect($target->last_cert_id)->toBe($cert->id);
+    expect($target->last_deployed_at)->not->toBeNull();
+    expect($targetUpdates)->toHaveCount(1);
+    expect($targetUpdates[0]['query'])
+        ->toContain('`pending_job` = ?')
+        ->toContain('`last_status` = ?')
+        ->toContain('`last_cert_id` = ?')
+        ->toContain('`last_error` = ?')
+        ->toContain('`last_deployed_at` = ?');
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'poll_pending')->where('is_final', false)->exists())->toBeTrue();
+});
+
+test('G2 核心闭环：清 Cache 后续查数据库中同一 jobId，累计只 bind 一次并在成功后清 pending', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: 'job-123'));
     [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
 
     expect(fn () => (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle())
         ->toThrow(DeployPollPendingException::class);
+    expect($target->fresh()->pending_job['job_id'])->toBe('job-123');
+    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
 
-    $pending = Cache::get("cloud-deploy:pending-job:$target->id");
-    expect($pending)->toBeArray();
-    expect($pending['job_id'])->toBe('job-123');
-    expect($pending['cert_id'])->toBe($cert->id);
-    expect($pending['product'])->toBe('cdn');
-
-    $target->refresh();
-    expect($target->last_status)->toBe('failed');
-    expect($target->last_cert_id)->toBe($cert->id);
-    expect($target->last_deployed_at)->not->toBeNull();
-    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'poll_pending')->where('is_final', false)->exists())->toBeTrue();
-});
-
-test('G2 预置 pending → 走 resumePoll 续查（bind 不被调）；成功 → success + forget cache', function () {
-    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: null)); // bind 若被调不会抛，靠 spy 断言未调
-    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
-    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id, 'product' => 'cdn', 'job_id' => 'job-9', 'remote_cert_id' => null], now()->addDays(10));
+    Cache::forever('cloud-deploy:test-sentinel', 'present');
+    Cache::flush();
+    expect(Cache::get('cloud-deploy:test-sentinel'))->toBeNull();
+    expect($target->fresh()->pending_job['job_id'])->toBe('job-123');
 
     (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
 
-    expect(CloudDeployJobTestSpy::$resumes)->toBe(['job-9']); // 续查同一 jobId
-    expect(CloudDeployJobTestSpy::$binds)->toBeEmpty();        // bind 未被调（不重建任务）
-    expect(Cache::get("cloud-deploy:pending-job:$target->id"))->toBeNull(); // 收敛后 forget
+    expect(CloudDeployJobTestSpy::$resumes)->toBe(['job-123']);
+    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
     $target->refresh();
     expect($target->last_status)->toBe('success');
+    expect($target->pending_job)->toBeNull();
 });
 
-test('G2 resumePoll 抛 DeployBusinessException（云端终态失败）→ 终态 + forget + 派通知', function () {
+test('G2 resumePoll 再次 pending → 复用同一 jobId 并刷新数据库过期时间', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(
+        bindJobId: null,
+        resume: function (string $jobId) {
+            expect($jobId)->toBe('job-123');
+            throw new DeployPollPendingException($jobId, '仍在处理');
+        },
+    ));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $oldExpiresAt = now()->addHour()->timestamp;
+    $target->update(['pending_job' => validPendingJob($cert->id, [
+        'remote_cert_id' => 'remote-cert-9',
+        'expires_at' => $oldExpiresAt,
+    ])]);
+
+    expect(fn () => (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle())
+        ->toThrow(DeployPollPendingException::class);
+
+    $pending = $target->fresh()->pending_job;
+    expect(CloudDeployJobTestSpy::$binds)->toBeEmpty();
+    expect(CloudDeployJobTestSpy::$resumes)->toBe(['job-123']);
+    expect($pending['job_id'])->toBe('job-123');
+    expect($pending['remote_cert_id'])->toBe('remote-cert-9');
+    expect($pending['expires_at'])->toBeGreaterThan($oldExpiresAt);
+});
+
+test('G2 resumePoll 成功 → success 与 pending_job=null 同一次 update', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: null));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $target->update(['pending_job' => validPendingJob($cert->id, ['job_id' => 'job-success'])]);
+
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+    $targetUpdates = collect(DB::getQueryLog())->filter(
+        fn (array $query) => str_starts_with($query['query'], 'update `cloud_deploy_targets` set')
+    )->values();
+    DB::disableQueryLog();
+
+    $target->refresh();
+    expect(CloudDeployJobTestSpy::$resumes)->toBe(['job-success']);
+    expect(CloudDeployJobTestSpy::$binds)->toBeEmpty();
+    expect($target->last_status)->toBe('success');
+    expect($target->pending_job)->toBeNull();
+    expect($targetUpdates)->toHaveCount(1);
+    expect($targetUpdates[0]['query'])->toContain('`pending_job` = ?')->toContain('`last_status` = ?');
+});
+
+test('G2 resumePoll 抛 DeployBusinessException（云端终态失败）→ 终态与 pending_job=null 同一次 update', function () {
     bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(
         bindJobId: null,
         resume: function () {
@@ -914,46 +1009,127 @@ test('G2 resumePoll 抛 DeployBusinessException（云端终态失败）→ 终�
         },
     ));
     [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
-    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id, 'product' => 'cdn', 'job_id' => 'job-x', 'remote_cert_id' => null], now()->addDays(10));
+    $target->update(['pending_job' => validPendingJob($cert->id, ['job_id' => 'job-business-failed'])]);
 
     $spy = Mockery::mock(NotificationCenter::class);
     $spy->shouldReceive('dispatch')->once()->withArgs(fn (NotificationIntent $i) => $i->code === 'cloud_deploy_failed' && ($i->context['error_code'] ?? null) === 'business_error');
     app()->instance(NotificationCenter::class, $spy);
 
+    DB::flushQueryLog();
+    DB::enableQueryLog();
     (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+    $targetUpdates = collect(DB::getQueryLog())->filter(
+        fn (array $query) => str_starts_with($query['query'], 'update `cloud_deploy_targets` set')
+    )->values();
+    DB::disableQueryLog();
 
-    expect(Cache::get("cloud-deploy:pending-job:$target->id"))->toBeNull(); // 业务终态清 pending
     $target->refresh();
     expect($target->last_status)->toBe('failed');
+    expect($target->pending_job)->toBeNull();
+    expect($targetUpdates)->toHaveCount(1);
+    expect($targetUpdates[0]['query'])->toContain('`pending_job` = ?')->toContain('`last_status` = ?');
     expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'business_error')->where('is_final', true)->exists())->toBeTrue();
 });
 
-test('G2 pending cert_id 不匹配（重签发换证）→ forget + 走正常 bind（绝不跨 cert 复用 jobId）', function () {
-    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: null));
+test('G2 resumePoll 瞬态异常 保留有效 pending_job', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(
+        bindJobId: null,
+        resume: fn () => throw new RuntimeException('temporary network error'),
+    ));
     [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
-    // pending 属旧 cert（id+1 一定不等当前 cert）
-    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id + 1000, 'product' => 'cdn', 'job_id' => 'stale', 'remote_cert_id' => null], now()->addDays(10));
+    $expectedPending = validPendingJob($cert->id, ['job_id' => 'keep-on-throwable']);
+    $target->update(['pending_job' => $expectedPending]);
 
-    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+    expect(fn () => (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle())
+        ->toThrow(RuntimeException::class, 'temporary network error');
 
-    expect(CloudDeployJobTestSpy::$resumes)->toBeEmpty(); // 不续查旧 jobId
-    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1); // 走正常 bind
-    $target->refresh();
-    expect($target->last_status)->toBe('success');
+    expect($target->fresh()->pending_job)->toBe($expectedPending);
 });
 
-test('G4：failed() 补写 last_deployed_at 且不清 pending cache（收敛链留给 sweep-B）', function () {
+test('G4：failed() 补写 last_deployed_at 且保留 pending_job（收敛链留给 sweep-B）', function () {
     [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
-    $target->update(['last_deployed_at' => null]);
-    Cache::put("cloud-deploy:pending-job:$target->id", ['cert_id' => $cert->id, 'product' => 'cdn', 'job_id' => 'keep-me', 'remote_cert_id' => null], now()->addDays(10));
+    $pending = validPendingJob($cert->id, ['job_id' => 'keep-me']);
+    $target->update(['last_deployed_at' => null, 'pending_job' => $pending]);
 
     (new CloudDeployJob($target->id, $cert->id, 'auto'))->failed(new DeployPollPendingException('keep-me', '待确认'));
 
     $target->refresh();
     expect($target->last_status)->toBe('failed');
-    expect($target->last_deployed_at)->not->toBeNull();                             // G4：补写
-    expect(Cache::get("cloud-deploy:pending-job:$target->id"))->not->toBeNull();    // 不清 pending
+    expect($target->last_deployed_at)->not->toBeNull();
+    expect($target->pending_job)->toBe($pending);
     expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'poll_pending')->where('is_final', true)->exists())->toBeTrue();
+});
+
+test('G2 force=true 遇有效 pending 仍 resume，不重新 bind', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(bindJobId: null));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $target->update([
+        'last_cert_id' => $cert->id,
+        'last_status' => 'success',
+        'pending_job' => validPendingJob($cert->id, ['job_id' => 'force-resume']),
+    ]);
+
+    (new CloudDeployJob($target->id, $cert->id, 'manual', force: true))->handle();
+
+    expect(CloudDeployJobTestSpy::$resumes)->toBe(['force-resume']);
+    expect(CloudDeployJobTestSpy::$binds)->toBeEmpty();
+    expect($target->fresh()->pending_job)->toBeNull();
+});
+
+test('G2 无效 pending_job 先清库再 bind', function (string $case) {
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+
+    $pending = match ($case) {
+        'cert 不匹配' => validPendingJob($cert->id + 1000),
+        '已过期' => validPendingJob($cert->id, ['expires_at' => now()->subSecond()->timestamp]),
+        '缺 job_id' => [
+            'cert_id' => $cert->id,
+            'remote_cert_id' => null,
+            'expires_at' => now()->addDay()->timestamp,
+        ],
+        'remote_cert_id 类型错误' => validPendingJob($cert->id, ['remote_cert_id' => 123]),
+        'expires_at 类型错误' => validPendingJob($cert->id, ['expires_at' => (string) now()->addDay()->timestamp]),
+        '标量 JSON' => 'broken',
+        '损坏 JSON' => null,
+    };
+
+    if ($case === '损坏 JSON') {
+        DB::table('cloud_deploy_targets')->where('id', $target->id)->update(['pending_job' => '{broken-json']);
+    } else {
+        $target->update(['pending_job' => $pending]);
+    }
+
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobResumableDeployer(
+        bindJobId: null,
+        bind: function () use ($target) {
+            expect(DB::table('cloud_deploy_targets')->where('id', $target->id)->value('pending_job'))->toBeNull();
+        },
+    ));
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployJobTestSpy::$resumes)->toBeEmpty();
+    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
+    expect($target->fresh()->pending_job)->toBeNull();
+})->with([
+    'cert 不匹配',
+    '已过期',
+    '缺 job_id',
+    'remote_cert_id 类型错误',
+    'expires_at 类型错误',
+    '标量 JSON',
+    '损坏 JSON',
+]);
+
+test('G2 deployer 不支持 resume 时清理有效 pending 并正常 bind', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobFakeInlineDeployer());
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $target->update(['pending_job' => validPendingJob($cert->id, ['job_id' => 'unsupported-resume'])]);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
+    expect($target->fresh()->pending_job)->toBeNull();
 });
 
 test('G5：业务终态失败（DeployBusinessException）→ 派一次 cloud_deploy_failed', function () {

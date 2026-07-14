@@ -3,6 +3,7 @@
 namespace Plugins\CloudDeploy\Models;
 
 use App\Models\BaseModel;
+use App\Models\Order;
 use App\Models\Traits\HasSnowflakeId;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
@@ -18,6 +19,7 @@ use Illuminate\Support\Carbon;
  * @property array $config array cast（资源参数：域名/region/实例ID 等）
  * @property string $config_hash 规范化 config 的 SHA-256，用于同一推送目标唯一约束
  * @property bool $enabled
+ * @property array|null $pending_job
  * @property int|null $last_cert_id 最近成功推送的证书ID（幂等键）
  * @property string|null $last_status 最近尝试结果: success/failed
  * @property string|null $last_error
@@ -25,7 +27,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property-read CloudDeployAccess|null $access
- * @property-read \App\Models\Order|null $order
+ * @property-read Order|null $order
  */
 class CloudDeployTarget extends BaseModel
 {
@@ -35,15 +37,17 @@ class CloudDeployTarget extends BaseModel
 
     protected $fillable = [
         'user_id', 'access_id', 'order_id', 'product', 'config', 'config_hash',
-        'enabled', 'last_cert_id', 'last_status', 'last_error', 'last_deployed_at',
+        'enabled', 'pending_job', 'last_cert_id', 'last_status', 'last_error', 'last_deployed_at',
     ];
 
     protected $hidden = [
         'config_hash',
+        'pending_job',
     ];
 
     protected $casts = [
         'config' => 'array',
+        'pending_job' => 'array',
         'enabled' => 'boolean',
         'last_deployed_at' => 'datetime',
     ];
@@ -95,6 +99,6 @@ class CloudDeployTarget extends BaseModel
      */
     public function order(): BelongsTo
     {
-        return $this->belongsTo(\App\Models\Order::class, 'order_id')->withoutGlobalScopes();
+        return $this->belongsTo(Order::class, 'order_id')->withoutGlobalScopes();
     }
 }
