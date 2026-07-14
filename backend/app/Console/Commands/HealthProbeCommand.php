@@ -149,10 +149,10 @@ class HealthProbeCommand extends Command
     private function sendAlertMail(string $url, string $reason): bool
     {
         try {
-            $adminEmail = get_system_setting('site', 'adminEmail');
-            $admin = $adminEmail ? Admin::where('email', $adminEmail)->first() : null;
-            $admin ??= Admin::first();
-            $targetEmail = $adminEmail ?: $admin?->email;
+            // admin 目标解析单一源（Admin::resolveAlertTarget，原 4 份内联之一）。裸 SMTP 只需投递地址，
+            // 不需 admin->id；故判 !email——有 site.adminEmail 别名即使无 Admin 记录也发（最后防线语义保留）。
+            // resolveAlertTarget 内 get_system_setting 经 Setting 已 cache 故障回落 DB，不破本命令 fail-open 韧性。
+            $targetEmail = Admin::resolveAlertTarget()['email'];
 
             if (! $targetEmail) {
                 Log::warning('[monitor.probe] 未找到管理员邮箱，无法发送拨测告警');

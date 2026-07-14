@@ -284,18 +284,12 @@ class TaskJob implements ShouldQueue
             ]);
         }
 
-        $adminEmail = get_system_setting('site', 'adminEmail');
-        $admin = null;
-        if ($adminEmail) {
-            $admin = Admin::where('email', $adminEmail)->first();
-        }
-        $admin ??= Admin::first();
+        // admin 目标解析单一源（Admin::resolveAlertTarget，原 4 份内联之一）。
+        ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 
         if (! $admin?->email) {
             return;
         }
-
-        $targetEmail = $adminEmail ?: $admin->email;
 
         $intent = new NotificationIntent(
             'task_failed',

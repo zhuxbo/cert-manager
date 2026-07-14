@@ -18,6 +18,10 @@ use Tests\TestCase;
 
 uses(TestCase::class);
 
+// 收敛：Builder 的排除 gate 已抽到 AutoRenewService::willBeHandledByAutoRenew（与派发侧
+// ExpireCommand 单一源）。故本文件 AutoRenewService mock 一律 makePartial —— willBeHandledByAutoRenew
+// 走真实实现，其内部调的 willAutoRenewExecute/willAutoReissueExecute 仍由各测试 shouldReceive 桩住控制 gate。
+
 afterEach(function () {
     Mockery::close();
 });
@@ -88,7 +92,7 @@ function bindAutoRenewFailedTemplate(bool $enabled): void
 }
 
 test('接收者非 User 时抛出异常', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
 
     $builder = new CertExpireNotificationBuilder($autoRenewService);
     $intent = new NotificationIntent('cert_expire', 'user', 1);
@@ -100,7 +104,7 @@ test('接收者非 User 时抛出异常', function () {
 })->throws(RuntimeException::class, '通知接收者必须为用户');
 
 test('邮箱为空时抛出异常', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
 
     $builder = new CertExpireNotificationBuilder($autoRenewService);
     $intent = new NotificationIntent('cert_expire', 'user', 1);
@@ -109,7 +113,7 @@ test('邮箱为空时抛出异常', function () {
 })->throws(RuntimeException::class, '邮箱为空');
 
 test('orders 为空 → 返回 null', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
 
     $builder = buildPartialBuilder($autoRenewService, new Collection);
     $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
@@ -118,7 +122,7 @@ test('orders 为空 → 返回 null', function () {
 });
 
 test('自动续签会执行的非 api 订单 → 全部 skip 返回 null（交由 auto_renew_failed 提醒，去重）', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
 
@@ -131,7 +135,7 @@ test('自动续签会执行的非 api 订单 → 全部 skip 返回 null（交�
 });
 
 test('自动续签会执行的非 api 订单即使委托未配置也排除（不再按委托细分，避免与 auto_renew_failed 双发）', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
     // checkDelegationValidity 不应再被 builder 调用（去重已不依赖委托判断）
@@ -150,7 +154,7 @@ test('自动续签会执行的非 api 订单即使委托未配置也排除（不
 });
 
 test('B2：auto_renew_failed 模板停用时不排除自动续签订单（回落发 cert_expire，防两头空）', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
 
@@ -170,7 +174,7 @@ test('B2：auto_renew_failed 模板停用时不排除自动续签订单（回落
 });
 
 test('api channel 订单即使 willAutoRenew=true 也不排除（AutoRenewCommand 不处理 api，照常发 cert_expire 防漏发）', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
     // 即便判定会执行，api channel 在 AutoRenewCommand getRenewOrders 已被排除，故 ExpireCommand/Builder 不能排除
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(true);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
@@ -192,7 +196,7 @@ test('api channel 订单即使 willAutoRenew=true 也不排除（AutoRenewComman
 });
 
 test('自动任务不会执行 → 加入通知列表，delegation_status=need_renew', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
 
@@ -220,7 +224,7 @@ test('自动任务不会执行 → 加入通知列表，delegation_status=need_r
 });
 
 test('intent.context.email 为空时回落 notifiable.email', function () {
-    $autoRenewService = Mockery::mock(AutoRenewService::class);
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
     $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
     $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
 

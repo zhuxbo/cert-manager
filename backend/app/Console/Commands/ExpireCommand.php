@@ -95,7 +95,7 @@ class ExpireCommand extends Command
             ->get();
 
         $user_ids = $orders
-            ->reject(fn (Order $order) => $this->willBeHandledByAutoRenew($order, $autoRenewService, $autoRenewFailedEnabled))
+            ->reject(fn (Order $order) => $autoRenewService->willBeHandledByAutoRenew($order, $order->user, $autoRenewFailedEnabled))
             ->pluck('user_id')
             ->unique()
             ->values()
@@ -104,20 +104,12 @@ class ExpireCommand extends Command
         $this->info(get_system_setting('site', 'name', 'SSL证书管理系统'));
         $notificationCenter = app(NotificationCenter::class);
 
-        foreach ($user_ids as $user_id) {
-            $user = User::find($user_id);
-            if ($user && $user->email) {
-                $notificationCenter->dispatch(new NotificationIntent(
-                    'cert_expire',
-                    'user',
-                    $user->id,
-                    [
-                        'email' => $user->email,
-                    ]
-                ));
-                $this->info("User $user->id email $user->email certificate expiration notification task created");
-            }
-        }
+        $this->dispatchExpiryNotifications(
+            $notificationCenter,
+            $user_ids,
+            'cert_expire',
+            'certificate expiration notification task created'
+        );
 
         // 续期停滞孤儿提醒（cert_renew_stalled）：续费/重签把前驱证书终态化（renewed/reissued）后，接替
         // 证书长期卡在非 active 停滞态（unpaid/pending/processing/approving/failed），前驱即将到期。此类前驱
@@ -135,20 +127,12 @@ class ExpireCommand extends Command
             ->values()
             ->all();
 
-        foreach ($stalledUserIds as $stalledUserId) {
-            $stalledUser = User::find($stalledUserId);
-            if ($stalledUser && $stalledUser->email) {
-                $notificationCenter->dispatch(new NotificationIntent(
-                    'cert_renew_stalled',
-                    'user',
-                    $stalledUser->id,
-                    [
-                        'email' => $stalledUser->email,
-                    ]
-                ));
-                $this->info("User $stalledUser->id email $stalledUser->email certificate renewal stalled notification task created");
-            }
-        }
+        $this->dispatchExpiryNotifications(
+            $notificationCenter,
+            $stalledUserIds,
+            'cert_renew_stalled',
+            'certificate renewal stalled notification task created'
+        );
 
         // ACME 订阅到期通知（节点 14/7/3/1，与 cert_expire 派发口径对齐）：查窗口内 active 订阅，
         // 按 user 去重逐 user 派发 acme_expire。无 willAuto* 去重（ACME 不由 AutoRenewCommand 处理，
@@ -166,20 +150,12 @@ class ExpireCommand extends Command
             ->values()
             ->all();
 
-        foreach ($acmeUserIds as $acmeUserId) {
-            $acmeUser = User::find($acmeUserId);
-            if ($acmeUser && $acmeUser->email) {
-                $notificationCenter->dispatch(new NotificationIntent(
-                    'acme_expire',
-                    'user',
-                    $acmeUser->id,
-                    [
-                        'email' => $acmeUser->email,
-                    ]
-                ));
-                $this->info("User $acmeUser->id email $acmeUser->email ACME subscription expiration notification task created");
-            }
-        }
+        $this->dispatchExpiryNotifications(
+            $notificationCenter,
+            $acmeUserIds,
+            'acme_expire',
+            'ACME subscription expiration notification task created'
+        );
 
         // 清理终态证书的敏感材料：已到期/吊销/取消/被续期重签/失败的 CSR、私钥、证书串
         // 业务已无保留价值，提前清理可缩小备份脱敏成本与泄露面
@@ -187,32 +163,37 @@ class ExpireCommand extends Command
     }
 
     /**
-     * 判断订单是否会被 AutoRenewCommand 妥善处理（成功续签/重签 或 失败时发 auto_renew_failed）。
+     * 批量派发到期类通知：一次 whereIn 加载用户消 N+1，收件人闸门（email 判空）单点。
      *
-     * 为真则 ExpireCommand 不发 cert_expire（交给 AutoRenewCommand 提醒，去重）。
-     * 调用方查询已 whereHas('latestCert'|'user'|'product')，三关系非空，与
-     * AutoRenewCommand::getRenewOrders/getReissueOrders 的过滤范围一致：
-     *   - API channel：AutoRenewCommand 跳过，返回 false（不排除，照常发 cert_expire，避免两头空）
-     *   - 其余 willAutoRenewExecute||willAutoReissueExecute：返回其结果
+     * cert_expire / cert_renew_stalled / acme_expire 三类共用；通知 code 与日志描述由参数吸收。
+     * $userIds 已在各查询侧去重（unique）；缺行用户（已删）不在结果内 → 跳过，等价原 User::find 返 null。
+     * 派发顺序无关（各 dispatch 独立），故用 DB 返回顺序不改变行为。
      */
-    private function willBeHandledByAutoRenew(Order $order, AutoRenewService $autoRenewService, bool $autoRenewFailedEnabled): bool
-    {
-        // auto_renew_failed 模板停用 → AutoRenewCommand 发不出失败通知 → 不排除，回落发 cert_expire
-        // （双腿同断防静默过期）。双时点 race：Builder 于 Job 异步执行时各查一次模板启用态，管理员在
-        // 派发与执行间重新启用模板会使该封落空（自愈型、方向无害，下轮 auto_renew_failed 接手），不引入跨时点同步。
-        if (! $autoRenewFailedEnabled) {
-            return false;
+    private function dispatchExpiryNotifications(
+        NotificationCenter $notificationCenter,
+        array $userIds,
+        string $code,
+        string $logDescription
+    ): void {
+        if (empty($userIds)) {
+            return;
         }
 
-        // API channel 订单由下游系统自行续费/重签，AutoRenewCommand 不处理（getRenewOrders/getReissueOrders 已 channel != api 过滤）
-        if ($order->latestCert->channel === 'api') {
-            return false;
+        foreach (User::whereIn('id', $userIds)->get() as $user) {
+            if (! $user->email) {
+                continue;
+            }
+
+            $notificationCenter->dispatch(new NotificationIntent(
+                $code,
+                'user',
+                $user->id,
+                [
+                    'email' => $user->email,
+                ]
+            ));
+            $this->info("User $user->id email $user->email $logDescription");
         }
-
-        $user = $order->user;
-
-        return $autoRenewService->willAutoRenewExecute($order, $user)
-            || $autoRenewService->willAutoReissueExecute($order, $user);
     }
 
     /**

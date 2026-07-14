@@ -21,6 +21,14 @@ class BackupCommand extends Command
 
     protected $description = '备份数据库（mysql）：通过 MysqlBackupHandler 走 mysqldump，剔除日志与队列等运行时表';
 
+    // SystemAlert 去重键：send 与 clear 两端引同一常量，杜绝裸键名两处手写、打错一字致 healthy 分支
+    // 清错键 → 去重永不解除（计数型 forever vs 24h TTL 的分叉是有意设计，见 notification.md，不在此统一）。
+    private const DEDUPE_LOCK_CONTENTION = 'backup_lock_contention';
+
+    private const DEDUPE_CLIENT_MISSING = 'backup_client_missing';
+
+    private const DEDUPE_DUMP_ERROR = 'backup_dump_error';
+
     public function __construct(
         private DatabaseStructureService $structureService,
         private BackupService $backupService
@@ -53,7 +61,7 @@ class BackupCommand extends Command
                     '定时备份跳过（互斥）',
                     '已有备份/恢复任务执行中，本次定时备份已跳过',
                     [],
-                    'backup_lock_contention',
+                    self::DEDUPE_LOCK_CONTENTION,
                     24,
                 );
 
@@ -89,7 +97,7 @@ class BackupCommand extends Command
                     '备份客户端缺失',
                     $e->getMessage(),
                     [],
-                    'backup_client_missing',
+                    self::DEDUPE_CLIENT_MISSING,
                     24,
                 );
             }
@@ -136,7 +144,7 @@ class BackupCommand extends Command
                     '数据库备份失败',
                     $e->getMessage(),
                     [],
-                    'backup_dump_error',
+                    self::DEDUPE_DUMP_ERROR,
                     24,
                 );
             }
@@ -171,9 +179,9 @@ class BackupCommand extends Command
         // 成功即清去重键（对齐 E 系恢复语义：故障恢复后下次异常立即再告警）
         if ($owns) {
             $alert = app(SystemAlert::class);
-            $alert->clearDedupe('backup_lock_contention');
-            $alert->clearDedupe('backup_client_missing');
-            $alert->clearDedupe('backup_dump_error');
+            $alert->clearDedupe(self::DEDUPE_LOCK_CONTENTION);
+            $alert->clearDedupe(self::DEDUPE_CLIENT_MISSING);
+            $alert->clearDedupe(self::DEDUPE_DUMP_ERROR);
         }
 
         return CommandAlias::SUCCESS;

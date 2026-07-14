@@ -71,12 +71,11 @@ class SystemAlert
             }
         }
 
-        // 2. 解析 admin（内联第 3 份，来源 FundAuditCommand.php:106-117）：
-        //    site.adminEmail → Admin::where('email') → Admin::first()。
-        //    无 admin/邮箱 → Log::warning 兜底，return false，不占去重键。
-        $adminEmail = get_system_setting('site', 'adminEmail');
-        $admin = $adminEmail ? Admin::where('email', $adminEmail)->first() : null;
-        $admin ??= Admin::first();
+        // 2. 解析 admin（单一源 Admin::resolveAlertTarget，原 4 份内联之一）：
+        //    site.adminEmail → Admin::where('email') → Admin::first()；无 admin/邮箱 → 兜底 return false，不占键。
+        //    写端接线：$targetEmail（= adminEmail ?: admin->email，由 resolveAlertTarget 返回）必须显式入 context
+        //    的 admin_email（Builder 的 email 映射只是读端），site.adminEmail 为分发别名时防 MailChannel 投错登录邮箱。
+        ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 
         if (! $admin?->email) {
             Log::warning('[system_alert] 未找到管理员邮箱，跳过告警', [
@@ -86,10 +85,6 @@ class SystemAlert
 
             return false;
         }
-
-        // 3. dispatch。写端接线（镜像 FundAuditCommand.php:119 的 $targetEmail）：
-        //    admin_email 必须显式计算并入 context，Builder 的 email 映射只是读端。
-        $targetEmail = $adminEmail ?: $admin->email;
 
         try {
             app(NotificationCenter::class)->dispatch(new NotificationIntent(

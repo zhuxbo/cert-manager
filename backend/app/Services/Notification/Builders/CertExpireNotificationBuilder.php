@@ -49,16 +49,11 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
         $certificates = [];
 
         foreach ($orders as $order) {
-            // 排除"会被 AutoRenewCommand 妥善处理"的订单（与 ExpireCommand 去重口径完全一致）：
-            //   - API channel 订单 AutoRenewCommand 不处理 → 不排除（照常进汇总邮件）
-            //   - auto_renew_failed 模板停用 → 不排除（回落发 cert_expire，防两头空）
-            //   - 其余 willAutoRenewExecute||willAutoReissueExecute 为真 → 排除（交由 auto_renew_failed 提醒）
-            // 注意：不再按委托有效性细分。委托未配置/失败的自动订单同样由 AutoRenewCommand 发 auto_renew_failed，
-            // 这里若保留则会与 auto_renew_failed 双发，故统一排除。
-            if ($order->latestCert->channel !== 'api'
-                && $autoRenewFailedEnabled
-                && ($this->autoRenewService->willAutoRenewExecute($order, $notifiable)
-                    || $this->autoRenewService->willAutoReissueExecute($order, $notifiable))) {
+            // 排除"会被 AutoRenewCommand 妥善处理"的订单：三腿谓词（api channel / 模板停用 / willAuto*）
+            // 与派发侧 ExpireCommand 共用 AutoRenewService::willBeHandledByAutoRenew 单一源，杜绝口径漂移
+            // （漂移致派发/重查不一致 → 整封静默漏发或双发）。不再按委托有效性细分（委托未配置/失败的自动
+            // 订单同样由 AutoRenewCommand 发 auto_renew_failed，保留会双发，故统一排除）。
+            if ($this->autoRenewService->willBeHandledByAutoRenew($order, $notifiable, $autoRenewFailedEnabled)) {
                 continue;
             }
 

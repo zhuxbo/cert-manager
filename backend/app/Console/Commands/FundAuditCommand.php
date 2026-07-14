@@ -103,20 +103,14 @@ class FundAuditCommand extends Command
     private function sendAlertEmail(array $violations): void
     {
         try {
-            $adminEmail = get_system_setting('site', 'adminEmail');
-            $admin = null;
-            if ($adminEmail) {
-                $admin = Admin::where('email', $adminEmail)->first();
-            }
-            $admin ??= Admin::first();
+            // admin 目标解析单一源（Admin::resolveAlertTarget，原 4 份内联之一）。
+            ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 
             if (! $admin?->email) {
                 $this->warn('未找到管理员邮箱，跳过邮件告警（已落 Log::error）');
 
                 return;
             }
-
-            $targetEmail = $adminEmail ?: $admin->email;
 
             // 提取关键信息减小通知体积（rows 限制 10 行避免邮件超长）
             $compact = array_map(function ($v) {
