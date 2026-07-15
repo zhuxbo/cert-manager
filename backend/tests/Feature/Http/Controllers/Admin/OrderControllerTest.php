@@ -429,6 +429,248 @@ test('管理员不能修改已支付订单价格', function () {
     expect($cert->fresh()->amount)->not->toBe('200.00');
 });
 
+test('管理员可以修改未支付订单的申请信息快照', function () {
+    [$order] = createOrderWithCert('unpaid', [
+        'organization' => [
+            'name' => '旧企业',
+            'registration_number' => 'OLD-CODE',
+            'phone' => '01012345678',
+            'address' => '旧地址',
+            'city' => '北京市',
+            'state' => '北京市',
+            'country' => 'CN',
+            'postcode' => '100000',
+        ],
+        'contact' => [
+            'first_name' => '三',
+            'last_name' => '张',
+            'title' => '经理',
+            'email' => 'old@example.com',
+            'phone' => '13800000000',
+        ],
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)->patchJson("/api/admin/order/applicant/$order->id", [
+        'organization' => [
+            'name' => '新企业',
+            'registration_number' => 'NEW-CODE',
+            'phone' => '01087654321',
+            'address' => '新地址',
+            'city' => '上海市',
+            'state' => '上海市',
+            'country' => 'CN',
+            'postcode' => '200000',
+        ],
+        'contact' => [
+            'first_name' => '四',
+            'last_name' => '李',
+            'title' => '负责人',
+            'email' => 'new@example.com',
+            'phone' => '13900000000',
+        ],
+    ]);
+
+    $response->assertOk()
+        ->assertJson(['code' => 1])
+        ->assertJsonPath('data.organization.name', '新企业')
+        ->assertJsonPath('data.contact.email', 'new@example.com');
+
+    $order->refresh();
+    expect($order->organization['name'])->toBe('新企业')
+        ->and($order->contact['email'])->toBe('new@example.com');
+});
+
+test('管理员可以修改 pending 订单的申请信息快照', function () {
+    [$order] = createOrderWithCert('pending', [
+        'contact' => [
+            'first_name' => '三',
+            'last_name' => '张',
+            'title' => '经理',
+            'email' => 'old@example.com',
+            'phone' => '13800000000',
+        ],
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)->patchJson("/api/admin/order/applicant/$order->id", [
+        'contact' => [
+            'first_name' => '四',
+            'last_name' => '李',
+            'title' => '负责人',
+            'email' => 'new@example.com',
+            'phone' => '13900000000',
+        ],
+    ]);
+
+    $response->assertOk()
+        ->assertJson(['code' => 1])
+        ->assertJsonPath('data.contact.email', 'new@example.com');
+
+    expect($order->fresh()->contact['email'])->toBe('new@example.com');
+});
+
+test('管理员修改申请信息时企业和联系人电话可以使用纯数字', function () {
+    [$order] = createOrderWithCert('unpaid', [
+        'organization' => [
+            'name' => '旧企业',
+            'registration_number' => 'OLD-CODE',
+            'phone' => '01012345678',
+            'address' => '旧地址',
+            'city' => '北京市',
+            'state' => '北京市',
+            'country' => 'CN',
+            'postcode' => '100000',
+        ],
+        'contact' => [
+            'first_name' => '三',
+            'last_name' => '张',
+            'title' => '经理',
+            'email' => 'old@example.com',
+            'phone' => '13800000000',
+        ],
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)->patchJson("/api/admin/order/applicant/$order->id", [
+        'organization' => [
+            'name' => '新企业',
+            'registration_number' => 'NEW-CODE',
+            'phone' => 1087654321,
+            'address' => '新地址',
+            'city' => '上海市',
+            'state' => '上海市',
+            'country' => 'CN',
+            'postcode' => '200000',
+        ],
+        'contact' => [
+            'first_name' => '四',
+            'last_name' => '李',
+            'title' => '负责人',
+            'email' => 'new@example.com',
+            'phone' => 13900000000,
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+
+    $order->refresh();
+    expect($order->organization['phone'])->toBe(1087654321)
+        ->and($order->contact['phone'])->toBe(13900000000);
+});
+
+test('管理员不能修改非未支付订单的申请信息快照', function () {
+    [$order] = createOrderWithCert('active', [
+        'contact' => [
+            'first_name' => '三',
+            'last_name' => '张',
+            'title' => '经理',
+            'email' => 'old@example.com',
+            'phone' => '13800000000',
+        ],
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)->patchJson("/api/admin/order/applicant/$order->id", [
+        'contact' => [
+            'first_name' => '四',
+            'last_name' => '李',
+            'title' => '负责人',
+            'email' => 'new@example.com',
+            'phone' => '13900000000',
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($order->fresh()->contact['email'])->toBe('old@example.com');
+});
+
+test('管理员不能为未支付订单新增原本不存在的申请信息快照', function () {
+    [$order] = createOrderWithCert('unpaid', ['organization' => null]);
+
+    $response = $this->actingAsAdmin($this->admin)->patchJson("/api/admin/order/applicant/$order->id", [
+        'organization' => [
+            'name' => '新企业',
+            'registration_number' => 'NEW-CODE',
+            'phone' => '01087654321',
+            'address' => '新地址',
+            'city' => '上海市',
+            'state' => '上海市',
+            'country' => 'CN',
+            'postcode' => '200000',
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($order->fresh()->organization)->toBeNull();
+});
+
+test('管理员修改未支付订单申请信息时会校验字段', function () {
+    [$order] = createOrderWithCert('unpaid', [
+        'organization' => [
+            'name' => '旧企业',
+            'registration_number' => 'OLD-CODE',
+            'phone' => '01012345678',
+            'address' => '旧地址',
+            'city' => '北京市',
+            'state' => '北京市',
+            'country' => 'CN',
+            'postcode' => '100000',
+        ],
+        'contact' => [
+            'first_name' => '三',
+            'last_name' => '张',
+            'title' => '经理',
+            'email' => 'old@example.com',
+            'phone' => '13800000000',
+        ],
+    ]);
+
+    $validContact = [
+        'first_name' => '四',
+        'last_name' => '李',
+        'title' => '负责人',
+        'email' => 'new@example.com',
+        'phone' => '13900000000',
+    ];
+    $validOrganization = [
+        'name' => '新企业',
+        'registration_number' => 'NEW-CODE',
+        'phone' => '01087654321',
+        'address' => '新地址',
+        'city' => '上海市',
+        'state' => '上海市',
+        'country' => 'CN',
+        'postcode' => '200000',
+    ];
+    $invalidPayloads = [
+        ['contact' => array_replace($validContact, ['email' => 'invalid-email'])],
+        ['contact' => array_replace($validContact, ['phone' => 'abcde'])],
+        ['contact' => array_replace($validContact, ['phone' => 12345.6])],
+        ['contact' => array_replace($validContact, ['first_name' => ['四']])],
+        ['contact' => array_replace($validContact, ['first_name' => 123])],
+        ['organization' => array_replace($validOrganization, ['country' => 'China'])],
+        ['organization' => array_replace($validOrganization, ['phone' => 12345.6])],
+        ['organization' => array_replace($validOrganization, ['name' => 123456])],
+        ['organization' => array_replace($validOrganization, ['postcode' => ''])],
+    ];
+
+    foreach ($invalidPayloads as $payload) {
+        $response = $this->actingAsAdmin($this->admin)->patchJson(
+            "/api/admin/order/applicant/$order->id",
+            $payload
+        );
+
+        $response->assertOk()->assertJson(['code' => 0]);
+        expect($response->json('errors'))->not->toBeEmpty();
+    }
+
+    $order->refresh();
+    expect($order->organization)->toMatchArray([
+        'country' => 'CN',
+        'postcode' => '100000',
+    ])->and($order->contact)->toMatchArray([
+        'email' => 'old@example.com',
+        'phone' => '13800000000',
+    ]);
+});
+
 test('管理员可以更新订单自动续费设置', function () {
     [$order, $cert] = createOrderWithCert('active');
 

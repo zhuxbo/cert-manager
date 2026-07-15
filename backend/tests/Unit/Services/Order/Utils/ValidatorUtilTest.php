@@ -168,6 +168,41 @@ test('validateContact 完整合法数据通过', function () {
     expect($result)->toBeEmpty();
 });
 
+test('validateContact 文本字段拒绝数组值', function () {
+    $contact = [
+        'first_name' => 'John',
+        'last_name' => 'Doe',
+        'title' => 'Manager',
+        'email' => 'john@test.com',
+        'phone' => '13800138000',
+    ];
+
+    $arraySizes = [
+        'first_name' => 1,
+        'last_name' => 1,
+        'title' => 2,
+        'email' => 6,
+        'phone' => 5,
+    ];
+
+    foreach ($arraySizes as $field => $size) {
+        $invalid = array_replace($contact, [$field => array_fill(0, $size, 'unexpected')]);
+        expect(ValidatorUtil::validateContact($invalid))->toHaveKey($field);
+    }
+});
+
+test('validateContact 接受数值归一化后的电话', function () {
+    $contact = [
+        'first_name' => 'John',
+        'last_name' => 'Doe',
+        'title' => 'Manager',
+        'email' => 'john@test.com',
+        'phone' => 13800138000,
+    ];
+
+    expect(ValidatorUtil::validateContact($contact))->toBeEmpty();
+});
+
 test('validateContact 缺少必填字段返回错误', function () {
 
     $contact = ['first_name' => 'John'];
@@ -209,6 +244,50 @@ test('validateOrganization 完整合法数据通过', function () {
     ];
     $result = ValidatorUtil::validateOrganization($org);
     expect($result)->toBeEmpty();
+});
+
+test('validateOrganization 文本字段拒绝数组值', function () {
+    $organization = [
+        'name' => 'ACME Corp',
+        'registration_number' => '123456789012345678',
+        'phone' => '13800138000',
+        'address' => '123 Main Street',
+        'city' => 'Shanghai',
+        'state' => 'Shanghai',
+        'country' => 'CN',
+        'postcode' => '200000',
+    ];
+
+    $arraySizes = [
+        'name' => 2,
+        'registration_number' => 6,
+        'phone' => 5,
+        'address' => 2,
+        'city' => 2,
+        'state' => 2,
+        'country' => 2,
+        'postcode' => 4,
+    ];
+
+    foreach ($arraySizes as $field => $size) {
+        $invalid = array_replace($organization, [$field => array_fill(0, $size, 'unexpected')]);
+        expect(ValidatorUtil::validateOrganization($invalid))->toHaveKey($field);
+    }
+});
+
+test('validateOrganization 接受数值归一化后的电话与邮编', function () {
+    $organization = [
+        'name' => 'ACME Corp',
+        'registration_number' => '123456789012345678',
+        'phone' => 13800138000,
+        'address' => '123 Main Street',
+        'city' => 'Shanghai',
+        'state' => 'Shanghai',
+        'country' => 'CN',
+        'postcode' => 200000,
+    ];
+
+    expect(ValidatorUtil::validateOrganization($organization))->toBeEmpty();
 });
 
 test('validateOrganization 缺少必填字段返回错误', function () {

@@ -4,13 +4,16 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Requests\Order\GetIdsRequest;
 use App\Http\Requests\Order\IndexRequest;
+use App\Http\Requests\Order\UpdateApplicantRequest;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\Order\Action;
+use App\Services\Order\Utils\FilterUtil;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Throwable;
 
@@ -301,6 +304,49 @@ class OrderController extends BaseController
         $cert->save();
 
         $this->success();
+    }
+
+    /**
+     * 修改未支付或待处理订单的企业/联系人快照
+     */
+    public function updateApplicant(UpdateApplicantRequest $request, int $id): void
+    {
+        $data = DB::transaction(function () use ($request, $id): array {
+            $order = Order::with('latestCert')
+                ->whereHas('latestCert')
+                ->lock()
+                ->find($id);
+
+            if (! $order) {
+                $this->error('订单不存在');
+            }
+
+            if (! in_array($order->latestCert->status, ['unpaid', 'pending'], true)) {
+                $this->error('只有未支付或待处理状态的订单可以修改申请信息');
+            }
+
+            $validated = $request->validated();
+            if (array_key_exists('organization', $validated) && ! $order->organization) {
+                $this->error('订单不存在企业信息');
+            }
+            if (array_key_exists('contact', $validated) && ! $order->contact) {
+                $this->error('订单不存在联系人信息');
+            }
+
+            if (isset($validated['organization'])) {
+                $validated['organization'] = FilterUtil::filterOrganization($validated['organization']);
+            }
+            if (isset($validated['contact'])) {
+                $validated['contact'] = FilterUtil::filterContact($validated['contact']);
+            }
+
+            $order->fill($validated);
+            $order->save();
+
+            return $order->only(['organization', 'contact']);
+        });
+
+        $this->success($data);
     }
 
     /**

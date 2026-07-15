@@ -139,6 +139,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('batch-revoke-cancel', [OrderController::class, 'batchRevokeCancel']);
         Route::patch('auto-settings/{id}', [OrderController::class, 'updateAutoSettings'])->where('id', '[0-9]+');
         Route::patch('amount/{id}', [OrderController::class, 'updateAmount'])->where('id', '[0-9]+');
+        Route::patch('applicant/{id}', [OrderController::class, 'updateApplicant'])->where('id', '[0-9]+');
         Route::get('deploy-commands', [OrderController::class, 'deployCommands']);
         Route::post('upload-document/{id}', [OrderController::class, 'uploadDocument'])->where('id', '[0-9]+');
         // document-preview 改走短时签名 URL（signed）而非 JWT：access_token 不进 URL，仅验证签名

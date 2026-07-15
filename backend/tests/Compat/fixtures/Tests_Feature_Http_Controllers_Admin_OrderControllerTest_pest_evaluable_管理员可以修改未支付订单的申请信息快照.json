@@ -1,0 +1,37 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员可以修改未支付订单的申请信息快照",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/order/applicant/{id}",
+            "request_keys": [
+                "contact",
+                "organization"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "organization": {
+                        "name": "string",
+                        "registration_number": "string",
+                        "phone": "string",
+                        "address": "string",
+                        "city": "string",
+                        "state": "string",
+                        "country": "string",
+                        "postcode": "string"
+                    },
+                    "contact": {
+                        "first_name": "string",
+                        "last_name": "string",
+                        "title": "string",
+                        "email": "string",
+                        "phone": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

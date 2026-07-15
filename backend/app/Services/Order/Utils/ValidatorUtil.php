@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Order\Utils;
 
 use App\Traits\ApiResponseStatic;
+use Closure;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
@@ -48,6 +49,12 @@ class ValidatorUtil
     // issue_verify 仅在API提交时验证
     protected static function init(): void
     {
+        $textValueRule = static function (string $attribute, mixed $value, Closure $fail): void {
+            if (! is_string($value) && ! is_int($value) && ! is_float($value)) {
+                $fail(':attribute必须是字符串或数字');
+            }
+        };
+
         self::$rules = [
             'basic' => [
                 'rules' => [
@@ -77,11 +84,11 @@ class ValidatorUtil
             ],
             'contact' => [
                 'rules' => [
-                    'first_name' => ['required', 'between:1,16'],
-                    'last_name' => ['required', 'between:1,40'],
-                    'title' => ['required', 'between:2,16'],
-                    'email' => ['required', 'email', 'between:6,64'],
-                    'phone' => ['required', 'numeric', 'digits_between:5,15'],
+                    'first_name' => ['required', $textValueRule, 'between:1,16'],
+                    'last_name' => ['required', $textValueRule, 'between:1,40'],
+                    'title' => ['required', $textValueRule, 'between:2,16'],
+                    'email' => ['required', $textValueRule, 'email', 'between:6,64'],
+                    'phone' => ['required', $textValueRule, 'numeric', 'digits_between:5,15'],
                 ],
                 'attributes' => [
                     'first_name' => '管理员-名',
@@ -93,14 +100,14 @@ class ValidatorUtil
             ],
             'organization' => [
                 'rules' => [
-                    'name' => ['required', 'between:2,64'],
-                    'registration_number' => ['required', 'string', 'between:6,32'],
-                    'phone' => ['required', 'numeric', 'digits_between:5,15'],
-                    'address' => ['required', 'between:2,64'],
-                    'city' => ['required', 'between:2,64'],
-                    'state' => ['required', 'between:2,64'],
-                    'country' => ['required', 'size:2'],
-                    'postcode' => ['required', 'between:4,16'],
+                    'name' => ['required', $textValueRule, 'between:2,64'],
+                    'registration_number' => ['required', $textValueRule, 'string', 'between:6,32'],
+                    'phone' => ['required', $textValueRule, 'numeric', 'digits_between:5,15'],
+                    'address' => ['required', $textValueRule, 'between:2,64'],
+                    'city' => ['required', $textValueRule, 'between:2,64'],
+                    'state' => ['required', $textValueRule, 'between:2,64'],
+                    'country' => ['required', $textValueRule, 'size:2'],
+                    'postcode' => ['required', $textValueRule, 'between:4,16'],
                 ],
                 'attributes' => [
                     'name' => '组织名称',

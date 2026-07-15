@@ -82,6 +82,15 @@
             {{ order.organization.state }}, {{ order.organization.city }},
             {{ order.organization.address }}, {{ order.organization.postcode
             }}<br />
+            <el-button
+              v-if="canEditApplicant"
+              type="primary"
+              link
+              size="small"
+              @click="editApplicant('organization')"
+            >
+              点击修改
+            </el-button>
           </td>
         </tr>
         <tr v-if="order.contact">
@@ -90,6 +99,15 @@
             {{ order.contact.last_name }}
             {{ order.contact.first_name }}, {{ order.contact.title }},
             {{ order.contact.phone }}, {{ order.contact.email }}<br />
+            <el-button
+              v-if="canEditApplicant"
+              type="primary"
+              link
+              size="small"
+              @click="editApplicant('contact')"
+            >
+              点击修改
+            </el-button>
           </td>
         </tr>
         <tr>
@@ -115,18 +133,40 @@
         </tr>
       </tbody>
     </table>
+    <ApplicantEditor
+      v-model:visible="applicantEditorVisible"
+      :order="order"
+      :section="applicantSection"
+      @success="onApplicantUpdated"
+    />
   </el-card>
 </template>
 <script setup lang="ts">
-import { inject, reactive } from "vue";
+import { computed, inject, reactive, ref } from "vue";
 import { buildUUID } from "@pureadmin/utils";
 import { ElMessageBox } from "element-plus";
 import * as OrderApi from "@/api/order";
 import { message } from "@shared/utils";
 import { brandLabels, periodLabels } from "@/views/system/dictionary";
 import dayjs from "dayjs";
+import ApplicantEditor from "../applicantEditor.vue";
 
 const order = inject("order") as any;
+const canEditApplicant = computed(() =>
+  ["unpaid", "pending"].includes(order.latest_cert?.status)
+);
+const applicantEditorVisible = ref(false);
+const applicantSection = ref<"organization" | "contact">("organization");
+
+const editApplicant = (section: "organization" | "contact") => {
+  applicantSection.value = section;
+  applicantEditorVisible.value = true;
+};
+
+const onApplicantUpdated = (data: any) => {
+  data.organization && (order.organization = data.organization);
+  data.contact && (order.contact = data.contact);
+};
 
 const updateAmount = () => {
   ElMessageBox.prompt("请输入新的价格", "修改价格", {
