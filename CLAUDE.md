@@ -78,6 +78,7 @@ skills/ # 开发规范（详细文档）
 - 产品同步时保留本地的 `delegation` 验证方法
 - **委托前缀（config 驱动）**：`backend/config/delegation.php` 的 `ca_map` 按 CA 映射 `{prefix, exact}` —— `_pki-validation`（Sectigo）、`_certum`（Certum）、`_dnsauth`（DigiCert/GlobalSign/TrustAsia/Sheca/CFCA/Wotrus 及未知 CA 的 default）。已移除 `_acme-challenge`（ACME 使用独立体系）
 - **`exact` 是 CA 属性、非 prefix 属性**：`exact=true` 精确匹配子域且查找拒绝回落根域，`exact=false` 子域优先 + 回落根域；**默认全 false（含 `_dnsauth` 系）**，每家可由 `DELEGATION_<CA>_EXACT` env 覆盖为 true。所有委托创建/查找一律经 ca 派生 prefix+exact，禁止 `prefix === '_dnsauth'` 之类推断
+- **手工添加委托支持 IDN**：admin/user 表单统一使用 `validator/isFQDN` 校验 Unicode 中文域名与 Punycode，禁止回退为 ASCII-only 正则；后端由 `DomainUtil` 负责 Unicode/Punycode 归一化
 - 详见 `skills/backend/delegation.md` 委托验证章节
 
 ### 插件系统

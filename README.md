@@ -127,6 +127,8 @@ Certum 非 DV 产品在订单进入 processing 后提供验证文档处理入口
 
 将域名验证 CNAME 记录指向平台托管域名，实现自动续签：
 
+管理端和用户端手工添加委托均支持 Unicode 中文域名与 Punycode，系统会统一处理 DNS 查询所需的域名编码。
+
 ```
 _dnsauth.example.com → *******.your-platform.com
 ```
