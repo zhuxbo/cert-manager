@@ -33,22 +33,34 @@ class VerifyUtil
      */
     private static function verifyDomains(string $ca, string $domains): array
     {
-        $client = new Client([
-            'timeout' => 3.0, // 设置超时时间为3秒
-            'verify' => false, // 关闭SSL证书验证
-        ]);
+        // CAA 仅适用于 DNS 域名。dnsTools 的 issue-verify 会把 IPv6 冒号去掉后按普通域名误判，
+        // 因此在调用边界同时跳过 IPv4/IPv6；纯 IP 订单无需发起远程 CAA 检查。
+        $domains = array_values(array_filter(
+            array_map('trim', explode(',', $domains)),
+            fn (string $domain) => $domain !== ''
+                && ! filter_var($domain, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6),
+        ));
+
+        if ($domains === []) {
+            return ['code' => 1, 'data' => null];
+        }
 
         foreach (self::getDnsToolsUrls() as $url) {
             try {
-                $response = $client->post($url.'/api/domain/issue-verify', [
-                    'json' => [
+                $response = Http::withoutVerifying()
+                    ->timeout(3)
+                    ->asJson()
+                    ->post($url.'/api/domain/issue-verify', [
                         'brand' => $ca,
-                        'domains' => $domains,
-                    ],
-                ]);
+                        'domains' => implode(',', $domains),
+                    ]);
 
-                return json_decode($response->getBody()->getContents(), true);
-            } catch (GuzzleException) {
+                if ($response->failed()) {
+                    continue;
+                }
+
+                return $response->json();
+            } catch (ConnectionException) {
                 continue; // 尝试下一个API
             }
         }

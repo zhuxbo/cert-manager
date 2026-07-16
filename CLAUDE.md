@@ -105,6 +105,7 @@ skills/ # 开发规范（详细文档）
 
 ## 系统架构约定
 
+- **支付前 CAA 签发预检仅检查 DNS 域名**：`VerifyUtil::issueVerify` 调用外部 `issue-verify` 前必须跳过 IPv4/IPv6（CAA 不适用于 IP，且外部解析会误删 IPv6 冒号）；纯 IP 订单不发起该远程检查
 - **取消/吊销不静默成功**：上游接口未返回明确成功时，一律返回失败；不允许跳过上游调用直接标记本地状态
 - **sync 终态守卫（防复活）**：`Order/Acme\Action::sync` 锁内回写前，本地已是终态（`cancelled/revoked/renewed/reissued/failed`）则 `unset($data['status'])`，不让上游旧状态复活订单；**守卫与写回必须按"写回目标 cert（外层 `$cert`）自身"判定（读=写同一行）**——并发重签会切 `latest_cert_id`，用 `lockedOrder->latestCert` 判定会漏判旧 cert 终态。详见 `skills/backend/auth.md`
 - **资金/状态变更必须在事务 + 行锁内**：涉及 `Transaction::create`/余额/状态机的路径都要 `DB::transaction` + 目标行 `lockForUpdate()`，**状态检查放锁内**（锁外会被并发绕过）；`$this->success()` 放事务闭包**外**、`$this->error()` 放**内**；`TaskJob::handle` 整体包 `DB::transaction`（否则 lockForUpdate 是假锁）；**支付路径同时锁 user 行**（防跨订单并发绕过 credit_limit）；**锁内上游 HTTP 必须设 timeout < `innodb_lock_wait_timeout`(=50)**（否则挂起持锁事务 → 1205）；**进 DB 锁前先抢 `MutexLock` order 级 Cache 互斥锁**（方案 C，抢不到抛 `MutationBusyException`，根治 3+ 并发 1205）。详见 `skills/backend/order-fund.md`、`skills/backend/source-api.md`（Sdk 超时）
