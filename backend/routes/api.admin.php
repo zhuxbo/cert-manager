@@ -101,12 +101,13 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::get('source', [ProductController::class, 'getSourceList']);
         Route::post('export', [ProductController::class, 'export']);
     });
-    RouteHelper::registerResourceRoutes('product-price', ProductPriceController::class);
     Route::prefix('product-price')->group(function () {
+        Route::post('initialization', [ProductPriceController::class, 'initialization']);
         Route::get('get', [ProductPriceController::class, 'get']);
         Route::put('set', [ProductPriceController::class, 'set']);
         Route::get('export', [ProductPriceController::class, 'export']);
     });
+    RouteHelper::registerResourceRoutes('product-price', ProductPriceController::class);
 
     // 订单路由
     Route::prefix('order')->group(function () {

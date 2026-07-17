@@ -4,6 +4,8 @@ namespace App\Bootstrap;
 
 use App\Exceptions\ApiResponseException;
 use App\Exceptions\MutationBusyException;
+use App\Exceptions\ProductPriceMutationBusyException;
+use App\Exceptions\ProductPriceMutationLockException;
 use App\Models\ErrorLog;
 use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
@@ -36,6 +38,7 @@ class ApiExceptions
         MethodNotAllowedHttpException::class,
         // 订单级互斥抢锁失败是高频「忙」信号，不记入 error_logs（与 TaskJob 死锁自愈不 report 的降噪一致）
         MutationBusyException::class,
+        ProductPriceMutationBusyException::class,
     ];
 
     /**
@@ -128,6 +131,7 @@ class ApiExceptions
             $e instanceof HttpException => $e->getStatusCode(),
             // 订单级互斥抢锁失败（同一订单 commit/cancel 正在执行）→ 503，建议客户端重试
             $e instanceof MutationBusyException => 503,
+            $e instanceof ProductPriceMutationBusyException, $e instanceof ProductPriceMutationLockException => 503,
             // 数据库并发冲突（MySQL deadlock / lock wait timeout）→ 503，让客户端/前端重试
             $this->causedByConcurrencyError($e) => 503,
             // 数据库唯一约束违反（funds.pay_method+pay_sn 重复 / transactions.type+transaction_id 重复）
@@ -217,6 +221,8 @@ class ApiExceptions
             $e instanceof HttpException => $e->getMessage() ?: '服务器错误',
             // 订单级互斥抢锁失败——精确文案（比通用「系统繁忙」更明确：是同一订单在处理中）
             $e instanceof MutationBusyException => '该订单正在处理中，请稍后重试',
+            $e instanceof ProductPriceMutationBusyException => '产品价格正在变更，请稍后重试',
+            $e instanceof ProductPriceMutationLockException => '产品价格变更失败，请稍后重试',
             // MySQL deadlock / lock wait timeout 等并发冲突——用户友好提示
             // 后端原始异常（如 "Lock wait timeout exceeded"）只在 debug 模式或日志中可见
             $this->causedByConcurrencyError($e) => '系统繁忙，请稍后重试',

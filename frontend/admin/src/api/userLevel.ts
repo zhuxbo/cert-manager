@@ -8,9 +8,29 @@ export interface IndexParams {
   custom?: number;
 }
 
+export interface UserLevelDto {
+  id: number;
+  code: string;
+  name: string;
+  custom: number;
+  cost_rate: string;
+  weight: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface IndexData {
+  items: UserLevelDto[];
+  total: number;
+  pageSize: number;
+  currentPage: number;
+}
+
 /** 获取用户级别列表 */
-export function index(params: IndexParams): Promise<BaseResponse> {
-  return http.get<BaseResponse<null>, IndexParams>("/user-level", { params });
+export function index(params: IndexParams): Promise<BaseResponse<IndexData>> {
+  return http.get<BaseResponse<IndexData>, IndexParams>("/user-level", {
+    params
+  });
 }
 
 // 定义 FormParams 的默认值对象
@@ -32,33 +52,49 @@ export type FormParams = {
   [K in keyof typeof FORM_PARAMS_DEFAULT]?: (typeof FORM_PARAMS_DEFAULT)[K];
 };
 
+export type MutationParams = Omit<FormParams, "cost_rate"> & {
+  cost_rate?: string;
+};
+
 /** 添加用户级别 */
-export function store(data: FormParams): Promise<BaseResponse> {
-  return http.post<BaseResponse<null>, FormParams>("/user-level", { data });
+export function store(data: MutationParams): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, MutationParams>("/user-level", { data });
 }
 
 /** 更新用户级别 */
-export function update(id: number, data: FormParams): Promise<BaseResponse> {
-  return http.put<BaseResponse<null>, FormParams>(`/user-level/${id}`, {
+export function update(
+  id: number,
+  data: MutationParams
+): Promise<BaseResponse> {
+  return http.put<BaseResponse<null>, MutationParams>(`/user-level/${id}`, {
     data
   });
 }
 
 /** 获取用户级别 */
-export function show(id: number): Promise<BaseResponse> {
-  return http.get<BaseResponse<null>, { id: number }>(`/user-level/${id}`);
+export function show(id: number): Promise<BaseResponse<UserLevelDto>> {
+  return http.get<BaseResponse<UserLevelDto>, { id: number }>(
+    `/user-level/${id}`
+  );
 }
 
 /** 批量获取用户级别 */
-export function batchShow(ids: number[]): Promise<BaseResponse> {
-  return http.get<BaseResponse<null>, { ids: number[] }>(`/user-level/batch`, {
-    params: { ids }
-  });
+export function batchShow(
+  ids: number[]
+): Promise<BaseResponse<UserLevelDto[]>> {
+  return http.get<BaseResponse<UserLevelDto[]>, { ids: number[] }>(
+    `/user-level/batch`,
+    {
+      params: { ids }
+    }
+  );
 }
 
 /** 批量获取用户级别 */
-export function batchShowInCodes(codes: string[]): Promise<BaseResponse> {
-  return http.get<BaseResponse<null>, { codes: string[] }>(
+export function batchShowInCodes(
+  codes: string[]
+): Promise<BaseResponse<UserLevelDto[]>> {
+  return http.get<BaseResponse<UserLevelDto[]>, { codes: string[] }>(
     `/user-level/batch-codes`,
     { params: { codes } }
   );

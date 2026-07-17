@@ -1,5 +1,15 @@
 # 订单与资金安全
 
+## 产品价格批量初始化
+
+- **成本事实来源**：初始化直接读取原始 `cost` JSON，并按产品当前周期和适用 SAN 类型校验必需字段；字段缺失、非普通非负十进制数或适用范围外的多余成本项都会告警并阻断整批执行。人工保存成本先经 `ProductCostNormalizer` 校验并写入完整规范化输出；产品导入不校验成本，数组成本原样保存，未提供、`null` 或非数组成本均不覆盖，避免本地旧产品配置阻断上游信息同步。禁止依赖模型访问器自动补零掩盖缺失成本。
+- **零值与 SAN 边界**：纯主价产品的主价必须大于 0；仅当产品存在适用 SAN 类型时主价可明确为 0，但每个适用的标准/通配符 SAN 成本必须存在且大于 0。不适用的 SAN 售价列保存结构性 `0.00`，字段缺失绝不能按明确零值处理。
+- **定点换算**：初始化只把 `price`、`alternative_standard_price`、`alternative_wildcard_price` 三个同名成本字段分别乘以级别倍率，使用 BCMath 与 `ROUND_HALF_UP` 按 0/1/2 位精度舍入，禁止浮点计算；正成本舍入为 `0.00` 或单字段超过 `999998.00` 时整批阻断。
+- **预览令牌与状态指纹**：预览绝不写库；无告警时签发 10 分钟令牌，绑定管理员、规范化参数及产品原始成本、周期、适用 SAN 类型、选中级别和选中级别现有价格的稳定指纹。正式执行必须在锁和事务内重读并复算，令牌无效、过期或指纹变化时零写入返回 `stale_preview`。
+- **写入范围**：默认模式只筛出缺失的“产品 + 级别 + 周期”唯一键并分批普通 `insert`，既有价格整行保留，禁止 `INSERT IGNORE`；强制模式只删除并重建本次选中级别。删除、插入和可选的级别倍率同步必须处于同一事务，并核对 `created + preserved = target` 或 `rebuilt = target`。
+- **全局变更锁**：初始化、产品价格新增/修改/删除/批量删除/单产品设置，以及会员级别危险变更，共用数据库命名锁 `ssl-manager:product-price:mutation`。`GET_LOCK(..., 0)` 和 `RELEASE_LOCK(...)` 必须在同一连接严格返回 1；回调成功、业务拒绝或异常都由 `finally` 释放，释放异常须 critical 记录、断开连接并 fail-closed。
+- **真实订单计价边界**：初始化不读取或解释 `standard_min/max`、`wildcard_min/max`、SAN 数量，也不改 `OrderUtil` 公式。`OrderUtil::getLatestCertAmount()` 继续从真实 `ProductPrice` 读取三类售价，按 SSL/ACME 各自的已购 SAN 来源和基础配额计算超额，重签只计算增购 SAN；对端测试必须用初始化实际落库的价格验证这些路径。
+
 ## order 级互斥锁（方案 C：根治 3+ 并发 1205）
 
 > **背景**：点 1（Sdk 锁内超时 28/10/10）把单次持锁压到 ≤48s 后，同一订单 **3+ 并发** commit/cancel 仍会在 DB 行锁上**排队累计** >`innodb_lock_wait_timeout`(已固化 session=50，见 `config/database.php` PDO `MYSQL_ATTR_INIT_COMMAND`) → 偶发 `1205 Lock wait timeout`。方案 C 在**进 DB 锁之前**加一把按订单 id 的 Cache 互斥锁，把"DB 锁等待 1205"转成"Cache 抢锁立即失败"。

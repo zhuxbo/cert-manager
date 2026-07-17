@@ -180,6 +180,10 @@ class Action
         $item['api_id'] = strval($item['code']);
         unset($item['code']);
 
+        $costProvided = array_key_exists('cost', $item) && $item['cost'] !== null;
+        $cost = $item['cost'] ?? null;
+        unset($item['cost']);
+
         // 根据 api_id 查询产品
         $product = Product::where('source', $source)->where('api_id', $item['api_id'])->first();
         if ($product) {
@@ -225,7 +229,9 @@ class Action
                     unset($item['weight']);
                 }
 
-                $product->update($item);
+                $product->fill($item);
+                $this->applyImportedCost($product, $cost, $costProvided);
+                $product->save();
             }
         } else {
             if ($type === 'new' || $type === 'all') {
@@ -243,9 +249,21 @@ class Action
                 }
 
                 $item = $importRequest->prepareForCreate($item);
-                Product::create($item);
+                $product = new Product;
+                $product->fill($item);
+                $this->applyImportedCost($product, $cost, $costProvided);
+                $product->save();
             }
         }
+    }
+
+    private function applyImportedCost(Product $product, mixed $cost, bool $provided): void
+    {
+        if (! $provided || ! is_array($cost)) {
+            return;
+        }
+
+        $product->cost = $cost;
     }
 
     /**

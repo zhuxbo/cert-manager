@@ -5,6 +5,7 @@ import { PlusSearch } from "plus-pro-components";
 import { useProductPrice } from "./hook";
 import { useProductPriceSearch } from "./search";
 import { useProductPriceTable } from "./table";
+import Initialization from "./initialization.vue";
 import Levels from "./levels.vue";
 
 import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
@@ -15,6 +16,7 @@ defineOptions({
 });
 
 const levelsVisible = ref(false);
+const initializationVisible = ref(false);
 
 const {
   tableRef,
@@ -53,6 +55,7 @@ function onFullscreen() {
 
 <template>
   <div class="main">
+    <Initialization v-model="initializationVisible" @saved="onSearch" />
     <Levels v-model="levelsVisible" @saved="onSearch" />
     <div
       class="search bg-bg_color w-[99/100] pl-4 pr-4 pt-[24px] pb-[12px] overflow-auto"
@@ -77,6 +80,9 @@ function onFullscreen() {
       @fullscreen="onFullscreen"
     >
       <template #buttons>
+        <el-button type="warning" @click="initializationVisible = true">
+          初始化价格
+        </el-button>
         <el-button type="primary" @click="levelsVisible = true">
           设置价格
         </el-button>

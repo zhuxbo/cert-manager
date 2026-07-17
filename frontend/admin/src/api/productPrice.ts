@@ -8,6 +8,45 @@ export interface IndexParams {
   period?: number;
 }
 
+export interface InitializationLevel {
+  code: string;
+  cost_rate: string;
+}
+
+export interface InitializationRequest {
+  levels: InitializationLevel[];
+  precision: 0 | 1 | 2;
+  force: boolean;
+  sync_cost_rates: boolean;
+  preview: boolean;
+  preview_token?: string;
+}
+
+export interface InitializationWarning {
+  product_id: number;
+  product_name: string;
+  period: number | null;
+  field: string;
+  message: string;
+}
+
+export interface InitializationResult {
+  preview: boolean;
+  can_execute: boolean;
+  executed: boolean;
+  reason: "cost_validation" | "stale_preview" | null;
+  preview_token?: string | null;
+  product_count: number;
+  level_count: number;
+  target_count: number;
+  created_count: number;
+  preserved_count: number;
+  deleted_count: number;
+  rebuilt_count: number;
+  synced_level_count: number;
+  warnings: InitializationWarning[];
+}
+
 /** 获取产品价格列表 */
 export function index(params: IndexParams): Promise<BaseResponse> {
   return http.get<BaseResponse<null>, IndexParams>("/product-price", {
@@ -103,6 +142,16 @@ export function set(
   >(`/product-price/set`, {
     data: { product_id, product_price }
   });
+}
+
+/** 预览或执行产品价格批量初始化 */
+export function initialize(
+  data: InitializationRequest
+): Promise<BaseResponse<InitializationResult>> {
+  return http.post<BaseResponse<InitializationResult>, InitializationRequest>(
+    "/product-price/initialization",
+    { data }
+  );
 }
 
 /** 导出产品价格 */

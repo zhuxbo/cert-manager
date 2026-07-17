@@ -6,7 +6,8 @@ import {
   update,
   FORM_PARAMS_DEFAULT,
   FORM_PARAMS_KEYS,
-  type FormParams
+  type FormParams,
+  type MutationParams
 } from "@/api/userLevel";
 import type { FormRules } from "element-plus";
 import { pickByKeys } from "@/views/system/utils";
@@ -70,6 +71,7 @@ export const useUserLevelStore = (onSearch: () => void) => {
       fieldProps: {
         placeholder: "请输入成本价倍率",
         min: 1,
+        max: 99.9999,
         precision: 4,
         step: 0.01,
         controlsPosition: "right"
@@ -110,7 +112,8 @@ export const useUserLevelStore = (onSearch: () => void) => {
       {
         type: "number",
         min: 1,
-        message: "成本价倍率必须大于等于1",
+        max: 99.9999,
+        message: "成本价倍率必须在1至99.9999之间",
         trigger: "blur"
       }
     ]
@@ -143,19 +146,38 @@ export const useUserLevelStore = (onSearch: () => void) => {
 
   const handleShow = (id: number) => {
     show(id).then(({ data }) => {
-      storeValues.value = pickByKeys<FormParams>(data, FORM_PARAMS_KEYS);
+      const values = pickByKeys<FormParams>(data, FORM_PARAMS_KEYS);
+      storeValues.value = {
+        ...values,
+        cost_rate: Number(values.cost_rate)
+      };
     });
   };
 
+  const mutationParams = (): MutationParams => {
+    const values = { ...storeValues.value };
+    const costRate = values.cost_rate;
+
+    return {
+      ...values,
+      cost_rate:
+        costRate === undefined
+          ? undefined
+          : Number(costRate)
+              .toFixed(4)
+              .replace(/\.?0+$/, "")
+    };
+  };
+
   const handleStore = () => {
-    store(storeValues.value).then(() => {
+    store(mutationParams()).then(() => {
       onSearch();
       showStore.value = false;
     });
   };
 
   const handleUpdate = () => {
-    update(storeId.value, storeValues.value).then(() => {
+    update(storeId.value, mutationParams()).then(() => {
       onSearch();
       showStore.value = false;
     });

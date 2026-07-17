@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ProductPriceInitializationControllerTest::__pest_evaluable_代表性参数失败返回结构化校验错误",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/product-price/initialization",
+            "request_keys": [
+                "force",
+                "levels",
+                "precision",
+                "preview",
+                "sync_cost_rates"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "precision": "array<string>"
+                }
+            }
+        }
+    ]
+}

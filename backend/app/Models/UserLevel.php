@@ -19,7 +19,7 @@ class UserLevel extends BaseModel
 
     protected $casts = [
         'custom' => 'integer',
-        'cost_rate' => 'float',
+        'cost_rate' => 'decimal:4',
         'weight' => 'integer',
     ];
 

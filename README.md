@@ -113,6 +113,8 @@ deploy/ # 部署脚本
 
 运行时并发防护：订单/任务状态变更统一遵循 `task→order/acme` 锁顺序；任务锁查询统一经 Task 模型 scope `Task::lockForMutation` 强制走 `tasks(order_id, action, status)` 复合索引（与之同首列的单列 `order_id` 索引已在 schema 层删除，杜绝优化器退回扩大间隙锁），纯本地 task 变更事务（Order 与 ACME 共用重试助手）启用 3 次死锁重试，降低并发取消、同步时 MySQL 1213 对用户请求的影响。CI 同时守住 Task 锁入口收口、tasks 索引最终态和 scope 接线，防止复合索引或 forceIndex 保护回归。
 
+管理端产品价格支持按会员级别倍率预览并批量初始化；每个级别可单独调整倍率，默认只补齐缺失价格，强制模式也只重建本次选中的级别。
+
 续费/重签接替单在已提交上游后被取消时不会恢复前驱证书；普通取消以及启用 `autoRefundOnSync` 后由同步发现上游取消的续费单，都会发送一次性 `cert_renew_cancelled` 提醒，避免前驱证书脱离续期监控后静默过期。
 
 Certum 非 DV 产品在订单进入 processing 后提供验证文档处理入口；入口按产品签发机构 `product.ca` 判断，不受订单品牌字段影响。

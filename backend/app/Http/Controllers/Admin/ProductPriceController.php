@@ -5,10 +5,15 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Requests\ProductPrice\GetIdsRequest;
 use App\Http\Requests\ProductPrice\GetRequest;
 use App\Http\Requests\ProductPrice\IndexRequest;
+use App\Http\Requests\ProductPrice\InitializationRequest;
 use App\Http\Requests\ProductPrice\SetRequest;
 use App\Http\Requests\ProductPrice\StoreRequest;
 use App\Http\Requests\ProductPrice\UpdateRequest;
+use App\Models\Product;
 use App\Models\ProductPrice;
+use App\Models\UserLevel;
+use App\Services\ProductPrice\ProductPriceInitializationService;
+use App\Services\ProductPrice\ProductPriceMutationLock;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -16,9 +21,22 @@ use Throwable;
 
 class ProductPriceController extends BaseController
 {
-    public function __construct()
+    public function __construct(private readonly ProductPriceMutationLock $mutationLock)
     {
         parent::__construct();
+    }
+
+    public function initialization(
+        InitializationRequest $request,
+        ProductPriceInitializationService $service,
+    ): void {
+        $validated = $request->validated();
+        $adminId = (int) $this->guard->id();
+        $data = $validated['preview']
+            ? $service->preview($validated, $adminId)
+            : $service->initialize($validated, $adminId, $validated['preview_token']);
+
+        $this->success($data);
     }
 
     /**
@@ -73,7 +91,13 @@ class ProductPriceController extends BaseController
      */
     public function store(StoreRequest $request): void
     {
-        $productPrice = ProductPrice::create($request->validated());
+        $validated = $request->validated();
+        $productPrice = $this->mutationLock->runWithLock(function () use ($validated) {
+            $this->ensurePriceReferencesExist($validated['product_id'], $validated['level_code']);
+            $this->ensureUniquePrice($validated['product_id'], $validated['level_code'], $validated['period']);
+
+            return ProductPrice::create($validated);
+        });
 
         if (! $productPrice->exists) {
             $this->error('添加失败');
@@ -115,13 +139,24 @@ class ProductPriceController extends BaseController
      */
     public function update(UpdateRequest $request, $id): void
     {
-        $productPrice = ProductPrice::find($id);
-        if (! $productPrice) {
-            $this->error('产品价格不存在');
-        }
+        $validated = $request->validated();
+        $this->mutationLock->runWithLock(function () use ($validated, $id) {
+            $productPrice = ProductPrice::find($id);
+            if (! $productPrice) {
+                $this->error('产品价格不存在');
+            }
 
-        $productPrice->fill($request->validated());
-        $productPrice->save();
+            $this->ensurePriceReferencesExist($validated['product_id'], $validated['level_code']);
+            $this->ensureUniquePrice(
+                $validated['product_id'],
+                $validated['level_code'],
+                $validated['period'],
+                $productPrice->id
+            );
+
+            $productPrice->fill($validated);
+            $productPrice->save();
+        });
 
         $this->success();
     }
@@ -131,12 +166,14 @@ class ProductPriceController extends BaseController
      */
     public function destroy($id): void
     {
-        $productPrice = ProductPrice::find($id);
-        if (! $productPrice) {
-            $this->error('产品价格不存在');
-        }
+        $this->mutationLock->runWithLock(function () use ($id) {
+            $productPrice = ProductPrice::find($id);
+            if (! $productPrice) {
+                $this->error('产品价格不存在');
+            }
 
-        $productPrice->delete();
+            $productPrice->delete();
+        });
         $this->success();
     }
 
@@ -147,12 +184,15 @@ class ProductPriceController extends BaseController
     {
         $ids = $request->validated('ids');
 
-        $productPrices = ProductPrice::whereIn('id', $ids)->get();
-        if ($productPrices->isEmpty()) {
-            $this->error('产品价格不存在');
-        }
+        $this->mutationLock->runWithLock(function () use ($ids) {
+            $uniqueIds = array_values(array_unique($ids));
+            $productPrices = ProductPrice::whereIn('id', $uniqueIds)->get();
+            if ($productPrices->count() !== count($uniqueIds)) {
+                $this->error('产品价格不存在');
+            }
 
-        ProductPrice::destroy($ids);
+            ProductPrice::destroy($uniqueIds);
+        });
         $this->success();
     }
 
@@ -179,9 +219,45 @@ class ProductPriceController extends BaseController
     {
         $validated = $request->validated();
 
-        ProductPrice::setProductPrice($validated['product_id'], $validated['product_price']);
+        $this->mutationLock->runWithLock(function () use ($validated) {
+            if (! Product::whereKey($validated['product_id'])->exists()) {
+                $this->error('产品不存在');
+            }
+
+            $levelCodes = array_keys($validated['product_price']);
+            if (UserLevel::whereIn('code', $levelCodes)->count() !== count(array_unique($levelCodes))) {
+                $this->error('用户级别不存在');
+            }
+
+            ProductPrice::setProductPrice($validated['product_id'], $validated['product_price']);
+        });
 
         $this->success();
+    }
+
+    private function ensurePriceReferencesExist(int $productId, string $levelCode): void
+    {
+        if (! Product::whereKey($productId)->exists()) {
+            $this->error('产品不存在');
+        }
+        if (! UserLevel::where('code', $levelCode)->exists()) {
+            $this->error('用户级别不存在');
+        }
+    }
+
+    private function ensureUniquePrice(int $productId, string $levelCode, int $period, ?int $exceptId = null): void
+    {
+        $query = ProductPrice::where('product_id', $productId)
+            ->where('level_code', $levelCode)
+            ->where('period', $period);
+
+        if ($exceptId !== null) {
+            $query->whereKeyNot($exceptId);
+        }
+
+        if ($query->exists()) {
+            $this->error('该产品、用户级别和周期的组合已经存在。');
+        }
     }
 
     /**

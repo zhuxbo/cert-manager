@@ -24,6 +24,7 @@
     "lint:check:prettier": "prettier --check  \"src/**/*.{js,ts,json,tsx,css,scss,vue,html,md}\"",
     "lint:check:stylelint": "stylelint --cache \"**/*.{html,vue,css,scss}\" --cache-location node_modules/.cache/stylelint/",
     "lint:check": "pnpm lint:check:eslint && pnpm lint:check:prettier && pnpm lint:check:stylelint",
+    "test:state": "node --experimental-strip-types --test src/views/productPrice/initializationState.test.mjs",
     "preinstall": "npx only-allow pnpm"
   },
   "keywords": [

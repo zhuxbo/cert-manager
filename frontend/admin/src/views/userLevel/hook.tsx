@@ -1,13 +1,13 @@
 import type { PaginationProps } from "@pureadmin/table";
 import { reactive, ref, toRaw, nextTick } from "vue";
-import type { IndexParams } from "@/api/userLevel";
+import type { IndexParams, UserLevelDto } from "@/api/userLevel";
 import * as userLevelApi from "@/api/userLevel";
 import { message } from "@shared/utils";
 
 export function useUserLevel(tableRef) {
   const search = ref<IndexParams>({});
 
-  const dataList = ref([]);
+  const dataList = ref<UserLevelDto[]>([]);
   const loading = ref(true);
 
   const pagination = reactive<PaginationProps>({

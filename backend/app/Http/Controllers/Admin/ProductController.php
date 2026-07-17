@@ -13,6 +13,7 @@ use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\UserLevel;
 use App\Services\Order\Action;
+use App\Services\Product\ProductCostNormalizer;
 use App\Traits\ExcelHelperTrait;
 use Exception;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
@@ -226,14 +227,34 @@ class ProductController extends BaseController
             $this->error('产品不存在');
         }
 
-        // 获取验证后的数据
         $validated = $request->validated();
+        $normalized = app(ProductCostNormalizer::class)->normalize($product, $validated['cost']);
+        if ($normalized['warnings'] !== []) {
+            $this->error('产品成本数据不完整', $this->warningsToErrors($normalized['warnings']));
+        }
 
-        // 更新产品的 cost 字段
-        $product->cost = $validated['cost'];
+        $product->cost = $normalized['cost'];
         $product->save();
 
         $this->success();
+    }
+
+    /**
+     * @param  list<array{field: string, period: int|null, message: string}>  $warnings
+     * @return array<string, list<string>>
+     */
+    private function warningsToErrors(array $warnings): array
+    {
+        $errors = [];
+        foreach ($warnings as $warning) {
+            $key = 'cost.'.$warning['field'];
+            if ($warning['period'] !== null) {
+                $key .= '.'.$warning['period'];
+            }
+            $errors[$key][] = $warning['message'];
+        }
+
+        return $errors;
     }
 
     /**
