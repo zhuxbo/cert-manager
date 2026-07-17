@@ -67,6 +67,7 @@ abstract class TestCase extends BaseTestCase
         }
 
         $workerStorage = storage_path('framework/testing/worker-'.$token);
+        @mkdir($workerStorage.'/framework', 0755, true);
         @mkdir($workerStorage.'/app/public', 0755, true);
 
         $this->app->useStoragePath($workerStorage);
