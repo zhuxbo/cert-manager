@@ -1,0 +1,20 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_管理员可以卸载失败的安装任务并清理同插件失败记录",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/plugin/operations/{uuid}/uninstall",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "name": "string",
+                    "remove_data": "boolean",
+                    "message": "string"
+                }
+            }
+        }
+    ]
+}

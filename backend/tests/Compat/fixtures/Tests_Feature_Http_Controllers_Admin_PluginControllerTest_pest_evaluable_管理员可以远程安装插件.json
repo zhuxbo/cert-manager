@@ -12,8 +12,23 @@
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "name": "string",
-                    "version": "string"
+                    "operation": {
+                        "uuid": "string",
+                        "type": "string",
+                        "plugin_name": "string",
+                        "version": "null",
+                        "status": "string",
+                        "stage": "string",
+                        "message": "string",
+                        "error": "null",
+                        "result": "null",
+                        "admin_id": "integer",
+                        "created_at": "string",
+                        "updated_at": "string",
+                        "started_at": "null",
+                        "finished_at": "null",
+                        "is_stale": "boolean"
+                    }
                 }
             }
         }

@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_cost__rate_拒绝超过四位小数或超出_1_至_99_9999_范围@dataset \"五位小数\" with data ('1.23456')",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/user-level",
+            "request_keys": [
+                "code",
+                "cost_rate",
+                "custom",
+                "name",
+                "weight"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "cost_rate": "array<string>"
+                }
+            }
+        }
+    ]
+}

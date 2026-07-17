@@ -1,0 +1,35 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V1\\ApiControllerSyncTimeoutTest::__pest_evaluable_V1_get_端点：上游_sync_超时不影响返回本地订单数据",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/get",
+            "request_keys": [
+                "oid"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "period_from": "string",
+                    "period_till": "string",
+                    "vendor_id": "string",
+                    "common_name": "string",
+                    "alternative_names": "string",
+                    "dcv": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    },
+                    "validation": "array<unknown>",
+                    "status": "string",
+                    "application_status": "string",
+                    "dcv_status": "string",
+                    "ov_status": "string"
+                }
+            }
+        }
+    ]
+}

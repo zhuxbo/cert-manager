@@ -1,13 +1,11 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_管理员可以更新插件",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_管理员可以重试失败的远程插件安装任务",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/admin/plugin/update",
-            "request_keys": [
-                "name"
-            ],
+            "uri_pattern": "/api/admin/plugin/operations/{uuid}/retry",
+            "request_keys": null,
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
@@ -16,7 +14,7 @@
                         "uuid": "string",
                         "type": "string",
                         "plugin_name": "string",
-                        "version": "null",
+                        "version": "string",
                         "status": "string",
                         "stage": "string",
                         "message": "string",

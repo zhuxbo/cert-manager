@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_update_接受字符串倍率并以四位小数字符串保存",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/user-level/{id}",
+            "request_keys": [
+                "code",
+                "cost_rate",
+                "custom",
+                "name",
+                "weight"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}
