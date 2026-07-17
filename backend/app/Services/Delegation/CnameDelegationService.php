@@ -8,6 +8,8 @@ use App\Models\CnameDelegation;
 use App\Services\Order\Utils\DomainUtil;
 use App\Services\Order\Utils\VerifyUtil;
 use App\Traits\ApiResponse;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -186,59 +188,172 @@ class CnameDelegationService
         return CnameDelegation::where($where)->first();
     }
 
+    /** 无效委托的固定失败原因（用户友好、不含原始异常/SQL 回显）。 */
+    public const INVALID_LAST_ERROR = 'CNAME记录不匹配或未配置';
+
     /**
-     * 检查并更新委托有效性
-     *
-     * @param  CnameDelegation  $delegation  委托记录
-     * @return bool 是否有效
+     * fail_count 硬截断上限：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出。
+     * 单一来源供三处 +1 自增共用（applyProbeOutcome PHP 侧 / applyProbeOutcomeIfUnchanged DB 侧
+     * LEAST / DelegationCheckCommand post-apply gate），消除上限魔数多处裸写漂移。
      */
-    public function checkAndUpdateValidity(CnameDelegation $delegation): bool
+    public const FAIL_COUNT_MAX = 100;
+
+    /**
+     * 纯探测委托有效性（三态，不写库）。
+     *
+     * 经 VerifyUtil 三态可达性变体区分：
+     * - `valid`：拿到权威答案且 CNAME 命中期望目标；
+     * - `invalid`：拿到权威答案但无记录/不匹配（确认无效）；
+     * - `unreachable`：全渠道失败/解析器不可达（无任何权威答案），或探测本身抛异常。
+     *
+     * 探测异常一律归 `unreachable`（冻结计数、计入熔断分母），绝不再当作 invalid 误累加
+     * fail_count——dnsTools 停摆时这是防误报/误删的第一道分档。
+     *
+     * @return string valid|invalid|unreachable
+     */
+    public function probeValidity(CnameDelegation $delegation): string
     {
         // DNS 查询需要 Punycode 格式
         $host = DomainUtil::convertToAscii("$delegation->prefix.$delegation->zone");
         $expectedTarget = $delegation->target_fqdn;
 
         try {
-            // 执行 DNS CNAME 查询
-            $valid = VerifyUtil::verifyCnameDelegation($host, $expectedTarget);
+            $result = VerifyUtil::verifyCnameDelegationDetailed($host, $expectedTarget);
 
-            $delegation->valid = $valid;
-            $delegation->last_checked_at = now();
-
-            if ($valid) {
-                $delegation->fail_count = 0;
-                $delegation->last_error = '';
-            } else {
-                // 硬截断 100：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出
-                $delegation->fail_count = min($delegation->fail_count + 1, 100);
-                $delegation->last_error = 'CNAME记录不匹配或未配置';
-                Log::warning('CNAME委托健康检查失败', [
-                    'id' => $delegation->id,
-                    'host' => $host,
-                    'expected' => $expectedTarget,
-                    'fail_count' => $delegation->fail_count,
-                ]);
+            if (! $result['authoritative']) {
+                return 'unreachable';
             }
 
-            $delegation->save();
-
-            return $valid;
+            return $result['matched'] ? 'valid' : 'invalid';
         } catch (Throwable $e) {
-            $delegation->valid = false;
-            $delegation->fail_count = min($delegation->fail_count + 1, 100);
-            // 截断异常消息，避免 SQLSTATE 报错回显嵌套 SQL 把 VARCHAR(255) 撑爆
-            $delegation->last_error = mb_substr($e->getMessage(), 0, 200);
-            $delegation->last_checked_at = now();
-            $delegation->save();
-
-            Log::error('CNAME委托健康检查异常', [
+            // 探测层异常按不可达处理（冻结计数）；原始异常仅进日志，绝不落 last_error/入用户邮件
+            Log::warning('CNAME委托探测异常（按不可达处理，冻结计数）', [
                 'id' => $delegation->id,
                 'host' => $host,
                 'error' => $e->getMessage(),
             ]);
 
+            return 'unreachable';
+        }
+    }
+
+    /**
+     * 按三态探测结论落库。
+     *
+     * - `valid`：valid=true + 归零 fail_count + 清 last_error；
+     * - `invalid`：valid=false + fail_count 递增（硬截断 100 防 TINYINT 溢出）+ 固定 last_error；
+     * - `unreachable`：**冻结计数**——不写 valid/fail_count/last_error，仅更新 last_checked_at 留痕。
+     *
+     * @param  string  $outcome  probeValidity 的返回值
+     * @return bool 是否有效（valid=true 时返回 true，其余 false，与历史 fail-safe 一致）
+     */
+    public function applyProbeOutcome(CnameDelegation $delegation, string $outcome): bool
+    {
+        $delegation->last_checked_at = now();
+
+        switch ($outcome) {
+            case 'valid':
+                $delegation->valid = true;
+                $delegation->fail_count = 0;
+                $delegation->last_error = '';
+                $delegation->save();
+
+                return true;
+
+            case 'invalid':
+                $delegation->valid = false;
+                // 硬截断（见 FAIL_COUNT_MAX）：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出
+                $delegation->fail_count = min($delegation->fail_count + 1, self::FAIL_COUNT_MAX);
+                $delegation->last_error = self::INVALID_LAST_ERROR;
+                Log::warning('CNAME委托健康检查失败', [
+                    'id' => $delegation->id,
+                    'zone' => $delegation->zone,
+                    'fail_count' => $delegation->fail_count,
+                ]);
+                $delegation->save();
+
+                return false;
+
+            case 'unreachable':
+            default:
+                // 冻结计数：不污染 valid/fail_count/last_error（dnsTools 停摆轮结果不可信），仅留痕
+                $delegation->save();
+                Log::warning('CNAME委托探测不可达（冻结计数，不计失败）', [
+                    'id' => $delegation->id,
+                    'zone' => $delegation->zone,
+                    'fail_count' => $delegation->fail_count,
+                ]);
+
+                return false;
+        }
+    }
+
+    /**
+     * 周巡检专用：带 TOCTOU CAS 守卫的探测结论落库（阶段①快照 → 阶段②条件写）。
+     *
+     * 巡检两阶段间隔可达数十分钟（invalid 每条打满全部节点），窗口内 ValidateCommand（每分钟）/
+     * 双端手动检查/AutoRenew 可能已写入更新鲜结论。落库为单条原子条件 UPDATE：
+     * `WHERE id = ? AND last_checked_at <=> ?`（NULL-safe 等值，MySQL 5.7/8.x 均支持）——
+     * 行被并发更新（时间戳前移）或已删除时 affected=0、本条陈旧结论作废；invalid 的
+     * fail_count 用 DB 侧 `LEAST(fail_count + 1, 100)` 自增，同时消除多写者 lost update。
+     * 方法内绝不读行现值做判断（读-写窗口正是要消除的对象）。
+     *
+     * CAS 基准可靠性：last_checked_at 前移的全局唯一写点是 applyProbeOutcome（三态均写
+     * now()、每次真实探测后），故「时间戳变化 ⟺ 有过一次新探测落库」成立，跳过恒安全。
+     *
+     * @param  int  $delegationId  委托 ID
+     * @param  string  $outcome  probeValidity 的返回值（valid|invalid|unreachable）
+     * @param  CarbonInterface|null  $expectedLastCheckedAt  阶段①探测前加载的 last_checked_at 快照（勿传落库前重读的现值，否则 CAS 恒命中、守卫虚设）
+     * @return bool 是否实际落库；false=行已被并发更新/删除，调用方应跳过该条的删除/通知 gate
+     */
+    public function applyProbeOutcomeIfUnchanged(int $delegationId, string $outcome, ?CarbonInterface $expectedLastCheckedAt): bool
+    {
+        $attributes = match ($outcome) {
+            'valid' => ['valid' => true, 'fail_count' => 0, 'last_error' => ''],
+            'invalid' => [
+                'valid' => false,
+                // 硬截断（见 FAIL_COUNT_MAX）：与 applyProbeOutcome 同语义，DB 侧原子自增免 lost update
+                'fail_count' => DB::raw('LEAST(fail_count + 1, '.self::FAIL_COUNT_MAX.')'),
+                'last_error' => self::INVALID_LAST_ERROR,
+            ],
+            // unreachable：冻结计数（不写 valid/fail_count/last_error），仅 last_checked_at 留痕
+            default => [],
+        };
+
+        $affected = CnameDelegation::whereKey($delegationId)
+            ->whereRaw('last_checked_at <=> ?', [$expectedLastCheckedAt?->format('Y-m-d H:i:s')])
+            ->update($attributes + ['last_checked_at' => now()]);
+
+        if ($affected === 0) {
+            Log::info('CNAME委托巡检落库跳过（探测期间已有更新鲜结论落库或记录已删除）', [
+                'id' => $delegationId,
+                'outcome' => $outcome,
+            ]);
+
             return false;
         }
+
+        if ($outcome === 'invalid') {
+            Log::warning('CNAME委托健康检查失败', ['id' => $delegationId]);
+        } elseif ($outcome === 'unreachable') {
+            Log::warning('CNAME委托探测不可达（冻结计数，不计失败）', ['id' => $delegationId]);
+        }
+
+        return true;
+    }
+
+    /**
+     * 检查并更新委托有效性（探测 + 落库组合，签名与历史保持）。
+     *
+     * 内部拆 probeValidity + applyProbeOutcome：既有 bool 消费方（AutoRenewService 续签前置、
+     * DelegationController 双端手动检查、ValidateCommand 即时检测）零改动，且同时获得
+     * 「unreachable 不误计数」的修复——unreachable 返 false（与历史 fail-safe 一致）但不再累加 fail_count。
+     *
+     * @return bool 是否有效
+     */
+    public function checkAndUpdateValidity(CnameDelegation $delegation): bool
+    {
+        return $this->applyProbeOutcome($delegation, $this->probeValidity($delegation));
     }
 
     /**

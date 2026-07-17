@@ -81,6 +81,8 @@ class ProductPrice extends BaseModel
     /**
      * 设置产品价格
      *
+     * 调用方必须通过 ProductPriceMutationLock 持有全局价格变更锁。
+     *
      * @throws Throwable
      */
     public static function setProductPrice(int $product_id, array $product_price): void

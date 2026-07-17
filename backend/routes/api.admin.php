@@ -101,12 +101,13 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::get('source', [ProductController::class, 'getSourceList']);
         Route::post('export', [ProductController::class, 'export']);
     });
-    RouteHelper::registerResourceRoutes('product-price', ProductPriceController::class);
     Route::prefix('product-price')->group(function () {
+        Route::post('initialization', [ProductPriceController::class, 'initialization']);
         Route::get('get', [ProductPriceController::class, 'get']);
         Route::put('set', [ProductPriceController::class, 'set']);
         Route::get('export', [ProductPriceController::class, 'export']);
     });
+    RouteHelper::registerResourceRoutes('product-price', ProductPriceController::class);
 
     // 订单路由
     Route::prefix('order')->group(function () {
@@ -139,6 +140,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('batch-revoke-cancel', [OrderController::class, 'batchRevokeCancel']);
         Route::patch('auto-settings/{id}', [OrderController::class, 'updateAutoSettings'])->where('id', '[0-9]+');
         Route::patch('amount/{id}', [OrderController::class, 'updateAmount'])->where('id', '[0-9]+');
+        Route::patch('applicant/{id}', [OrderController::class, 'updateApplicant'])->where('id', '[0-9]+');
         Route::get('deploy-commands', [OrderController::class, 'deployCommands']);
         Route::post('upload-document/{id}', [OrderController::class, 'uploadDocument'])->where('id', '[0-9]+');
         // document-preview 改走短时签名 URL（signed）而非 JWT：access_token 不进 URL，仅验证签名
@@ -246,6 +248,11 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     Route::prefix('plugin')->group(function () {
         Route::get('installed', [PluginController::class, 'installed']);
         Route::get('check-updates', [PluginController::class, 'checkUpdates']);
+        Route::get('operations', [PluginController::class, 'operations']);
+        Route::get('operations/{uuid}', [PluginController::class, 'operation']);
+        Route::post('operations/{uuid}/fail-stale', [PluginController::class, 'failStaleOperation']);
+        Route::post('operations/{uuid}/retry', [PluginController::class, 'retryOperation']);
+        Route::post('operations/{uuid}/uninstall', [PluginController::class, 'uninstallFailedOperation']);
         Route::post('install', [PluginController::class, 'install']);
         Route::post('update', [PluginController::class, 'update']);
         Route::post('uninstall', [PluginController::class, 'uninstall']);

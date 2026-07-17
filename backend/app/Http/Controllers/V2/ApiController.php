@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\V2;
 
 use App\Exceptions\ApiResponseException;
+use App\Exceptions\MutationBusyException;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\OrderIdCompatTrait;
 use App\Models\ApiToken;
@@ -10,6 +11,7 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Services\Order\Action;
+use App\Services\Order\OrderCommitResilience;
 use App\Services\Order\Utils\OrderUtil;
 use DB;
 use Exception;
@@ -205,7 +207,7 @@ class ApiController extends Controller
             $this->error('API 不支持委托验证方法');
         }
 
-        $this->checkReferId($params['refer_id'] ?? '');
+        $this->resolveReferId($params['refer_id'] ?? '');
 
         $product = Product::where('code', $params['product_code'] ?? null)->where('status', 1)->first();
         if (! $product) {
@@ -220,6 +222,9 @@ class ApiController extends Controller
         $params['action'] = 'new';
         $params['channel'] = 'api';
 
+        // 外层事务只包 new + pay(commit=false)：建单 + 扣费落 pending（原子，失败一起回滚不留孤儿）。
+        // commit（调上游下单）移到事务外，其失败不回滚已提交的 new+pay —— 订单停 pending、已扣费保留，
+        // 靠对账/下游 pull get 自愈，返回既有 processing 展示态（getData('commit') 吞 code=0/忙，见 getData）。
         try {
             DB::beginTransaction();
 
@@ -227,7 +232,7 @@ class ApiController extends Controller
 
             $order_id = $result['data']['order_id'] ?? null;
 
-            $this->getData('pay', [$order_id, true, boolval($params['issue_verify'] ?? 0)]);
+            $this->getData('pay', [$order_id, false, boolval($params['issue_verify'] ?? 0)]);
 
             DB::commit();
         } catch (Throwable $e) {
@@ -235,18 +240,12 @@ class ApiController extends Controller
             throw $e;
         }
 
+        // 事务外独立提交上游：超时/失败/抢锁忙被 getData('commit') 吞掉，不影响已落库的 new+pay
+        $this->getData('commit', [$order_id]);
+
         $order = Order::with(['latestCert'])->where('orders.id', $order_id)->first();
 
-        $cleaned = $this->cleanDcvAndValidation(
-            $order->latestCert->dcv ?? null,
-            $order->latestCert->validation ?? null,
-        );
-
-        $this->success([
-            'order_id' => $order_id,
-            'cert_apply_status' => $order->latestCert->cert_apply_status ?? 0,
-            ...$cleaned,
-        ]);
+        $this->success($this->buildApplyResponse($order));
     }
 
     /**
@@ -266,7 +265,7 @@ class ApiController extends Controller
             $this->error('API 不支持委托验证方法');
         }
 
-        $this->checkReferId($params['refer_id'] ?? '');
+        $this->resolveReferId($params['refer_id'] ?? '');
 
         // 处理order_id参数兼容
         $this->processOrderIdParamInArray($params);
@@ -274,6 +273,7 @@ class ApiController extends Controller
         $params['action'] = 'renew';
         $params['channel'] = 'api';
 
+        // 外层事务只包 renew + pay(commit=false)，commit 移到事务外（同 new，见 new 注释）
         try {
             DB::beginTransaction();
 
@@ -281,7 +281,7 @@ class ApiController extends Controller
 
             $order_id = $result['data']['order_id'] ?? '';
 
-            $this->getData('pay', [$order_id, true, boolval($params['issue_verify'] ?? 0)]);
+            $this->getData('pay', [$order_id, false, boolval($params['issue_verify'] ?? 0)]);
 
             DB::commit();
         } catch (Throwable $e) {
@@ -289,18 +289,12 @@ class ApiController extends Controller
             throw $e;
         }
 
+        // 事务外独立提交上游：超时/失败/抢锁忙被 getData('commit') 吞掉，不影响已落库的 renew+pay
+        $this->getData('commit', [$order_id]);
+
         $order = Order::with(['latestCert'])->where('orders.id', $order_id)->first();
 
-        $cleaned = $this->cleanDcvAndValidation(
-            $order->latestCert->dcv ?? null,
-            $order->latestCert->validation ?? null,
-        );
-
-        $this->success([
-            'order_id' => $order_id,
-            'cert_apply_status' => $order->latestCert->cert_apply_status ?? 0,
-            ...$cleaned,
-        ]);
+        $this->success($this->buildApplyResponse($order));
     }
 
     /**
@@ -320,7 +314,7 @@ class ApiController extends Controller
             $this->error('API 不支持委托验证方法');
         }
 
-        $this->checkReferId($params['refer_id'] ?? '');
+        $this->resolveReferId($params['refer_id'] ?? '');
 
         // 处理order_id参数兼容
         $this->processOrderIdParamInArray($params);
@@ -328,6 +322,8 @@ class ApiController extends Controller
         $params['action'] = 'reissue';
         $params['channel'] = 'api';
 
+        // 外层事务只包 reissue + 所有权校验 + pay(commit=false)，commit 移到事务外（同 new，见 new 注释）。
+        // 所有权校验保留在事务内：跨用户 order_id 抛异常触发整笔 rollback（reissue 建的证书一起撤销）。
         try {
             DB::beginTransaction();
 
@@ -341,7 +337,7 @@ class ApiController extends Controller
                 throw new Exception('Order not found');
             }
 
-            $this->getData('pay', [$order_id, true, boolval($params['issue_verify'] ?? 0)]);
+            $this->getData('pay', [$order_id, false, boolval($params['issue_verify'] ?? 0)]);
 
             DB::commit();
         } catch (Throwable $e) {
@@ -349,18 +345,12 @@ class ApiController extends Controller
             throw $e;
         }
 
+        // 事务外独立提交上游：超时/失败/抢锁忙被 getData('commit') 吞掉，不影响已落库的 reissue+pay
+        $this->getData('commit', [$order_id]);
+
         $order = Order::with(['latestCert'])->where('orders.id', $order_id)->first();
 
-        $cleaned = $this->cleanDcvAndValidation(
-            $order->latestCert->dcv ?? null,
-            $order->latestCert->validation ?? null,
-        );
-
-        $this->success([
-            'order_id' => $order_id,
-            'cert_apply_status' => $order->latestCert->cert_apply_status ?? 0,
-            ...$cleaned,
-        ]);
+        $this->success($this->buildApplyResponse($order));
     }
 
     /**
@@ -434,17 +424,21 @@ class ApiController extends Controller
         // 原子占位：Cache::add（SETNX）保证并发下只放一个请求进 sync/pay/commit，防击穿重复调上游。
         // 保守 10s 占位；末尾按最终状态刷新滑动窗口（签发 120s / 其他 10s）
         if (Cache::add($cacheKey, time(), 10)) {
-            // 待验证、待审批、已签发的订单同步
+            // 待验证、待审批、已签发的订单同步（同步失败不影响返回已有数据）
             if (in_array($order->latestCert->status, ['processing', 'approving', 'active'])) {
                 // suppressCallback=true：下游主动 pull，get 末尾已重新查询并同步返回新状态，无需再异步回调（避免冗余触发）
-                $this->action->sync($order_id, true, true);
+                try {
+                    $this->action->sync($order_id, true, true);
+                } catch (ApiResponseException) {
+                    // 上游超时/失败不影响返回本地已有数据，下次 pull 再同步
+                }
             }
 
             // 未支付订单支付
             if ($order->latestCert->status === 'unpaid') {
                 try {
                     $this->action->pay($order_id);
-                } catch (ApiResponseException) {
+                } catch (ApiResponseException|MutationBusyException) {
                 }
             }
 
@@ -452,7 +446,7 @@ class ApiController extends Controller
             if ($order->latestCert->status === 'pending') {
                 try {
                     $this->action->commit($order_id);
-                } catch (ApiResponseException) {
+                } catch (ApiResponseException|MutationBusyException) {
                 }
             }
 
@@ -604,7 +598,7 @@ class ApiController extends Controller
     public function updateDCV(): void
     {
         $order_id = $this->processOrderIdParam();
-        $method = $this->request->input('method', '');
+        $method = (string) $this->request->input('method');
 
         // API 不支持委托验证方法
         if ($method === 'delegation') {
@@ -626,23 +620,48 @@ class ApiController extends Controller
     }
 
     /**
-     * 检测重复 refer_id
+     * 根据 refer_id 做幂等推进。
      */
-    private function checkReferId(string $refer_id): void
+    private function resolveReferId(string $refer_id): void
     {
-        if ($refer_id) {
-            $order = $this->model
-                ->whereHas('latestCert', function ($query) use ($refer_id) {
-                    $query->where('refer_id', $refer_id);
-                })
-                ->where('user_id', $this->user_id)
-                ->with(['latestCert'])
-                ->first();
-
-            if ($order) {
-                $this->error('Refer id already exists');
-            }
+        if (! $refer_id) {
+            return;
         }
+
+        $order = $this->model
+            ->whereHas('latestCert', function ($query) use ($refer_id) {
+                $query->where('refer_id', $refer_id);
+            })
+            ->where('user_id', $this->user_id)
+            ->with(['latestCert'])
+            ->first();
+
+        if (! $order) {
+            return;
+        }
+
+        // manager 的卡单态是 pending 且 api_id=NULL（不是 gateway 的 processing）。
+        // 仅 pending 才重提 commit，避免把 cancelled/revoked 等终态复活。
+        if (! $order->latestCert->api_id && $order->latestCert->status === 'pending') {
+            $this->getData('commit', [$order->id]);
+            $order = $this->model->with(['latestCert'])->where('orders.id', $order->id)->first();
+        }
+
+        $this->success($this->buildApplyResponse($order));
+    }
+
+    private function buildApplyResponse(Order $order): array
+    {
+        $cleaned = $this->cleanDcvAndValidation(
+            $order->latestCert->dcv ?? null,
+            $order->latestCert->validation ?? null,
+        );
+
+        return [
+            'order_id' => $order->id,
+            'cert_apply_status' => $order->latestCert->cert_apply_status ?? 0,
+            ...$cleaned,
+        ];
     }
 
     /**
@@ -652,16 +671,13 @@ class ApiController extends Controller
      */
     private function getData(string $action, array $params): array
     {
-        try {
-            $this->action->$action(...$params);
-        } catch (ApiResponseException $e) {
-            $result = $e->getApiResponse();
-            if ($result['code'] === 0) {
-                $this->error($result['msg'], $result['errors'] ?? null);
-            }
-        }
-
-        return $result ?? [];
+        // commit 段吞并守卫收敛至 OrderCommitResilience（V1/V2/Deploy 单一真相源）；
+        // 吞并边界（仅 commit 吞 code=0 + MutationBusyException、扣费不回滚）是 P0 红线，勿在此另写分叉。
+        return OrderCommitResilience::run(
+            fn () => $this->action->$action(...$params),
+            $action,
+            fn (array $result) => $this->error($result['msg'], $result['errors'] ?? null),
+        );
     }
 
     /**

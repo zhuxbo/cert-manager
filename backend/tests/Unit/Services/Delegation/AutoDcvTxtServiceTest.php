@@ -3,6 +3,7 @@
 use App\Services\Delegation\AutoDcvTxtService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
@@ -587,4 +588,103 @@ test('collect txt records does not fall back for exact ca subdomain', function (
     expect($txtRecords)->toBeEmpty();
     expect($hasChanges)->toBeFalse();
     expect($updatedValidation[0])->not->toHaveKey('auto_txt_written');
+});
+
+// ==================== 232：ca 取值源对齐 dcv['ca']（防订单创建后 product.ca 改指 miss）====================
+
+// 核心防回归：product 订单创建后被改指 sectigo，但委托按创建期 dcv['ca']=certum 建（_certum）。
+// 旧代码用实时 product->ca=sectigo → _pki-validation prefix → 查不到 → 静默 miss、TXT 不写；
+// 修复后用 dcv['ca']=certum → _certum → 命中。
+test('232 dcv[ca] 优先 product->ca：product 改指别家 CA 仍按 dcv[ca] 命中', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'sectigo']); // 订单创建后改指
+    $order = $this->createTestOrder($user, $product);
+
+    // 委托按创建期 dcv['ca']=certum 建（_certum prefix）
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_certum',
+        'valid' => true,
+    ]);
+
+    $this->createTestCert($order, [
+        'common_name' => 'example.com',
+        'alternative_names' => 'example.com',
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'ca' => 'certum', 'dns' => ['host' => '_certum']],
+        'validation' => [
+            ['host' => '_certum.example.com', 'domain' => 'example.com', 'value' => 'tok'],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+    $order->refresh();
+    [$txtRecords, $updatedValidation, $hasChanges] = $method->invoke($this->service, $order);
+
+    // dcv['ca']=certum → _certum → 命中（若用 product->ca=sectigo → _pki-validation → miss）
+    expect($txtRecords)->toHaveCount(1);
+    expect($updatedValidation[0]['delegation_id'])->toBe($delegation->id);
+    expect($hasChanges)->toBeTrue();
+});
+
+// dcv['ca'] 缺失（legacy 订单）时回落 product->ca，保持兼容
+test('232 dcv[ca] 缺失时回落 product->ca（legacy 订单兼容）', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'certum']);
+    $order = $this->createTestOrder($user, $product);
+    $delegation = $this->createTestDelegation($user, ['zone' => 'example.com', 'prefix' => '_certum', 'valid' => true]);
+
+    $this->createTestCert($order, [
+        'common_name' => 'example.com',
+        'alternative_names' => 'example.com',
+        // dcv 无 'ca' → 回落 product->ca=certum
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'dns' => ['host' => '_certum']],
+        'validation' => [
+            ['host' => '_certum.example.com', 'domain' => 'example.com', 'value' => 'tok'],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+    $order->refresh();
+    [$txtRecords, $updatedValidation, $hasChanges] = $method->invoke($this->service, $order);
+
+    expect($txtRecords)->toHaveCount(1);
+    expect($updatedValidation[0]['delegation_id'])->toBe($delegation->id);
+    expect($hasChanges)->toBeTrue();
+});
+
+// 未命中委托 → Log::warning（含 order_id/zone 上下文），surface 静默 miss
+test('232 未命中委托 → Log::warning（含 zone 上下文）', function () {
+    Log::spy();
+
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['ca' => 'certum']);
+    $order = $this->createTestOrder($user, $product);
+    // 不创建委托记录 → miss
+
+    $this->createTestCert($order, [
+        'common_name' => 'example.com',
+        'alternative_names' => 'example.com',
+        'dcv' => ['method' => 'txt', 'is_delegate' => true, 'ca' => 'certum', 'dns' => ['host' => '_certum']],
+        'validation' => [
+            ['host' => '_certum.example.com', 'domain' => 'example.com', 'value' => 'tok'],
+        ],
+    ]);
+
+    $reflection = new ReflectionClass($this->service);
+    $method = $reflection->getMethod('collectTxtRecords');
+    $order->refresh();
+    [$txtRecords, , $hasChanges] = $method->invoke($this->service, $order);
+
+    expect($txtRecords)->toBeEmpty();
+    expect($hasChanges)->toBeFalse();
+
+    Log::shouldHaveReceived('warning')
+        ->withArgs(function ($message, $context = []) use ($order) {
+            return str_contains((string) $message, '未命中委托配置')
+                && ($context['zone'] ?? null) === 'example.com'
+                && ($context['order_id'] ?? null) === $order->id;
+        })
+        ->once();
 });

@@ -18,7 +18,11 @@ abstract class TestCase extends BaseTestCase
      */
     public function createApplication()
     {
-        $app = parent::createApplication();
+        // bootstrap/cache（services.php/packages.php）在 paratest 多 worker 并发首次编译时
+        // 偶发 "Failed to open stream" —— 用兜底重试器包裹启动，清半态缓存 + 退避重试
+        // （详见 bootstrap/resilient.php，与 public/index.php、artisan 同一套全局兜底）。
+        $resilient = require dirname(__DIR__).'/bootstrap/resilient.php';
+        $app = $resilient(fn () => parent::createApplication(), dirname(__DIR__).'/bootstrap/cache');
 
         $conn = (string) $app['config']->get('database.default');
         $db = (string) $app['config']->get("database.connections.{$conn}.database");
@@ -63,6 +67,7 @@ abstract class TestCase extends BaseTestCase
         }
 
         $workerStorage = storage_path('framework/testing/worker-'.$token);
+        @mkdir($workerStorage.'/framework', 0755, true);
         @mkdir($workerStorage.'/app/public', 0755, true);
 
         $this->app->useStoragePath($workerStorage);

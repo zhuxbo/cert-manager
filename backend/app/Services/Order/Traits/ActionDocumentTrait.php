@@ -32,8 +32,7 @@ trait ActionDocumentTrait
     {
         $order = FindUtil::Order($orderId);
 
-        // 证书已签发（active）后不再接受文档上传——Admin/User UI 与 V2 API 三入口统一拒绝
-        $order->latestCert->status === 'active' && $this->error('证书已签发，不能再上传文档');
+        $order->latestCert->status === 'processing' || $this->error('仅处理中状态可以上传文档');
 
         in_array($type, self::DOCUMENT_TYPES) || $this->error('不支持的文档类型');
         $file->getSize() > self::MAX_FILE_SIZE && $this->error('文件大小不能超过 5MB');
@@ -95,8 +94,7 @@ trait ActionDocumentTrait
     {
         $order = FindUtil::Order($orderId);
 
-        // 证书已签发（active）后不再接受文档上传——与 UI 入口保持一致，挡住 V2 API 推送
-        $order->latestCert->status === 'active' && $this->error('证书已签发，不能再上传文档');
+        $order->latestCert->status === 'processing' || $this->error('仅处理中状态可以上传文档');
 
         in_array($type, self::DOCUMENT_TYPES) || $this->error('不支持的文档类型');
 

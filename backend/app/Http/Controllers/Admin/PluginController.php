@@ -2,14 +2,19 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Jobs\PluginOperationJob;
+use App\Models\PluginOperation;
 use App\Services\Plugin\PluginManager;
+use App\Services\Plugin\PluginOperationService;
 use Illuminate\Http\Request;
 use RuntimeException;
+use Throwable;
 
 class PluginController extends BaseController
 {
     public function __construct(
         protected PluginManager $pluginManager,
+        protected PluginOperationService $pluginOperations,
     ) {
         parent::__construct();
     }
@@ -39,45 +44,32 @@ class PluginController extends BaseController
      */
     public function install(Request $request): void
     {
-        // 上传安装
-        if ($request->hasFile('file')) {
-            $file = $request->file('file');
-
-            if ($file->getSize() > 100 * 1024 * 1024) {
-                $this->error('文件大小超过限制（最大 100MB）');
-            }
-
-            if ($file->getClientOriginalExtension() !== 'zip') {
-                $this->error('仅支持 ZIP 格式');
-            }
-
-            $zipPath = $file->store('', ['disk' => 'local']);
-            $fullPath = storage_path("app/$zipPath");
-
-            try {
-                $result = $this->pluginManager->installFromZip($fullPath);
-                $this->success($result);
-            } finally {
-                @unlink($fullPath);
-            }
-        }
-
-        // 远程安装
-        $name = $request->input('name');
-        if (! $name) {
-            $this->error('请指定插件名称或上传 ZIP 文件');
-        }
-
-        $releaseUrl = $request->input('release_url');
-        $version = $request->input('version');
-
         try {
-            $result = $this->pluginManager->install($name, $releaseUrl, $version);
+            if ($request->hasFile('file')) {
+                $operation = $this->pluginOperations->createUploadInstall(
+                    (int) auth('admin')->id(),
+                    $request->file('file')
+                );
+            } else {
+                $name = $request->input('name');
+                if (! $name) {
+                    $this->error('请指定插件名称或上传 ZIP 文件');
+                }
+
+                $operation = $this->pluginOperations->createRemoteInstall(
+                    (int) auth('admin')->id(),
+                    $name,
+                    $request->input('release_url'),
+                    $request->input('version')
+                );
+            }
         } catch (RuntimeException $e) {
             $this->error($e->getMessage());
         }
 
-        $this->success($result);
+        $this->dispatchOperation($operation);
+
+        $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
     }
 
     /**
@@ -93,12 +85,18 @@ class PluginController extends BaseController
         $version = $request->input('version');
 
         try {
-            $result = $this->pluginManager->update($name, $version);
+            $operation = $this->pluginOperations->createUpdate(
+                (int) auth('admin')->id(),
+                $name,
+                $version
+            );
         } catch (RuntimeException $e) {
             $this->error($e->getMessage());
         }
 
-        $this->success($result);
+        $this->dispatchOperation($operation);
+
+        $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
     }
 
     /**
@@ -112,8 +110,103 @@ class PluginController extends BaseController
         }
 
         $removeData = (bool) $request->input('remove_data', false);
-        $result = $this->pluginManager->uninstall($name, $removeData);
+        try {
+            $this->pluginOperations->assertNoActiveOperation($name);
+            $result = $this->pluginOperations->withPluginMutex(
+                $name,
+                fn () => $this->pluginManager->uninstall($name, $removeData)
+            );
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
 
         $this->success($result);
+    }
+
+    public function operations(): void
+    {
+        $this->success(['operations' => $this->pluginOperations->listVisible()]);
+    }
+
+    public function operation(string $uuid): void
+    {
+        $operation = $this->pluginOperations->findVisible($uuid);
+
+        $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
+    }
+
+    public function failStaleOperation(string $uuid): void
+    {
+        try {
+            $operation = $this->pluginOperations->failStale($uuid);
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
+
+        $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
+    }
+
+    public function retryOperation(string $uuid): void
+    {
+        $operation = $this->pluginOperations->findVisible($uuid);
+
+        try {
+            $operation = $this->pluginOperations->retryFailed($operation);
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
+
+        $this->dispatchOperation($operation);
+
+        $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
+    }
+
+    public function uninstallFailedOperation(string $uuid): void
+    {
+        $operation = $this->pluginOperations->findVisible($uuid);
+        $pluginName = $operation->plugin_name;
+
+        if ($operation->status !== PluginOperation::STATUS_FAILED) {
+            $this->error('只能卸载失败的插件任务');
+        }
+
+        if (! in_array($operation->type, [
+            PluginOperation::TYPE_INSTALL_REMOTE,
+            PluginOperation::TYPE_INSTALL_UPLOAD,
+        ], true)) {
+            $this->error('更新失败任务只能重试，不能卸载');
+        }
+
+        try {
+            $this->pluginOperations->assertNoActiveOperation($pluginName);
+            $removed = $this->pluginOperations->withPluginMutex(
+                $pluginName,
+                fn () => $this->pluginOperations->clearFailedInstallsForPlugin($pluginName)
+            );
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
+
+        $message = $removed > 0
+            ? "插件 $pluginName 失败安装记录已清理，可重新安装"
+            : "插件 $pluginName 没有需要清理的失败记录";
+
+        $this->success([
+            'name' => $pluginName,
+            'remove_data' => false,
+            'message' => $message,
+        ]);
+    }
+
+    private function dispatchOperation(PluginOperation $operation): void
+    {
+        try {
+            PluginOperationJob::dispatch($operation->uuid)
+                ->afterCommit()
+                ->onQueue(config('queue.names.tasks'));
+        } catch (Throwable $e) {
+            $this->pluginOperations->markQueuedFailed($operation, $e);
+            $this->error('插件任务入队失败，请检查队列配置后重试');
+        }
     }
 }

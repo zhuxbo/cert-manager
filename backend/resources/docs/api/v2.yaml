@@ -106,7 +106,12 @@ paths:
     post:
       tags: [申请]
       summary: 申请证书
-      description: 创建并支付订单。返回 `dcv`/`validation` 供完成域名验证。
+      description: >-
+        创建并支付订单。返回 `dcv`/`validation` 供完成域名验证。**refer_id 幂等**：传相同
+        `refer_id` 重放不新建订单，而是幂等返回该订单当前状态（同 `ApplyResult`，`code=1`）——命中卡单态
+        （pending 且未提交上游）会顺带重试提交上游，命中终态（cancelled/revoked 等）只读回放、不复活；并发同
+        `refer_id` 撞唯一索引返回 `409 {code:0, msg:"Refer id already exists"}`（视为“已存在、勿重试”，
+        可用 `/get-order-id-by-refer-id` 反查订单号）。
       requestBody:
         required: true
         content:
@@ -171,7 +176,7 @@ paths:
                 validation_method: { $ref: "#/components/schemas/ValidationMethod" }
                 organization: { $ref: "#/components/schemas/Organization" }
                 issue_verify: { type: integer, enum: [0, 1] }
-                refer_id: { type: string, maxLength: 64 }
+                refer_id: { type: string, maxLength: 64, description: "端到端幂等键；重放相同值幂等返回既有订单的 order_id（详见 /new 说明）" }
       responses:
         "200":
           description: OK
@@ -365,7 +370,7 @@ components:
         plus: { type: integer, enum: [0, 1], description: 赠送时间标记 }
         contact: { $ref: "#/components/schemas/Contact" }
         organization: { $ref: "#/components/schemas/Organization" }
-        refer_id: { type: string, maxLength: 64, description: 端到端幂等键 }
+        refer_id: { type: string, maxLength: 64, description: "端到端幂等键；重放相同值幂等返回既有订单的 order_id（详见 /new 说明）" }
         issue_verify: { type: integer, enum: [0, 1], description: 1=提交后立即尝试验证 }
 
     ApplyResult:

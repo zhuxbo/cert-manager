@@ -14,6 +14,7 @@ use App\Models\OrderDocument;
 use App\Models\Organization;
 use App\Models\Scopes\UserScope;
 use App\Models\Transaction;
+use App\Models\User;
 use App\Traits\ApiResponse;
 use Closure;
 use Illuminate\Auth\TokenGuard;
@@ -42,6 +43,10 @@ class ApiAuthenticate
 
         if (! $apiToken->status) {
             $this->error('Api token is disabled');
+        }
+
+        if ($apiToken->user_id && (! $apiToken->user instanceof User || $apiToken->user->status === 0)) {
+            $this->error('Account is disabled');
         }
 
         if (! $apiToken->isIpAllowed($request->ip())) {

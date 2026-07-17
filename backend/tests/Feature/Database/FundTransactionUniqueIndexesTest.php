@@ -1,6 +1,8 @@
 <?php
 
 use App\Bootstrap\ApiExceptions;
+use App\Models\Cert;
+use App\Models\Order;
 use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -116,6 +118,29 @@ test('ApiExceptions::causedByDuplicateKey 识别 funds 唯一冲突并返回业�
     expect($message)->toBe('支付编号重复请勿重复支付');
 
     DB::table('funds')->where('id', '>=', 9995)->delete();
+});
+
+test('ApiExceptions::causedByDuplicateKey 识别 certs refer_id 唯一冲突并返回 Refer id already exists（对齐 gateway V2）', function () {
+    // resolveReferId 无锁 SELECT 并发漏过 → Action::new INSERT 撞 certs_refer_id_unique 的兜底路径。
+    // 该竞态文案须与 gateway V2 一致（Refer id already exists），而非落通用兜底「数据已存在」。
+    $order = Order::factory()->create();
+    Cert::factory()->create(['order_id' => $order->id, 'refer_id' => 'CERTDUPREFER00000001']);
+
+    $caught = null;
+    try {
+        DB::transaction(fn () => Cert::factory()->create([
+            'order_id' => $order->id, 'refer_id' => 'CERTDUPREFER00000001',
+        ]));
+    } catch (QueryException $e) {
+        $caught = $e;
+    }
+
+    expect($caught)->not->toBeNull();
+
+    $api = new ApiExceptions;
+    $message = (new ReflectionMethod($api, 'causedByDuplicateKey'))->invoke($api, $caught);
+
+    expect($message)->toBe('Refer id already exists');
 });
 
 test('ApiExceptions::causedByDuplicateKey 识别 transactions 唯一冲突并返回业务消息', function () {

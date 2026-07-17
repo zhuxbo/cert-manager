@@ -226,7 +226,7 @@ for ((i = 0; i < n; i++)); do
                 verdict="是"
                 cnt="$(wc -l <<<"$hits" | tr -d ' ')"
                 sample="$(head -3 <<<"$hits" | tr '\n' ' ')"
-                [[ "$cnt" -gt 3 ]] && sample="$sample…共 $cnt 个文件"
+                [[ "$cnt" -gt 3 ]] && sample="${sample}…共 $cnt 个文件"
                 detail="$sample"
                 while IFS= read -r f; do mark_covered "$f"; done <<<"$hits"
             fi
@@ -256,8 +256,8 @@ for ((i = 0; i < n; i++)); do
                 verdict="人工(提示命中)"
                 scnt="$(wc -l <<<"$sec_files" | tr -d ' ')"
                 sample="$(head -3 <<<"$sec_files" | tr '\n' ' ')"
-                [[ "$scnt" -gt 3 ]] && sample="$sample…共 $scnt 个文件"
-                detail="routes/Middleware/Controller 改动（$sample）且新增 public function — 倾向判是，须人工确认"
+                [[ "$scnt" -gt 3 ]] && sample="${sample}…共 $scnt 个文件"
+                detail="routes/Middleware/Controller 改动（${sample}）且新增 public function — 倾向判是，须人工确认"
                 while IFS= read -r f; do mark_covered "$f"; done <<<"$sec_files"
             else
                 detail="无关键词提示，仍须人工给一句是/否判定"

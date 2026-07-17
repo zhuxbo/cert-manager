@@ -87,4 +87,29 @@ class Admin extends BaseModel implements AuthenticatableContract, JWTSubject
     {
         $this->attributes['password'] = Hash::make($password);
     }
+
+    /**
+     * 解析运维告警投递目标（原 TaskJob/FundAuditCommand/SystemAlert/HealthProbeCommand 4 份内联收敛为单一源，
+     * 杜绝解析规则演进漏改致最需要时投错地址——HealthProbe 是脱离 worker 的最后防线）。
+     *
+     * 规则：site.adminEmail 优先 → Admin::where('email', adminEmail) → 回落 Admin::first()。
+     * 零新增 Cache 依赖：get_system_setting 经 Setting 已「cache 故障回落 DB」，Admin 查询直读 DB；
+     * 故 HealthProbe 调用本方法不引入 cache / NotificationCenter 耦合（保持其 fail-open 韧性）。
+     *
+     * @return array{admin: ?Admin, email: ?string}
+     *                                              admin: 命中 adminEmail 的 Admin，或回落 Admin::first()（可能 null）——供 NotificationCenter 取 id；
+     *                                              email: adminEmail（配了别名即使无 Admin 记录也优先）?: admin?->email（可能 null）——投递地址。
+     *                                              调用方按需判空：走 NotificationCenter（需 admin->id）判 admin?->email；裸 SMTP（仅需地址）判 email。
+     */
+    public static function resolveAlertTarget(): array
+    {
+        $adminEmail = get_system_setting('site', 'adminEmail');
+        $admin = $adminEmail ? static::where('email', $adminEmail)->first() : null;
+        $admin ??= static::first();
+
+        return [
+            'admin' => $admin,
+            'email' => $adminEmail ?: $admin?->email,
+        ];
+    }
 }

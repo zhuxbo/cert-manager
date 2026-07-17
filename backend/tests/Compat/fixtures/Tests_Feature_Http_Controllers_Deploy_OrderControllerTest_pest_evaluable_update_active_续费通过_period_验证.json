@@ -8,10 +8,15 @@
             "request_keys": [
                 "order_id"
             ],
-            "response_status": "4xx",
+            "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string"
+                "data": {
+                    "order_id": "integer",
+                    "domains": "string",
+                    "status": "string",
+                    "renew_before_days": "integer"
+                }
             }
         }
     ]

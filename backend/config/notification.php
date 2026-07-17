@@ -2,12 +2,19 @@
 
 use App\Models\Admin;
 use App\Models\User;
+use App\Services\Notification\Builders\AcmeExpireNotificationBuilder;
 use App\Services\Notification\Builders\AutoRenewFailedNotificationBuilder;
+use App\Services\Notification\Builders\BalanceForecastNotificationBuilder;
 use App\Services\Notification\Builders\CertExpireNotificationBuilder;
 use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
+use App\Services\Notification\Builders\CertRenewCancelledNotificationBuilder;
+use App\Services\Notification\Builders\CertRenewStalledNotificationBuilder;
+use App\Services\Notification\Builders\CertRevokedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
+use App\Services\Notification\Builders\DelegationInvalidNotificationBuilder;
 use App\Services\Notification\Builders\FinanceAuditNotificationBuilder;
 use App\Services\Notification\Builders\SecurityNotificationBuilder;
+use App\Services\Notification\Builders\SystemAlertNotificationBuilder;
 use App\Services\Notification\Builders\TaskFailedNotificationBuilder;
 use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
 
@@ -34,8 +41,28 @@ return [
         // 自动续费/重签失败：专用 Builder 注入系统设置 site.url（登录控制台按钮），
         // 不进模板 variables、测试发送无需手填 site_url（与 cert_expire 一致）
         'auto_renew_failed' => AutoRenewFailedNotificationBuilder::class,
+        // 余额前瞻预警（A1，未来 30 天自动续费余额不足）：专用 Builder 注入 site.url、透传
+        // 金额/证书明细；required 为「预估上限」。不入 user_default_preferences（强制发，主控已裁）
+        'balance_forecast' => BalanceForecastNotificationBuilder::class,
         'cert_issued' => CertIssuedNotificationBuilder::class,
         'cert_expire' => CertExpireNotificationBuilder::class,
+        // 续期停滞孤儿提醒（续费/重签把前驱终态化后接替卡停滞态、前驱即将到期）：专用 Builder 注入
+        // site.url、按接替状态映射文案；不入 user_default_preferences（强制发，穿透用户已关的到期提醒偏好）
+        'cert_renew_stalled' => CertRenewStalledNotificationBuilder::class,
+        // 接替单取消一次性通知（续费/重签接替单在 processing/approving 等非恢复态取消后，前驱脱离
+        // cert_expire/AutoRenew/cert_renew_stalled 三重监控）：事件驱动、专用 Builder 白名单构造域名/日期/
+        // 订单号/动作，不携密。不入 user_default_preferences（强制发，与 cert_renew_stalled 成对）
+        'cert_renew_cancelled' => CertRenewCancelledNotificationBuilder::class,
+        // 证书吊销一次性通知（Order sync 直写 revoked 终态：证书被 CA 吊销、立即失去信任）：事件驱动、
+        // 专用 Builder 白名单构造域名/日期/订单号/接替单标志，不携密。对所有 revoked（含 plain new）发；
+        // 不入 user_default_preferences（强制发，吊销属服务中断类事件，穿透用户已关的到期偏好）
+        'cert_revoked' => CertRevokedNotificationBuilder::class,
+        // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）
+        'acme_expire' => AcmeExpireNotificationBuilder::class,
+        // 委托失效提醒（周巡检确认无效 + 达阈值 + 有 active 证书）：专用 Builder 按 delegation_ids
+        // 重载过滤 valid=false、固定用户友好文案（不带 last_error）。不入 user_default_preferences
+        // （强制发，穿透用户已关的到期偏好——委托失效→自动续期静默失败→静默过期）
+        'delegation_invalid' => DelegationInvalidNotificationBuilder::class,
         'task_failed' => TaskFailedNotificationBuilder::class,
         'finance_audit' => FinanceAuditNotificationBuilder::class,
         // 账号安全变更（改密/重置）：专用 Builder 白名单 username/event/email 入库，
@@ -44,6 +71,9 @@ return [
         // 携带初始密码：用专用 Builder 把密码走 transient（仅渲染、不入库），
         // 不能回落 DefaultNotificationBuilder（会把明文密码直通进 notifications.data）
         'user_created' => UserCreatedNotificationBuilder::class,
+        // 通用运维/健康告警（admin-only，E1~E6 监控与 F/G/H 复用）：专用 Builder 对 details
+        // 做标量化 + 敏感键 denylist + PEM 掩码/截断，携密不入库；显式不回落 DefaultNotificationBuilder
+        'system_alert' => SystemAlertNotificationBuilder::class,
     ],
 
     'default_builder' => DefaultNotificationBuilder::class,
@@ -59,6 +89,7 @@ return [
     'user_default_preferences' => [
         'cert_issued' => true,
         'cert_expire' => true,
+        'acme_expire' => true,
         'security' => true,
     ],
 ];

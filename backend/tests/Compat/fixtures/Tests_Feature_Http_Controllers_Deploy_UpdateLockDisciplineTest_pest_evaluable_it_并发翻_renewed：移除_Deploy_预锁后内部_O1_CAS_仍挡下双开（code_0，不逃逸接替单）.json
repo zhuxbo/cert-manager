@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\UpdateLockDisciplineTest::__pest_evaluable_it_并发翻_renewed：移除_Deploy_预锁后内部_O1_CAS_仍挡下双开（code_0，不逃逸接替单）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

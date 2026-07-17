@@ -49,6 +49,7 @@ pnpm-debug.log*
 /backend/storage/upgrades/
 /backend/storage/backups/
 /backend/storage/databak/
+/backend/storage/temp-certs/
 
 # Test coverage
 coverage/

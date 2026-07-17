@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import dayjs from "dayjs";
+import { formatCostRate } from "./costRate";
 
 export const useUserLevelTable = () => {
   const tableRef = ref();
@@ -46,7 +47,7 @@ export const useUserLevelTable = () => {
       label: "成本价倍率",
       prop: "cost_rate",
       width: 100,
-      formatter: ({ cost_rate }) => cost_rate.toFixed(4)
+      formatter: ({ cost_rate }) => formatCostRate(cost_rate)
     },
     {
       label: "权重",

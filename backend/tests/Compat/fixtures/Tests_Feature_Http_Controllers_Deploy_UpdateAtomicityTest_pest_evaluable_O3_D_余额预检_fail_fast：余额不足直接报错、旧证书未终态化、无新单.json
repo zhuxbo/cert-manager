@@ -1,0 +1,18 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\UpdateAtomicityTest::__pest_evaluable_O3_D_余额预检_fail_fast：余额不足直接报错、旧证书未终态化、无新单",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

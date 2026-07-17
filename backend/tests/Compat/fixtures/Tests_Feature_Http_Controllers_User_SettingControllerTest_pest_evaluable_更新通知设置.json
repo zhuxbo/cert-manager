@@ -15,6 +15,7 @@
                 "data": {
                     "cert_issued": "boolean",
                     "cert_expire": "boolean",
+                    "acme_expire": "boolean",
                     "security": "boolean"
                 }
             }

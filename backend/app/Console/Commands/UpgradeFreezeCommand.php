@@ -23,7 +23,8 @@ class UpgradeFreezeCommand extends Command
     protected $signature = 'upgrade:freeze
                             {--from= : 当前版本（可选，仅记录用）}
                             {--to= : 目标版本（可选，仅记录用）}
-                            {--ttl=7200 : 锁文件 TTL 秒数，60 ~ 7200}';
+                            {--ttl=7200 : 锁文件 TTL 秒数，60 ~ 7200}
+                            {--source=shell : 锁持有方（web|shell|manual），upgrade:watchdog 据此判归属}';
 
     protected $description = '写入升级冻结锁，进入 HTTP 维护态';
 
@@ -46,10 +47,18 @@ class UpgradeFreezeCommand extends Command
         $from = $this->option('from');
         $to = $this->option('to');
 
+        $source = $this->option('source');
+        if (! is_string($source) || ! in_array($source, ['web', 'shell', 'manual'], true)) {
+            $this->error('--source 必须是 web|shell|manual 之一');
+
+            return CommandAlias::FAILURE;
+        }
+
         UpgradeFreezeLock::freeze(
             is_string($from) ? $from : null,
             is_string($to) ? $to : null,
             $ttl,
+            $source,
         );
 
         if (! UpgradeFreezeLock::isFrozen()) {
@@ -65,6 +74,7 @@ class UpgradeFreezeCommand extends Command
             $this->line('  version_from: '.($info['version_from'] ?? 'null'));
             $this->line('  version_to  : '.($info['version_to'] ?? 'null'));
             $this->line('  ttl_seconds : '.($info['ttl_seconds'] ?? 'unknown'));
+            $this->line('  owner       : '.($info['owner_source'] ?? 'unknown').' pid='.($info['owner_pid'] ?? 'unknown'));
         }
         $this->line('  path        : '.UpgradeFreezeLock::path());
 

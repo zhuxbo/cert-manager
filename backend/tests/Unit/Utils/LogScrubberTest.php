@@ -326,3 +326,60 @@ test('credentials.hmac 内置敏感（hmac 字段名直接匹配）', function (
     expect($result['credentials']['hmac'])->toBe('******');
     expect($result['credentials']['kid'])->toBe('keep');
 });
+
+// ========================================
+// scrubUrl —— URL 查询串脱敏（F1-3）
+// ========================================
+
+test('scrubUrl 脱敏 token 查询参数', function () {
+    expect(LogScrubber::scrubUrl('https://a.com/api/deploy?token=abc123'))
+        ->toContain('token=%2A%2A%2A%2A%2A%2A') // http_build_query 会 urlencode ******
+        ->not->toContain('abc123');
+});
+
+test('scrubUrl 仅脱敏敏感 key，保留 order/field 等业务参数', function () {
+    $result = LogScrubber::scrubUrl('https://a.com/api/deploy?order=5&token=abc123&field=certificate');
+
+    expect($result)
+        ->toContain('order=5')
+        ->toContain('field=certificate')
+        ->not->toContain('abc123');
+});
+
+test('scrubUrl 无 query 原样返回', function () {
+    expect(LogScrubber::scrubUrl('https://a.com/api/deploy'))
+        ->toBe('https://a.com/api/deploy');
+});
+
+test('scrubUrl 畸形 URL 不抛异常（兜底原样返回）', function () {
+    $bad = 'http://:::not-a-url:::';
+    expect(fn () => LogScrubber::scrubUrl($bad))->not->toThrow(Throwable::class);
+    // 解析失败或无 query → 原样返回（不脱敏也不崩）
+    expect(LogScrubber::scrubUrl($bad))->toBeString();
+});
+
+test('scrubUrl 命中 access_token / secret / 大小写变体', function () {
+    $result = LogScrubber::scrubUrl('https://a.com/x?access_token=aaa&SECRET=bbb&keep=ccc');
+
+    expect($result)
+        ->not->toContain('aaa')
+        ->not->toContain('bbb')
+        ->toContain('keep=ccc');
+});
+
+test('scrubUrl 数组型查询参数不崩', function () {
+    expect(fn () => LogScrubber::scrubUrl('https://a.com/x?a[]=1&a[]=2&token=zzz'))
+        ->not->toThrow(Throwable::class);
+
+    expect(LogScrubber::scrubUrl('https://a.com/x?a[]=1&a[]=2&token=zzz'))
+        ->not->toContain('zzz');
+});
+
+test('scrubUrl 保留 path 与 fragment', function () {
+    $result = LogScrubber::scrubUrl('https://a.com/api/deploy/sub?token=x#frag');
+
+    expect($result)
+        ->toContain('/api/deploy/sub')
+        ->toContain('#frag')
+        ->not->toContain('token=x');
+});

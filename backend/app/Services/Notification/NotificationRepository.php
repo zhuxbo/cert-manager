@@ -43,21 +43,28 @@ class NotificationRepository
     /**
      * 创建通知记录
      *
-     * 在数据库中创建一条新的通知记录，初始状态为 pending
+     * 在数据库中创建一条新的通知记录，默认初始状态为 pending。
+     * $status 可选：build 失败落记录时直接单写 FAILED（不走 PENDING→markAsFailed 两步，
+     * 消除两写间进程死留 stuck-pending 行的窗口）；缺省 PENDING 不影响既有调用。
      *
      * @param  Model  $notifiable  通知接收者（User、Admin 等）
      * @param  NotificationTemplate  $template  通知模板
      * @param  array  $payload  准备好的数据载荷（通常来自 preparePayload）
+     * @param  string  $status  初始状态（缺省 pending）
      * @return Notification 创建的通知记录
      */
-    public function createNotification(Model $notifiable, NotificationTemplate $template, array $payload): Notification
-    {
+    public function createNotification(
+        Model $notifiable,
+        NotificationTemplate $template,
+        array $payload,
+        string $status = Notification::STATUS_PENDING
+    ): Notification {
         /** @var User $notifiable */
         /** @var Notification */
         return $notifiable->notifications()->create([
             'template_id' => $template->id,
             'data' => $payload,
-            'status' => Notification::STATUS_PENDING,
+            'status' => $status,
         ]);
     }
 

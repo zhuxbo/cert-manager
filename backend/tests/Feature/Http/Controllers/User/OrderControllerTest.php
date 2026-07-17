@@ -642,24 +642,28 @@ test('取消订单-不能取消其他用户的订单（UserScope 越权拒绝）
 // ==================== 标记已续费（mark-renewed）====================
 //
 // renewed 是终态：手工标记后订单不再自动续费/到期提醒，sync 终态守卫防上游复活。
+// 语义：用户另开新订单续了证书 → 把旧订单标 renewed 止住到期通知（非"原订单内重签"，
+// 那个靠重签后 expires_at 推远自动止通知）。
 // 这些用例真实执行 Action::markRenewed（不 mock），验证锁内二次校验：
 //   - 仅 active 证书可标记；
-//   - 仅到期前 30 天内且未过期可标记；
+//   - 仅【订单】到期前 30 天内且未过期可标记（按 orders.period_till，非 cert.expires_at）；
 //   - UserScope 越权边界。
 
 /**
- * 造一个 user 名下 active 证书订单，可指定 expires_at（到期窗口校验依赖此字段）。
+ * 造一个 user 名下 active 证书订单，可指定订单到期时间 period_till（标记窗口校验依赖此字段）。
+ * cert.expires_at 给固定合理值、刻意与 period_till 解耦 —— gate 只看订单到期、不看单证书到期。
  */
-function createUserActiveOrder(User $user, Product $product, ?Carbon $expiresAt = null): array
+function createUserActiveOrder(User $user, Product $product, ?Carbon $periodTill = null): array
 {
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
+        'period_till' => $periodTill ?? now()->addDays(25),
     ]);
 
     $cert = Cert::factory()->active()->create([
         'order_id' => $order->id,
-        'expires_at' => $expiresAt ?? now()->addDays(25),
+        'expires_at' => now()->addDays(25),
     ]);
 
     $order->update(['latest_cert_id' => $cert->id]);
@@ -667,7 +671,7 @@ function createUserActiveOrder(User $user, Product $product, ?Carbon $expiresAt 
     return [$order, $cert];
 }
 
-test('标记已续费-active + 到期前 25 天成功标记为 renewed', function () {
+test('标记已续费-active + 订单到期前 25 天成功标记为 renewed', function () {
     $user = $this->createTestUser();
     $product = Product::factory()->create();
     [$order, $cert] = createUserActiveOrder($user, $product, now()->addDays(25));
@@ -681,7 +685,7 @@ test('标记已续费-active + 到期前 25 天成功标记为 renewed', functio
     expect($cert->fresh()->status)->toBe('renewed');
 });
 
-test('标记已续费-active + 到期 40 天后被拒（超 30 天），状态不变', function () {
+test('标记已续费-active + 订单到期 40 天后被拒（超 30 天），状态不变', function () {
     $user = $this->createTestUser();
     $product = Product::factory()->create();
     [$order, $cert] = createUserActiveOrder($user, $product, now()->addDays(40));
@@ -694,10 +698,10 @@ test('标记已续费-active + 到期 40 天后被拒（超 30 天），状态�
     expect($cert->fresh()->status)->toBe('active');
 });
 
-test('标记已续费-已过期证书被拒，状态不变', function () {
+test('标记已续费-订单已过期被拒，状态不变', function () {
     $user = $this->createTestUser();
     $product = Product::factory()->create();
-    // active 但 expires_at 已是过去（手工造越窗数据）
+    // active 证书但订单 period_till 已是过去（手工造越窗数据）
     [$order, $cert] = createUserActiveOrder($user, $product, now()->subDay());
 
     $this->actingAsUser($user)
@@ -728,6 +732,30 @@ test('标记已续费-非 active（pending）证书被拒，状态不变', funct
         ->assertJson(['code' => 0]);
 
     expect($cert->fresh()->status)->toBe('pending');
+});
+
+test('标记已续费-证书将到期但订单未到期（period_till > 30 天）被拒，状态不变', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    // 多年期/中途重签场景：当前证书 10 天后到期、但订单还有 200 天 —— 会被自动重签接管，
+    // 不应允许标记。锁住「gate 看 orders.period_till 而非 cert.expires_at」的语义。
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addDays(200),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(10),
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/mark-renewed/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect($cert->fresh()->status)->toBe('active');
 });
 
 test('标记已续费-不能标记其他用户的订单（UserScope 越权拒绝）', function () {

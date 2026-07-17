@@ -27,14 +27,11 @@
           command="revokeCancel"
           >{{ "撤回" }}</el-dropdown-item
         >
-        <el-dropdown-item
-          v-if="cert.status == 'active'"
-          command="renew"
-          divided
-          >{{ "续费" }}</el-dropdown-item
-        >
-        <el-dropdown-item v-if="allowMarkRenewed" command="markRenewed">{{
-          "标记已续费"
+        <el-dropdown-item v-if="inRenewWindow" command="renew" divided>{{
+          "续费"
+        }}</el-dropdown-item>
+        <el-dropdown-item v-if="inRenewWindow" command="markRenewed">{{
+          "已续"
         }}</el-dropdown-item>
         <el-dropdown-item
           v-if="['active', 'expired'].includes(cert.status)"
@@ -108,14 +105,16 @@ const allowCancel = computed(() => {
   );
 });
 
-// 标记已续费：仅 active 且到期前 30 天内（未过期且 ≤30 天）显示，与后端 gate 对齐
-const allowMarkRenewed = computed(() => {
-  const c = order.latest_cert;
-  if (c.status !== "active" || !c.expires_at) {
+// 续费 / 已续 共用显示窗口：active 证书 + 订单到期前 30 天内（未过期且 ≤30 天）。
+// 按 order.period_till（订单到期）判定、非单张证书 expires_at —— 与后端 gate 对齐：
+// 手工续费（ActionTrait 的 period_till>now+30 报错）与 markRenewed 同窗口。
+// 续费=在窗口内续；已续=在窗口内但用户另开新单续了、标旧单止到期通知。
+const inRenewWindow = computed(() => {
+  if (order.latest_cert.status !== "active" || !order.period_till) {
     return false;
   }
-  const expires = dayjs(c.expires_at);
-  return expires.isAfter(dayjs()) && expires.diff(dayjs(), "day") <= 30;
+  const till = dayjs(order.period_till);
+  return till.isAfter(dayjs()) && till.diff(dayjs(), "day") <= 30;
 });
 
 // 打开操作抽屉

@@ -12,6 +12,13 @@ set -e
 # 配置
 # ========================================
 TEMP_DIR="/tmp/ssl-manager-upgrade-$$"
+# 危险窗守卫状态（trap handler 依赖；见 cleanup / perform_upgrade）
+PRESERVE_DIR="" # 保留目录绝对路径（安装目录同文件系统，非 TEMP_DIR 内）；perform_upgrade 内设定
+FREEZE_FIRED=0  # upgrade:freeze 已点火（决定失败路径是否打印恢复 runbook）
+UPGRADE_DONE=0  # 升级成功走到 artisan up 之后（避免尾部步骤失败误打 runbook）
+# 入口 _check_stranded_preserve 回迁了中断升级遗留的旧 vendor → 置 1，强制 composer 重装对齐新 lock
+# （backend/composer.json 已是新版本时新旧 hash 相等会误跳过 composer，回迁的旧 vendor 可能陈旧）
+NEED_COMPOSER_FORCE=0
 # release 服务 URL
 # - 部署到 release 服务时，__RELEASE_URL__ 会被替换为实际地址
 # - 如果未替换（本地运行），则需要通过 --url 参数或 version.json 配置
@@ -48,12 +55,244 @@ SCRIPT_DIR="$UPGRADE_SH_DIR/scripts"
 # ========================================
 # 工具函数
 # ========================================
-cleanup() {
-    if [ -d "$TEMP_DIR" ]; then
-        rm -rf "$TEMP_DIR"
+# 取路径所在文件系统设备号（GNU stat -c / BSD stat -f 双兼容；两者皆失败输出空）
+_fs_device() {
+    stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null || true
+}
+
+# same-fs 强制断言：storage 搬移原子性的先决门。mv 跨 fs 不报错而是静默 copy+unlink，
+# 复制窗中断会让 cleanup 用半份覆盖完好源——设备号不一致必须拦在搬移窗之前。
+_assert_storage_same_fs() {
+    local dev_install dev_storage
+    dev_install=$(_fs_device "$INSTALL_DIR")
+    dev_storage=$(_fs_device "$INSTALL_DIR/backend/storage")
+    if [ -z "$dev_install" ] || [ -z "$dev_storage" ] || [ "$dev_install" != "$dev_storage" ]; then
+        log_error "backend/storage 与安装目录不在同一文件系统（设备号 ${dev_storage:-?} vs ${dev_install:-?}），"
+        log_error "storage 搬移无法保证原子还原，已中止升级（原地未破坏）。请调整挂载布局后重试。"
+        exit 1
     fi
 }
+
+# 升级入口残留检测：上次升级被 SIGKILL/断电打断（trap 未跑）时，storage 会滞留在
+# .upgrade-preserve-<旧pid>/ 内且 backend/storage 缺失；此时继续升级会在后续步骤
+# mkdir 出全新空 storage，把真 storage（含 databak 数据库备份）静默埋掉——必须先人工恢复。
+_check_stranded_preserve() {
+    local dir
+    for dir in "$INSTALL_DIR"/.upgrade-preserve-*; do
+        [ -d "$dir" ] || continue # glob 无匹配时字面量不过 -d
+        if [ -d "$dir/storage" ]; then
+            log_error "检测到上次升级中断遗留的 storage 数据：$dir/storage"
+            log_error "继续升级会新建空 storage 并埋掉真实数据（含 databak），已中止。"
+            log_error "请先手工恢复（若 backend/storage 已存在，先人工确认其为空壳再挪开）："
+            log_error "  mv '$dir/storage' '$INSTALL_DIR/backend/storage'"
+            log_error "  rm -rf '$dir'"
+            log_error "恢复完成后重跑 upgrade.sh。"
+            exit 1
+        fi
+        # vendor-only 残留回迁：storage 已排除（上面命中即 exit），但中断落在「storage 移回 ~ vendor 移回」
+        # 窄窗时 preserve 仍留 vendor 唯一副本（备份 zip 不含 vendor）、backend/vendor 缺失。直接当空壳 rm
+        # 会毁唯一副本，且后续 composer 因 backend/composer.json 已是新版本、新旧 hash 相等而误跳过 →
+        # artisan fatal 砖机自循环。回迁保命并置 NEED_COMPOSER_FORCE，让后续 composer 强制重装对齐新 lock。
+        if [ -d "$dir/vendor" ] && [ ! -d "$INSTALL_DIR/backend/vendor" ]; then
+            log_warning "回迁上次升级中断遗留的 vendor 唯一副本：$dir/vendor → $INSTALL_DIR/backend/vendor"
+            if mv "$dir/vendor" "$INSTALL_DIR/backend/vendor"; then
+                NEED_COMPOSER_FORCE=1
+                log_success "vendor 已回迁（后续 composer 将强制重装以对齐新版本依赖）"
+            else
+                log_error "vendor 回迁失败，保留 preserve 目录不清理：$dir"
+                log_error "请手工执行：mv '$dir/vendor' '$INSTALL_DIR/backend/vendor'"
+                continue
+            fi
+        fi
+        # 空壳残留（storage 已被还原/消费，仅剩 .env / frontend_config / api_adapters 等副本）：清理防堆积。
+        # 「:1559 storage 移回 ~ :1591 api_adapters 还原」窄窗被打断时，preserve 仅剩 api_adapters 副本
+        # （另存于本次备份 backend.zip、可恢复）——rm 前列出内容物留痕，防静默清走无迹可查。
+        local shell_contents
+        shell_contents=$(ls -A "$dir" 2>/dev/null | tr '\n' ' ')
+        log_warning "清理上次升级遗留的空 preserve 目录: ${dir}（残留内容: ${shell_contents}）"
+        rm -rf "$dir"
+    done
+}
+
+# 入口残留升级状态处置：status.json 是 web 升级的进度/心跳记录（upgrade.sh 自身不写它）。
+# 残留 running 的三种形态：
+#   - 进程活：另一场 web 升级真在跑 → 中止本次 shell 升级（并发双升级必互毁）；
+#     确认为 PID 复用误判时，可 UPGRADE_IGNORE_RUNNING=1 重跑跳过本检查。
+#   - 进程死：SIGKILL/OOM 残留 → 归档改名（.stale.<epoch>），消除 upgrade:watchdog 在本次升级
+#     危险窗内把它判 stale 而拆闸（unfreeze+up）的触发源（纵深第二道；第一道 = watchdog 冻结锁归属校验）。
+#   - 解析不出 running 语义（缺文件/损坏/终态）：不动，交后端锁归属防线。
+# PID 探活镜像 UpgradeStatusManager::isProcessAlive（Linux /proc、非 Linux posix_kill 回落）。
+_handle_stale_upgrade_status() {
+    local status_file="$INSTALL_DIR/backend/storage/upgrades/status.json"
+    [ -f "$status_file" ] || return 0
+
+    if [ "${UPGRADE_IGNORE_RUNNING:-0}" = "1" ]; then
+        log_warning "UPGRADE_IGNORE_RUNNING=1：跳过残留升级状态检查"
+        return 0
+    fi
+
+    local verdict
+    verdict=$(STATUS_FILE="$status_file" "$PHP_CMD" -r '
+$d = @json_decode((string) @file_get_contents(getenv("STATUS_FILE")), true);
+if (! is_array($d) || (($d["status"] ?? null) !== "running")) { echo "other"; exit; }
+$pid = $d["pid"] ?? null;
+$alive = false;
+if (is_numeric($pid) && (int) $pid > 0) {
+    $pid = (int) $pid;
+    if (is_dir("/proc")) {
+        $alive = file_exists("/proc/$pid");
+        // PID 复用防护（镜像 UpgradeStatusManager::isProcessAlive）：/proc/{pid} 存在只证明
+        // 有进程占用该 PID。有记录 pid_starttime 时校验 /proc/{pid}/stat 第 22 字段（starttime）——
+        // 不符即原升级进程已死、PID 被长寿进程复用 → 判死（放行本次 shell 升级，归档残留 status）。
+        // 无记录（旧格式）或 starttime 读不到 → 保持只判存在（兼容、保守不误放行并发真升级）。
+        $rec = $d["pid_starttime"] ?? null;
+        if ($alive && $rec !== null && $rec !== "") {
+            $stat = @file_get_contents("/proc/$pid/stat");
+            $rp = $stat === false ? false : strrpos($stat, ")");
+            if ($rp !== false) {
+                $f = preg_split("/\\s+/", trim(substr($stat, $rp + 1)));
+                $act = $f[19] ?? null;
+                if ($act !== null && (string) $act !== (string) $rec) { $alive = false; }
+            }
+        }
+    } else {
+        $alive = function_exists("posix_kill") && posix_kill($pid, 0);
+    }
+}
+echo $alive ? "running_alive" : "running_dead";
+' 2>/dev/null) || verdict="other"
+
+    case "$verdict" in
+        running_alive)
+            log_error "检测到另一场升级疑似正在进行（status.json 为 running 且进程存活），已中止。"
+            log_error "  - 若确有后台升级在跑：等它结束后再执行本脚本；"
+            log_error "  - 若确认是残留（如 PID 被复用）：手动删除 ${status_file} 后重跑，"
+            log_error "    或 UPGRADE_IGNORE_RUNNING=1 重跑跳过本检查。"
+            exit 1
+            ;;
+        running_dead)
+            if mv "$status_file" "${status_file}.stale.$(date +%s)" 2>/dev/null; then
+                log_warning "已归档中断升级残留状态：${status_file}.stale.*（防看门狗在升级窗内误自愈）"
+            else
+                log_warning "残留升级状态归档失败（已忽略，看门狗锁归属校验兜底）：$status_file"
+            fi
+            ;;
+        *) : ;;
+    esac
+}
+
+# 纯还原：把 PRESERVE_DIR 里尚未移回的 storage/vendor 移回原位。
+# 返回 0 = 成功或无需还原；返回 1 = 还原失败（调用方须保留 PRESERVE_DIR、不得删）。
+_restore_preserved_storage() {
+    [ -n "$PRESERVE_DIR" ] || return 0
+    local failed=0
+    # storage 含 databak——最高优先级，成对判断「preserve 有、原位无(或空)」
+    if [ -d "$PRESERVE_DIR/storage" ]; then
+        log_warning "升级中断：还原 storage（含 databak 数据库备份）到原位..."
+        rm -rf "$INSTALL_DIR/backend/storage" 2>/dev/null || true
+        if mv "$PRESERVE_DIR/storage" "$INSTALL_DIR/backend/storage"; then
+            log_success "storage 已还原：$INSTALL_DIR/backend/storage"
+        else
+            log_error "storage 还原失败！数据仍在：$PRESERVE_DIR/storage"
+            log_error "请手工执行：mv '$PRESERVE_DIR/storage' '$INSTALL_DIR/backend/storage'"
+            failed=1
+        fi
+    fi
+    # vendor 次要（composer 可重建），但还原可省一次重装、且让 artisan 能 bootstrap
+    if [ "$failed" -eq 0 ] && [ -d "$PRESERVE_DIR/vendor" ] && [ ! -d "$INSTALL_DIR/backend/vendor" ]; then
+        mv "$PRESERVE_DIR/vendor" "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
+    fi
+    return "$failed"
+}
+
+# 还原 preserve 中的 api_adapters / frontend_config 副本到原位（幂等 cp，最佳努力）。
+# 与 _restore_preserved_storage 分离：storage/vendor 是 mv 的唯一副本（数据级），这两类是 cp 副本——
+# 但原件已被步骤 7 `rm -rf backend/app` / `rm frontend/{admin,user}` 删除，中断落在「rm 原件 ~ 步骤 9
+# 恢复保留文件」窗内时它们成为唯一在线副本（备份 zip 虽含之，但 rollback 自动选最新=绿灯重跑后生成的
+# 无适配器备份，救不回）。故 cleanup 删 preserve 前先经此还原；成功态则幂等重复无害。
+# 返回：0=全部就位或无副本可还原；1=有副本 cp 失败（调用方须保留 PRESERVE_DIR、不得删）。
+_restore_preserved_extras() {
+    [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] || return 0
+    local failed=0
+    # 自定义 API 适配器：按 bucket 还原到 Services/<X>/Api（与步骤 6 保留 / 步骤 9 还原对称）
+    local spec bucket rel bucket_dir api_adapter_dir
+    for spec in "order:Services/Order/Api" "acme:Services/Acme/Api"; do
+        bucket="${spec%%:*}"
+        rel="${spec#*:}"
+        bucket_dir="$PRESERVE_DIR/api_adapters/$bucket"
+        [ -d "$bucket_dir" ] && [ "$(ls -A "$bucket_dir" 2>/dev/null)" ] || continue
+        api_adapter_dir="$INSTALL_DIR/backend/app/$rel"
+        mkdir -p "$api_adapter_dir" 2>/dev/null || true
+        if cp -r "$bucket_dir"/* "$api_adapter_dir/" 2>/dev/null; then
+            log_warning "已还原中断升级遗留的自定义 API 适配器：$bucket"
+        else
+            log_error "自定义 API 适配器还原失败：$bucket_dir → $api_adapter_dir"
+            failed=1
+        fi
+    done
+    # 前端用户配置（logo / platform-config / qrcode）
+    if [ -d "$PRESERVE_DIR/frontend_config" ]; then
+        local file
+        for file in logo.svg platform-config.json; do
+            [ -f "$PRESERVE_DIR/frontend_config/admin_$file" ] || continue
+            mkdir -p "$INSTALL_DIR/frontend/admin" 2>/dev/null || true
+            cp "$PRESERVE_DIR/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file" 2>/dev/null || failed=1
+        done
+        for file in logo.svg platform-config.json qrcode.png; do
+            [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] || continue
+            mkdir -p "$INSTALL_DIR/frontend/user" 2>/dev/null || true
+            cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file" 2>/dev/null || failed=1
+        done
+    fi
+    return "$failed"
+}
+
+# 升级中断后的运维恢复指引（与 skills/ops/deploy-ops.md runbook + H2 顺序契约一致）
+_print_recovery_runbook() {
+    log_error "═══════════════════════════════════════════════"
+    log_error "升级未完成，系统仍处于 freeze + 维护模式；storage 已还原（数据安全）。"
+    log_error "请先确认代码目录完整（重跑 upgrade.sh 至成功、或 upgrade.sh rollback）后再执行："
+    log_error "  cd '$INSTALL_DIR/backend'"
+    log_error "  $PHP_CMD artisan upgrade:unfreeze   # ① 先解冻（严格先于 up）"
+    log_error "  $PHP_CMD artisan up                 # ② 再解除维护（恢复 worker/scheduler）"
+    log_error "  $PHP_CMD artisan queue:restart      # ③ 重启常驻 worker"
+    log_error "随后看 storage/upgrades/status.json 与升级日志，决定重跑 upgrade.sh 或 upgrade.sh rollback。"
+    log_error "═══════════════════════════════════════════════"
+}
+
+cleanup() {
+    local rc=$?
+    # 防重入（先闭后续信号、再解 EXIT，重入窗收敛到最小；
+    # 即便极窄窗内重入，还原亦幂等——PRESERVE/storage 存在性门 + rc 首行捕获，双跑无害）
+    trap '' INT TERM HUP
+    trap - EXIT
+
+    if ! _restore_preserved_storage; then
+        # 守卫自身失败绝不吞：保留 PRESERVE_DIR（唯一副本）、只删 TEMP_DIR、非零退出
+        [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+        exit 1
+    fi
+
+    # 升级未完成且已冻结 → 打印运维恢复 runbook（不自动 up，见 _print_recovery_runbook）
+    if [ "$UPGRADE_DONE" -eq 0 ] && [ "$FREEZE_FIRED" -eq 1 ]; then
+        _print_recovery_runbook
+        # 仅打脚本 PID 的 kill 会让在途前台命令正常跑完 → rc=0；强制提升为非零，
+        # 使「已冻结但未完成」永不以 0 谎报成功（真实 Ctrl-C 打进程组 rc 已非零，不受影响）
+        [ "$rc" -eq 0 ] && rc=1
+    fi
+
+    [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+    # 删 preserve 前先还原 api_adapters / frontend_config 副本：中断落在「rm 旧代码 ~ 恢复保留文件」窗内时
+    # 它们是唯一在线副本（原件已删），直接 rm preserve 会连副本一并静默销毁。还原失败则保留 preserve 供人工恢复。
+    if _restore_preserved_extras; then
+        [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] && rm -rf "$PRESERVE_DIR"
+    else
+        log_error "自定义 API 适配器 / 前端配置副本还原失败，已保留 preserve 供人工恢复：$PRESERVE_DIR"
+    fi
+    exit "$rc"
+}
 trap cleanup EXIT
+trap cleanup INT TERM HUP
 
 get_timestamp() {
     # 与 PHP BackupManager 格式一致：2026-01-15_021459
@@ -509,7 +748,7 @@ detect_php_cmd() {
             log_info "请手工指定: export PHP_CMD=/www/server/php/<ver>/bin/php"
             return 1
         else
-            log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+            log_error "未检测到符合要求的 PHP 版本（需要 >= ${php_min}）"
             log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
             return 1
         fi
@@ -887,10 +1126,10 @@ _php_env_print_manual() {
         log_error "  1. PHP 版本：宝塔 → 软件商店 → 安装 PHP ${PHP_ENV_PHP_RECOMMENDED:-${PHP_ENV_PHP_MIN%.*}}+，网站设置切换 PHP 版本"
     fi
     if [ -n "$PHP_ENV_MISSING_EXT" ]; then
-        log_error "  - 扩展：宝塔 → 软件商店 → PHP 管理 → 安装扩展（$PHP_ENV_MISSING_EXT）"
+        log_error "  - 扩展：宝塔 → 软件商店 → PHP 管理 → 安装扩展（${PHP_ENV_MISSING_EXT}）"
     fi
     if [ -n "$PHP_ENV_DISABLED_FN" ]; then
-        log_error "  - 函数：编辑对应 PHP 版本的 php.ini / php-cli.ini / php-fpm.ini（凡含该函数的文件都要改），从 disable_functions 删除（$PHP_ENV_DISABLED_FN），保存后重启 PHP-FPM"
+        log_error "  - 函数：编辑对应 PHP 版本的 php.ini / php-cli.ini / php-fpm.ini（凡含该函数的文件都要改），从 disable_functions 删除（${PHP_ENV_DISABLED_FN}），保存后重启 PHP-FPM"
     fi
 }
 
@@ -991,7 +1230,7 @@ check_php_environment() {
 
     # 推荐项警告（每次都输出，不阻断）
     if [ -n "$PHP_ENV_MISSING_REC" ]; then
-        log_warning "缺失推荐扩展: $PHP_ENV_MISSING_REC（不阻断升级，但建议安装以获得最佳性能/功能）"
+        log_warning "缺失推荐扩展: ${PHP_ENV_MISSING_REC}（不阻断升级，但建议安装以获得最佳性能/功能）"
     fi
 
     if [ "$PHP_ENV_OK" = true ]; then
@@ -1003,7 +1242,7 @@ check_php_environment() {
     log_error "═══════════════════════════════════════════════════════"
     log_error "PHP 环境校验失败："
     if [ "$PHP_ENV_VERSION_ERROR" = true ]; then
-        log_error "  - PHP 版本过低：当前 $PHP_ENV_CURRENT_PHP，需要 >= $PHP_ENV_PHP_MIN"
+        log_error "  - PHP 版本过低：当前 ${PHP_ENV_CURRENT_PHP}，需要 >= ${PHP_ENV_PHP_MIN}"
     fi
     if [ -n "$PHP_ENV_MISSING_EXT" ]; then
         log_error "  - 缺失必需扩展: $PHP_ENV_MISSING_EXT"
@@ -1053,10 +1292,83 @@ check_php_environment() {
     exit 1
 }
 
+# 写 logrotate 配置（schedule.log / probe.log 轮转，防日增日志涨满盘触发 disk_free 503）
+# 与 bt-install.sh::write_logrotate_conf 对称（两脚本独立发布不能 source），修改时请同步
+# 落点在 update_jobs_php_path 之外（perform_upgrade 主流程），不受函数内 total_mismatch / BT key 早返影响
+write_logrotate_conf() {
+    local conf="/etc/logrotate.d/ssl-manager"
+    local logdir="$INSTALL_DIR/backend/storage/logs"
+
+    if [ ! -d /etc/logrotate.d ] || [ ! -w /etc/logrotate.d ]; then
+        log_warning "/etc/logrotate.d 不可写，跳过 logrotate 配置（schedule.log/probe.log 需手工轮转）"
+        return 0
+    fi
+
+    # cron `>>` 每次执行独立 open-append，rotate 后自动写新文件，无需 copytruncate
+    cat >"$conf" <<EOF
+$logdir/schedule.log
+$logdir/probe.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0664 www www
+}
+EOF
+    log_success "logrotate 配置已写入: ${conf}（weekly rotate 4）"
+}
+
+# 修复单条 install.sh 自管 cron 的 PHP 路径（schedule 组另追加 one-shot /dev/null → schedule.log 迁移）
+# 参数：$1=entry(id|name|paths|ctype|cwhere1|body_enc)  $2=kind(schedule|probe)
+# 三段语义（原样保留）：DelCrontab → bt_add_crontab 新 → 失败用原 body 回滚 + 落 other 提示
+# 返回：0=已修复；非 0=no-op skip 或失败（失败已 push 全局 other_cron_entries，bash 动态作用域）
+_fix_installer_cron() {
+    local entry="$1" kind="$2"
+    local cid cname paths ctype cwhere1 cbody_enc cbody new_body
+    IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
+    cbody=$(_entry_decode "$cbody_enc")
+    # 两步 PHP sed：① 绝对路径版本不对整体替换 ② 裸 php token → target_php
+    new_body=$(echo "$cbody" | sed -E "s#/www/server/php/[0-9]+/bin/php#$target_php#g")
+    new_body=$(echo "$new_body" | sed -E "s#(^|[[:space:];&|])php([[:space:]]+)#\1${target_php}\2#g")
+    # schedule 组追加 one-shot 重定向迁移（检测模式与此 sed 同构 `>> */dev/null 2>&1`）；
+    # 已迁移 / 用户自定义重定向形态无匹配 no-op（幂等）。
+    # 替换串里的 & 必须转义为 \&（sed 替换段 & = 整个匹配文本），否则 2>&1 会展开成匹配串致 body 损坏
+    if [ "$kind" = "schedule" ]; then
+        new_body=$(echo "$new_body" | sed "s#>> */dev/null 2>&1#>> $INSTALL_DIR/backend/storage/logs/schedule.log 2>\&1#")
+    fi
+    # no-op 守卫（Mi6 双保险）：new_body 与原 body 一致则不 Del/Add，杜绝无效 churn 与 Del→Add 风险窗
+    if [ "$new_body" = "$cbody" ]; then
+        return 1
+    fi
+    log_step "自动更新 cron [${cname}] PHP 路径/日志重定向（install.sh 自管，唯一；保留频率 ${ctype}=${cwhere1}）"
+    # 防止 DelCrontab 成功 + AddCrontab 失败的窗口里 cron 静默消失
+    if _bt_api_post "/crontab?action=DelCrontab" "--data-urlencode 'id=$cid'" >/dev/null 2>&1; then
+        sleep 1
+        if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$new_body"; then
+            return 0
+        fi
+        log_warning "  cron [$cname] 添加新版失败，尝试用原命令回滚..."
+        if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$cbody"; then
+            log_info "  原 cron 已恢复（PHP 路径仍是旧版本，需手工修改）"
+            other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
+        else
+            log_error "  ⚠️  cron [$cname] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
+            log_error "  原命令: $cbody"
+            log_error "  新命令: $new_body"
+        fi
+        return 1
+    fi
+    log_warning "  cron [$cname] DelCrontab 失败，跳过自动修复"
+    other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
+    return 1
+}
+
 # 扫 cron / supervisor 中的 PHP 绝对路径，列出与当前 PHP_CMD 不一致的项
 # 对 install.sh 自管（命令含 $INSTALL_DIR/backend/artisan）且类型内唯一的项，自动覆盖更新
 # 不满足"自管 + 唯一"的项保留原"列出 + 警告"行为，由用户手工到面板改
 # 通常在切换 PHP 版本后才有不一致；常规升级是 no-op
+# M3/M6 §1.5：schedule / probe 双 marker 分组、probe 缺失幂等 ensure、schedule body /dev/null→schedule.log 迁移
 update_jobs_php_path() {
     local target_php="$PHP_CMD"
 
@@ -1087,13 +1399,20 @@ update_jobs_php_path() {
     log_step "扫描 cron / supervisor 的 PHP 绝对路径..."
     log_info "  期望 PHP: $target_php"
 
-    # install.sh 自管特征（cron: schedule:run；supervisor: queue:work），按 INSTALL_DIR 锚定
+    # install.sh 自管特征（cron: schedule:run + monitor:probe；supervisor: queue:work），按 INSTALL_DIR 锚定
+    # marker 即 artisan 命令串本身（面板可见 shell 命令，已是唯一稳定特征，不引额外注释 token）
     local installer_cron_marker="$INSTALL_DIR/backend/artisan schedule:run"
+    local installer_probe_marker="$INSTALL_DIR/backend/artisan monitor:probe"
     local installer_supervisor_marker="$INSTALL_DIR/backend/artisan queue:work"
 
-    # 分类容器：install.sh 自管 vs 其他（仅手工提示）
-    local installer_cron_entries=() other_cron_entries=()
+    # 分类容器：install.sh 自管 schedule / probe 分组 vs 其他（仅手工提示）
+    local installer_cron_entries=() installer_probe_entries=() other_cron_entries=()
     local installer_supervisor_entries=() other_supervisor_entries=()
+
+    # 存在性 flag（§1.5）：probe ensure 守卫用，须在 needs_fix 短路之前置位
+    #   schedule_marker_seen：确认本机是 install.sh 自管站点（有 schedule:run 自管行）
+    #   probe_cron_exists：面板已有 probe 行（按 body marker 判定，PHP 路径已对的行也算存在）
+    local schedule_marker_seen=false probe_cron_exists=false
 
     # cron
     # 扫描分两类不一致：
@@ -1105,11 +1424,21 @@ update_jobs_php_path() {
         body=$(echo "$line" | _json_field "sBody")
         [ -z "$body" ] && continue
 
-        local is_installer=false
+        # 分组：命中 schedule marker → schedule 组；命中 probe marker → probe 组；否则 other
+        # 存在性 flag 在此置位（needs_fix 短路之前）：PHP 路径已对的 probe 行不进 entries，
+        # 但 probe_cron_exists 须已 true，否则下方 ensure 误判缺失 → 重复新增第二条 probe cron
+        local cron_kind=other
         # set -e 下不能写 `cmd && x=y` —— grep 无匹配时整体非零会触发 exit
         if echo "$body" | grep -qF "$installer_cron_marker"; then
-            is_installer=true
+            cron_kind=schedule
+            schedule_marker_seen=true
+        elif echo "$body" | grep -qF "$installer_probe_marker"; then
+            cron_kind=probe
+            probe_cron_exists=true
         fi
+
+        local is_installer=false
+        [ "$cron_kind" != "other" ] && is_installer=true
 
         local found_paths=""
         local has_bare_php=false
@@ -1133,6 +1462,10 @@ update_jobs_php_path() {
             needs_fix=true
         fi
         # 非 installer 自管 + 裸 php → 不动（用户脚本，可能有意依赖 PATH）
+        # schedule 组 M6 迁移信号：body 仍写 /dev/null → 需修（检测模式与迁移 sed 同构 `>> */dev/null 2>&1`）
+        if [ "$cron_kind" = "schedule" ] && echo "$body" | grep -qE '>> */dev/null 2>&1'; then
+            needs_fix=true
+        fi
 
         if [ "$needs_fix" = false ]; then
             continue
@@ -1150,7 +1483,11 @@ update_jobs_php_path() {
             ctype=$(echo "$line" | _json_field "type")
             cwhere1=$(echo "$line" | _json_field "where1")
             if [ "$ctype" = "minute-n" ] && [ -n "$cwhere1" ]; then
-                installer_cron_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
+                if [ "$cron_kind" = "probe" ]; then
+                    installer_probe_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
+                else
+                    installer_cron_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
+                fi
             else
                 other_cron_entries+=("$id|$name|$display_paths|$body_enc")
             fi
@@ -1222,50 +1559,55 @@ update_jobs_php_path() {
         fi
     done < <(bt_list_supervisor_all 2>/dev/null)
 
-    local total_mismatch=$((${#installer_cron_entries[@]} + ${#other_cron_entries[@]} + \
+    # ===== probe ensure（§1.5，I3 前移至早返之前）=====
+    # 本机是 install.sh 自管站点（见 schedule marker）且面板无 probe cron → 幂等新增。
+    # 守卫用 schedule_marker_seen 天然排除 bt_list_crontab_all 瞬时失败/空响应（列表拿不到 →
+    # marker 必未见 → skip，防重复新增第二条 probe cron）。这是常驻自愈（非仅首次交付），
+    # 故须在 total_mismatch -eq 0 早返之前，否则干净存量机（cron 全对+probe 缺失）永不获 probe。
+    # 存在性按 body marker 判定（probe_cron_exists），name 用 basename（upgrade.sh 无 SITE_DOMAIN）仅展示用。
+    if [ "$schedule_marker_seen" = true ] && [ "$probe_cron_exists" = false ]; then
+        log_step "补充缺失的外部健康拨测 cron（monitor:probe，每 5min）"
+        if bt_add_crontab "$(basename "$INSTALL_DIR")-probe" "minute-n" 5 \
+            "$target_php $INSTALL_DIR/backend/artisan monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1"; then
+            log_success "  已新增拨测 cron: $(basename "$INSTALL_DIR")-probe（每 5 分钟）"
+        else
+            log_warning "  拨测 cron 新增失败，请手工到宝塔面板 → 计划任务添加（每 5min，www 运行）："
+            log_warning "  $target_php $INSTALL_DIR/backend/artisan monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1"
+        fi
+    fi
+
+    local total_mismatch=$((${#installer_cron_entries[@]} + ${#installer_probe_entries[@]} + ${#other_cron_entries[@]} + \
         ${#installer_supervisor_entries[@]} + ${#other_supervisor_entries[@]}))
     if [ "$total_mismatch" -eq 0 ]; then
         log_success "  cron / supervisor 的 PHP 路径与当前一致"
         return 0
     fi
 
-    # ===== 自动修复阶段：install.sh 自管 + 类型内唯一才覆盖更新 =====
+    # ===== 自动修复阶段：install.sh 自管 + 组内唯一才覆盖更新 =====
     local auto_fixed=0
 
+    # schedule 组：组内 -eq 1 才修（对单行存量机与原全局 -eq 1 等价；probe 存在不使 schedule 退手工）
     if [ ${#installer_cron_entries[@]} -eq 1 ]; then
-        local entry=${installer_cron_entries[0]}
-        local cid cname paths ctype cwhere1 cbody_enc cbody new_body
-        IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
-        cbody=$(_entry_decode "$cbody_enc")
-        # 两步替换：① 已是绝对路径但版本不对 → sed 整体替换 ② 裸 php token → 替换为 target_php
-        # 裸 php 模式：命令开头 / 空格 / ; & | 后紧跟 `php ` 才认（避开 php-cli / php-fpm / php8.X）
-        new_body=$(echo "$cbody" | sed -E "s#/www/server/php/[0-9]+/bin/php#$target_php#g")
-        new_body=$(echo "$new_body" | sed -E "s#(^|[[:space:];&|])php([[:space:]]+)#\1${target_php}\2#g")
-        log_step "自动更新 cron [$cname] PHP 路径（install.sh 自管，唯一；保留原频率 $ctype=$cwhere1）"
-        # 三段语义：① 删旧 → ② 加新（失败时 → ③ 用原 body 回滚）
-        # 防止 DelCrontab 成功 + AddCrontab 失败的窗口里 cron 静默消失
-        if _bt_api_post "/crontab?action=DelCrontab" "--data-urlencode 'id=$cid'" >/dev/null 2>&1; then
-            sleep 1
-            if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$new_body"; then
-                auto_fixed=$((auto_fixed + 1))
-            else
-                log_warning "  cron [$cname] 添加新版失败，尝试用原命令回滚..."
-                if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$cbody"; then
-                    log_info "  原 cron 已恢复（PHP 路径仍是旧版本，需手工修改）"
-                    other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
-                else
-                    log_error "  ⚠️  cron [$cname] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
-                    log_error "  原命令: $cbody"
-                    log_error "  新命令: $new_body"
-                fi
-            fi
-        else
-            log_warning "  cron [$cname] DelCrontab 失败，跳过自动修复"
-            other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
+        if _fix_installer_cron "${installer_cron_entries[0]}" schedule; then
+            auto_fixed=$((auto_fixed + 1))
         fi
     elif [ ${#installer_cron_entries[@]} -gt 1 ]; then
-        log_info "  检测到 ${#installer_cron_entries[@]} 个 install.sh 风格 cron 任务，非唯一，保留手工提示"
+        log_info "  检测到 ${#installer_cron_entries[@]} 个 schedule:run cron，非唯一，保留手工提示"
         for entry in "${installer_cron_entries[@]}"; do
+            local cid cname paths ctype cwhere1 cbody_enc
+            IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
+            other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
+        done
+    fi
+
+    # probe 组：组内 -eq 1 才修（PHP 大版本升级后修正 probe 路径，消除静默失效；与 schedule 组独立）
+    if [ ${#installer_probe_entries[@]} -eq 1 ]; then
+        if _fix_installer_cron "${installer_probe_entries[0]}" probe; then
+            auto_fixed=$((auto_fixed + 1))
+        fi
+    elif [ ${#installer_probe_entries[@]} -gt 1 ]; then
+        log_info "  检测到 ${#installer_probe_entries[@]} 个 monitor:probe cron，非唯一，保留手工提示"
+        for entry in "${installer_probe_entries[@]}"; do
             local cid cname paths ctype cwhere1 cbody_enc
             IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
             other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
@@ -1351,12 +1693,46 @@ update_jobs_php_path() {
     log_warning "═══════════════════════════════════════════════════════"
 }
 
+# 判定是否需要跑 composer install（返回 0=需要 / 1=可跳过）。入参：old/new composer.json hash、old/new lock hash。
+# 判据（任一成立即需要）：
+#   ① vendor/autoload.php 缺失——中断升级把 vendor 唯一副本弄丢后重跑时，backend/composer.json 已是新版本、
+#      新旧 hash 相等会误跳过 composer → artisan fatal 砖机自循环，必须强制重装兜底（根治 ⑧ 砖机）；
+#   ② NEED_COMPOSER_FORCE=1——入口 _check_stranded_preserve 回迁了中断遗留的旧 vendor，须重装对齐新 lock；
+#   ③ composer.json / composer.lock hash 变化（常规依赖变更）。
+# 从新 composer.lock 重建始终正确且幂等；宁可多装一次也不留砖机自循环。
+_need_composer_install() {
+    local old_json="$1" new_json="$2" old_lock="$3" new_lock="$4"
+    if [ ! -f "$INSTALL_DIR/backend/vendor/autoload.php" ]; then
+        log_warning "vendor/autoload.php 缺失，强制重装 composer 依赖（防中断升级后 hash 相等跳过致砖机）"
+        return 0
+    fi
+    if [ "${NEED_COMPOSER_FORCE:-0}" = "1" ]; then
+        log_warning "已回迁中断升级遗留的 vendor，强制重装 composer 依赖以对齐新 composer.lock"
+        return 0
+    fi
+    if [ -z "$old_json" ] || [ "$old_json" != "$new_json" ]; then
+        log_info "composer.json 已变化，需要更新依赖"
+        return 0
+    fi
+    if [ -z "$old_lock" ] || [ "$old_lock" != "$new_lock" ]; then
+        log_info "composer.lock 已变化，需要更新依赖"
+        return 0
+    fi
+    log_info "依赖未变化，跳过 composer install"
+    return 1
+}
+
 # 执行升级
 perform_upgrade() {
     local target_version="$1"
     local upgrade_file="$2"
 
     log_step "开始升级到版本 $target_version"
+
+    # 0. 残留检测：上次升级被 SIGKILL/断电打断（trap 未跑）会把真 storage 滞留在
+    #    .upgrade-preserve-*/ 内且 backend/storage 缺失，继续升级会新建空 storage 埋掉真数据。
+    #    必须在 create_backup / down / freeze / 任何 mv 之前拦截（拦截时零服务扰动）。
+    _check_stranded_preserve
 
     # 1. 记录旧版本 composer.json 和 composer.lock hash
     local old_composer_json_hash=""
@@ -1403,34 +1779,54 @@ perform_upgrade() {
     # 5. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
     cd "$INSTALL_DIR/backend"
+    # 残留升级状态处置（必须在 down/freeze 之前：running_alive 中止时未动任何状态）
+    _handle_stale_upgrade_status
     "$PHP_CMD" artisan down --retry=60 || true
+    # freeze：down 只暂停 worker/scheduler、不挡 HTTP（本仓已删 PreventRequestsDuringMaintenance）；
+    # freeze 才是挡外部写请求（下单/支付回调/文档上传）的 HTTP-503 闸，锁文件 storage/framework/upgrade.lock。
+    # 覆盖有边界：锁随 storage 移动（见下方 mv / 恢复）——此刻到 storage 恢复的[切代码窗]内锁离开规范路径、
+    # isFrozen()=false，该窗由 storage 缺失致 app 无法 bootstrap（请求 500）兜底挡写；freeze 的 HTTP-503
+    # 实际自 storage 恢复起才有效，正好罩住其后的 migrate/seed 数据危险窗。
+    "$PHP_CMD" artisan upgrade:freeze --ttl=7200 || true
+    # freeze 已点火：失败/中断路径据此打印恢复 runbook（unfreeze→up→queue:restart）
+    FREEZE_FIRED=1
 
     # 6. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."
-    local preserve_dir="$TEMP_DIR/preserve"
-    mkdir -p "$preserve_dir"
+    # 保留目录放安装目录同文件系统内（非 TEMP_DIR//tmp）：
+    #   ① storage 的 mv 变原子 rename（同 fs），消除 /tmp 为 tmpfs 时的跨文件系统复制窗；
+    #   ② 不在 TEMP_DIR 内 → EXIT trap 的 rm -rf "$TEMP_DIR" 天然够不着它（守卫失败数据仍在盘上）。
+    PRESERVE_DIR="$INSTALL_DIR/.upgrade-preserve-$$"
+    mkdir -p "$PRESERVE_DIR"
 
     # 保留 .env（不保留 version.json，升级需要更新版本号）
-    [ -f "$INSTALL_DIR/backend/.env" ] && cp "$INSTALL_DIR/backend/.env" "$preserve_dir/"
+    [ -f "$INSTALL_DIR/backend/.env" ] && cp "$INSTALL_DIR/backend/.env" "$PRESERVE_DIR/"
     # 保留 storage（使用 mv 避免大目录复制失败导致数据丢失）
+    # 注意：freeze 锁文件（storage/framework/upgrade.lock）随此 mv 一并移走 → 至下方恢复前
+    # isFrozen()=false、HTTP-503 暂失效；此[切代码窗]靠 storage 缺失致 app 500 兜底挡写。
     if [ -d "$INSTALL_DIR/backend/storage" ]; then
-        mv "$INSTALL_DIR/backend/storage" "$preserve_dir/"
+        # 进搬移窗先决门：设备号不一致即中止（原地未破坏），杜绝 mv 跨 fs 静默 copy 半态
+        _assert_storage_same_fs
+        mv "$INSTALL_DIR/backend/storage" "$PRESERVE_DIR/" || {
+            log_error "storage 移出失败，中止升级（原地未破坏）"
+            exit 1 # → cleanup：preserve 无 storage、原位有 storage → 还原 no-op；安全
+        }
     fi
     # 保留 vendor（加速升级）
     if [ -d "$INSTALL_DIR/backend/vendor" ]; then
         log_info "保留 vendor 目录（加速升级）..."
-        mv "$INSTALL_DIR/backend/vendor" "$preserve_dir/"
+        mv "$INSTALL_DIR/backend/vendor" "$PRESERVE_DIR/"
     fi
     # frontend/web 不移动，在清理旧代码时跳过（避免脚本中断导致丢失）
     # 保留前端用户配置文件（logo、平台配置等）
-    mkdir -p "$preserve_dir/frontend_config"
+    mkdir -p "$PRESERVE_DIR/frontend_config"
     # admin: logo.svg, platform-config.json
     for file in logo.svg platform-config.json; do
-        [ -f "$INSTALL_DIR/frontend/admin/$file" ] && cp "$INSTALL_DIR/frontend/admin/$file" "$preserve_dir/frontend_config/admin_$file"
+        [ -f "$INSTALL_DIR/frontend/admin/$file" ] && cp "$INSTALL_DIR/frontend/admin/$file" "$PRESERVE_DIR/frontend_config/admin_$file"
     done
     # user: logo.svg, platform-config.json, qrcode.png
     for file in logo.svg platform-config.json qrcode.png; do
-        [ -f "$INSTALL_DIR/frontend/user/$file" ] && cp "$INSTALL_DIR/frontend/user/$file" "$preserve_dir/frontend_config/user_$file"
+        [ -f "$INSTALL_DIR/frontend/user/$file" ] && cp "$INSTALL_DIR/frontend/user/$file" "$PRESERVE_DIR/frontend_config/user_$file"
     done
     # 保留自定义 API 适配器（Order/Api 和 Acme/Api 对称扫描；按 bucket 归档避免重名冲突）
     # 跳过：核心入口 Api.php、默认实现 default/、各接口契约文件（新增接口需登记到 case 清单）
@@ -1449,8 +1845,8 @@ perform_upgrade() {
                     continue
                     ;;
             esac
-            [ "$has_custom" = false ] && mkdir -p "$preserve_dir/api_adapters/$bucket"
-            cp -r "$item" "$preserve_dir/api_adapters/$bucket/"
+            [ "$has_custom" = false ] && mkdir -p "$PRESERVE_DIR/api_adapters/$bucket"
+            cp -r "$item" "$PRESERVE_DIR/api_adapters/$bucket/"
             has_custom=true
             log_info "保留自定义 API 适配器: $bucket/$name"
         done
@@ -1540,32 +1936,37 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
 
     # 9. 恢复保留的文件
     log_step "恢复保留文件..."
-    [ -f "$preserve_dir/.env" ] && cp "$preserve_dir/.env" "$INSTALL_DIR/backend/"
+    [ -f "$PRESERVE_DIR/.env" ] && cp "$PRESERVE_DIR/.env" "$INSTALL_DIR/backend/"
     # 注意：不恢复 version.json，使用升级包中的新版本
 
     # 恢复 storage（已使用 mv 保留，直接移回）
-    if [ -d "$preserve_dir/storage" ]; then
+    # freeze 锁文件随 storage 移回 → isFrozen() 重新生效，HTTP-503 有效覆盖自此刻起至 unfreeze，
+    # 正好罩住其后的 migrate/seed 数据危险窗。
+    if [ -d "$PRESERVE_DIR/storage" ]; then
         rm -rf "$INSTALL_DIR/backend/storage" 2>/dev/null || true
-        mv "$preserve_dir/storage" "$INSTALL_DIR/backend/"
+        mv "$PRESERVE_DIR/storage" "$INSTALL_DIR/backend/" || {
+            log_error "storage 移回失败，交 cleanup 守卫还原"
+            exit 1 # → cleanup：preserve 仍有 storage → 守卫还原
+        }
     fi
 
     # 恢复 vendor
-    if [ -d "$preserve_dir/vendor" ]; then
-        mv "$preserve_dir/vendor" "$INSTALL_DIR/backend/"
+    if [ -d "$PRESERVE_DIR/vendor" ]; then
+        mv "$PRESERVE_DIR/vendor" "$INSTALL_DIR/backend/"
     fi
 
     # frontend/web 已在原地保留，无需恢复
 
     # 恢复前端用户配置文件
-    if [ -d "$preserve_dir/frontend_config" ]; then
+    if [ -d "$PRESERVE_DIR/frontend_config" ]; then
         log_info "恢复前端用户配置..."
         # admin
         for file in logo.svg platform-config.json; do
-            [ -f "$preserve_dir/frontend_config/admin_$file" ] && cp "$preserve_dir/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file"
+            [ -f "$PRESERVE_DIR/frontend_config/admin_$file" ] && cp "$PRESERVE_DIR/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file"
         done
         # user
         for file in logo.svg platform-config.json qrcode.png; do
-            [ -f "$preserve_dir/frontend_config/user_$file" ] && cp "$preserve_dir/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file"
+            [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] && cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file"
         done
     fi
 
@@ -1573,7 +1974,7 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     for spec in "order:Services/Order/Api" "acme:Services/Acme/Api"; do
         local bucket="${spec%%:*}"
         local rel="${spec#*:}"
-        local bucket_dir="$preserve_dir/api_adapters/$bucket"
+        local bucket_dir="$PRESERVE_DIR/api_adapters/$bucket"
         [ -d "$bucket_dir" ] && [ "$(ls -A "$bucket_dir" 2>/dev/null)" ] || continue
 
         local api_adapter_dir="$INSTALL_DIR/backend/app/$rel"
@@ -1618,16 +2019,11 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         log_info "新版本 composer.lock hash: ${new_composer_lock_hash:0:16}..."
     fi
 
+    # 依赖变化判定收口到 _need_composer_install（vendor 缺失 / 回迁强制 / hash 变化 → 需要安装）
     local need_composer=false
-    # 检查 composer.json 或 composer.lock 是否有变化
-    if [ -z "$old_composer_json_hash" ] || [ "$old_composer_json_hash" != "$new_composer_json_hash" ]; then
+    if _need_composer_install "$old_composer_json_hash" "$new_composer_json_hash" \
+        "$old_composer_lock_hash" "$new_composer_lock_hash"; then
         need_composer=true
-        log_info "composer.json 已变化，需要更新依赖"
-    elif [ -z "$old_composer_lock_hash" ] || [ "$old_composer_lock_hash" != "$new_composer_lock_hash" ]; then
-        need_composer=true
-        log_info "composer.lock 已变化，需要更新依赖"
-    else
-        log_info "依赖未变化，跳过 composer install"
     fi
 
     # 探测 composer phar 路径（无论 install/dump-autoload 都要用，提前到 if 块外）
@@ -1777,10 +2173,18 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         log_warning "部分校验未通过，请检查"
     fi
 
+    # unfreeze 必须严格先于 artisan up：up 唤醒被暂停的 worker 去 pop job，
+    # 若 freeze 仍在则 SkipWhenUpgradeFrozen 的 release(60) 会开始烧 job attempts。
+    # 「smoke」= 上方本地完整性校验（非需 admin 鉴权 + FPM 在线的 HTTP /upgrade/smoke）。
+    "$PHP_CMD" artisan upgrade:unfreeze || true
+
     # 14. 退出维护模式
     log_step "退出维护模式..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan up
+    # 升级实质已完成（storage 已回原位、库已迁移、服务已恢复）：此后尾部步骤（queue:restart /
+    # FPM reload / nginx reload）失败均非致命，不得再打恢复 runbook。必须落在 up 与 queue:restart 之间。
+    UPGRADE_DONE=1
 
     # 14b. 重启队列 worker（让常驻 worker 跑完当前 job 后退出，supervisor 自动拉起新进程加载新代码）
     log_step "重启队列 worker..."
@@ -1789,9 +2193,15 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     else
         log_warning "queue:restart 失败（如未启用队列可忽略）"
     fi
+    # 非阻断：仅兜 supervisor 进程级崩溃（罕见）；supervisorctl 缺失即整体假、仅提示不阻断
+    supervisorctl status 2>/dev/null | grep -qi running || log_warning "queue worker 可能未运行，请到宝塔面板检查 Supervisor"
 
     # 15. 扫描 cron / supervisor 的 PHP 绝对路径（PHP 版本切换后保护性检查 + 自动修复 install.sh 自管项）
     update_jobs_php_path
+
+    # 15a. logrotate（schedule.log / probe.log 轮转）——函数外调用，不受 update_jobs_php_path
+    # 的 total_mismatch / BT key 早返影响（写盘不依赖 BT API）
+    write_logrotate_conf
 
     # 15b. 重载 PHP-FPM 清 opcache，加载新代码
     # 仅宝塔环境（PHP_CMD 形如 /www/server/php/83/bin/php）；其他环境提示手工重启
@@ -1933,8 +2343,9 @@ rollback() {
         unzip -qo "$latest_backup/frontend.zip" -d "$INSTALL_DIR/frontend/"
     fi
 
-    # 退出维护模式
+    # 退出维护模式（先解冻：清失败升级滞留的 freeze，rollback 自身不 freeze，与升级路径同序）
     cd "$INSTALL_DIR/backend"
+    "$PHP_CMD" artisan upgrade:unfreeze || true
     "$PHP_CMD" artisan up
 
     log_success "回滚完成"

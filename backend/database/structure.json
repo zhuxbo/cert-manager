@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-06-06 18:28:03",
+    "generated_at": "2026-07-09 00:13:44",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -2687,6 +2687,18 @@
                         null
                     ]
                 },
+                "error_logs_exception_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "exception",
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null
+                    ]
+                },
                 "error_logs_method_index": {
                     "unique": false,
                     "type": "BTREE",
@@ -3926,6 +3938,283 @@
                 }
             }
         },
+        "plugin_operations": {
+            "engine": "InnoDB",
+            "collation": "utf8mb4_0900_ai_ci",
+            "comment": "",
+            "auto_increment": 1,
+            "columns": {
+                "id": {
+                    "position": 1,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "auto_increment",
+                    "comment": ""
+                },
+                "uuid": {
+                    "position": 2,
+                    "type": "varchar(64)",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "type": {
+                    "position": 3,
+                    "type": "varchar(32)",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "plugin_name": {
+                    "position": 4,
+                    "type": "varchar(100)",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "version": {
+                    "position": 5,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "release_url": {
+                    "position": 6,
+                    "type": "text",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "upload_path": {
+                    "position": 7,
+                    "type": "varchar(255)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "status": {
+                    "position": 8,
+                    "type": "varchar(32)",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "stage": {
+                    "position": 9,
+                    "type": "varchar(64)",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "message": {
+                    "position": 10,
+                    "type": "text",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "result": {
+                    "position": 11,
+                    "type": "text",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "error": {
+                    "position": 12,
+                    "type": "text",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "admin_id": {
+                    "position": 13,
+                    "type": "bigint unsigned",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "attempts": {
+                    "position": 14,
+                    "type": "int unsigned",
+                    "nullable": false,
+                    "default": "0",
+                    "extra": "",
+                    "comment": ""
+                },
+                "run_token": {
+                    "position": 15,
+                    "type": "varchar(64)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "last_heartbeat_at": {
+                    "position": 16,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "started_at": {
+                    "position": 17,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "finished_at": {
+                    "position": 18,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "created_at": {
+                    "position": 19,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                },
+                "updated_at": {
+                    "position": 20,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": ""
+                }
+            },
+            "indexes": {
+                "plugin_operations_admin_id_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "admin_id",
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null
+                    ]
+                },
+                "plugin_operations_admin_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "admin_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "plugin_operations_plugin_name_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "plugin_name"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "plugin_operations_plugin_name_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "plugin_name",
+                        "status"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null
+                    ]
+                },
+                "plugin_operations_stage_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "stage"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "plugin_operations_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "status"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "plugin_operations_status_updated_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "status",
+                        "updated_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null
+                    ]
+                },
+                "plugin_operations_type_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "type"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "plugin_operations_uuid_unique": {
+                    "unique": true,
+                    "type": "BTREE",
+                    "columns": [
+                        "uuid"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "PRIMARY": {
+                    "unique": true,
+                    "type": "BTREE",
+                    "columns": [
+                        "id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                }
+            },
+            "foreign_keys": []
+        },
         "product_prices": {
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
@@ -4901,16 +5190,6 @@
                     "sub_parts": [
                         null,
                         null,
-                        null
-                    ]
-                },
-                "tasks_order_id_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "order_id"
-                    ],
-                    "sub_parts": [
                         null
                     ]
                 },

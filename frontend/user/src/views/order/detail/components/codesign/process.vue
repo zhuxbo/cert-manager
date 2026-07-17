@@ -34,8 +34,8 @@
         <tr
           v-if="
             order.product.validation_type !== 'dv' &&
-            order.brand?.toLowerCase() === 'certum' &&
-            ['unpaid', 'pending', 'processing'].includes(cert?.status)
+            order.product.ca?.toLowerCase() === 'certum' &&
+            cert?.status === 'processing'
           "
         >
           <td class="label" />

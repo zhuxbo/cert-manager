@@ -36,7 +36,7 @@ bash skills/scripts/derive-scope.sh   # 机器推导范围表，贴实际输出
 | tests/ 文件本身（新增/修改测试）                                               | 是/否      | §2.3 测试集 + 反模式 14（flaky 四源：faker/共享 storage/时钟/tearDown）+ 15（伪绿：`assertOk`、provider 方向反置、`markTestSkipped` 吞 bug）；diff 含 `backend/tests/Feature/Http/Controllers/` 下新增/修改测试 → 必跑 `COMPAT_COMPARE=true php artisan test <这些测试文件>`，`fixture_missing` 即按 remote-release §3.0.2 程序 `COMPAT_CAPTURE=true` 补 capture 并 `git add backend/tests/Compat/fixtures/`（shift-left：免发布期补救 commit） |
 | 鉴权 / 下载 / 解压 / CORS / 通知 / 公开端点（安全面）                          | 是/否      | §7 安全风险细化 + 反模式 17/18/19；**实际发一次绕过请求**验证防御生效                                                                                                                                                                                                                                                                                                                                                                           |
 | 外部命令调用（`exec`/`proc_open`/二进制探测）                                  | 是/否      | 反模式 12（BinaryLocator + 开发机/生产环境差异）                                                                                                                                                                                                                                                                                                                                                                                                |
-| 节流 / 防重 / 并发事务（`Cache::add` / 锁 / TaskJob / 死锁）                   | 是/否      | 反模式 10（task→业务行锁顺序，新增路径先 grep 现有路径对齐）/ 20（check-then-act 原子化、占位失败回滚、防重占位 ≠ 互斥锁、死锁不可吞 / 不可续写）                                                                                                                                                                                                                                                                                               |
+| 节流 / 防重 / 并发事务（`Cache::add` / 锁 / TaskJob / 死锁）                   | 是/否      | 反模式 10（task→业务行锁顺序，新增路径先 grep 现有路径对齐；涉及 tasks 索引/锁入口时跑 finish-check-greps Z12/Z13/Z14 和 Task 索引最终态测试）/ 20（check-then-act 原子化、占位失败回滚、防重占位 ≠ 互斥锁、死锁不可吞 / 不可续写）                                                                                                                                                                                                             |
 | catch 自定义异常后日志/落库（`ApiResponseException`）                          | 是/否      | 反模式 16（消息走 `getApiResponse()['msg']`，`getMessage()` 恒空）                                                                                                                                                                                                                                                                                                                                                                              |
 | 通知模板 / NotificationTemplate / NotificationCenter                           | 是/否      | §7 部署风险加 `db:seed --class=NotificationTemplateSeeder` + 模板渲染单测                                                                                                                                                                                                                                                                                                                                                                       |
 | 删除了类/配置/命令/表/字段/函数                                                | 是/否      | §1.5 删除审核必跑                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -172,7 +172,7 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 
 ### 2.5 Laravel 专项检查
 
-> 详见 [skills/backend-dev.md](../../skills/backend-dev.md)（Laravel 架构、迁移规范、自动续费/重签等章节）+ [skills/acme-module.md](../../skills/acme-module.md)（ACME 三步流程）
+> 详见 [skills/backend/](../../skills/backend/)（core Laravel 架构、database 迁移规范、auto-renew 自动续费等）+ [skills/backend/acme-module.md](../../skills/backend/acme-module.md)（ACME 三步流程）
 
 - [ ] 迁移幂等（`Schema::hasColumn`/`Schema::hasTable`/索引存在性 守卫），不写 down
 - [ ] Model 的 `$fillable`、`$casts`、`$hidden` 是否需要更新
@@ -186,7 +186,7 @@ trap - EXIT && docker stop manager-mysql-test >/dev/null
 
 ### 2.6 资金路径专项（涉及 funds/transactions/users.balance 时）
 
-> 详见 [skills/backend-dev.md](../../skills/backend-dev.md) "资金确定性体系（4 道网）" 章节
+> 详见 [skills/backend/order-fund.md](../../skills/backend/order-fund.md) "资金确定性体系（4 道网）" 章节
 
 - [ ] 状态转换走 CAS UPDATE（`Fund::transitionToSuccessful`），CAS WHERE 必须完整字段匹配（不能简化为单一 status）
 - [ ] 写 transaction 不依赖应用层 `exists` 防重 — 靠 DB 唯一索引兜底
@@ -331,7 +331,11 @@ git status --short | grep "^??"
 - [ ] 部署相关 → 更新 `DEPLOY.md`
 - [ ] 升级回滚相关 → 更新 `UPGRADE.md`
 - [ ] 模块架构改动 → 更新 `skills/*.md`（按领域）
-- [ ] 跑 `bash skills/scripts/check-review-checklist-staleness.sh && bash skills/scripts/finish-check-greps.sh`，把 warning / FAIL 项贴入 finish-check 总结的"已知局限性"段；greps 脚本 FAIL > 0 必须当场修（硬零断言，恒红会驯化走过场）；staleness warning 数 ≥ 3 → 必须列入 follow-up 维护任务（避免清单长期失真）
+- [ ] 跑 `bash skills/scripts/check-review-checklist-staleness.sh && bash skills/scripts/finish-check-greps.sh`，把 warning / FAIL 项贴入 finish-check 总结的"已知局限性"段；greps 脚本 FAIL > 0 必须当场修（硬零断言，恒红会驯化走过场；其中 Z12/Z13/Z14 分别守 Task 锁入口、tasks 索引最终态快照、`Task::lockForMutation` scope 接线）；staleness warning 数 ≥ 3 → 必须列入 follow-up 维护任务（避免清单长期失真）。涉及 tasks 索引迁移时补跑：
+
+```bash
+make test ARGS="tests/Feature/Database/TaskIndexFinalStateTest.php"
+```
 
 ---
 

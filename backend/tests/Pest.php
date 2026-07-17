@@ -3,8 +3,13 @@
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\FundAudit\FundInvariants;
+use App\Services\Notification\Builders\SystemAlertNotificationBuilder;
 use App\Services\Payment\PaymentGateway;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\Repository;
+use Illuminate\Contracts\Cache\Store;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 use Yansongda\Pay\Pay;
 use Yansongda\Supports\Collection;
@@ -109,6 +114,26 @@ function something()
 }
 
 /**
+ * SystemAlert details 消费方安全护栏（监控/告警命令测试共用）：
+ * 逐键断言 ① 值为标量——非标量会被 SystemAlertNotificationBuilder 换成 [filtered:non-scalar] 占位、信息丢失；
+ * ② 键名不命中 Builder 敏感键 denylist——命中即值被掩码为 ***、运维定位信息丢失。
+ * 正则经反射读 Builder 私有常量（本体冻结、不改可见性），与实现同源不漂移。
+ */
+function assertSystemAlertDetailsSafe(array $details): void
+{
+    $pattern = (new ReflectionClassConstant(
+        SystemAlertNotificationBuilder::class,
+        'SENSITIVE_KEY_PATTERN'
+    ))->getValue();
+
+    expect($details)->not->toBeEmpty();
+    foreach ($details as $key => $value) {
+        expect(is_scalar($value))->toBeTrue("details.$key 应为标量（非标量会被 Builder 占位过滤）")
+            ->and(preg_match($pattern, (string) $key))->toBe(0, "details.$key 键名命中 Builder denylist（值会被掩码）");
+    }
+}
+
+/**
  * 创建或更新工商查询 Setting 配置项
  */
 function setEnterpriseLookupSetting(string $key, mixed $value, string $type = 'string'): void
@@ -186,11 +211,6 @@ function mockPayCapture(): object
 
         return new Collection(['code_url' => 'weixin://wxpay/test']);
     });
-    $wechat->shouldReceive('query')->andReturnUsing(function ($order) use ($captured) {
-        $captured->query = $order;
-
-        return new Collection(['trade_state' => 'NOTPAY']);
-    });
 
     $alipay = Mockery::mock();
     $alipay->shouldReceive('query')->andReturnUsing(function ($order) use ($captured) {
@@ -202,7 +222,97 @@ function mockPayCapture(): object
     $gateway = Mockery::mock(PaymentGateway::class);
     $gateway->shouldReceive('wechat')->andReturn($wechat);
     $gateway->shouldReceive('alipay')->andReturn($alipay);
+    // 查单走 PaymentGateway::wechatQuery（内部自定义插件列表注入 Wechatpay-Serial 头，
+    // 见 InjectWechatSerialPlugin）。此处捕获参数断言调用方按 gate 合入 _serial_no；
+    // 「头真的发出」由 WechatSerialPipelineTest 在 HTTP 层断言。
+    $gateway->shouldReceive('wechatQuery')->andReturnUsing(function ($order) use ($captured) {
+        $captured->query = $order;
+
+        return new Collection(['trade_state' => 'NOTPAY']);
+    });
     app()->instance(PaymentGateway::class, $gateway);
 
     return $captured;
+}
+
+/**
+ * 返回一个底层 Store 所有读写操作都抛异常的 Cache Repository。
+ * `Cache::swap(throwingCacheRepository())` 之即模拟 redis 后端全故障（get/put/forget/remember 全抛）。
+ * 用于验证「最后防线」路径（HealthController 探针 / HealthProbeCommand 告警 / Setting 读取）
+ * 在 cache 后端崩溃时降级为结构化输出 / DB 直读，而非白屏 500 或静默丢告警。
+ *
+ * 注意：swap 后 `Cache::has/forget` 也会抛——用完须 `Cache::swap` 回正常 store（或用例末尾恢复），
+ * 否则同用例的 afterEach 清理会被 cache 异常打断。
+ */
+function throwingCacheRepository(): Repository
+{
+    $store = new class implements Store
+    {
+        public function get($key)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function many(array $keys)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function put($key, $value, $seconds)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function putMany(array $values, $seconds)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function increment($key, $value = 1)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function decrement($key, $value = 1)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function forever($key, $value)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function touch($key, $seconds)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function forget($key)
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function flush()
+        {
+            throw new RuntimeException('cache backend down');
+        }
+
+        public function getPrefix()
+        {
+            return '';
+        }
+    };
+
+    return new Repository($store);
+}
+
+/**
+ * 恢复为可用的 array Cache（配合 throwingCacheRepository 使用，用例末尾调用让 afterEach 清理安全）。
+ */
+function restoreArrayCache(): void
+{
+    Cache::swap(
+        new Repository(new ArrayStore)
+    );
 }

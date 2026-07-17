@@ -19,6 +19,7 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Services\LogBuffer;
 use App\Traits\ApiResponse;
+use App\Utils\LogScrubber;
 use Closure;
 use Exception;
 use Illuminate\Auth\AuthenticationException;
@@ -75,7 +76,7 @@ abstract class Authenticate
         } catch (Exception $e) {
             LogBuffer::add(ErrorLog::class, [
                 'method' => $request->method(),
-                'url' => $request->fullUrl(),
+                'url' => LogScrubber::scrubUrl($request->fullUrl()),
                 'exception' => class_basename($e),
                 'message' => $e->getMessage(),
                 'ip' => $request->ip(),

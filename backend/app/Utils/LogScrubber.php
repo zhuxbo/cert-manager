@@ -149,6 +149,48 @@ class LogScrubber
     }
 
     /**
+     * 脱敏 URL 查询串：逐 query key 命中 isSensitive 则值替 ******，重建 URL。
+     *
+     * 用于日志 url 字段脱敏（fullUrl 里 ?token=/?access_token= 等凭据串传，params 已过
+     * scrub 但 url 不过 → 明文落库）。path/host/scheme/fragment 一律保留；无 query 原样返回；
+     * 解析失败（畸形 URL）兜底原样返回、绝不抛异常（日志脱敏绝不能因畸形 URL 打断请求/日志中间件）。
+     * 复用 isSensitive 单一来源，随 config logs.scrubber.extra_fields 扩展。
+     */
+    public static function scrubUrl(string $url): string
+    {
+        try {
+            $parts = parse_url($url);
+
+            if ($parts === false || empty($parts['query'])) {
+                return $url;
+            }
+
+            parse_str($parts['query'], $query);
+
+            foreach ($query as $key => $value) {
+                if (is_string($key) && self::isSensitive($key)) {
+                    $query[$key] = '******';
+                }
+            }
+
+            $scheme = isset($parts['scheme']) ? $parts['scheme'].'://' : '';
+            $userInfo = '';
+            if (isset($parts['user'])) {
+                $userInfo = $parts['user'].(isset($parts['pass']) ? ':'.$parts['pass'] : '').'@';
+            }
+            $host = $parts['host'] ?? '';
+            $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+            $path = $parts['path'] ?? '';
+            $fragment = isset($parts['fragment']) ? '#'.$parts['fragment'] : '';
+
+            return $scheme.$userInfo.$host.$port.$path.'?'.http_build_query($query).$fragment;
+        } catch (\Throwable) {
+            // 解析/重建异常一律原样返回：url 仅供人读，宁可不脱敏也不打断日志写入
+            return $url;
+        }
+    }
+
+    /**
      * 判断字段名是否敏感（精确匹配 + 正则匹配）
      */
     public static function isSensitive(string $field): bool

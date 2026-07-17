@@ -55,6 +55,19 @@ test('freeze 期间白名单路径 /api/admin/upgrade/status 返回 200', functi
     expect($response->status())->not->toBe(503);
 });
 
+test('freeze 期间插件任务轮询 GET 放行但 fail-stale POST 仍拦截', function () {
+    $admin = Admin::factory()->create();
+    UpgradeFreezeLock::freeze();
+
+    $this->actingAsAdmin($admin)
+        ->getJson('/api/admin/plugin/operations')
+        ->assertOk();
+
+    $this->actingAsAdmin($admin)
+        ->postJson('/api/admin/plugin/operations/example/fail-stale')
+        ->assertStatus(503);
+});
+
 test('freeze 期间 admin 登录路径放行', function () {
     Admin::factory()->create([
         'username' => 'maintainer',

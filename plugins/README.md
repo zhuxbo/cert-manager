@@ -25,7 +25,7 @@ plugins/
 | `plugins/invoice` | 发票管理（双端 CRUD）+ 外部开票方接入（pending/complete）+ Admin 配置面板   | CRUD + 对外鉴权接口 + storage 加密配置 |
 | `plugins/easy`    | Easy 简易证书申请 + 简易开票（依赖 `invoice` 插件，软 `class_exists` 守门） | 多回调、跨插件协作、tid+email 业务鉴权 |
 
-详见 [`skills/plugin-dev.md`](../skills/plugin-dev.md)。
+详见 [`skills/plugins/plugin-dev.md`](../skills/plugins/plugin-dev.md)。
 
 ## 安装插件
 

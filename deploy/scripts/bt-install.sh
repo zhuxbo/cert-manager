@@ -197,13 +197,13 @@ check_environment() {
         log_warning "未能识别宝塔面板版本（common.py 不可读 / 格式异常）"
         log_warning "请确保面板版本 ≥ $BT_MIN_VERSION 后再继续"
     elif ! _version_ge "$bt_version" "$BT_MIN_VERSION"; then
-        log_error "宝塔面板版本过低：$bt_version（需要 ≥ $BT_MIN_VERSION）"
+        log_error "宝塔面板版本过低：${bt_version}（需要 ≥ ${BT_MIN_VERSION}）"
         log_info "请到宝塔面板首页升级后再装："
         log_info " bt update # 命令行升级"
         log_info " 或面板首页 → 一键升级"
         exit 1
     else
-        log_info "宝塔面板版本: $bt_version（≥ $BT_MIN_VERSION）"
+        log_info "宝塔面板版本: ${bt_version}（≥ ${BT_MIN_VERSION}）"
     fi
 
     log_success "检测到宝塔面板环境"
@@ -240,7 +240,7 @@ select_php_version() {
     fi
 
     if [ ${#php_versions[@]} -eq 0 ]; then
-        log_error "未检测到符合要求的 PHP 版本（需要 >= $php_min）"
+        log_error "未检测到符合要求的 PHP 版本（需要 >= ${php_min}）"
         log_info "请在宝塔面板软件商店安装 PHP $php_min 或更高"
         exit 1
     elif [ ${#php_versions[@]} -eq 1 ]; then
@@ -386,7 +386,7 @@ select_install_dir() {
             # 站点已存在则询问是否复用（默认 y），否则将由 try_bt_automation 自动建站
             local existing_path=""
             if existing_path=$(bt_get_site_path "$SITE_DOMAIN" 2>/dev/null) && [ -n "$existing_path" ]; then
-                log_warning "BT 已有站点 '$SITE_DOMAIN'（路径: $existing_path）"
+                log_warning "BT 已有站点 '${SITE_DOMAIN}'（路径: ${existing_path}）"
                 if confirm "是否复用该站点？" "y"; then
                     INSTALL_DIR="$existing_path"
                     log_info "复用已有站点目录: $INSTALL_DIR"
@@ -447,7 +447,7 @@ select_install_dir() {
 
     log_success "安装目录: $INSTALL_DIR"
     if [ -n "${SITE_DOMAIN:-}" ]; then
-        log_success "站点域名: $SITE_DOMAIN（将用于 BT 自动建站 + vhost include 注入）"
+        log_success "站点域名: ${SITE_DOMAIN}（将用于 BT 自动建站 + vhost include 注入）"
     fi
 }
 
@@ -773,7 +773,7 @@ select_db_driver() {
     log_step "数据库驱动"
 
     if [ -n "$DB_DRIVER" ] && [ "$DB_DRIVER" != "mysql" ]; then
-        log_error "无效的 --db 值: $DB_DRIVER（仅支持 mysql）"
+        log_error "无效的 --db 值: ${DB_DRIVER}（仅支持 mysql）"
         exit 1
     fi
     DB_DRIVER="mysql"
@@ -1020,7 +1020,7 @@ generate_env_file() {
     local db_collation
     db_collation=$(_detect_db_collation)
     _set_env_var "$env_file" "DB_COLLATION" "$db_collation"
-    log_info "DB_COLLATION=$db_collation（按数据库版本自动选择）"
+    log_info "DB_COLLATION=${db_collation}（按数据库版本自动选择）"
 
     # CACHE_DRIVER / QUEUE_CONNECTION / SESSION_DRIVER 不写入 — 已是 config 默认值
 
@@ -1141,7 +1141,7 @@ show_manual_supervisor_hint() {
     echo " 运行用户: www"
     echo " 目录: $INSTALL_DIR/backend/"
     echo " 启动命令: $PHP_CMD $INSTALL_DIR/backend/artisan queue:work --queue tasks,notifications --tries 3 --delay 5 --max-jobs 1000 --max-time 3600 --memory 128 --timeout 60 --sleep 3"
-    echo " 进程数: 1"
+    echo " 进程数: 2"
     echo
 }
 
@@ -1151,8 +1151,46 @@ show_manual_cron_hint() {
     echo "Cron 定时任务（宝塔 → 计划任务 → 添加任务 → Shell 脚本）:"
     echo " 任务名: $svc_name"
     echo " 执行周期: 每 1 分钟"
-    echo " 脚本内容: $PHP_CMD $INSTALL_DIR/backend/artisan schedule:run >> /dev/null 2>&1"
+    echo " 脚本内容: $PHP_CMD $INSTALL_DIR/backend/artisan schedule:run >> $INSTALL_DIR/backend/storage/logs/schedule.log 2>&1"
+    echo " 注意: 必须以 www 运行（宝塔计划任务默认 www）；勿用 root crontab（root 写 file cache → www FPM 读不到心跳）"
     echo
+}
+
+# 显示外部健康拨测 cron 手工配置提示（M3）
+show_manual_probe_hint() {
+    local svc_name="${SITE_DOMAIN:-<您的站点域名>}"
+    echo "外部健康拨测 Cron（宝塔 → 计划任务 → 添加任务 → Shell 脚本）:"
+    echo " 任务名: ${svc_name}-probe"
+    echo " 执行周期: 每 5 分钟"
+    echo " 脚本内容: $PHP_CMD $INSTALL_DIR/backend/artisan monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1"
+    echo " 说明: 独立于 schedule:run，worker/scheduler 死亡时仍能拨测 /api/health 并同步发信告警"
+    echo
+}
+
+# 写 logrotate 配置（schedule.log / probe.log 轮转，防日增日志涨满盘触发 disk_free 503）
+# 与 upgrade.sh::write_logrotate_conf 对称（两脚本独立发布不能 source），修改时请同步
+write_logrotate_conf() {
+    local conf="/etc/logrotate.d/ssl-manager"
+    local logdir="$INSTALL_DIR/backend/storage/logs"
+
+    if [ ! -d /etc/logrotate.d ] || [ ! -w /etc/logrotate.d ]; then
+        log_warning "/etc/logrotate.d 不可写，跳过 logrotate 配置（schedule.log/probe.log 需手工轮转）"
+        return 0
+    fi
+
+    # cron `>>` 每次执行独立 open-append，rotate 后自动写新文件，无需 copytruncate
+    cat >"$conf" <<EOF
+$logdir/schedule.log
+$logdir/probe.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0664 www www
+}
+EOF
+    log_success "logrotate 配置已写入: ${conf}（weekly rotate 4）"
 }
 
 # 显示 BT 站点 nginx include 手工提示（vhost 注入失败时）
@@ -1170,11 +1208,15 @@ show_manual_vhost_hint() {
 # - vhost 注入不依赖 BT_KEY，直接读写 vhost 文件 + nginx -s reload；
 # 仅依赖 vhost 文件存在（用户已手工建站时也能跑）
 try_bt_automation() {
+    # logrotate 不依赖 BT_KEY / bt-automate.sh，install 时 root 可写，最先写入
+    write_logrotate_conf
+
     if [ ! -f "$SCRIPT_DIR/bt-automate.sh" ]; then
         # 模块缺失：所有自动化降级为手工提示
         log_warning "bt-automate.sh 未找到，跳过所有自动化"
         show_manual_supervisor_hint
         show_manual_cron_hint
+        show_manual_probe_hint
         show_manual_vhost_hint
         return 0
     fi
@@ -1212,7 +1254,7 @@ try_bt_automation() {
     fi
 
     # ==== 2. vhost include 注入（不依赖 BT_KEY；依赖 vhost 文件存在）====
-    # 第 3 参 expected_root=$INSTALL_DIR：校验 BT vhost root 与 INSTALL_DIR 一致
+    # 第 3 参 expected_root=${INSTALL_DIR}：校验 BT vhost root 与 INSTALL_DIR 一致
     # 不一致时 -y 模式失败，交互模式询问（防止 SPA 资源 404 部署陷阱）
     local include_injected=false
     if [ -n "${SITE_DOMAIN:-}" ]; then
@@ -1232,7 +1274,7 @@ try_bt_automation() {
                 "www" \
                 "$INSTALL_DIR/backend/" \
                 "$PHP_CMD $INSTALL_DIR/backend/artisan queue:work --queue tasks,notifications --tries 3 --delay 5 --max-jobs 1000 --max-time 3600 --memory 128 --timeout 60 --sleep 3" \
-                1 \
+                2 \
                 "$SITE_DOMAIN"; then
                 supervisor_ok=true
             else
@@ -1247,10 +1289,22 @@ try_bt_automation() {
     local cron_ok=false
     if [ "$has_bt_key" = true ] && [ -n "${SITE_DOMAIN:-}" ]; then
         if bt_add_crontab "$SITE_DOMAIN" "minute-n" 1 \
-            "$PHP_CMD $INSTALL_DIR/backend/artisan schedule:run >> /dev/null 2>&1"; then
+            "$PHP_CMD $INSTALL_DIR/backend/artisan schedule:run >> $INSTALL_DIR/backend/storage/logs/schedule.log 2>&1"; then
             cron_ok=true
         else
             log_warning "cron 添加失败"
+        fi
+    fi
+
+    # ==== 4b. 外部健康拨测 Cron（M3；独立 cron 每 5min，脱离 schedule:run 载体）====
+    # 任务名 $SITE_DOMAIN-probe 与 schedule:run 的 $SITE_DOMAIN 不同名，共存不覆盖
+    local probe_ok=false
+    if [ "$has_bt_key" = true ] && [ -n "${SITE_DOMAIN:-}" ]; then
+        if bt_add_crontab "$SITE_DOMAIN-probe" "minute-n" 5 \
+            "$PHP_CMD $INSTALL_DIR/backend/artisan monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1"; then
+            probe_ok=true
+        else
+            log_warning "拨测 cron 添加失败"
         fi
     fi
 
@@ -1265,8 +1319,13 @@ try_bt_automation() {
         { [ -n "${SITE_DOMAIN:-}" ] && echo "✗ vhost include 未注入"; }
     [ "$supervisor_ok" = true ] && echo "✓ supervisor 已添加: $SITE_DOMAIN" ||
         echo "✗ supervisor 未自动添加"
-    [ "$cron_ok" = true ] && echo "✓ cron 已添加: $SITE_DOMAIN（每分钟）" ||
+    [ "$cron_ok" = true ] && echo "✓ cron 已添加: ${SITE_DOMAIN}（每分钟）" ||
         echo "✗ cron 未自动添加"
+    [ "$probe_ok" = true ] && echo "✓ 拨测 cron 已添加: $SITE_DOMAIN-probe（每 5 分钟）" ||
+        echo "✗ 拨测 cron 未自动添加"
+    echo
+    echo "⚠ 部署必读：请到「宝塔 → 网站监控/监控报警」为本站配置外部站点监控（拨测 /api/health），"
+    echo "   兜底 crond/机器/PHP-fatal 层（本机 artisan 拨测无法覆盖此层，见部署文档）"
     echo
 
     # 仅在某项失败时打印对应手工配置提示
@@ -1275,6 +1334,7 @@ try_bt_automation() {
     [ "$include_injected" != true ] && [ -n "${SITE_DOMAIN:-}" ] && need_manual=true
     [ "$supervisor_ok" != true ] && need_manual=true
     [ "$cron_ok" != true ] && need_manual=true
+    [ "$probe_ok" != true ] && need_manual=true
 
     if [ "$need_manual" = true ]; then
         echo "未完成步骤的手工配置参考："
@@ -1283,6 +1343,7 @@ try_bt_automation() {
         [ "$include_injected" != true ] && [ -n "${SITE_DOMAIN:-}" ] && show_manual_vhost_hint
         [ "$supervisor_ok" != true ] && show_manual_supervisor_hint
         [ "$cron_ok" != true ] && show_manual_cron_hint
+        [ "$probe_ok" != true ] && show_manual_probe_hint
     fi
 }
 

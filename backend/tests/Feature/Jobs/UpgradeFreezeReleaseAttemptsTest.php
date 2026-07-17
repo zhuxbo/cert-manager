@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use App\Jobs\CreateBackupJob;
 use App\Jobs\RestoreBackupJob;
+use App\Jobs\SubmitDocumentJob;
+use App\Jobs\TaskJob;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Queue\Events\JobFailed;
@@ -14,6 +16,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\Jobs\ProbeTriesFiveJob;
+use Tests\Fixtures\Jobs\ProbeTriesFiveNoMaxJob;
 use Tests\Fixtures\Jobs\ProbeTriesOneJob;
 
 // TestCase + RefreshDatabase 由 tests/Pest.php 对 Feature/Jobs 统一注入，勿在此重复 uses()。
@@ -33,6 +36,7 @@ beforeEach(function () {
     ProbeTriesOneJob::$ran = 0;
     ProbeTriesFiveJob::$ran = 0;
     ProbeTriesFiveJob::$throw = false;
+    ProbeTriesFiveNoMaxJob::$ran = 0;
 
     // 强制 database 驱动（phpunit 默认可能是 sync，sync 不记 attempts）
     config(['queue.default' => 'database']);
@@ -183,4 +187,45 @@ test('受影响的备份类 Job 已配置 tries=5 + maxExceptions=1（freeze 不
         expect($defaults['tries'] ?? null)->toBe(5, "$class 的 tries 应为 5（吸收 freeze release）")
             ->and($defaults['maxExceptions'] ?? null)->toBe(1, "$class 的 maxExceptions 应为 1（worker 级异常封顶一次）");
     }
+});
+
+test('C5：TaskJob / SubmitDocumentJob 为 tries=5 且不加 maxExceptions（自管重试 / 需保留上游重试）', function () {
+    // 护栏：TaskJob 自管 release/throw（maxExceptions 冗余）、SubmitDocumentJob 需保留上游瞬态重试
+    // （maxExceptions=1 会在首次上游错误即杀掉重试）。两者必须 tries=5 且 maxExceptions=null，
+    // 防后人误加 maxExceptions 破坏重试/自管模型。
+    foreach ([TaskJob::class, SubmitDocumentJob::class] as $class) {
+        $defaults = (new ReflectionClass($class))->getDefaultProperties();
+
+        expect($defaults['tries'] ?? null)->toBe(5, "$class 的 tries 应为 5（吸收 freeze release）")
+            ->and($defaults['maxExceptions'] ?? null)->toBeNull("$class 不得声明 maxExceptions");
+    }
+});
+
+test('tries=5 且 maxExceptions=null Job 经 4 次 freeze release 仍存活，解冻后 handle 正常执行一次', function () {
+    // 闭合经验缺口：现有 ProbeTriesFiveJob 带 maxExceptions=1，未覆盖 C5 两个 Job 的实际配置
+    // （tries=5 且 maxExceptions=null）。此夹具直证「无 maxExceptions 变体」在 freeze 期 release 累加
+    // attempts 仍存活。pop#1~4 attempts 累到 4（<=5）皆 release；解冻后 pop#5 attempts=5 执行 handle。
+    $failures = [];
+    captureJobFailures($failures);
+
+    UpgradeFreezeLock::freeze();
+    ProbeTriesFiveNoMaxJob::dispatch();
+
+    $worker = probeWorker();
+
+    // 连续 4 次 freeze release（attempts 累到 4，仍 <= 5）
+    foreach (range(1, 4) as $ignored) {
+        popOnce($worker);
+        expect(ProbeTriesFiveNoMaxJob::$ran)->toBe(0); // 冻结期 handle 不跑
+        $this->travel(61)->seconds();                  // 跳过 release 延迟
+    }
+    expect($failures)->toBeEmpty(); // 没有被误杀
+
+    // 解冻 → 下一次 pop（attempts=5 == tries）执行业务
+    UpgradeFreezeLock::unfreeze();
+    popOnce($worker);
+
+    expect(ProbeTriesFiveNoMaxJob::$ran)->toBe(1)
+        ->and($failures)->toBeEmpty()
+        ->and(Queue::connection('database')->size('default'))->toBe(0); // 成功删除
 });

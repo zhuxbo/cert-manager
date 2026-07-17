@@ -1,0 +1,34 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V1\\ApiControllerCommitResilienceTest::__pest_evaluable_V1_get_命中_pending_且_commit_抢锁忙：不冒_503，返回_processing_展示态",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/get",
+            "request_keys": [
+                "oid"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "period_from": "string",
+                    "period_till": "string",
+                    "common_name": "string",
+                    "alternative_names": "string",
+                    "dcv": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    },
+                    "validation": "array<unknown>",
+                    "status": "string",
+                    "application_status": "string",
+                    "dcv_status": "string",
+                    "ov_status": "string"
+                }
+            }
+        }
+    ]
+}

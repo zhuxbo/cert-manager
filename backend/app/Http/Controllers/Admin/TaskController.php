@@ -170,14 +170,18 @@ class TaskController extends Controller
         }
 
         foreach ($tasks as $task) {
+            $isCancel = in_array($task->action, ['cancel', 'cancel_acme']);
             $data = ['status' => 'executing', 'weight' => $task->id];
-            if (in_array($task->action, ['cancel', 'cancel_acme'])) {
-                $data['started_at'] = now()->addSeconds(120);
-            } else {
-                $data['started_at'] = now();
-            }
+            $data['started_at'] = $isCancel ? now()->addSeconds(120) : now();
             $task->update($data);
-            TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
+
+            $job = TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
+            if ($isCancel) {
+                // T3：cancel/cancel_acme 恢复必须补 delay，否则 job 立即消费、handle 守卫 started_at<=now 落空
+                // no-op → task 永久 executing（用户取消意图静默失效）。delay 跟随 started_at + 3s 缓冲（全仓惯例：
+                // 队列定时比可执行时间多 3 秒），从 $task->started_at 取真值，消除与 :175 的 120 硬编码双点漂移。
+                $job->delay($task->started_at->copy()->addSeconds(3));
+            }
         }
 
         $this->success();

@@ -64,10 +64,15 @@ trait ActionCallbackTrait
         }
 
         // 考虑回调提供订单数据
-        $response = Http::asForm()->post($callback->url, [
-            'id' => $orderId,
-            'token' => $callback->token,
-        ]);
+        // 显式超时（不靠 Laravel 框架默认 30s+10s）：回推下游是纯通知，跑在 TaskJob 事务内持 task 行锁，
+        // 30s < worker --timeout 60s；框架升级或全局 Http::macro 改默认也不会静默退回无界阻塞。
+        $response = Http::asForm()
+            ->timeout(30)
+            ->connectTimeout(10)
+            ->post($callback->url, [
+                'id' => $orderId,
+                'token' => $callback->token,
+            ]);
 
         $httpCode = $response->status();
 

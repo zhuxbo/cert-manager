@@ -3,8 +3,10 @@
 namespace App\Console\Commands;
 
 use App\Services\Backup\BackupService;
+use App\Services\Notification\SystemAlert;
 use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command as CommandAlias;
 use Throwable;
@@ -14,9 +16,18 @@ class BackupCommand extends Command
     protected $signature = 'schedule:backup
  {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")；仅按天清理 backup_ 前缀，pre_restore_ 不参与（改按 config("database.backup.pre_restore_keep") 数量上限清理）}
  {--path= : 输出目录，默认 storage/databak}
- {--prefix=backup : 文件名前缀，内部调用可传 pre_restore}';
+ {--prefix=backup : 文件名前缀，内部调用可传 pre_restore}
+ {--internal-no-lock : （内部）调用方已持 backup:mutex，仅供 CreateBackupJob/RestoreBackupJob 重入旁路，勿手工使用}';
 
     protected $description = '备份数据库（mysql）：通过 MysqlBackupHandler 走 mysqldump，剔除日志与队列等运行时表';
+
+    // SystemAlert 去重键：send 与 clear 两端引同一常量，杜绝裸键名两处手写、打错一字致 healthy 分支
+    // 清错键 → 去重永不解除（计数型 forever vs 24h TTL 的分叉是有意设计，见 notification.md，不在此统一）。
+    private const DEDUPE_LOCK_CONTENTION = 'backup_lock_contention';
+
+    private const DEDUPE_CLIENT_MISSING = 'backup_client_missing';
+
+    private const DEDUPE_DUMP_ERROR = 'backup_dump_error';
 
     public function __construct(
         private DatabaseStructureService $structureService,
@@ -37,6 +48,41 @@ class BackupCommand extends Command
             return CommandAlias::FAILURE;
         }
 
+        // 定时备份是「可跳过的从操作」：非阻塞抢 backup:mutex，避免与持锁 3600s 的
+        // Create/RestoreBackupJob 并发 dump 出半恢复库（垃圾备份污染灾备轮转）。
+        // --internal-no-lock 供已持锁的父 Job 重入旁路（防命令无脑抢锁 → 自死锁 → pre_restore 快照缺失）。
+        $owns = ! $this->option('internal-no-lock');
+        $lock = null;
+        if ($owns) {
+            $lock = Cache::lock(BackupService::MUTEX_LOCK_KEY, 3600);
+            if (! $lock->get()) {
+                app(SystemAlert::class)->send(
+                    'backup',
+                    '定时备份跳过（互斥）',
+                    '已有备份/恢复任务执行中，本次定时备份已跳过',
+                    [],
+                    self::DEDUPE_LOCK_CONTENTION,
+                    24,
+                );
+
+                // 跳过≠失败：返回 SUCCESS，避免与 console 层 onFailure 双告警
+                return CommandAlias::SUCCESS;
+            }
+        }
+
+        try {
+            return $this->runBackup($connection, $config, $driver, $owns);
+        } finally {
+            $lock?->release();
+        }
+    }
+
+    /**
+     * 实际执行备份（锁已由 handle 处理）。仅 $owns（自持锁的定时/手工入口）才发/清 SystemAlert；
+     * --internal-no-lock 的父 Job 重入路径不告警（父 Job 自管进度上报）。
+     */
+    private function runBackup(string $connection, array $config, string $driver, bool $owns): int
+    {
         try {
             $handler = $this->backupService->makeHandler($driver);
             $handler->ensureClient();
@@ -44,6 +90,16 @@ class BackupCommand extends Command
             $this->error($e->getMessage());
             foreach (BackupService::installHintLines($driver) as $line) {
                 $this->line($line);
+            }
+            if ($owns) {
+                app(SystemAlert::class)->send(
+                    'backup',
+                    '备份客户端缺失',
+                    $e->getMessage(),
+                    [],
+                    self::DEDUPE_CLIENT_MISSING,
+                    24,
+                );
             }
 
             return CommandAlias::FAILURE;
@@ -82,6 +138,16 @@ class BackupCommand extends Command
             @unlink($finalPath);
             @unlink($schemaPath);
             $this->error('备份失败: '.$e->getMessage());
+            if ($owns) {
+                app(SystemAlert::class)->send(
+                    'backup',
+                    '数据库备份失败',
+                    $e->getMessage(),
+                    [],
+                    self::DEDUPE_DUMP_ERROR,
+                    24,
+                );
+            }
 
             return CommandAlias::FAILURE;
         }
@@ -108,6 +174,14 @@ class BackupCommand extends Command
             if ($preKeep > 0) {
                 $this->info("清理 $purged 个旧的 pre_restore 快照（保留最近 $preKeep 份）");
             }
+        }
+
+        // 成功即清去重键（对齐 E 系恢复语义：故障恢复后下次异常立即再告警）
+        if ($owns) {
+            $alert = app(SystemAlert::class);
+            $alert->clearDedupe(self::DEDUPE_LOCK_CONTENTION);
+            $alert->clearDedupe(self::DEDUPE_CLIENT_MISSING);
+            $alert->clearDedupe(self::DEDUPE_DUMP_ERROR);
         }
 
         return CommandAlias::SUCCESS;

@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Jobs\TaskJob;
 use App\Models\Acme;
 use App\Models\Admin;
@@ -7,6 +8,7 @@ use App\Models\Product;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\Task;
+use App\Models\Transaction;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Api\Api;
@@ -191,6 +193,331 @@ test('ApiResponseException(code=0) 任务标 failed 且结果落库', function (
     expect($fresh->last_execute_at)->not->toBeNull();
 });
 
+// ==================== C1：取消类 action 业务失败触发 fail() ====================
+
+test('cancel 业务失败（订单不存在）触发 fail() 且 task 标 failed', function () {
+    // 杀手场景：cancel 被上游/本地校验拒绝时，退款永不发生、订单永久卡 cancelling。
+    // 内层 catch 对 cancel 白名单设 $failedException → $this->fail() → failed() 发 admin 告警。
+    // order 888888 不存在 → Action::cancel 在锁内 error('订单或相关数据不存在')（ApiResponseException code=0）。
+    $task = Task::factory()->create([
+        'order_id' => 888888,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertFailed(); // C1：修复前 ApiResponseException 分支不设 $failedException → 不 fail
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->result['code'])->toBe(0);
+    expect($fresh->result['msg'])->toContain('订单或相关数据不存在');
+});
+
+test('cancel_acme 业务失败（状态不是取消中）触发 fail() 且 task 标 failed', function () {
+    // Acme::firstOrFail 存在 → 状态非 cancelling → error('订单状态不是取消中')（ApiResponseException code=0），
+    // 命中内层 catch（非 ModelNotFound 的 generic 分支），验证 cancel_acme 白名单同样触发 fail()。
+    $product = Product::factory()->create([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+    ]);
+    $acme = Acme::factory()->active()->create([ // active != cancelling
+        'product_id' => $product->id,
+    ]);
+
+    $task = Task::factory()->create([
+        'order_id' => $acme->id,
+        'action' => 'cancel_acme',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertFailed();
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->result['code'])->toBe(0);
+    expect($fresh->result['msg'])->toContain('订单状态不是取消中');
+});
+
+test('commit 业务失败不触发 fail()（action 白名单未扩散，commit 由 reconcile 兜底告警）', function () {
+    // 回归护栏：仅 cancel/cancel_acme 触发 fail()，commit 业务失败仍只标 failed、不 fail，
+    // 避免告警风暴（commit 到顶由 ReconcilePendingCommand 转人工扫描 alertMaxedOrders 每日快照兜底）。
+    $task = Task::factory()->create([
+        'order_id' => 888888, // commit 不存在订单 → error(code=0)
+        'action' => 'commit',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertNotFailed(); // commit 不在白名单，不触发 fail()
+    expect($task->fresh()->status)->toBe('failed');
+});
+
+// ==================== Imp-1：取消类幂等拒绝不误报 admin 告警 ====================
+
+test('cancel 幂等拒绝（本地已 cancelled 且已退款）视为 no-op：task 标 failed 但不触发 fail() 告警', function () {
+    // Imp-1 复现：refundForSyncedCancel 退款置 cancelled 后刻意保留的 cancel task 被 TaskJob 唤醒，
+    // 撞 cancelLocked 锁内 status===cancelled → error('订单已取消')（code=0）。退款已发生，属幂等 no-op，
+    // 绝不能再发 admin task_failed 假告警。修复前 C1 无差别对 cancel 失败 fail() → 假告警（本断言 RED）。
+    // ②修复后：cancelled 豁免需以「已退款（有 cancel 流水）」为真实前提 —— 本用例补建 cancel 流水
+    // 忠实反映「退款已发生」，判据读到流水正确豁免。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product); // amount 默认 100
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'cancelled']); // 本地已终态
+    // 退款已发生的真实前提：cancelLocked/refundForSyncedCancel 退款置 cancelled 时建 cancel 流水
+    Transaction::create([
+        'user_id' => $user->id,
+        'type' => 'cancel',
+        'transaction_id' => $order->id,
+        'amount' => '100.00',
+        'standard_count' => -1,
+        'wildcard_count' => 0,
+    ]);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertNotFailed(); // 幂等拒绝不告警（修复前无条件 fail → 本行 RED）
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');        // 仍标 failed，绝不标 successful（红线：取消不静默成功）
+    expect($fresh->result['code'])->toBe(0);
+    expect($fresh->result['msg'])->toContain('订单已取消');
+});
+
+test('cancel_acme 幂等拒绝（本地已 cancelled 终态）视为 no-op：task 标 failed 但不触发 fail() 告警', function () {
+    // Imp-1 ACME 对称：孤儿延时 cancel_acme 任务唤醒时 acme 已终态（cancelled），撞 cancelLocked
+    // status!==cancelling → error('订单状态不是取消中')（code=0）。幂等 no-op，绝不假告警（修复前 RED）。
+    $product = $this->createTestProduct([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+    ]);
+    $acme = Acme::factory()->cancelled()->create([ // 本地已终态
+        'product_id' => $product->id,
+    ]);
+
+    $task = Task::factory()->create([
+        'order_id' => $acme->id,
+        'action' => 'cancel_acme',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertNotFailed();
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->result['code'])->toBe(0);
+    expect($fresh->result['msg'])->toContain('订单状态不是取消中');
+});
+
+test('cancel 真失败（本地 cancelling 非终态 + 上游拒绝）必须照常触发 fail() 告警', function () {
+    // 反向严格边界：本地仍 cancelling（非终态）且上游 api->cancel 真拒绝 → 真·CA 取消失败，
+    // 退款未发生、订单卡 cancelling，必须告警。守卫幂等豁免绝不误伤真失败（本用例修复前后恒绿）。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'cancelling']); // 非终态
+
+    // 上游 cancel 抛 ApiResponseException（cancelLocked 捕获后 re-throw error('上游拒绝取消')）
+    $stub = new class extends Api
+    {
+        public function cancel(int $orderId): array
+        {
+            throw new ApiResponseException('上游拒绝取消');
+        }
+    };
+    app()->instance(Api::class, $stub);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertFailed(); // 非终态 + 真失败 → 必须告警
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->result['msg'])->toContain('上游拒绝取消');
+});
+
+test('cancel 撞已 failed 订单（failed 无任何退款路径）：不豁免、必须触发 fail() 告警', function () {
+    // ② 子面1：force sync 可把上游 failed 写过 cancelling（守卫集不含 cancelling）→ cancel task 到点撞
+    // cancelLocked 锁内「status != cancelling → error('订单状态不是取消中')」（code=0）读到 failed。
+    // failed 全系统无退款路径（commitCancel/V2 cancel 均拒 failed），「failed 但退款已发生」不存在合法形态
+    // → 真·CA 取消失败，必须告警。修复前 failed 在豁免集 → 静默零告警（本断言 RED）。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'failed']); // 终态但非取消中
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertFailed(); // failed 剔除豁免集 → 告警（修复前 assertNotFailed）
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed');
+    expect($fresh->result['msg'])->toContain('订单状态不是取消中');
+});
+
+test('cancel 撞已 cancelled 但未退款订单（付费单无 cancel 流水）：不豁免、必须触发 fail() 告警', function () {
+    // ② 子面2（与 ③ 同根因）：autoRefundOnSync=false 时 sync 直写 cancelled 而不退款；用户的 cancel
+    // 任务到点撞「status===cancelled → error('订单已取消')」，退款诉求丢失。cancelled 不能无条件豁免——
+    // 付费单（应退金额>0）却无 cancel 流水 = 退款未发生的真失败，必须告警。修复前无条件豁免 → 静默（RED）。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product); // amount 默认 100（应退>0）
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'cancelled']);
+    // 付过费（type=order 扣费流水），但没有 cancel 退款流水 —— 退款未发生
+    Transaction::create([
+        'user_id' => $user->id,
+        'type' => 'order',
+        'transaction_id' => $order->id,
+        'amount' => '-100.00',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertFailed(); // cancelled 但应退>0 且无 cancel 流水 → 告警（修复前 assertNotFailed）
+    expect($task->fresh()->result['msg'])->toContain('订单已取消');
+});
+
+test('cancel 撞已 cancelled 的 0 元订单（应退=0 本就不建流水）：仍豁免、不告警', function () {
+    // ② 反向边界：0 元订单取消不产生 cancel 流水（Transaction::creating amount=0 短路），
+    // 无 cancel 流水属合法幂等，绝不能误告警。判据以「应退金额（order.amount）是否>0」区分，非「有无流水」。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product, ['amount' => '0.00']); // 0 元订单
+    $this->createTestCert($order, ['action' => 'new', 'status' => 'cancelled']);
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertNotFailed(); // 0 元取消无流水属合法幂等
+    expect($task->fresh()->result['msg'])->toContain('订单已取消');
+});
+
+test('cancel 撞已 cancelled 的 reissue 零增量单（应退=cert.amount=0）：仍豁免、不告警', function () {
+    // ② 反向边界：reissue 应退金额 = 当次增量 cert.amount（非 order.amount）。零增量 reissue 取消
+    // 本就不建 cancel 流水，即便原始订单付过费（order.amount>0）也必须豁免 —— 判据按 action 取正确应退口径。
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['source' => 'default']);
+    $order = $this->createTestOrder($user, $product, ['amount' => '100.00']); // 原始订单付费
+    $this->createTestCert($order, ['action' => 'reissue', 'status' => 'cancelled', 'amount' => '0.00']); // 零增量
+
+    $task = Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'cancel',
+        'status' => 'executing',
+        'started_at' => now(),
+    ]);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->withFakeQueueInteractions();
+
+    $job->handle();
+
+    $job->assertNotFailed(); // reissue 零增量取消无流水属合法幂等
+    expect($task->fresh()->result['msg'])->toContain('订单已取消');
+});
+
+test('failed() 对 ApiResponseException 取 getApiResponse()[msg] 而非空 getMessage()', function () {
+    // 反模式 16：ApiResponseException::getMessage() 恒空，可读消息在 getApiResponse()['msg']；
+    // 若 failed() 用 getMessage() 则 error_message 恒空 = 告警邮件无据 = 白修。
+    $admin = Admin::factory()->create(['email' => 'ops@example.com']);
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点', 'weight' => 1]);
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'adminEmail'],
+        ['type' => 'string', 'value' => 'ops@example.com', 'weight' => 0]
+    );
+    Setting::clearGroupCache($group->id);
+
+    $task = Task::factory()->create([
+        'action' => 'cancel',
+        'status' => 'failed',
+    ]);
+
+    $captured = null;
+    $mock = Mockery::mock(NotificationCenter::class);
+    $mock->shouldReceive('dispatch')
+        ->once()
+        ->with(Mockery::on(function ($intent) use (&$captured) {
+            $captured = $intent;
+
+            return $intent instanceof NotificationIntent;
+        }));
+    app()->instance(NotificationCenter::class, $mock);
+
+    $job = new TaskJob(['id' => $task->id]);
+    $job->failed(new ApiResponseException('CA取消失败：上游拒绝'));
+
+    expect($captured)->not->toBeNull();
+    expect($captured->context['error_message'])->toBe('CA取消失败：上游拒绝');
+});
+
 // ==================== Throwable 分流（含方法不存在） ====================
 
 test('内层 Throwable 任务标 failed 且捕获异常元数据（file/line/error_code）', function () {
@@ -322,7 +649,7 @@ test('内层并发错误（死锁）达 tries 上限：冒泡交 worker failJob 
 
     $job = new TaskJob(['id' => $task->id]);
     $job->withFakeQueueInteractions();
-    $job->job->attempts = 3; // == tries（最后一次执行）
+    $job->job->attempts = 5; // == tries（最后一次执行；C5 将 tries 3→5，边界值随之上移）
 
     $threw = false;
     try {

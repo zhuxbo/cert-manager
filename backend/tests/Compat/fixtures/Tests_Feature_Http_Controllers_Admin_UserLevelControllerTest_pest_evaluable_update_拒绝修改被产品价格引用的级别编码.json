@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_update_拒绝修改被产品价格引用的级别编码",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/user-level/{id}",
+            "request_keys": [
+                "code",
+                "cost_rate",
+                "custom",
+                "name",
+                "weight"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

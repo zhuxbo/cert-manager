@@ -112,6 +112,11 @@ trait ActionTrait
 
             $order || $this->error('订单或相关数据不存在');
 
+            // 接替单取消后 latestCert=cancelled、订单终结，重签专属提示（存量非 cancelled 路径文案不变）
+            if ($params['action'] == 'reissue' && $order->latestCert->status === 'cancelled') {
+                $this->error('订单已取消，无法重签');
+            }
+
             // 证书状态为 active 和 expired 都可以重签 只要订单没过期
             if (! in_array($order->latestCert->status, ['active', 'expired']) && $params['action'] == 'reissue') {
                 $this->error('订单状态错误');
@@ -767,7 +772,19 @@ trait ActionTrait
             $domain = $item['domain'] ?? '';
             if (isset($indexed[$domain])) {
                 $indexedDomain = $indexed[$domain];
+
+                // F2-2 token 轮换检测：API value 与旧 value 均存在且不等 = 上游轮换了 DCV token。
+                // 此时不带过旧的 auto_txt_written/auto_txt_written_at（= 清标记），令下轮
+                // writeDelegationTxtRecords/collectTxtRecords 重写新 token（upsertTXT append-only，不删旧、不伤兄弟）。
+                // delegation_* 保留（委托未变，仅 token 变）。value 相同或任一缺失 → 不剔除（no-op 护栏，
+                // 防上游 value 不稳定时每轮误判轮换→每轮 append 致活跃 label TXT 累积至上限）。
+                $valueRotated = isset($item['value'], $indexedDomain['value'])
+                    && $item['value'] !== $indexedDomain['value'];
+
                 foreach ($indexedDomain as $key => $value) {
+                    if ($valueRotated && ($key === 'auto_txt_written' || $key === 'auto_txt_written_at')) {
+                        continue;
+                    }
                     if (! array_key_exists($key, $item)) {
                         $item[$key] = $value;
                     }
@@ -1091,6 +1108,82 @@ trait ActionTrait
     }
 
     /**
+     * reissue 取消退款预检（只读，必须在上游 api->cancel 之前调用）。
+     *
+     * 两道前置校验，失败点全部前移到上游调用之前（收窄"上游已取消但本地回滚"窗口）：
+     *   - F1 fail-safe：唯一索引 (type,transaction_id) WHERE type!='order' 每订单仅一条 cancel 流水。
+     *     恢复旧证书 active 打开了"二次 reissue → 二次取消"路径，若不预检会在 api->cancel 成功【之后】
+     *     撞唯一冲突 → 回滚 → 上游已取消、本地无退款、卡 cancelling。命中即报错转人工，杜绝该形态。
+     *   - F4 金额校验：amount>0 时预取 last_transaction 并断言金额，失败前移到上游调用前。
+     *
+     * @return Transaction|null amount==0 返回 null（不建 cancel 流水，天然不触发 F1 唯一索引）
+     */
+    protected function prepareReissueRefund(Order $order, Cert $cert): ?Transaction
+    {
+        // F1：已存在 cancel 流水即拒绝（挡在 api->cancel 之前，转人工）
+        $alreadyRefunded = Transaction::where('type', 'cancel')
+            ->where('transaction_id', $order->id)
+            ->exists();
+        $alreadyRefunded && $this->error('该订单已存在取消退款流水，请人工处理');
+
+        // amount>0：预取并校验上次交易（增量退款依据），失败前移到上游调用前
+        if ($cert->amount > 0) {
+            $lastTransaction = Transaction::where('transaction_id', $order->id)->orderBy('id', 'desc')->first();
+            $lastTransaction || $this->error('未找到上次交易记录');
+            bccomp('-'.$cert->amount, (string) $lastTransaction->amount, 2) !== 0
+            && $this->error('上次交易记录金额错误');
+
+            return $lastTransaction;
+        }
+
+        return null;
+    }
+
+    /**
+     * reissue 取消增量退款（写）：只退当次 reissue 增量金额、counts 取 -last_transaction（增量非累计）。
+     *
+     * $lastTransaction=null（amount==0）整体跳过、不建 cancel 流水（外层守卫 `$cert->amount>0` 决定，
+     * Transaction::creating 的 amount=0 短路为次层）；purchased_* 内存递减由调用方随分支 save 持久化。
+     */
+    protected function applyReissueIncrementRefund(Order $order, Cert $cert, ?Transaction $lastTransaction): void
+    {
+        if (! $lastTransaction) {
+            return;
+        }
+
+        Transaction::create([
+            'user_id' => $order->user_id,
+            'type' => 'cancel',
+            'transaction_id' => $order->id,
+            'amount' => $cert->amount,
+            'standard_count' => -$lastTransaction->standard_count,
+            'wildcard_count' => -$lastTransaction->wildcard_count,
+        ]);
+
+        $order->purchased_standard_count -= $lastTransaction->standard_count;
+        $order->purchased_wildcard_count -= $lastTransaction->wildcard_count;
+    }
+
+    /**
+     * 未签发 reissue 取消的恢复：回切 latest_cert_id + 恢复旧证书 active + 删除 reissue cert。
+     *
+     * certs.last_cert_id 与 orders.latest_cert_id 均 UNIQUE，删除 reissue cert 释放槽位（标 cancelled
+     * 会占死槽位锁死后续 reissue）。$order->save() 一并持久化 applyReissueIncrementRefund 的 purchased_* 内存递减。
+     */
+    protected function restoreReissuedCert(Order $order, Cert $cert): void
+    {
+        $order->latest_cert_id = $cert->last_cert_id;
+        $order->save();
+
+        $lastCert = Cert::where('id', $cert->last_cert_id)->first();
+        $lastCert || $this->error('未找到上个证书');
+        $lastCert->status = 'active';
+        $lastCert->save();
+
+        $cert->delete();
+    }
+
+    /**
      * 取消待提交订单
      *
      * 并发安全：事务内持 order 行级锁，与 commitCancel / batchCommitCancel /
@@ -1100,15 +1193,13 @@ trait ActionTrait
      */
     public function cancelPending(int $order_id): void
     {
-        DB::beginTransaction();
-        try {
-            // task → order 锁顺序：先锁 commit task 再锁 order 行，与
-            // revokeCancel / commitCancel / TaskJob::handle 的锁顺序统一防死锁
-            Task::where('order_id', $order_id)
-                ->where('action', 'commit')
-                ->whereIn('status', ['executing', 'stopped'])
-                ->lockForUpdate()
-                ->get();
+        // task → order 锁顺序：先锁 commit task 再锁 order 行，与
+        // revokeCancel / commitCancel / TaskJob::handle 的锁顺序统一防死锁。
+        // runTaskMutationTransaction 提供 attempts=3 死锁重试：闭包纯本地 task+order/cert 变更、无上游 HTTP；
+        // 退款 Transaction::create 随回滚消失且有唯一索引兜底，$this->error() 抛 ApiResponseException（非并发错误）
+        // 不被 DB::transaction 重试、直接传播触发回滚，语义与原手写 begin/commit/rollback 等价。
+        $this->runTaskMutationTransaction(function () use ($order_id) {
+            Task::lockForMutation($order_id, ['commit'])->get();
 
             $order = Order::with(['latestCert'])
                 ->whereHas('latestCert')
@@ -1128,38 +1219,15 @@ trait ActionTrait
             }
 
             if ($cert->action === 'reissue') {
-                if ($cert->amount > 0) {
-                    $last_transaction = Transaction::where('transaction_id', $order_id)->orderBy('id', 'desc')->first();
-                    $last_transaction || $this->error('未找到上次交易记录');
-                    bccomp('-'.$cert->amount, (string) $last_transaction->amount, 2) !== 0
-                    && $this->error('上次交易记录金额错误');
-
-                    $transaction = [
-                        'user_id' => $order->user_id,
-                        'type' => 'cancel',
-                        'transaction_id' => $order_id,
-                        'amount' => $cert->amount,
-                        'standard_count' => -$last_transaction->standard_count,
-                        'wildcard_count' => -$last_transaction->wildcard_count,
-                    ];
-                    Transaction::create($transaction);
-                    $order->purchased_standard_count -= $last_transaction->standard_count;
-                    $order->purchased_wildcard_count -= $last_transaction->wildcard_count;
-                }
-
-                // latestCert恢复为上个证书
-                $order->latest_cert_id = $cert->last_cert_id;
-                $order->save();
-
-                $last_cert = Cert::where('id', $cert->last_cert_id)->first();
-                $last_cert || $this->error('未找到上个证书');
-
-                // 恢复上个证书的状态
-                $last_cert->status = 'active';
-                $last_cert->save();
-
-                // 删除当前证书
-                $cert->delete();
+                // 与 cancelLocked reissue 分支共享退款 helper（prepareReissueRefund/applyReissueIncrementRefund，
+                // 反模式 4/6 消对称副本）：增量退款口径统一。restoreReissuedCert 恢复旧证书为本路径专属——
+                // 恢复窗口仅 unpaid/pending，pending 恒未签发（未提交上游、api_id=null）故恢复前驱；
+                // cancelLocked（已提交上游）不恢复、置 cancelled 并终结订单。
+                // 对称获得 F1 fail-safe：二次 reissue-cancel 一律转人工（含 amount=0 —— exists() 预检先于
+                // amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧）。
+                $lastTransaction = $this->prepareReissueRefund($order, $cert);
+                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
+                $this->restoreReissuedCert($order, $cert);
             } elseif ($cert->action === 'renew') {
                 // renew 取消时恢复上个订单的证书状态
                 if ($cert->last_cert_id) {
@@ -1188,12 +1256,7 @@ trait ActionTrait
 
             // 事务内、task 锁保护下 DELETE，避免与 TaskJob::handle 竞争
             $this->deleteTask($order_id, 'commit');
-
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+        });
     }
 
     /**
@@ -1226,11 +1289,22 @@ trait ActionTrait
             $task = Task::create($data);
             // afterCommit 防止 worker 在外层事务提交前消费 job 导致 task 查无记录静默丢失
             // （默认 after_commit=false，配合 Redis 队列会让 revokeCancel/batchRevokeCancel 的 sync 任务丢失）
-            if ($later > 0) {
-                // 队列定时比可执行时间多3秒 避免任务在可执行时间之前执行
-                TaskJob::dispatch(['id' => $task->id])->afterCommit()->delay(now()->addSeconds($later + 3))->onQueue(config('queue.names.tasks'));
-            } else {
-                TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
+            try {
+                if ($later > 0) {
+                    // 队列定时比可执行时间多3秒 避免任务在可执行时间之前执行
+                    TaskJob::dispatch(['id' => $task->id])->afterCommit()->delay(now()->addSeconds($later + 3))->onQueue(config('queue.names.tasks'));
+                } else {
+                    TaskJob::dispatch(['id' => $task->id])->afterCommit()->onQueue(config('queue.names.tasks'));
+                }
+            } catch (Throwable $e) {
+                // T4：最小 Log 留痕。afterCommit 把 push 推迟到 commit 后回调执行，同步 try/catch 捕不到事务内
+                // push 失败——本 catch 仅覆盖无事务上下文的同步 dispatch 失败；事务内遗留的 orphan executing task
+                // 权威兜底 = T1 sweep-stale-tasks（30min 后重派）。不删 task、不改状态、不 rethrow。
+                Log::error('createTask dispatch 失败', [
+                    'order_id' => $orderId,
+                    'task_action' => $action,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
     }

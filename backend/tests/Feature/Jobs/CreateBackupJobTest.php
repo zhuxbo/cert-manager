@@ -25,9 +25,10 @@ test('互斥锁被占用时写 failed 进度并立即返回', function () {
 });
 
 test('成功路径：Artisan::call 后写 completed 进度并附带输出', function () {
+    // 持锁父 Job 重入命令必须带 --internal-no-lock 旁路（防自死锁静默）
     Artisan::shouldReceive('call')
         ->once()
-        ->with('schedule:backup')
+        ->with('schedule:backup', ['--internal-no-lock' => true])
         ->andReturn(0);
     Artisan::shouldReceive('output')->once()->andReturn('备份完成: backup_20260424_120000.sql.gz');
 
@@ -44,7 +45,7 @@ test('成功路径：Artisan::call 后写 completed 进度并附带输出', func
 test('Artisan::call 返回非零退出码时写 failed 进度并保留 output（mysqldump 失败场景）', function () {
     Artisan::shouldReceive('call')
         ->once()
-        ->with('schedule:backup')
+        ->with('schedule:backup', ['--internal-no-lock' => true])
         ->andReturn(1);
     Artisan::shouldReceive('output')
         ->once()
@@ -68,7 +69,7 @@ test('Artisan::call 返回非零退出码时写 failed 进度并保留 output（
 test('Artisan 抛异常时写 failed 进度并释放锁（后续可重试）', function () {
     Artisan::shouldReceive('call')
         ->once()
-        ->with('schedule:backup')
+        ->with('schedule:backup', ['--internal-no-lock' => true])
         ->andThrow(new RuntimeException('mysqldump 不可执行'));
 
     $token = 'tok_'.uniqid();

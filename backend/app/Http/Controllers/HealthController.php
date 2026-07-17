@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Symfony\Component\HttpFoundation\Response;
@@ -29,13 +30,17 @@ class HealthController extends Controller
      *   "freeze": bool,
      *   "checks": {
      *     "db": { "ok": bool, "latency_ms": int },
+     *     "cache": { "ok": bool },
      *     "queue_lag_seconds": int,
-     *     "disk_free_gb": float
+     *     "disk_free_gb": float,
+     *     "heartbeat_age_seconds": int|null
      *   }
      * }
      *
-     * HTTP 状态码：所有检查通过 200；任一关键检查失败 503。
-     * freeze 期间 queue_lag_seconds 不参与 503 判定（worker 已按升级流程停止）。
+     * HTTP 状态码：error → 503；ok / degraded → 200。
+     * - error（db 挂 / cache 后端故障 / 磁盘不足 / queue_lag 超阈 / 心跳过旧 stale）→ 503。
+     * - degraded（心跳键缺失：新装机未跑调度 / cache:clear 清键）→ 200（不 503，避免误报）。
+     * freeze 期间 queue_lag_seconds 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止）。
      */
     public function index(): JsonResponse
     {
@@ -43,14 +48,18 @@ class HealthController extends Controller
 
         $checks = [
             'db' => $this->dbCheck(),
+            'cache' => $this->cacheCheck(),
             'queue_lag_seconds' => $this->queueLag(),
             'disk_free_gb' => $this->diskFree(),
+            'heartbeat_age_seconds' => $this->heartbeatAge(),
         ];
 
         $status = $this->aggregate($checks, $freeze);
-        $httpStatus = $status === 'ok'
-            ? Response::HTTP_OK
-            : Response::HTTP_SERVICE_UNAVAILABLE;
+        // 仅 error → 503；degraded（心跳缺失）与 ok 均 200：
+        // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，防止误报卡外部监控。
+        $httpStatus = $status === 'error'
+            ? Response::HTTP_SERVICE_UNAVAILABLE
+            : Response::HTTP_OK;
 
         return new JsonResponse([
             'status' => $status,
@@ -81,11 +90,32 @@ class HealthController extends Controller
     }
 
     /**
+     * Cache 后端探活
+     *
+     * 心跳年龄（heartbeatAge）与 health 阈值（aggregate/queueThreshold 经 get_system_setting →
+     * Cache::remember）均依赖 Cache（driver=redis 时）。Cache 后端故障绝不能让 /api/health 白屏
+     * 500 丢弃结构化输出——须显式探活并结构化上报 error（503）。用只读 get 探连通性（不写键，
+     * 避免 probe / 外部监控高频拨测频繁写 cache）；不抛异常，失败 ok=false。
+     *
+     * @return array{ok: bool}
+     */
+    protected function cacheCheck(): array
+    {
+        try {
+            Cache::get('schedule:heartbeat');
+
+            return ['ok' => true];
+        } catch (Throwable) {
+            return ['ok' => false];
+        }
+    }
+
+    /**
      * 计算队列积压秒数
      *
      * 按 config('queue.default') 分发：
      * - database：min(jobs.available_at where reserved_at IS NULL) 后 PHP 计算 time() - $min
-     * - redis：第一版只返回队列深度（Redis::llen("queues:default")），不计算时间差
+     * - redis：全队列（queue.names）就绪深度 + 已到期延时深度求和（见 queueLagRedis()）
      * - sync / 其他：返回 0
      *
      * 任何失败一律返回 0（健康检查不应因 queue 探活异常而 503）。
@@ -125,16 +155,58 @@ class HealthController extends Controller
     }
 
     /**
-     * redis driver 的 queue lag
+     * redis driver 的 queue lag（返回队列深度，条数）
      *
-     * 第一版只返回 default 队列深度。如需精确 lag，后续把 enqueue timestamp 写入
-     * payload/tag，不在本次实现里扩展。
+     * 遍历 config('queue.names') 的全部队列名（notifications/tasks/default），每队列求和：
+     *  - 就绪深度：llen queues:{name}
+     *  - 已到期延时：zcount queues:{name}:delayed -inf now —— 只计 score ≤ now 的到期部分。
+     *    worker 死亡时到期 job 无人搬运即堆积；整包 zcard 会把 auto-renew 夜间 0~8h 延时
+     *    commit 批次（未到期 score 在未来）当积压，导致 00:00-08:00 持续误报，故只计已到期。
+     *  - 不计 :reserved zset（在途健康工作非积压）。
+     *
+     * 含 default 与 queueLagDatabase 全队列扫描语义对称：default 按约定恒空（全仓无 Job 派 default），
+     * 求和加 0 无害；若非空即真积压（漏写 onQueue 的 Job）应报，非假 lag。
+     * 裸 queues:{name} 键式（facade 自动套连接 prefix，与队列写入端对称）；外层 catch 兜底返 0。
      */
     protected function queueLagRedis(): int
     {
-        $depth = Redis::command('llen', ['queues:default']);
+        $now = time();
+        $total = 0;
 
-        return max(0, (int) $depth);
+        $names = array_unique(array_values(config('queue.names', ['default' => 'default'])));
+        foreach ($names as $name) {
+            $total += (int) Redis::command('llen', ["queues:$name"]);
+            $total += (int) Redis::command('zcount', ["queues:$name:delayed", '-inf', $now]);
+        }
+
+        return max(0, $total);
+    }
+
+    /**
+     * 调度器心跳年龄（秒）
+     *
+     * schedule:heartbeat 命令每分钟 Cache::forever('schedule:heartbeat', now()->timestamp)。
+     * - 键缺失（null）→ 返回 null：新装机未跑过调度 / cache:clear 清键，aggregate 判 degraded 非 stale。
+     * - 键存在 → time() - 存储时间戳（下限 0，防时钟回拨出负值）。
+     *
+     * 用 forever 无 TTL 是刻意选型：死 scheduler 留旧时间戳 → age 超阈 → stale 503（正确）；
+     * 带 TTL 则键到期消失 → 缺失 → degraded 200，会把死 scheduler 误判为「未装机」。
+     */
+    protected function heartbeatAge(): ?int
+    {
+        try {
+            $stored = Cache::get('schedule:heartbeat');
+        } catch (Throwable) {
+            // Cache 后端故障：cacheCheck 已判 error（503），此处返 null 不参与 degraded
+            // （aggregate 的 cache error 分支先于 degraded return，故不会被误判 degraded 200）。
+            return null;
+        }
+
+        if ($stored === null) {
+            return null;
+        }
+
+        return max(0, time() - (int) $stored);
     }
 
     /**
@@ -155,17 +227,30 @@ class HealthController extends Controller
     /**
      * 综合判定
      *
-     * - DB ping 失败 → error（503）
-     * - disk_free_gb < 阈值 → error（503）
-     * - queue_lag_seconds > 阈值 且 freeze=false → error（503）
-     * - freeze=true 时 queue_lag 不参与 503 判定（worker 已按升级流程停止）
-     * - 其他 → ok（200）
+     * 判定序固化：所有 error 分支必须全部先于 degraded 分支 return，否则「心跳缺失 → degraded 200」
+     * 会掩盖真错误（如 db 挂时误判 200）。
+     * - ① DB ping 失败 → error（503）
+     * - ② cache 后端故障 → error（503）——必须先于下方任何 get_system_setting（其读取经
+     *      Cache::remember，cache 故障时会抛异常）
+     * - ③ disk_free_gb < 阈值 → error（503）
+     * - ④ freeze=false 时：queue_lag 超阈 → error；心跳存在且过旧（stale）→ error
+     * - ⑤ 心跳缺失（null）→ degraded（200）——排在全部 error 检查之后
+     * - ⑥ 其他 → ok（200）
      *
-     * @param  array{db: array{ok: bool, latency_ms: int}, queue_lag_seconds: int, disk_free_gb: float}  $checks
+     * freeze=true 时 queue_lag 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止）；
+     * cache 后端故障不受 freeze 豁免（cache 是独立于升级流程的基础设施）。
+     *
+     * @param  array{db: array{ok: bool, latency_ms: int}, cache: array{ok: bool}, queue_lag_seconds: int, disk_free_gb: float, heartbeat_age_seconds: int|null}  $checks
      */
     protected function aggregate(array $checks, bool $freeze): string
     {
         if ($checks['db']['ok'] !== true) {
+            return 'error';
+        }
+
+        // Cache 后端故障 → error（503）。必须早于下方 get_system_setting（disk/queue/heartbeat 阈值
+        // 读取经 Cache::remember，cache 故障时会抛），且早于 degraded 分支（error 先于 degraded 红线）。
+        if ($checks['cache']['ok'] !== true) {
             return 'error';
         }
 
@@ -175,12 +260,40 @@ class HealthController extends Controller
         }
 
         if (! $freeze) {
-            $lagThreshold = (int) get_system_setting('health', 'queue_lag_threshold', 600);
-            if ($checks['queue_lag_seconds'] > $lagThreshold) {
+            if ($checks['queue_lag_seconds'] > $this->queueThreshold()) {
+                return 'error';
+            }
+
+            // 心跳存在且过旧 → stale 503（死 scheduler）。缺失（null）不在此判，留待下方 degraded。
+            $staleThreshold = (int) get_system_setting('health', 'heartbeat_stale_seconds', 300);
+            if ($checks['heartbeat_age_seconds'] !== null
+                && $checks['heartbeat_age_seconds'] > $staleThreshold) {
                 return 'error';
             }
         }
 
+        // 心跳缺失（null）→ degraded：必须排在全部 error 检查之后（防真错误被 200 掩盖）。
+        if ($checks['heartbeat_age_seconds'] === null) {
+            return 'degraded';
+        }
+
         return 'ok';
+    }
+
+    /**
+     * queue lag 判定阈值（按驱动取义，消除「秒 vs 深度条数」两义）
+     *
+     * - redis：queueLagRedis 返回队列深度（条数），用 queue_depth_threshold（默认 500 条）。
+     * - 其余（database）：queueLagDatabase 返回积压秒数，用 queue_lag_threshold（默认 600 秒，语义不变）。
+     *
+     * 低量 redis 部署若沿用 600「秒」阈值当深度门槛，需堆 600 条才 503 → worker 死检测显著延迟。
+     */
+    protected function queueThreshold(): int
+    {
+        if (config('queue.default') === 'redis') {
+            return (int) get_system_setting('health', 'queue_depth_threshold', 500);
+        }
+
+        return (int) get_system_setting('health', 'queue_lag_threshold', 600);
     }
 }

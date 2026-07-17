@@ -64,7 +64,8 @@ class CreateBackupJob implements ShouldQueue
             ]);
 
             // keep 参数由 BackupCommand 自行回落到 config('database.backup.keep_days')
-            $exitCode = Artisan::call('schedule:backup');
+            // --internal-no-lock：本 Job 已持 backup:mutex，命令重入不得再抢锁（否则自死锁 → 备份静默跳过）
+            $exitCode = Artisan::call('schedule:backup', ['--internal-no-lock' => true]);
             $output = trim(Artisan::output());
 
             if ($exitCode !== 0) {

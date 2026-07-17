@@ -6,6 +6,7 @@ use App\Services\Plugin\PluginManager;
 use App\Services\Upgrade\UpgradePreflight;
 use App\Services\Upgrade\VersionManager;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -15,6 +16,7 @@ afterEach(function () {
     foreach (glob(sys_get_temp_dir().'/pmch-*') as $dir) {
         File::deleteDirectory($dir);
     }
+    File::deleteDirectory(storage_path('app/plugin-recovery'));
 });
 
 /**
@@ -164,6 +166,7 @@ function makeUpdateManager(string $newLockContent): array
 {
     $installCalls = new stdClass;
     $installCalls->count = 0;
+    $installCalls->reporterWasPassed = false;
 
     // 真实 runner，但 install 覆盖为计数（不真跑 composer）
     $runner = new class(app(BinaryLocator::class), app(UpgradePreflight::class), $installCalls) extends PluginComposerRunner
@@ -173,9 +176,10 @@ function makeUpdateManager(string $newLockContent): array
             parent::__construct($l, $p);
         }
 
-        public function install(string $pluginDir, string $name): void
+        public function install(string $pluginDir, string $name, ?callable $reporter = null): void
         {
             $this->calls->count++;
+            $this->calls->reporterWasPassed = $reporter !== null;
         }
     };
 
@@ -277,4 +281,129 @@ test('update composer.lock 变化时触发 composer install', function () {
     expect($result['version'])->toBe('2.0.0');
     // lock 内容变化 → 哈希不同 → install 被调用一次
     expect($installCalls->count)->toBe(1);
+});
+
+test('update 重装 composer 依赖时传递进度 reporter', function () {
+    [$manager, $pluginsPath, $installCalls] = makeUpdateManager(newLockContent: 'NEW-LOCK');
+    seedInstalledPlugin($pluginsPath, lockContent: 'OLD-LOCK');
+
+    $manager = $manager->withProgressReporter(fn () => null);
+    $result = $manager->update('lock-plugin');
+
+    expect($result['version'])->toBe('2.0.0');
+    expect($installCalls->count)->toBe(1)
+        ->and($installCalls->reporterWasPassed)->toBeTrue();
+});
+
+test('update 迁移回滚不干净时隔离失败新目录并恢复旧目录', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('lockHash')->andReturn('');
+    $runner->shouldReceive('pluginHasComposer')->andReturn(false);
+    $runner->shouldNotReceive('install');
+
+    $versionManager = Mockery::mock(VersionManager::class);
+    $versionManager->shouldReceive('getVersionString')->andReturn('99.0.0');
+
+    $pluginsPath = sys_get_temp_dir().'/pmch-plugins-'.uniqid();
+    $downloadPath = sys_get_temp_dir().'/pmch-dl-'.uniqid();
+    mkdir($pluginsPath, 0755, true);
+    mkdir($downloadPath, 0755, true);
+
+    $pluginDir = "$pluginsPath/lock-plugin";
+    mkdir($pluginDir, 0755, true);
+    file_put_contents("$pluginDir/plugin.json", json_encode([
+        'name' => 'lock-plugin',
+        'version' => '1.0.0',
+        'release_url' => 'https://example.com/lock-plugin',
+    ]));
+    file_put_contents("$pluginDir/old.txt", 'old');
+
+    $newZip = sys_get_temp_dir().'/pmch-newzip-'.uniqid().'.zip';
+    $zip = new ZipArchive;
+    $zip->open($newZip, ZipArchive::CREATE);
+    $zip->addFromString('lock-plugin/plugin.json', json_encode(['name' => 'lock-plugin', 'version' => '2.0.0']));
+    $zip->addFromString('lock-plugin/new.txt', 'new');
+    $zip->close();
+
+    $manager = new class($versionManager, $runner, $newZip) extends PluginManager
+    {
+        public function __construct($vm, $runner, private string $newZip)
+        {
+            parent::__construct($vm, $runner);
+        }
+
+        protected function fetchRemoteReleases(string $baseUrl): array
+        {
+            return [['tag_name' => 'v2.0.0', 'assets' => [['name' => 'lock-plugin-plugin-2.0.0.zip', 'browser_download_url' => 'https://example.com/lock-plugin-plugin-2.0.0.zip']]]];
+        }
+
+        protected function downloadPlugin(string $url, string $savePath): void
+        {
+            copy($this->newZip, $savePath);
+        }
+
+        protected function runPluginMigrations(string $name): void
+        {
+            throw new RuntimeException('migrate failed');
+        }
+
+        protected function rollbackNewPluginMigrations(string $name, array $before): bool
+        {
+            return false;
+        }
+    };
+
+    $ref = new ReflectionClass(PluginManager::class);
+    $ref->getProperty('pluginsPath')->setValue($manager, $pluginsPath);
+    $ref->getProperty('downloadPath')->setValue($manager, $downloadPath);
+
+    expect(fn () => $manager->update('lock-plugin'))
+        ->toThrow(RuntimeException::class, 'migrate failed');
+
+    $recoveryDirs = glob(storage_path('app/plugin-recovery/lock-plugin-*')) ?: [];
+
+    expect(is_file("$pluginsPath/lock-plugin/old.txt"))->toBeTrue()
+        ->and(is_file("$pluginsPath/lock-plugin/new.txt"))->toBeFalse()
+        ->and($recoveryDirs)->not->toBeEmpty()
+        ->and(is_file($recoveryDirs[0].'/new.txt'))->toBeTrue()
+        ->and(glob("$downloadPath/plugin-backup-lock-plugin-*") ?: [])->toBeEmpty();
+});
+
+test('异步下载路径将 download timeout 作为 curl 和 HTTP fallback 总预算', function () {
+    config(['plugin.download.timeout' => 30]);
+
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new class($versionManager, $runner) extends PluginManager
+    {
+        public int $curlTimeout = 0;
+
+        public function exposeDownload(string $url, string $savePath): void
+        {
+            $this->downloadPlugin($url, $savePath);
+        }
+
+        protected function downloadWithCurl(string $url, string $savePath, int $timeout): bool
+        {
+            $this->curlTimeout = $timeout;
+
+            return false;
+        }
+    };
+
+    $downloadDir = sys_get_temp_dir().'/pmch-download-'.uniqid();
+    mkdir($downloadDir, 0755, true);
+    $savePath = "$downloadDir/plugin.zip";
+
+    Http::fake(function () use ($savePath) {
+        file_put_contents($savePath, 'zip');
+
+        return Http::response('ok');
+    });
+
+    $manager = $manager->withProgressReporter(fn () => null);
+    $manager->exposeDownload('https://example.com/plugin.zip', $savePath);
+
+    expect($manager->curlTimeout)->toBe(15)
+        ->and(is_file($savePath))->toBeTrue();
 });

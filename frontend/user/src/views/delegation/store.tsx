@@ -11,6 +11,10 @@ import type { FormRules } from "element-plus";
 import { message } from "@shared/utils";
 import { caOptionsAll } from "@/views/system/dictionary";
 import type { CnameGuideOptions } from "@/views/delegation/CnameGuide";
+import isDomain from "validator/lib/isFQDN";
+import { createDomainValidator } from "@shared/utils/domain";
+
+const validateZone = createDomainValidator(isDomain);
 
 export const useDelegationStore = (
   onSearch: () => void,
@@ -52,11 +56,7 @@ export const useDelegationStore = (
   const rules: FormRules = {
     zone: [
       { required: true, message: "请输入委托域", trigger: "blur" },
-      {
-        pattern: /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i,
-        message: "请输入正确的域名格式",
-        trigger: "blur"
-      }
+      { validator: validateZone, trigger: "blur" }
     ],
     ca: [{ required: true, message: "请选择 CA", trigger: "change" }]
   };

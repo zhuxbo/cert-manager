@@ -1,0 +1,36 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderDeployCommandsTest::__pest_evaluable_site_url_未配置时_deploy_commands_返回优雅降级结果而非抛_TypeError",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/order/deploy-commands",
+            "request_keys": [
+                "order_ids"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "install": {
+                        "linux": "string",
+                        "windows": "string"
+                    },
+                    "deploy": "string",
+                    "iis_install": {
+                        "windows": "string"
+                    },
+                    "iis_deploy": "string",
+                    "bt_install": {
+                        "linux": "string"
+                    },
+                    "bt_deploy": "string",
+                    "cert_url_id": "string",
+                    "key_url_id": "string",
+                    "cert_url_domain": "string",
+                    "key_url_domain": "string"
+                }
+            }
+        }
+    ]
+}

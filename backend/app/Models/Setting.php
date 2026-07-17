@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Cache;
 use JsonException;
+use Throwable;
 
 class Setting extends BaseModel
 {
@@ -107,7 +108,7 @@ class Setting extends BaseModel
     {
         $cacheKey = self::CACHE_PREFIX.'group:'.$groupId;
 
-        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($groupId) {
+        $loader = function () use ($groupId) {
             /** @var Setting[] $settings */
             $settings = self::where('group_id', $groupId)->orderBy('weight')->get();
             $result = [];
@@ -117,7 +118,15 @@ class Setting extends BaseModel
             }
 
             return $result;
-        });
+        };
+
+        try {
+            return Cache::remember($cacheKey, self::CACHE_TTL, $loader);
+        } catch (Throwable) {
+            // Cache 后端故障（如 redis 宕机）→ 直读 DB。settings 是告警最后防线（HealthProbeCommand
+            // 读 site.adminEmail / mail 配置发信）与 health 阈值的依赖，绝不能因 cache 死而整链哑火。
+            return $loader();
+        }
     }
 
     /**
@@ -127,14 +136,21 @@ class Setting extends BaseModel
     {
         $cacheKey = self::CACHE_PREFIX.'group_name:'.$groupName;
 
-        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($groupName) {
+        $loader = function () use ($groupName) {
             $group = SettingGroup::where('name', $groupName)->first();
             if (! $group) {
                 return [];
             }
 
             return self::getByGroupId($group->id);
-        });
+        };
+
+        try {
+            return Cache::remember($cacheKey, self::CACHE_TTL, $loader);
+        } catch (Throwable) {
+            // Cache 后端故障回落 DB 直读（同 getByGroupId 注释）。
+            return $loader();
+        }
     }
 
     /**

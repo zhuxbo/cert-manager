@@ -277,6 +277,7 @@ class AcmeController extends BaseController
         if ($request->filled('id')) {
             $query->where('id', $request->input('id'));
         }
+        // statusSet 仅 activating/archived 两个具名集合走对应 whereIn；其余值（'all'/显式 null/未知）有意不加 status 过滤 = 返回全部（前端「全部」tab），属设计行为，故此处不做 ?? 兜底
         $statusSet = $request->input('statusSet', 'activating');
         if ($request->filled('status')) {
             $query->where('status', $request->input('status'));

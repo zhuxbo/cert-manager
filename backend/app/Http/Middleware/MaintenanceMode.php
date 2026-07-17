@@ -24,7 +24,7 @@ class MaintenanceMode
      * 让 admin 在升级期间维持登录状态以便观察进度。修改性路由（如
      * update-profile / update-password）一律不放行——freeze 期禁写。
      *
-     * @var list<string>
+     * @var list<string|array{0: string, 1: string}>
      */
     protected array $whitelist = [
         // 健康检查（1a-4 新建 + 现有 v1/v2）—— 宝塔 healthcheck + 升级流程内部探活
@@ -43,6 +43,10 @@ class MaintenanceMode
         'api/admin/refresh-token',  // 刷新 access token
         'api/admin/me',             // 获取当前 admin 信息（前端守卫探活）
         'api/admin/logout',         // 登出
+
+        // 插件安装/更新异步任务状态只读查询；freeze 期允许观察状态，但不允许写操作
+        ['GET', 'api/admin/plugin/operations'],
+        ['GET', 'api/admin/plugin/operations/*'],
     ];
 
     /**
@@ -79,6 +83,15 @@ class MaintenanceMode
     public function isWhitelisted(Request $request): bool
     {
         foreach ($this->whitelist as $pattern) {
+            if (is_array($pattern)) {
+                [$method, $path] = $pattern;
+                if ($request->isMethod($method) && $request->is($path)) {
+                    return true;
+                }
+
+                continue;
+            }
+
             if ($request->is($pattern)) {
                 return true;
             }

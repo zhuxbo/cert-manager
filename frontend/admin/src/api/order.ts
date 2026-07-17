@@ -283,6 +283,22 @@ export function updateAmount(
   );
 }
 
+export interface OrderApplicantData {
+  organization?: Record<string, string>;
+  contact?: Record<string, string>;
+}
+
+/** 修改未支付订单的企业或联系人快照 */
+export function updateApplicant(
+  id: number,
+  data: OrderApplicantData
+): Promise<BaseResponse> {
+  return http.patch<BaseResponse<null>, OrderApplicantData>(
+    `/order/applicant/${id}`,
+    { data }
+  );
+}
+
 /** 上传验证文档 */
 export function uploadDocument(
   id: number,

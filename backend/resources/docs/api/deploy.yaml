@@ -59,6 +59,9 @@ paths:
       description: |
         按订单当前状态推进：`unpaid`→支付、`pending`→提交、
         `active`→到期 ≤15 天续费（需开启自动续费）、否则重签。
+        注意：`unpaid`/`pending`（签发进行中）状态下携带非空 `csr` 或 `domains`
+        将返回错误（code=0）——在途订单的 CSR/域名已定型无法变更；
+        仅传 `order_id` 可正常推进（支付/提交）。
       requestBody:
         required: true
         content:
@@ -105,6 +108,10 @@ paths:
                 order_id: { type: integer }
                 status: { type: string, enum: [success, failure] }
                 deployed_at: { type: string, description: 可选，部署完成时间 }
+                message:
+                  type: string
+                  maxLength: 500
+                  description: 可选，部署失败原因说明（前向兼容扩展，下游后续版本可选上送；服务端转义并截断后记录）
       responses:
         "200":
           description: OK

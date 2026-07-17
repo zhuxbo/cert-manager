@@ -182,3 +182,18 @@ test('并发 freeze 文件内容不损坏，JSON 可解析', function () {
     expect($decoded['version_from'])->toMatch('/^v\.from\.\d+$/')
         ->and($decoded['version_to'])->toMatch('/^v\.to\.\d+$/');
 });
+
+test('freeze 写入 owner_source/owner_pid，缺省 source=unknown', function () {
+    UpgradeFreezeLock::freeze('1.0.5', '1.1.0', 3600, 'web');
+
+    $info = UpgradeFreezeLock::info();
+    expect($info['owner_source'])->toBe('web')
+        ->and($info['owner_pid'])->toBe(getmypid());
+
+    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::freeze();
+
+    $info = UpgradeFreezeLock::info();
+    expect($info['owner_source'])->toBe('unknown')
+        ->and($info['owner_pid'])->toBe(getmypid());
+});

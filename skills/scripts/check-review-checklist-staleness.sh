@@ -193,6 +193,6 @@ stale=$((id_stale + sha_stale))
 allowed=$((id_allowed + sha_allowed))
 
 echo ""
-echo "检查 $total 项 / 失效 $stale 项 / 豁免 $allowed 项（标识符 $id_total/$id_stale/$id_allowed + commit SHA $sha_total/$sha_stale/$sha_allowed）"
+echo "检查 $total 项 / 失效 $stale 项 / 豁免 $allowed 项（标识符 ${id_total}/${id_stale}/${id_allowed} + commit SHA ${sha_total}/${sha_stale}/${sha_allowed}）"
 echo "反模式条目数 $entry_count"
 exit 0

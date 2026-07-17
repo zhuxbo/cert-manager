@@ -6,8 +6,10 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\User;
 use App\Models\UserLevel;
+use Illuminate\Database\Connection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Tests\Traits\ActsAsAdmin;
 
 uses(ActsAsAdmin::class);
@@ -15,7 +17,45 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->admin = Admin::factory()->create();
+    $this->userLevelLockHolder = null;
 });
+
+afterEach(function () {
+    if ($this->userLevelLockHolder instanceof Connection) {
+        try {
+            $this->userLevelLockHolder->selectOne(
+                'SELECT RELEASE_LOCK(?) AS released',
+                [userLevelMutationLockKey()]
+            );
+        } catch (Throwable) {
+            // 测试清理只做 best effort。
+        }
+
+        DB::purge('user_level_lock_holder');
+    }
+});
+
+function userLevelMutationLockKey(): string
+{
+    $token = getenv('TEST_TOKEN');
+
+    return 'ssl-manager:product-price:mutation:'.($token === false || $token === '' ? 'single' : $token);
+}
+
+function holdUserLevelMutationLock(object $test): void
+{
+    $default = config('database.default');
+    config(['database.connections.user_level_lock_holder' => config("database.connections.$default")]);
+    DB::purge('user_level_lock_holder');
+
+    $test->userLevelLockHolder = DB::connection('user_level_lock_holder');
+    $result = $test->userLevelLockHolder->selectOne(
+        'SELECT GET_LOCK(?, 0) AS acquired',
+        [userLevelMutationLockKey()]
+    );
+
+    expect((int) ($result->acquired ?? 0))->toBe(1);
+}
 
 // ==================== destroy 删除保护（被引用禁删） ====================
 
@@ -143,4 +183,120 @@ test('batchDestroy 拒绝删除被 site.sourceLevel 引用的级别且整批不�
     expect($resp->json('msg'))->toContain('VIP2会员');
     expect(UserLevel::find($referenced->id))->not->toBeNull();
     expect(UserLevel::find($free->id))->not->toBeNull();
+});
+
+// ==================== update 编码引用保护 ====================
+
+test('update 拒绝修改被产品价格引用的级别编码', function () {
+    $level = UserLevel::factory()->create(['code' => 'price-ref', 'name' => '价格引用级别']);
+    ProductPrice::factory()->create(['level_code' => $level->code]);
+
+    $resp = $this->actingAsAdmin($this->admin)->putJson("/api/admin/user-level/{$level->id}", [
+        'code' => 'renamed-ref',
+        'name' => $level->name,
+        'custom' => $level->custom,
+        'cost_rate' => '1.0000',
+        'weight' => 100,
+    ]);
+
+    $resp->assertOk()->assertJson(['code' => 0]);
+    expect($resp->json('msg'))->toContain('产品价格');
+    expect($level->fresh()->code)->toBe('price-ref');
+});
+
+test('update 未修改编码时允许更新被引用级别的其他字段', function () {
+    $level = UserLevel::factory()->create(['code' => 'same-code', 'name' => '保持编码级别']);
+    ProductPrice::factory()->create(['level_code' => $level->code]);
+
+    $resp = $this->actingAsAdmin($this->admin)->putJson("/api/admin/user-level/{$level->id}", [
+        'code' => $level->code,
+        'name' => '保持编码新名称',
+        'custom' => $level->custom,
+        'cost_rate' => '1.2500',
+        'weight' => 100,
+    ]);
+
+    $resp->assertOk()->assertJson(['code' => 1]);
+    expect($level->fresh())
+        ->name->toBe('保持编码新名称')
+        ->cost_rate->toBe('1.2500');
+});
+
+// ==================== cost_rate 精确倍率契约 ====================
+
+test('store 接受 JSON number 倍率并以四位小数字符串输出', function () {
+    $resp = $this->actingAsAdmin($this->admin)->postJson('/api/admin/user-level', [
+        'code' => 'number-rate',
+        'name' => '数字倍率级别',
+        'custom' => 1,
+        'cost_rate' => 1.2345,
+        'weight' => 100,
+    ]);
+
+    $resp->assertOk()->assertJson(['code' => 1]);
+    $level = UserLevel::where('code', 'number-rate')->firstOrFail();
+    expect($level->cost_rate)->toBe('1.2345');
+
+    $this->actingAsAdmin($this->admin)->getJson("/api/admin/user-level/{$level->id}")
+        ->assertOk()
+        ->assertJsonPath('data.cost_rate', '1.2345');
+});
+
+test('update 接受字符串倍率并以四位小数字符串保存', function () {
+    $level = UserLevel::factory()->create(['code' => 'string-rate', 'name' => '字符串倍率级别']);
+
+    $resp = $this->actingAsAdmin($this->admin)->putJson("/api/admin/user-level/{$level->id}", [
+        'code' => $level->code,
+        'name' => $level->name,
+        'custom' => 1,
+        'cost_rate' => '99.9999',
+        'weight' => 100,
+    ]);
+
+    $resp->assertOk()->assertJson(['code' => 1]);
+    expect($level->fresh()->cost_rate)->toBe('99.9999');
+});
+
+test('cost_rate 拒绝超过四位小数或超出 1 至 99.9999 范围', function ($rate) {
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/user-level', [
+        'code' => 'invalid-rate',
+        'name' => '非法倍率级别',
+        'custom' => 1,
+        'cost_rate' => $rate,
+        'weight' => 100,
+    ])->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonValidationErrors('cost_rate');
+})->with([
+    '五位小数' => '1.23456',
+    '小于一' => '0.9999',
+    '达到一百' => '100',
+]);
+
+test('会员级别 update destroy batchDestroy 与价格写入共用同一命名锁', function () {
+    $updateLevel = UserLevel::factory()->create(['code' => 'lock-update', 'name' => '锁更新级别']);
+    $destroyLevel = UserLevel::factory()->create(['code' => 'lock-destroy', 'name' => '锁删除级别']);
+    $batchLevel = UserLevel::factory()->create(['code' => 'lock-batch', 'name' => '锁批删级别']);
+    holdUserLevelMutationLock($this);
+
+    $responses = [
+        $this->actingAsAdmin($this->admin)->putJson("/api/admin/user-level/{$updateLevel->id}", [
+            'code' => $updateLevel->code,
+            'name' => $updateLevel->name,
+            'custom' => 1,
+            'cost_rate' => '1.0000',
+            'weight' => 100,
+        ]),
+        $this->actingAsAdmin($this->admin)->deleteJson("/api/admin/user-level/{$destroyLevel->id}"),
+        $this->actingAsAdmin($this->admin)->deleteJson('/api/admin/user-level/batch', [
+            'ids' => [$batchLevel->id],
+        ]),
+    ];
+
+    foreach ($responses as $response) {
+        $response->assertStatus(503)->assertJson([
+            'code' => 0,
+            'msg' => '产品价格正在变更，请稍后重试',
+        ]);
+    }
 });

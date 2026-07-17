@@ -1,0 +1,34 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V2\\ApiControllerCommitResilienceTest::__pest_evaluable_new_commit_超时（SDK_code_0）：订单不回滚、cert_停_pending、api__id_空、扣费保留、200_展示_processing、msg_不泄露内部地址",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/v2/new",
+            "request_keys": [
+                "csr_generate",
+                "domains",
+                "period",
+                "product_code",
+                "validation_method"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "cert_apply_status": "integer",
+                    "dcv": {
+                        "method": "string"
+                    },
+                    "validation": {
+                        "__list_of__": {
+                            "domain": "string",
+                            "method": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

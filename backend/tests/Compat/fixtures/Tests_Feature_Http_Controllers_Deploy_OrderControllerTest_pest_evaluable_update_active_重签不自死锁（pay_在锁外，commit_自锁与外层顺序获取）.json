@@ -1,0 +1,23 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_重签不自死锁（pay_在锁外，commit_自锁与外层顺序获取）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "domains": "string",
+                    "status": "string",
+                    "renew_before_days": "integer"
+                }
+            }
+        }
+    ]
+}

@@ -108,8 +108,7 @@ class Product extends BaseModel
             return;
         }
 
-        $data = $this->getCost($cost);
-        $this->attributes['cost'] = json_encode($data);
+        $this->attributes['cost'] = json_encode($cost);
     }
 
     /**

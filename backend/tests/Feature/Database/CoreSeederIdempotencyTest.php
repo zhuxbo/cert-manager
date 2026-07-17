@@ -155,6 +155,8 @@ dataset('core_seeders', [
             expect(NotificationTemplate::where('code', 'cert_issued')->first())->not->toBeNull();
             expect(NotificationTemplate::where('code', 'cert_expire')->first())->not->toBeNull();
             expect(NotificationTemplate::where('code', 'auto_renew_failed')->first())->not->toBeNull();
+            expect(NotificationTemplate::where('code', 'balance_forecast')->first())->not->toBeNull();
+            expect(NotificationTemplate::where('code', 'delegation_invalid')->first())->not->toBeNull();
         },
         function (): void {
             // 用户自定义已存在的模板（修改内容），seeder 再跑不应覆盖

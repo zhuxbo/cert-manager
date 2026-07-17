@@ -1,0 +1,36 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\NotificationTemplateControllerTest::__pest_evaluable_管理员通知模板列表_pageSize_显式_null_回落默认值，不静默返回空列表",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/notification-template",
+            "request_keys": [
+                "code",
+                "pageSize"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "name": "string",
+                            "code": "string",
+                            "content": "string",
+                            "variables": "array<string>",
+                            "example": "string",
+                            "status": "integer",
+                            "created_at": "string",
+                            "updated_at": "string"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

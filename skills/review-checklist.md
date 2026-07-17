@@ -168,7 +168,8 @@ PHP 数组 `foreach ($args as $key => $value)` 中 `$key` 可能是 int(位置�
 `TaskJob::handle` 是 **task → order/acme** 顺序(先锁 task,action 内再锁业务行)。业务路径若反向(先锁 order 再锁 task) = InnoDB 周期性死锁回滚,用户看到随机失败。
 
 **真实案例**:commit `3dd44b84` (fix: 资金/状态变更路径全面加行锁,消除并发竞态)统一所有修改 task 的业务路径(`Order::revokeCancel` / `commitCancel(active)` / `batchCommitCancel` / `Acme::revokeCancel` 等)按 task → 业务行 顺序,并修复 `TaskJob::handle` 整体包事务(否则 `lockForUpdate` 在自动提交模式下是"假锁",SELECT 返回即释放)。
-**修复**:所有 DELETE / 修改 task 的业务路径,必须先 `Task::where(...)->lockForUpdate()->get()` 拿 task 锁,再锁业务行,再做 DELETE。新增涉及 task + order/acme 的事务路径,先 grep 现有路径确认锁顺序与之对齐。
+**修复**:所有 DELETE / 修改 task 的业务路径,必须先 `Task::lockForMutation($orderId, $actions)->get()` 拿 task 锁,再锁业务行,再做 DELETE。新增涉及 task + order/acme 的事务路径,先 grep 现有路径确认锁顺序与之对齐。
+**检查动作**:`finish-check-greps.sh` Z12 禁止业务代码内联 `Task::...->lockForUpdate()` 绕过 scope;Z13 校验 `structure.json` 里 tasks 表只保留 `tasks_order_action_status_index(order_id, action, status)` 这一条 `order_id` 首列索引;Z14 校验 `Task::lockForMutation` 的 forceIndex/where/status/select/lock 接线。涉及 tasks 索引迁移时还要跑 Feature/Database 的 Task 索引最终态测试,由真实测试库 `SHOW INDEX FROM tasks` 兜住 migration add-path。
 
 ---
 
@@ -219,7 +220,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **Pest `->skip(<非闭包>)` 收集期 eager 求值**:skip 条件引用尚未 autoload 的类(插件类晚于 ServiceProvider 注册) → 整个文件收集崩溃。改 `fn () => ...` 延迟求值。
 
 **真实案例**:`45e442a`(faker jobTitle 0.4% 概率 1 字符撞 `title between:2,16`)/ `802804b`(PurgeCommand 跨 worker 误删文档)/ `a546f16`(RateLimiter `time()`→`now()->timestamp`)/ `e2e6a3e`(tearDown 吞 rollback)/ `dff3d07`(Pest skip eager)。
-**检查动作**:`grep -rn "fake()->\(jobTitle\|sentence\|word\|text\|paragraph\|catchPhrase\)" backend/database/factories` 命中字段若喂业务校验即改固定值;`grep -n "parent::tearDown" tests/TestCase.php` 确认前置清理被 try/finally 包住;`grep -rn "\->skip(" tests | grep -v "fn ()"`;`grep -rn "\btime()\b" backend/app/Http/Middleware backend/app/Services`。细节见 `skills/backend-dev.md` `## 测试`。
+**检查动作**:`grep -rn "fake()->\(jobTitle\|sentence\|word\|text\|paragraph\|catchPhrase\)" backend/database/factories` 命中字段若喂业务校验即改固定值;`grep -n "parent::tearDown" tests/TestCase.php` 确认前置清理被 try/finally 包住;`grep -rn "\->skip(" tests | grep -v "fn ()"`;`grep -rn "\btime()\b" backend/app/Http/Middleware backend/app/Services`。细节见 `skills/backend/core.md` `## 测试`。
 
 ---
 
@@ -260,7 +261,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **鉴权配置双空 fail-close**:回调等端点 token 与 IP 白名单**双空时必须拒绝**,不能默默放行(出厂双空裸奔被刷 sync / 探测 api_id)。
 
 **真实案例**:`39cd024`(验证码限流 + reset 去 exists 防枚举)/ `c81ce00`(DeployToken/Callback 隐藏 token + 回调双空拒绝 + 登录限流 account 归一化)/ `dc97990`(改密撤销 token)/ `f58320c`+`76a2f58`(签名 URL + 构造函数放行)/ `0d91294`(easy/invoice 端点补限流)。
-**检查动作**:grep 免登录路由组逐条核对限流中间件;改密吊销两条机器检查 —— ① `git grep -nE 'token_version[[:space:]]*(=[^=>]|\+\+)' backend/app plugins | grep -vE 'Models/(User|Admin)\.php'` 应 0 命中(三件套禁散落直写,必须走 revokeAllSessions 单点;`[^=>]` 排除 JWT claims 数组的 `'token_version' =>` 形态),② `git grep -n -- '->password = ' backend/app plugins` 命中清单逐条核对同方法/同事务内有 revokeAllSessions(创建/注册流程豁免);grep `access_token` 是否进前端 URL;**实际发一次绕过请求**验证签名 / 限流真生效。细节见 `skills/backend-dev.md` `## 安全补强` + `### 凭据不进 URL`。
+**检查动作**:grep 免登录路由组逐条核对限流中间件;改密吊销两条机器检查 —— ① `git grep -nE 'token_version[[:space:]]*(=[^=>]|\+\+)' backend/app plugins | grep -vE 'Models/(User|Admin)\.php'` 应 0 命中(三件套禁散落直写,必须走 revokeAllSessions 单点;`[^=>]` 排除 JWT claims 数组的 `'token_version' =>` 形态),② `git grep -n -- '->password = ' backend/app plugins` 命中清单逐条核对同方法/同事务内有 revokeAllSessions(创建/注册流程豁免);grep `access_token` 是否进前端 URL;**实际发一次绕过请求**验证签名 / 限流真生效。细节见 `skills/backend/auth.md` `## 安全补强` + `### 凭据不进 URL`。
 
 ---
 
@@ -275,7 +276,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **解压走 ArchiveGuard**:zip-slip / 符号链接统一防护,备份恢复与插件 / 升级包解压共用。
 
 **真实案例**:`39cd024`(升级包 sha256 fail-closed + 强制 HTTPS,但 169.254 半修)/ `dc97990`(插件 sha256 + SSRF 双重收敛 + ArchiveGuard)/ `76a2f58`(补 link-local 拒绝 + 重定向限 https)。
-**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单——**两种语义勿混用**:下载"明文 http 仅放行私网"场景用 `isPrivateOrLoopbackIp`(PluginManager/ReleaseClient);出站回调"私网必须拒绝"场景用 `IpUtil::isPrivateOrReserved`(ActionCallbackTrait,拒私网+loopback+link-local+CGNAT+多播+benchmark 等全部保留段,直接复用 isPrivateOrLoopbackIp 会放行 169.254 云元数据));grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugin-dev.md` `## 安全机制` + `skills/backend-dev.md` `### 归档解压统一防护`。
+**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单——**两种语义勿混用**:下载"明文 http 仅放行私网"场景用 `isPrivateOrLoopbackIp`(PluginManager/ReleaseClient);出站回调"私网必须拒绝"场景用 `IpUtil::isPrivateOrReserved`(ActionCallbackTrait,拒私网+loopback+link-local+CGNAT+多播+benchmark 等全部保留段,直接复用 isPrivateOrLoopbackIp 会放行 169.254 云元数据));grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugins/plugin-dev.md` `## 安全机制` + `skills/backend/auth.md` `### 归档解压统一防护`。
 
 ---
 
@@ -302,7 +303,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **死锁不可吞、不可在回滚事务上续写**:InnoDB 死锁(1213/1205/序列化失败)被 `catch(Throwable)` 当普通业务异常吞掉,再在**已被 MySQL 整体回滚的连接上** `$task->update()` → `PDOException: no active transaction`,job 失败被 queue 无脑重试 → 雪崩。并发错误必须**重抛交 queue 错峰重试**,`failed()` 钩子守卫兜底标记;手写 `begin/commit/rollback` 改 `DB::transaction` 闭包(嵌套死锁时手写 `DB::rollback` 抛 1305 淹没原异常);事务级 `attempts>1` 仅当上游 HTTP 调用在事务外(`sync` 可重试、`commit` 下单在事务内不可)。
 
 **真实案例**:`1bac824`(Order checkDuplicate / Acme sync 占位 / VerifyCode 冷却统一 `Cache::add`)/ `19384ef`(TaskJob 死锁重抛 + 死事务续写致 no active transaction 雪崩)/ `47925d9b`(占位失败不回滚被防抖伪装成功)/ `5a36d599`(互斥锁误用 add/forget/put 三连)/ `f94f28ac`(sync 终态守卫读=写不同行)。
-**检查动作**:`grep -rn "Cache::get\|Cache::has" backend/app | grep -iE "重复|节流|cooldown|sync|防重"` 看是否紧跟 `Cache::set`(TOCTOU);`git grep -n 'Cache::add(' backend/app | grep -iE 'lock|mutex|互斥'` 应 0 命中(互斥语义必须 Cache::lock);`git grep -nE "Cache::forget\((self::)?\\\$?[A-Za-z_]*LOCK" backend/app plugins` 应 0 命中(LOCK 风格常量的 forget 释放 = 无属主释放);diff 同时出现"锁外捕获的模型 + 事务外上游调用 + 锁内守卫/写回"三要素时,逐处核对判定 status 的来源行 id 与 update() 目标行 id 是否同一行;`grep -rn "catch.*Throwable" backend/app/Jobs backend/app/Services` 看 catch 体是否对并发错误分流;`grep -rn "DB::beginTransaction\|DB::rollback" backend/app/Services` 应趋零。细节见 `skills/backend-dev.md` `### tasks 死锁防护与并发错误处理` + `### 节流统一 Cache::add 原子占位`。
+**检查动作**:`grep -rn "Cache::get\|Cache::has" backend/app | grep -iE "重复|节流|cooldown|sync|防重"` 看是否紧跟 `Cache::set`(TOCTOU);`git grep -n 'Cache::add(' backend/app | grep -iE 'lock|mutex|互斥'` 应 0 命中(互斥语义必须 Cache::lock);`git grep -nE "Cache::forget\((self::)?\\\$?[A-Za-z_]*LOCK" backend/app plugins` 应 0 命中(LOCK 风格常量的 forget 释放 = 无属主释放);diff 同时出现"锁外捕获的模型 + 事务外上游调用 + 锁内守卫/写回"三要素时,逐处核对判定 status 的来源行 id 与 update() 目标行 id 是否同一行;`grep -rn "catch.*Throwable" backend/app/Jobs backend/app/Services` 看 catch 体是否对并发错误分流;`grep -rn "DB::beginTransaction\|DB::rollback" backend/app/Services` 应趋零。细节见 `skills/backend/order-fund.md` `## tasks 死锁防护与并发错误处理` + `skills/backend/auth.md` `### 节流统一 Cache::add 原子占位`。
 
 ---
 
@@ -316,7 +317,7 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - **升级同步用动态发现,非硬编码目录白名单**:后台升级硬编码同步白名单漏新增顶层目录(`resources` 被漏 → 对外 API 文档 yaml 不部署 → 端点 404);改 `File::directories()` 动态发现 + skip storage/vendor,同步范围与可写预检对齐。
 
 **真实案例**:`7fda164`(`SHOW INDEX WHERE ?` 抛 1064,迁移看似成功但 code 唯一索引没升级 + 结构校验漏 `modified_indexes`)/ `1050297`(增量列/索引回灌建表迁移)/ `0c97e50`(升级漏 resources 目录致文档 404)。
-**检查动作**:`git grep -n "SHOW INDEX\|SHOW COLUMNS\|SHOW TABLES" backend | grep "?" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|//|#)'` 必须为空(排除 docblock 说明行);含 `add_*/drop_*` 迁移 → 改结构后**实跑 `php artisan migrate` 再 `db:structure --check` 验证确已生效**(不能只信 migration 入表);`migrate:fresh` + `--check` 双跑验建表同步;`grep -rn "\['app'.*'config'.*'database'" backend/app/Services/Upgrade` 硬编码目录列表应消除。细节见 `skills/backend-dev.md` `### 数据库结构校验` + `## 迁移规范`。
+**检查动作**:`git grep -n "SHOW INDEX\|SHOW COLUMNS\|SHOW TABLES" backend | grep "?" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|//|#)'` 必须为空(排除 docblock 说明行);含 `add_*/drop_*` 迁移 → 改结构后**实跑 `php artisan migrate` 再 `db:structure --check` 验证确已生效**(不能只信 migration 入表);`migrate:fresh` + `--check` 双跑验建表同步;`grep -rn "\['app'.*'config'.*'database'" backend/app/Services/Upgrade` 硬编码目录列表应消除。细节见 `skills/backend/database.md` `### 数据库结构校验` + `## 迁移规范`。
 
 ---
 
@@ -328,7 +329,7 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - **副作用未在卸载时清理**:`setInterval` / `addEventListener` / `mitt.on` 未在 `onBeforeUnmount` 清理 → 路由切换后泄漏继续跑;事件监听显式声明 `passive` 意图。
 
 **真实案例**:`30d122a5`(Order 详情聚合页轮询上提父级,消除多卡片并发风暴)/ `43acaa88`(同一问题在 ACME 页二次出现 = 同类扩散,后抽 shared composable `59e70a25`)/ `e1e27952`(lay-tag wheel 监听显式 passive:false)/ `095e08fe`(Dashboard 折线图首帧空数据)。
-**检查动作**:新增轮询/定时器时先 grep `frontend/shared/composables` 是否已有可复用 composable(反模式 6 同理);`grep -rn "setInterval\|addEventListener\|mitt.on" <改动组件>` 逐处核对 onBeforeUnmount 清理。细节见 `skills/frontend-dev.md` 轮询与视口懒加载章节。
+**检查动作**:新增轮询/定时器时先 grep `frontend/shared/composables` 是否已有可复用 composable(反模式 6 同理);`grep -rn "setInterval\|addEventListener\|mitt.on" <改动组件>` 逐处核对 onBeforeUnmount 清理。细节见 `skills/frontend/frontend-dev.md` 轮询与视口懒加载章节。
 
 ---
 

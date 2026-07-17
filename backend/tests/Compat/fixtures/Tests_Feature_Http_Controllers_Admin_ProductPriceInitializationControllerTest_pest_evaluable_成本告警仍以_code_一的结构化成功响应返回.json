@@ -1,0 +1,45 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\ProductPriceInitializationControllerTest::__pest_evaluable_成本告警仍以_code_一的结构化成功响应返回",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/product-price/initialization",
+            "request_keys": [
+                "force",
+                "levels",
+                "precision",
+                "preview",
+                "sync_cost_rates"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "preview": "boolean",
+                    "can_execute": "boolean",
+                    "executed": "boolean",
+                    "reason": "string",
+                    "preview_token": "null",
+                    "product_count": "integer",
+                    "level_count": "integer",
+                    "target_count": "integer",
+                    "created_count": "integer",
+                    "preserved_count": "integer",
+                    "deleted_count": "integer",
+                    "rebuilt_count": "integer",
+                    "synced_level_count": "integer",
+                    "warnings": {
+                        "__list_of__": {
+                            "product_id": "integer",
+                            "product_name": "string",
+                            "period": "integer",
+                            "field": "string",
+                            "message": "string"
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

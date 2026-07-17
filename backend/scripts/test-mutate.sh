@@ -11,7 +11,7 @@ BASELINE_FILE="tests/.mutation-baseline.json"
 
 if [[ ! -f "$BASELINE_FILE" ]]; then
     echo "❌ baseline 文件不存在: $BASELINE_FILE" >&2
-    echo "首次跑请先生成 baseline，命令见 skills/backend-dev.md 变异测试章节" >&2
+    echo "首次跑请先生成 baseline，命令见 skills/backend/core.md 变异测试章节" >&2
     exit 1
 fi
 

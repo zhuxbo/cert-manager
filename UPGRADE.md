@@ -151,6 +151,6 @@ curl -H "Authorization: Bearer <admin_token>" http://your-host/api/admin/metrics
 
 ## 详细文档
 
-- [skills/deploy-ops.md](skills/deploy-ops.md) — 部署运维规范
-- [skills/backend-dev.md](skills/backend-dev.md) — 升级冻结契约 + freeze lock 实现
+- [skills/ops/deploy-ops.md](skills/ops/deploy-ops.md) — 部署运维规范
+- [skills/backend/upgrade.md](skills/backend/upgrade.md) — 升级冻结契约 + freeze lock 实现
 - [DEPLOY.md](DEPLOY.md) — 部署指南（含 sha256 校验 + 安全基线）

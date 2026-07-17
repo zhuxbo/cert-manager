@@ -27,8 +27,8 @@ class AuthController extends BaseController
     public function login(): void
     {
         $request = request();
-        $account = $request->input('account', '');
-        $password = $request->input('password', '');
+        $account = (string) $request->input('account');
+        $password = (string) $request->input('password');
 
         $credentials = $this->getCredentials($account, $password);
         $accessToken = $this->attemptLogin($credentials);

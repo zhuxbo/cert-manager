@@ -1,0 +1,64 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_管理员可以查看插件任务并标记_stale_running_为失败",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/plugin/operations",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "operations": {
+                        "__list_of__": {
+                            "uuid": "string",
+                            "type": "string",
+                            "plugin_name": "string",
+                            "version": "null",
+                            "status": "string",
+                            "stage": "string",
+                            "message": "string",
+                            "error": "null",
+                            "result": "null",
+                            "admin_id": "integer",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "started_at": "string",
+                            "finished_at": "null",
+                            "is_stale": "boolean"
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/plugin/operations/{uuid}/fail-stale",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "operation": {
+                        "uuid": "string",
+                        "type": "string",
+                        "plugin_name": "string",
+                        "version": "null",
+                        "status": "string",
+                        "stage": "string",
+                        "message": "string",
+                        "error": "string",
+                        "result": "null",
+                        "admin_id": "integer",
+                        "created_at": "string",
+                        "updated_at": "string",
+                        "started_at": "string",
+                        "finished_at": "string",
+                        "is_stale": "boolean"
+                    }
+                }
+            }
+        }
+    ]
+}

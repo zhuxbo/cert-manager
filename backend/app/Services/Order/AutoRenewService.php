@@ -40,6 +40,12 @@ class AutoRenewService
             return false;
         }
 
+        // 仅 ssl 产品走自动续费；smime/codesign/docsign 等无域名验证产品退出选单，改由 cert_expire 提醒
+        // （product_type NULL 视为 ssl，与 Product::isSSL / getRenewOrders 白名单口径一致）
+        if (! $product->isSSL()) {
+            return false;
+        }
+
         // 订单剩余时间不超过15天时执行续费，超过15天走重签
         $periodTill = $order->period_till;
         if ($periodTill) {
@@ -74,6 +80,12 @@ class AutoRenewService
             return false;
         }
 
+        // 仅 ssl 产品走自动重签；非 ssl（smime/codesign/docsign）退出选单，改由 cert_expire 提醒
+        // （product_type NULL 视为 ssl，与 Product::isSSL / getReissueOrders 白名单口径一致）
+        if (! $product->isSSL()) {
+            return false;
+        }
+
         // 订单剩余时间超过15天时执行重签，不超过15天走续费
         $periodTill = $order->period_till;
         if ($periodTill) {
@@ -84,6 +96,34 @@ class AutoRenewService
         }
 
         return true;
+    }
+
+    /**
+     * 判断订单是否会被 AutoRenewCommand 妥善处理（成功续签/重签 或 失败时发 auto_renew_failed）。
+     *
+     * 派发侧（ExpireCommand）与重查侧（CertExpireNotificationBuilder）三腿谓词单一源，杜绝口径漂移
+     * （漂移致「派发了 user 但重查为空 → 整封静默漏发」或反向双发，见 skills/backend/auto-renew.md
+     * 「派发/重查同源」红线）。三道 gate：
+     *   ① $autoRenewFailedEnabled=false（模板停用）→ false：AutoRenewCommand 发不出失败通知，不排除，
+     *      回落发 cert_expire（双腿同断防静默过期）。布尔由各调用方循环外算一次传入（不逐单查模板）。
+     *   ② latestCert.channel==='api' → false：下游系统自行续费/重签，AutoRenewCommand 不处理
+     *      （getRenewOrders/getReissueOrders 已 channel!=api 过滤）。
+     *   ③ willAutoRenewExecute||willAutoReissueExecute。
+     *
+     * 调用方须保证 $order->latestCert / user / product 非空（whereHas 预筛 + 汇总 builder 二次过滤）。
+     */
+    public function willBeHandledByAutoRenew(Order $order, User $user, bool $autoRenewFailedEnabled): bool
+    {
+        if (! $autoRenewFailedEnabled) {
+            return false;
+        }
+
+        if ($order->latestCert->channel === 'api') {
+            return false;
+        }
+
+        return $this->willAutoRenewExecute($order, $user)
+            || $this->willAutoReissueExecute($order, $user);
     }
 
     /**

@@ -7,11 +7,13 @@ use App\Models\DomainValidationRecord;
 use App\Models\Order;
 use App\Services\Delegation\AutoDcvTxtService;
 use App\Services\Delegation\CnameDelegationService;
+use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
 use App\Services\Order\Utils\VerifyUtil;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -98,6 +100,10 @@ class ValidateCommand extends Command
         $this->info("[$siteName] 证书验证命令开始执行");
         $this->info("待验证订单数量: {$orders->count()}");
 
+        // F2-1 本轮 dnsTools 观测（收尾判连挂告警）：出现过 infra-down / 有任一节点应答
+        $sawInfraDown = false;
+        $sawDnsToolsResponse = false;
+
         foreach ($orders as $order) {
             try {
                 // 查找或创建域名验证记录
@@ -163,14 +169,32 @@ class ValidateCommand extends Command
                         // 执行域名验证（DNS/HTTP/HTTPS验证）
                         $verified = VerifyUtil::verifyValidation($cert->validation);
 
+                        // F2-1 记录本轮 infra-down 观测（dnsTools 全挂→有 dns_tools_down 标记；有节点应答→无标记）
+                        $infraDown = ($verified['dns_tools_down'] ?? false) === true;
+                        if ($infraDown) {
+                            $sawInfraDown = true;
+                        } else {
+                            $sawDnsToolsResponse = true;
+                        }
+
                         if ($verified['code'] == 1) {
                             // 验证成功：创建重新验证任务
                             $action->createTask($order->id, 'revalidate');
                             $this->info("订单 #$order->id: 验证成功，已创建提交CA验证的任务");
+                            // code=1（含本地兜底命中）→ 清 order 级 infra-down 计数
+                            Cache::forget("validate:dnstools_down:{$order->id}");
                         } else {
                             // 验证失败
                             $errorMsg = $verified['msg'] ?: '验证失败';
                             $this->warn("订单 #$order->id: $errorMsg");
+
+                            if ($infraDown) {
+                                // dnsTools 全挂且本地不可判定：连续 N 次建 sync 安全网拉回 CA 完成态
+                                $this->accumulateDnsToolsDownSyncNet($order->id, $action);
+                            } else {
+                                // dnsTools 有应答但校验失败（DNS 未就绪，正常）→ 清 order 级计数
+                                Cache::forget("validate:dnstools_down:{$order->id}");
+                            }
                         }
                     } else {
                         // 其他状态：直接创建同步任务（如approving状态等待CA处理）
@@ -188,6 +212,73 @@ class ValidateCommand extends Command
             } catch (Throwable $e) {
                 $this->error("订单 #$order->id: 验证异常 - {$e->getMessage()}");
             }
+        }
+
+        // F2-1 收尾：dnsTools 连挂 admin 告警
+        $this->reportDnsToolsOutage($sawInfraDown, $sawDnsToolsResponse);
+    }
+
+    /**
+     * F2-1 dnsTools 全挂且本地不可判定：累计 order 级连续次数，达 N 建 sync 安全网。
+     *
+     * 计数按订单自身档位递增（仅 next_check_at 到点才检测），TTL=48h ≥ N×最大档位(12h)+余量，
+     * 避免老单 12h 档在计数达标前 key 过期重置。达阈值建 sync 后清零。
+     */
+    private function accumulateDnsToolsDownSyncNet(int $orderId, Action $action): void
+    {
+        $key = "validate:dnstools_down:{$orderId}";
+        Cache::add($key, 0, now()->addHours(48));
+        $count = (int) Cache::increment($key);
+        $threshold = (int) config('validation.dnstools_down_sync_threshold', 3);
+
+        if ($count >= $threshold) {
+            // createTask 内建去重（同 order+action+executing 跳过），不堆叠 sync
+            $action->createTask($orderId, 'sync');
+            $this->warn("订单 #{$orderId}: dnsTools 连续 {$count} 次全挂且本地不可判定，已建 sync 安全网");
+            Cache::forget($key);
+        }
+    }
+
+    /**
+     * F2-1 dnsTools 连挂 admin 告警（runValidation 收尾）。
+     *
+     * 本轮有任一订单拿到 dnsTools 应答 → 清零 + 清告警去重（恢复后再异常立即告警）；
+     * 否则本轮出现过 infra-down（有到点检测但全挂）→ 累计运行轮，达 M 派 system_alert（24h 去重、每日复发直至恢复）。
+     * 无到点检测/无 DNS 项的空轮不动计数。
+     */
+    private function reportDnsToolsOutage(bool $sawInfraDown, bool $sawDnsToolsResponse): void
+    {
+        $runsKey = 'validate:dnstools_outage_runs';
+
+        if ($sawDnsToolsResponse) {
+            // 本轮有节点应答 → 非全挂：清零 + 清告警去重
+            Cache::forget($runsKey);
+            app(SystemAlert::class)->clearDedupe('dnstools_outage');
+
+            return;
+        }
+
+        if (! $sawInfraDown) {
+            // 空轮（无到点检测或无 DNS 项）→ 不动计数
+            return;
+        }
+
+        Cache::add($runsKey, 0, now()->addHours(48));
+        $runs = (int) Cache::increment($runsKey);
+        $threshold = (int) config('validation.dnstools_outage_alert_runs', 5);
+
+        if ($runs >= $threshold) {
+            // Log::error 无条件（不依赖邮件）：即便告警去重/派发失败也留排障日志
+            Log::error('dnsTools 验证节点连续全挂，DCV 自动验证停摆', ['outage_runs' => $runs]);
+            app(SystemAlert::class)->send(
+                'dnstools_outage',
+                'dnsTools 验证节点连续全挂',
+                "DCV 验证工具节点已连续 {$runs} 个巡检轮全部不可达，processing 证书的自动域名验证停摆，请检查 dnsTools 节点可用性。",
+                ['reason' => 'dnstools_outage', 'outage_runs' => $runs],
+                'dnstools_outage',
+                24,
+                'outage'
+            );
         }
     }
 

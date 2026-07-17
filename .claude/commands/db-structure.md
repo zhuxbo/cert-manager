@@ -27,4 +27,4 @@ make db-structure          # 超时设 5 分钟（含一次全量 migrate:fresh�
 ## 注意
 
 - 插件表由插件自管，不纳入主系统 `structure.json`
-- 发布前确保 `structure.json` 最新（见 `skills/build-release.md`）
+- 发布前确保 `structure.json` 最新（见 `skills/ops/build-release.md`）

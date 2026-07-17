@@ -116,3 +116,23 @@ test('数据库连接 timezone 偏移与 app.timezone 一致（mysql 数字偏�
 
     expect((new DateTimeZone($mysqlTz))->getOffset(new DateTime))->toBe($appOffset);
 });
+
+// ==========================================
+// 活连接 session time_zone：真实查询断言（堵上面 config-only 伪绿缺口）
+// 上一用例只读 config 值，无法区分「config 正确而活连接漂移」的静默回归；
+// 本用例经真实 Laravel 查询断言 @@session.time_zone，锁住活连接语义。
+// ==========================================
+
+test('活 DB 连接 session time_zone 等于 app.timezone 推导的数字偏移', function () {
+    $appOffsetSec = (new DateTimeZone(config('app.timezone')))->getOffset(new DateTime);
+    $sessionTz = DB::selectOne('SELECT @@session.time_zone AS tz')->tz; // 如 '+08:00'
+
+    // 断言活连接 tz 解析出的偏移 == app 偏移（而非只读 config 值）
+    expect((new DateTimeZone($sessionTz))->getOffset(new DateTime))->toBe($appOffsetSec);
+
+    // 且形态为数字偏移（非 SYSTEM/命名），证明 configureConnection() 的 time_zone
+    // 赋值真到达了 session。已知边界（知情接受）：若环境把 global time_zone 人为设为
+    // 数字 '+08:00'，本断言无法区分「机制生效」与「global 巧合同值」，区分度退化；
+    // CI 与生产 global 均为 SYSTEM（跟随 OS），不触发该边界。
+    expect($sessionTz)->toMatch('/^[+-]\d{2}:\d{2}$/');
+});

@@ -39,10 +39,9 @@ return [
             'connection' => env('DB_CONNECTION', 'mysql'),
             'table' => 'jobs',
             'queue' => 'default',
-            // 300s：覆盖 ACME commit / Order commit 等"事务内调上游"最坏 30s
-            // + worker 调度延迟。3 倍冗余，避免极端情况下 worker 业务超 90s
-            // 触发 job 重派、第二个 worker 误报 failed 通知 Admin。
-            'retry_after' => 300,
+            // 600s：覆盖普通订单任务，也为插件安装的 composer + migrate/seed/rollback
+            // 异步长任务留足可见性超时，避免任务尚未结束就被重新投递。
+            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 600),
             'block_for' => null,
             'after_commit' => false,
         ],
@@ -51,7 +50,7 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => 300,
+            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 600),
             'block_for' => null,
             'after_commit' => false,
         ],

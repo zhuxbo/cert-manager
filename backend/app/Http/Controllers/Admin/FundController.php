@@ -292,7 +292,7 @@ class FundController extends BaseController
 
         if ($fund->pay_method === 'wechat') {
             $this->getPayConfig('wechat');
-            $order = app(PaymentGateway::class)->wechat()->query(array_merge(['out_trade_no' => $fund->id], $this->wechatSerial()));
+            $order = app(PaymentGateway::class)->wechatQuery(array_merge(['out_trade_no' => $fund->id], $this->wechatSerial()));
             if ($order['trade_state'] === 'SUCCESS') {
                 $pay_sn = $order['transaction_id'];
             }

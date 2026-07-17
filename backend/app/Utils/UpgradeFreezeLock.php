@@ -10,7 +10,11 @@ use Throwable;
  *
  * 升级期 freeze flag 不存 cache，存文件锁 storage/framework/upgrade.lock：
  * - 文件存在 = freeze 中
- * - 文件内容：{frozen_at, version_from, version_to, ttl_seconds}
+ * - 文件内容：{frozen_at, version_from, version_to, ttl_seconds, owner_source, owner_pid}
+ * - owner_source/owner_pid = 持有方身份（web=后台升级进程本体、shell=upgrade.sh 经 artisan
+ *   子进程、manual=admin 手动），供 upgrade:watchdog 判「锁是否属于 status.json 追踪的那场
+ *   已死升级」——他方持锁绝不 unfreeze（防拆掉别人升级危险窗的 HTTP 写闸）；
+ *   旧格式锁（无 owner 字段）由 watchdog 按 frozen_at vs 死升级最后心跳回退判定
  * - TTL 兜底防忘（默认 7200s），过期文件视同 unfreeze
  * - 与 Cache::flush() / cache:clear / optimize:clear / config:clear 完全解耦
  * - 跨 PHP 进程重启持久（落盘）
@@ -31,7 +35,7 @@ class UpgradeFreezeLock
      *              调用方（UpgradeController::freeze、upgrade.sh）应据此回滚或停止流程，
      *              避免在锁未生效时仍报告 freeze 已激活、产生半坏的升级状态。
      */
-    public static function freeze(?string $versionFrom = null, ?string $versionTo = null, int $ttlSeconds = self::DEFAULT_TTL_SECONDS): bool
+    public static function freeze(?string $versionFrom = null, ?string $versionTo = null, int $ttlSeconds = self::DEFAULT_TTL_SECONDS, string $ownerSource = 'unknown'): bool
     {
         $path = self::path();
 
@@ -46,6 +50,8 @@ class UpgradeFreezeLock
                 'version_from' => $versionFrom,
                 'version_to' => $versionTo,
                 'ttl_seconds' => $ttlSeconds,
+                'owner_source' => $ownerSource,
+                'owner_pid' => getmypid() ?: null,
             ];
 
             $json = json_encode($data, JSON_UNESCAPED_UNICODE);

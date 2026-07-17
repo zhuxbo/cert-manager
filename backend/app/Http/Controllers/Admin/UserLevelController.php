@@ -10,10 +10,12 @@ use App\Http\Requests\UserLevel\UpdateRequest;
 use App\Models\ProductPrice;
 use App\Models\User;
 use App\Models\UserLevel;
+use App\Services\ProductPrice\ProductPriceMutationLock;
+use Illuminate\Support\Facades\DB;
 
 class UserLevelController extends BaseController
 {
-    public function __construct()
+    public function __construct(private readonly ProductPriceMutationLock $mutationLock)
     {
         parent::__construct();
     }
@@ -125,13 +127,22 @@ class UserLevelController extends BaseController
      */
     public function update(UpdateRequest $request, $id): void
     {
-        $userLevel = UserLevel::find($id);
-        if (! $userLevel) {
-            $this->error('用户级别不存在');
-        }
+        $validated = $request->validated();
+        $this->mutationLock->runWithLock(function () use ($validated, $id) {
+            DB::transaction(function () use ($validated, $id) {
+                $userLevel = UserLevel::lockForUpdate()->find($id);
+                if (! $userLevel) {
+                    $this->error('用户级别不存在');
+                }
 
-        $userLevel->fill($request->validated());
-        $userLevel->save();
+                if ($validated['code'] !== $userLevel->code && ($refs = $this->referenceSummary($userLevel->code))) {
+                    $this->error("无法修改级别「{$userLevel->name}」的编码：仍有 $refs 在使用");
+                }
+
+                $userLevel->fill($validated);
+                $userLevel->save();
+            });
+        });
 
         $this->success();
     }
@@ -141,16 +152,20 @@ class UserLevelController extends BaseController
      */
     public function destroy($id): void
     {
-        $userLevel = UserLevel::find($id);
-        if (! $userLevel) {
-            $this->error('用户级别不存在');
-        }
+        $this->mutationLock->runWithLock(function () use ($id) {
+            DB::transaction(function () use ($id) {
+                $userLevel = UserLevel::lockForUpdate()->find($id);
+                if (! $userLevel) {
+                    $this->error('用户级别不存在');
+                }
 
-        if ($refs = $this->referenceSummary($userLevel->code)) {
-            $this->error("无法删除级别「{$userLevel->name}」：仍有 $refs 在使用");
-        }
+                if ($refs = $this->referenceSummary($userLevel->code)) {
+                    $this->error("无法删除级别「{$userLevel->name}」：仍有 $refs 在使用");
+                }
 
-        $userLevel->delete();
+                $userLevel->delete();
+            });
+        });
         $this->success();
     }
 
@@ -161,22 +176,27 @@ class UserLevelController extends BaseController
     {
         $ids = $request->validated('ids');
 
-        $userLevels = UserLevel::whereIn('id', $ids)->get();
-        if ($userLevels->isEmpty()) {
-            $this->error('用户级别不存在');
-        }
+        $this->mutationLock->runWithLock(function () use ($ids) {
+            DB::transaction(function () use ($ids) {
+                $uniqueIds = array_values(array_unique($ids));
+                $userLevels = UserLevel::whereIn('id', $uniqueIds)->lockForUpdate()->get();
+                if ($userLevels->count() !== count($uniqueIds)) {
+                    $this->error('用户级别不存在');
+                }
 
-        $blocked = [];
-        foreach ($userLevels as $userLevel) {
-            if ($refs = $this->referenceSummary($userLevel->code)) {
-                $blocked[] = "「{$userLevel->name}」($refs)";
-            }
-        }
-        if (! empty($blocked)) {
-            $this->error('以下级别正在使用，无法删除：'.implode('、', $blocked));
-        }
+                $blocked = [];
+                foreach ($userLevels as $userLevel) {
+                    if ($refs = $this->referenceSummary($userLevel->code)) {
+                        $blocked[] = "「{$userLevel->name}」($refs)";
+                    }
+                }
+                if (! empty($blocked)) {
+                    $this->error('以下级别正在使用，无法删除：'.implode('、', $blocked));
+                }
 
-        UserLevel::destroy($ids);
+                UserLevel::destroy($uniqueIds);
+            });
+        });
         $this->success();
     }
 

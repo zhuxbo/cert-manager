@@ -68,6 +68,21 @@ test('管理员可以获取历史版本列表', function () {
     $response->assertJsonPath('data.current_version', '1.0.0');
 });
 
+test('releases-显式 null limit 归一为默认 int 5（input 默认值对显式 null 不生效）', function () {
+    $mockUpgrade = Mockery::mock(UpgradeService::class);
+    $mockUpgrade->shouldReceive('getReleaseHistory')->with(5)->once()->andReturn([]);
+    $this->app->instance(UpgradeService::class, $mockUpgrade);
+
+    $mockVersion = Mockery::mock(VersionManager::class);
+    $mockVersion->shouldReceive('getVersionString')->andReturn('1.0.0');
+    $this->app->instance(VersionManager::class, $mockVersion);
+
+    $this->actingAsAdmin($this->admin)
+        ->json('GET', '/api/admin/upgrade/releases', ['limit' => null])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+});
+
 test('管理员可以获取升级状态', function () {
     $mock = Mockery::mock(UpgradeStatusManager::class);
     $mock->shouldReceive('get')->once()->andReturn(null);

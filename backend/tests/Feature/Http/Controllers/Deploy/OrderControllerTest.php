@@ -1,13 +1,26 @@
 <?php
 
+use App\Jobs\NotificationJob;
+use App\Models\Admin;
 use App\Models\ApiLog;
 use App\Models\Cert;
 use App\Models\DeployToken;
+use App\Models\ErrorLog;
+use App\Models\NotificationTemplate;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
+use App\Services\Notification\ChannelManager;
+use App\Services\Notification\Channels\MailChannel;
+use App\Services\Notification\SystemAlert;
+use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 
 uses(RefreshDatabase::class);
@@ -120,6 +133,23 @@ test('query 空参数分页', function () {
         ->assertOk()->assertJson(['code' => 1]);
 
     expect($response2->json('data.data'))->toHaveCount(1);
+});
+
+// query() 用 (int) $request->input('page', 1) 兜底默认值：客户端显式传 JSON null 时
+// input() 返回 null（key 存在），(int) null = 0 → offset((0-1)*page_size) 负偏移，
+// 响应体 page 字段也回显 0（错误）。正确写法应为 (int) ($request->input('page') ?? 1)。
+test('query page 显式 null 回落默认值（非负 offset，page 回显 1）', function () {
+    [$user, $token] = createDeployAuth();
+    for ($i = 0; $i < 3; $i++) {
+        createDeployOrder($user, 'active');
+    }
+
+    $response = test()->withHeaders(['Authorization' => "Bearer $token->token"])
+        ->json('GET', '/api/deploy/', ['page' => null])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    expect($response->json('data.page'))->toBe(1);
+    expect($response->json('data.data'))->toHaveCount(3);
 });
 
 test('query 空参数 UserScope 隔离', function () {
@@ -709,6 +739,138 @@ test('callback 参数验证', function () {
 });
 
 // ========================================
+// callback() — 失败留痕 + 7 天滑窗聚合告警（F1-4）
+// ========================================
+
+test('callback 失败直写 error_logs 且 message 转义截断', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    $malicious = '<script>alert(1)</script>'.str_repeat('x', 400);
+
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id,
+        'status' => 'failure',
+        'message' => $malicious,
+    ])->assertOk()->assertJson(['code' => 1]);
+
+    $log = ErrorLog::query()->where('exception', 'DeployCallbackFailure')->latest('id')->first();
+    $reason = Str::after($log->message, ';reason=');
+
+    expect($log)->not->toBeNull()
+        ->and($log->message)->toStartWith("order_id={$order->id};user_id={$user->id};")
+        ->and($log->message)->not->toContain('<script>')  // strip_tags 转义
+        ->and($log->message)->not->toContain('</script>')
+        ->and(mb_strlen($reason))->toBe(256); // reason 截断至 ≤256
+});
+
+test('callback 失败跨日达阈值 SystemAlert 告警一次（禁背靠背）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    // 容器 mock SystemAlert：断言恰一次 send，且携正确 category/dedupeKey/ttl/固定指纹/计数
+    $alert = Mockery::mock(SystemAlert::class);
+    $alert->shouldReceive('send')->once()
+        ->with(
+            'deploy_callback',
+            Mockery::type('string'),
+            Mockery::type('string'),
+            Mockery::on(fn ($d) => (int) $d['order_id'] === $order->id
+                && (int) $d['failure_count'] === 2
+                && (int) $d['user_id'] === $user->id),
+            "deploy_callback_fail_{$order->id}",
+            168,
+            'deploy_callback_failure' // 固定指纹：防计数 churn 击穿 per-order 去重
+        )
+        ->andReturnTrue();
+    app()->instance(SystemAlert::class, $alert);
+
+    // day1：第 1 次失败（count=1 < 阈值）→ 不告警
+    $this->travelTo(now()->startOfDay());
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id, 'status' => 'failure',
+    ])->assertOk();
+
+    // day2：第 2 次失败（7 天滑窗 count=2 = 阈值）→ 告警恰一次
+    $this->travelTo(now()->addDay());
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id, 'status' => 'failure',
+    ])->assertOk();
+
+    $this->travelBack();
+});
+
+test('callback 失败 7 天窗口外不累计告警', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    // 窗口外：day1 与 day9 各一次，滑窗计数恒为 1（<阈值）→ 从不告警
+    $alert = Mockery::mock(SystemAlert::class);
+    $alert->shouldNotReceive('send');
+    app()->instance(SystemAlert::class, $alert);
+
+    $this->travelTo(now()->startOfDay());
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id, 'status' => 'failure',
+    ])->assertOk();
+
+    $this->travelTo(now()->addDays(8)); // 距 day1 已 8 天，超出 7 天窗口
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id, 'status' => 'failure',
+    ])->assertOk();
+
+    $this->travelBack();
+});
+
+test('callback 失败达阈值真推送 NotificationJob 且 per-order 去重', function () {
+    // 端到端真链路（非只断 assertOk）：seed system_alert 模板 + 可用 MailChannel + Queue::fake，
+    // 断 NotificationJob 真推送；跨日第 3 次失败经 SystemAlert 固定指纹 per-order 去重 → 仍恰一封。
+    Queue::fake();
+
+    NotificationTemplate::updateOrCreate(
+        ['code' => 'system_alert'],
+        ['name' => '运维告警', 'content' => '{{ $title }} {{ $message }}', 'variables' => ['title', 'message'], 'status' => 1],
+    );
+    Admin::factory()->create(['email' => 'ops@corp.example']);
+    app()->bind(MailChannel::class, fn () => new class extends MailChannel
+    {
+        public function isAvailable(): bool
+        {
+            return true;
+        }
+    });
+    app()->forgetInstance(ChannelManager::class);
+
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    $this->travelTo(now()->startOfDay());
+    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'failure'])->assertOk();
+    Queue::assertNotPushed(NotificationJob::class); // day1 count=1 未达阈值
+
+    $this->travelTo(now()->addDay());
+    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'failure'])->assertOk();
+    Queue::assertPushed(NotificationJob::class, 1); // day2 count=2 → 真推送一次
+
+    // day2+1：第 3 次失败（count=3）→ SystemAlert 固定指纹 per-order 去重 → 不再推送
+    $this->travelTo(now()->addDay());
+    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'failure'])->assertOk();
+    Queue::assertPushed(NotificationJob::class, 1); // 仍恰 1 封（去重）
+
+    $this->travelBack();
+});
+
+test('⑲：error_logs 有 (exception, created_at) 复合索引支撑回调失败 7 天滑窗计数', function () {
+    // recordCallbackFailure 按 WHERE exception=? AND message LIKE ? AND created_at>=? 做滑窗 count；
+    // 无复合索引时只能走 created_at 范围扫全部异常再逐行过滤 exception。此索引让优化器直接 seek
+    // 到该异常 + 时间范围（exception 高选择性）。RED（无迁移）：无此索引；GREEN（迁移后）：存在。
+    $composite = collect(Schema::getIndexes('error_logs'))
+        ->first(fn ($idx) => $idx['columns'] === ['exception', 'created_at']);
+
+    expect($composite)->not->toBeNull();
+});
+
+// ========================================
 // update() — 错误场景
 // ========================================
 
@@ -791,6 +953,68 @@ test('update active 续费未开启自动续费', function () {
 });
 
 // ========================================
+// update() — 在途订单 CSR/域名守卫（F1-1）
+// ========================================
+
+test('update unpaid 携带新 csr 显式报错（在途订单 CSR 已定型）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'unpaid');
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => "-----BEGIN CERTIFICATE REQUEST-----\nNEW\n-----END CERTIFICATE REQUEST-----",
+    ])->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'));
+});
+
+test('update pending 携带新 domains 显式报错（在途订单域名已定型）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'pending');
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'domains' => 'a.example.com,b.example.com',
+    ])->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'));
+});
+
+test('update unpaid 仅传 order_id 不触发守卫（推进自愈路径不被破坏）', function () {
+    // 回归护栏：不带 csr/domains 的 unpaid 推进（pay）不应命中守卫
+    [$user, $token] = createDeployAuth(
+        User::factory()->create(['balance' => '0.00', 'credit_limit' => '0.00'])
+    );
+    [$order] = createDeployOrder($user, 'unpaid', [], ['amount' => '100.00']);
+
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+    ])->assertOk()->assertJson(['code' => 0]);
+
+    // 走 pay 分支（余额不足失败），而非被守卫拦截
+    expect((string) $response->json('msg'))->not->toContain('无法变更');
+});
+
+test('update pending 仅传 order_id → commit 推进：上游超时被吞返 200 + status=pending（O3 resume 自愈形态）', function () {
+    // O3 迁移后 resume 分支端到端护栏：卡在 pending 的在途单（已扣费、api_id 空），下游仅传 order_id 触达
+    // update 的 pending 分支 → getData('commit')。上游 commit 返回 code=0（超时/失败）被 getData 吞 → 订单停
+    // pending、下游可继续 poll 自愈，非报错。锁死「pending resume 入口的 commit 吞外溢」的 O3 迁移后形态。
+    $api = Mockery::mock(Api::class);
+    // 默认 pending cert 的 action='new' → commitLocked 调 $this->api->new()；令其返回 code=0 模拟上游超时/失败
+    $api->shouldReceive('new')->andReturn(['code' => 0, 'msg' => '上游超时']);
+    app()->instance(Api::class, $api);
+
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'pending');
+
+    $response = deployPost($token, '/api/deploy/', ['order_id' => $order->id])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    // commit 被吞 → 订单停 pending（下游 poll 自愈）、api_id 仍空（未推进上游）
+    expect($response->json('data.status'))->toBe('pending')
+        ->and($cert->fresh()->status)->toBe('pending')
+        ->and($cert->fresh()->api_id)->toBeNull();
+});
+
+// ========================================
 // update() — 正常流程（余额相关）
 // ========================================
 
@@ -828,13 +1052,129 @@ test('update active 续费通过 period 验证', function () {
     ]);
 
     // 控制器已继承原订单 period，不会因 period 缺失报错
-    // 后续会因 gateway 不可用而失败，但不应是参数验证错误
     $response = deployPost($token, '/api/deploy/', [
         'order_id' => $order->id,
     ]);
 
+    // 【O3 行为迁移认领】此前 pay(autoCommit=true) 的 commit 打不可达 gateway 失败 → 响应 code=0 错误；
+    // O3 后 renew+pay(false) 原子落 pending、commit 移出被 getData 吞 → 响应 code=1 + status=pending
+    // （对齐 V2 一条龙自愈哲学：卡单停 pending 靠 reconcile 自愈，非报错）。弱断言（无「有效期」参数错误）保留。
     $msg = $response->json('msg') ?? '';
     expect($msg)->not->toContain('有效期');
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.status'))->toBe('pending');
+});
+
+// ========================================
+// update() — 续费/重签 order 级互斥（F1-2）
+// ========================================
+
+test('update active 续费占锁时立即 503（抢锁早于建新单，Order 计数不变）', function () {
+    // 占锁路径（Cache 层）：与 Action::commit/cancel 共用 order_mutate_{id} 键，
+    // 预占该锁后 POST 续费 → withMutex 抢不到 → MutationBusyException → 503，
+    // 且在进 DB / 建新单之前抛出（Order 计数不变）。array driver 进程内互斥。
+    config(['cache.default' => 'array']);
+    Cache::store('array')->flush();
+
+    [$user, $token] = createDeployAuth(
+        User::factory()->create([
+            'balance' => '1000.00',
+            'auto_settings' => ['auto_renew' => true, 'auto_reissue' => false],
+        ])
+    );
+    [$order] = createDeployOrder($user, 'active', [
+        'common_name' => 'lock.example.com',
+        'alternative_names' => 'lock.example.com',
+    ], [
+        'period_till' => now()->addDays(5), // ≤15 天 → 续费
+        'auto_renew' => null,
+    ], [
+        'source' => 'default',
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    // 预占互斥锁（模拟同订单 commit/cancel 正在执行 / 另一续费请求持锁）
+    expect(Cache::lock("order_mutate_{$order->id}", 60)->get())->toBeTrue();
+
+    $before = Order::count();
+
+    deployPost($token, '/api/deploy/', ['order_id' => $order->id])
+        ->assertStatus(503);
+
+    // 抢锁失败早于建新单：无新订单
+    expect(Order::count())->toBe($before);
+});
+
+test('update active 续费并发前驱翻 renewed：内部 O1 CAS 挡下 {code:0}，不双开', function () {
+    // 移除 Deploy 显式预锁后（对齐 V2 一条龙，把 initParams 的 CSR/委托移出订单行锁），
+    // 防并发双开改由 renew 内部 persistOrder 的「源订单行锁 + 前驱翻转 affected-rows CAS」承担。
+    // 用 DB::listen 在锁内首条 orders FOR UPDATE 执行后把前驱证书翻 renewed，确定性复现
+    // 「CAS 读到 status!='active' → affected=0 → 三态守卫 '订单已续费' code=0 回滚」（非真并发、预设态）。
+    config(['cache.default' => 'array']);
+    Cache::store('array')->flush();
+
+    [$user, $token] = createDeployAuth(
+        User::factory()->create([
+            'balance' => '1000.00',
+            'auto_settings' => ['auto_renew' => true, 'auto_reissue' => false],
+        ])
+    );
+    [$order, $cert] = createDeployOrder($user, 'active', [
+        'common_name' => 'guard.example.com',
+        'alternative_names' => 'guard.example.com',
+    ], [
+        'period_till' => now()->addDays(5),
+        'auto_renew' => null,
+    ], [
+        'source' => 'default',
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    $before = Order::count();
+    $flipped = false;
+    DB::listen(function ($query) use (&$flipped, $cert) {
+        // 锁内首条 orders 行 FOR UPDATE（persistOrder）执行后翻转前驱证书状态
+        if (! $flipped
+            && str_contains(strtolower($query->sql), 'for update')
+            && str_contains(strtolower($query->sql), 'orders')) {
+            $flipped = true;
+            DB::table('certs')->where('id', $cert->id)->update(['status' => 'renewed']);
+        }
+    });
+
+    deployPost($token, '/api/deploy/', ['order_id' => $order->id])
+        ->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '订单已续费'));
+
+    expect($flipped)->toBeTrue();          // 确认 CAS 路径确实被触发
+    expect(Order::count())->toBe($before); // 无逃逸接替单（内部 CAS 挡下双开）
+});
+
+test('update active 重签不自死锁（pay 在锁外，commit 自锁与外层顺序获取）', function () {
+    // reissue 复用同一 orderId：若把 pay 放互斥锁内，pay→commit 二次抢同键必 MutationBusyException 自伤。
+    // pay 移出锁后是顺序获取（外层锁 finally 已释放），不应出现「正在处理中」自死锁文案。
+    config(['cache.default' => 'array']);
+    Cache::store('array')->flush();
+
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'active', [
+        'common_name' => 'reissue.example.com',
+        'alternative_names' => 'reissue.example.com',
+    ], [
+        'period_till' => now()->addMonths(6), // >15 天 → 重签
+    ], [
+        'source' => 'default',
+        'reissue' => 1,
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    // 上游 CA 未配置（测试无 gateway）→ pay→commit 会失败于上游（既有 renew 用例同款容忍，不 assertOk）。
+    // 关键断言：① 重签本地终态化在互斥锁内完成并提交（旧证书翻 reissued，证明锁工作且 finally 已释放）；
+    // ② 无「正在处理中」自死锁文案（若 pay 在锁内则 commit 二次抢同键抛 MutationBusyException）。
+    $response = deployPost($token, '/api/deploy/', ['order_id' => $order->id]);
+
+    expect($cert->fresh()->status)->toBe('reissued')
+        ->and((string) $response->json('msg'))->not->toContain('正在处理中');
 });
 
 // ========================================
@@ -867,6 +1207,21 @@ test('query GET query token 认证通过', function () {
         ->assertJson(['code' => 1]);
 
     $response->assertJsonPath('data.data.0.order_id', $order->id);
+});
+
+test('query GET query token 落 api_logs 时 url 脱敏（F1-3）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    // 走 query token 认证：?token=<real> 明文串传，url 字段须脱敏
+    test()->getJson("/api/deploy?token=$token->token&order=$order->id")->assertOk();
+
+    // LogBuffer 在请求 terminating 时 flush；测试内 HTTP 调用后已 flush
+    $log = ApiLog::query()->latest('id')->first();
+
+    expect($log)->not->toBeNull()
+        ->and($log->url)->not->toContain($token->token) // 明文 token 不落库
+        ->and($log->url)->toContain('order='.$order->id); // 业务参数保留
 });
 
 // ========================================

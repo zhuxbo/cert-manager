@@ -94,6 +94,7 @@ class Sdk
         try {
             $request = Http::withToken($this->apiToken)
                 ->timeout(30)
+                ->connectTimeout(10) // 对齐 Order Sdk min(10,timeout)；manager 多级代理上游按不可控处理，10<50 不破坏 1205 防护
                 ->acceptJson();
 
             $response = match (strtoupper($method)) {

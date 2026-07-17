@@ -192,7 +192,9 @@ import type { FormInstance, FormRules } from "element-plus";
 import * as ProductApi from "@/api/product";
 import * as ProductPriceApi from "@/api/productPrice";
 import * as UserLevelApi from "@/api/userLevel";
+import type { UserLevelDto } from "@/api/userLevel";
 import { periodLabels } from "@/views/system/dictionary";
+import { toCostRateNumber } from "@/views/userLevel/costRate";
 import { message } from "@shared/utils";
 
 // 定义组件属性（保持向后兼容，新增可选 productId）
@@ -350,17 +352,15 @@ const availablePriceTypes = computed(() => {
 const getUserLevelInfo = () => {
   setTimeout(() => {
     if (formData!.level_codes.length > 0) {
-      UserLevelApi.batchShowInCodes(formData!.level_codes).then(
-        (res: BaseResponse<any>) => {
-          // 获取选中的会员级别
-          res.data.forEach(
-            (item: { code: string; name: string; cost_rate: number }) => {
-              userLevelNames.value[item.code] = item.name;
-              userLevelCostRates.value[item.code] = item.cost_rate;
-            }
+      UserLevelApi.batchShowInCodes(formData!.level_codes).then(res => {
+        // 获取选中的会员级别
+        res.data?.forEach((item: UserLevelDto) => {
+          userLevelNames.value[item.code] = item.name;
+          userLevelCostRates.value[item.code] = toCostRateNumber(
+            item.cost_rate
           );
-        }
-      );
+        });
+      });
     } else {
       userLevelNames.value = {};
       userLevelCostRates.value = {};

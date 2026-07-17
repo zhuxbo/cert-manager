@@ -1,0 +1,37 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\OrderControllerTest::__pest_evaluable_管理员修改申请信息时企业和联系人电话可以使用纯数字",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/order/applicant/{id}",
+            "request_keys": [
+                "contact",
+                "organization"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "organization": {
+                        "name": "string",
+                        "registration_number": "string",
+                        "phone": "integer",
+                        "address": "string",
+                        "city": "string",
+                        "state": "string",
+                        "country": "string",
+                        "postcode": "string"
+                    },
+                    "contact": {
+                        "first_name": "string",
+                        "last_name": "string",
+                        "title": "string",
+                        "email": "string",
+                        "phone": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

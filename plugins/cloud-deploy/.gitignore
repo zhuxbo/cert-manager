@@ -1,0 +1,11 @@
+# 插件独立 vendor 不入库（承载阿里/腾讯官方云 SDK 约 80M）：改为运行时安装——
+# 主系统 PluginManager 在安装/更新本插件时按 backend/composer.json 跑 composer install，
+# 把依赖拉进 backend/vendor/。故此处不再反忽略 vendor，回落根 .gitignore 的全局 `vendor/` 忽略。
+# 注意：backend/composer.json 与 backend/composer.lock 仍随包发布（供安装时 composer install 用）。
+
+# 插件前端独立 workspace 必须入库：定义独立 pnpm workspace 根（隔离主 monorepo），
+# 并经 allowBuilds 放行 esbuild/vue-demi 构建脚本（pnpm 11 默认禁止）。
+# 覆盖根 .gitignore 的 `plugins/*/frontend/*/pnpm-workspace.yaml` 忽略——本插件不用
+# --ignore-workspace（靠文件存在定义独立根），故该文件是「活文件」而非死文件，需随包构建。
+!frontend/user/pnpm-workspace.yaml
+!frontend/admin/pnpm-workspace.yaml

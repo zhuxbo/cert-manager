@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Upgrade\UpgradeStatusManager;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Config;
 use Tests\TestCase;
 
@@ -17,6 +18,7 @@ beforeEach(function () {
 afterEach(function () {
     // 测试后清理状态
     $this->statusManager->clear();
+    Carbon::setTestNow();
 });
 
 test('start creates status file', function () {
@@ -250,4 +252,201 @@ test('complete with structure check stores result', function () {
     expect($status['status'])->toBe('completed');
     expect($status)->toHaveKey('structure_check');
     expect($status['structure_check']['has_diff'])->toBeFalse();
+});
+
+// ============================================================
+// H1：心跳 updated_at + PID 存活探测 + stale 判定（防 SIGKILL 卡 running）
+// ============================================================
+
+/** 直接写 status.json，绕过 save() 的 updated_at 注入，构造受控 pid / 时间戳 */
+function h1WriteStatus(array $overrides): void
+{
+    $file = storage_path('upgrades/status.json');
+    if (! is_dir(dirname($file))) {
+        mkdir(dirname($file), 0755, true);
+    }
+    $base = [
+        'status' => 'running',
+        'version' => 'v1.0.0',
+        'started_at' => now()->toDateTimeString(),
+        'updated_at' => now()->toDateTimeString(),
+        'pid' => getmypid(),
+        'current_step' => null,
+        'steps' => [],
+        'progress' => 0,
+        'error' => null,
+    ];
+    file_put_contents($file, json_encode(array_merge($base, $overrides)));
+}
+
+/** 取一个确定性已死的 PID：proc_open 起子进程、proc_close 等它退出后该 PID 即死 */
+function h1DeadPid(): int
+{
+    $proc = proc_open('exit 0', [], $pipes);
+    $pid = (int) proc_get_status($proc)['pid'];
+    proc_close($proc);
+
+    return $pid;
+}
+
+test('H1 start 写入 pid，save 注入 updated_at 且随 Carbon::setTestNow 推进刷新', function () {
+    Carbon::setTestNow(Carbon::parse('2026-07-11 12:00:00'));
+    $this->statusManager->start('v1.0.0');
+
+    $first = $this->statusManager->get();
+    expect($first)->toHaveKey('pid')
+        ->and($first['pid'])->toBe(getmypid())
+        ->and($first)->toHaveKey('updated_at')
+        ->and($first['updated_at'])->toBe('2026-07-11 12:00:00');
+
+    Carbon::setTestNow(Carbon::parse('2026-07-11 12:05:00'));
+    $this->statusManager->updateStep('download', 'running');
+    expect($this->statusManager->get()['updated_at'])->toBe('2026-07-11 12:05:00');
+});
+
+test('H1 running + 超时 2h + PID 已死 → isRunning()===false（闸门重开交 watchdog）', function () {
+    Config::set('upgrade.stale_seconds', 3600);
+    h1WriteStatus([
+        'pid' => h1DeadPid(),
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+    ]);
+
+    expect($this->statusManager->isRunning())->toBeFalse();
+});
+
+test('H1 running + 超时 2h 但 PID 存活 → isRunning()===true（PID 一票否决，防误 up 半迁移库）', function () {
+    Config::set('upgrade.stale_seconds', 3600);
+    h1WriteStatus([
+        'pid' => getmypid(), // 本进程恒活
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+    ]);
+
+    expect($this->statusManager->isRunning())->toBeTrue();
+});
+
+test('H1 心跳新鲜（updated_at=now）→ isRunning()===true（未超阈不算 stale）', function () {
+    Config::set('upgrade.stale_seconds', 3600);
+    h1WriteStatus([
+        'pid' => h1DeadPid(), // 即便进程死，时间未过阈也不 stale
+        'updated_at' => now()->toDateTimeString(),
+    ]);
+
+    expect($this->statusManager->isRunning())->toBeTrue();
+});
+
+test('H1 缺 updated_at 回落 started_at 判定超时', function () {
+    Config::set('upgrade.stale_seconds', 3600);
+    $file = storage_path('upgrades/status.json');
+    if (! is_dir(dirname($file))) {
+        mkdir(dirname($file), 0755, true);
+    }
+    file_put_contents($file, json_encode([
+        'status' => 'running',
+        'version' => 'v1.0.0',
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'pid' => h1DeadPid(),
+        'steps' => [],
+    ]));
+
+    expect($this->statusManager->isRunning())->toBeFalse();
+});
+
+test('H1 缺 pid（旧格式 status.json）+ 超时 → 按不存活处理 → stale', function () {
+    Config::set('upgrade.stale_seconds', 3600);
+    $file = storage_path('upgrades/status.json');
+    if (! is_dir(dirname($file))) {
+        mkdir(dirname($file), 0755, true);
+    }
+    file_put_contents($file, json_encode([
+        'status' => 'running',
+        'version' => 'v1.0.0',
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+        'steps' => [],
+        // 无 pid 字段
+    ]));
+
+    expect($this->statusManager->isRunning())->toBeFalse();
+});
+
+// ============================================================
+// PID 复用防护——isProcessAlive 在 /proc/{pid} 存在后再校验 starttime，
+// 避免死升级 PID 被长寿进程复用时误判「进程活」→ watchdog 永不自愈 + execute 闸门永闭。
+// 仅 Linux(/proc) 生效；生产恒 Linux、测试容器为 Linux。
+// ============================================================
+
+test('⑯ start() 写入 pid_starttime（Linux）', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux，无 /proc，starttime 校验不适用');
+    }
+
+    $this->statusManager->start('v1.0.0');
+
+    $status = $this->statusManager->get();
+    expect($status)->toHaveKey('pid_starttime')
+        ->and($status['pid_starttime'])->not->toBeNull()
+        // starttime 是 /proc/{pid}/stat 第 22 字段（自 boot 的 clock ticks），数字串
+        ->and(ctype_digit((string) $status['pid_starttime']))->toBeTrue();
+});
+
+test('⑯ isProcessAlive：活 PID + 记录 starttime 匹配 → true', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+
+    // start() 写本进程真实 pid + starttime；本进程恒活、starttime 自匹配
+    $this->statusManager->start('v1.0.0');
+    $data = $this->statusManager->get();
+
+    expect($this->statusManager->isProcessAlive($data))->toBeTrue();
+});
+
+test('⑯ isProcessAlive：活 PID 但记录 starttime 不符（PID 复用）→ false', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+
+    // 本进程恒活（/proc/{pid} 存在），但记录一个不可能匹配的 starttime →
+    // 等价于「原升级进程已死、该 PID 被本进程复用」→ 应判死
+    $data = [
+        'status' => 'running',
+        'pid' => getmypid(),
+        'pid_starttime' => '1', // boot 后 1 tick，几乎不可能等于任何真实进程 starttime
+    ];
+
+    expect($this->statusManager->isProcessAlive($data))->toBeFalse();
+});
+
+test('⑯ isProcessAlive：活 PID + 旧格式无 pid_starttime → true（兼容回落）', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+
+    // 旧格式 status.json 无 pid_starttime → 不因缺字段误判，回落只判 /proc 存在
+    $data = [
+        'status' => 'running',
+        'pid' => getmypid(),
+        // 无 pid_starttime
+    ];
+
+    expect($this->statusManager->isProcessAlive($data))->toBeTrue();
+});
+
+test('⑯ 杀手场景：running + 超时 + 活 PID 但 starttime 不符（复用）→ isRunning()===false（闸门重开）', function () {
+    if (! is_dir('/proc')) {
+        $this->markTestSkipped('非 Linux');
+    }
+    Config::set('upgrade.stale_seconds', 3600);
+
+    // 活 PID（本进程）但记录 starttime 对不上 = PID 复用 → 不再一票否决
+    h1WriteStatus([
+        'pid' => getmypid(),
+        'pid_starttime' => '1',
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+    ]);
+
+    expect($this->statusManager->isRunning())->toBeFalse();
 });

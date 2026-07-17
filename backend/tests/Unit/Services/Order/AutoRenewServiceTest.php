@@ -349,6 +349,105 @@ test('will auto reissue execute boundary 16 days returns true', function () {
     expect($result)->toBeTrue(); // 超过15天应该返回true（走重签）
 });
 
+// ==================== A3: 非 ssl 产品退出自动续费/重签选单 ====================
+// 存量 smime/codesign/docsign 订单被默认开启的 auto_reissue 卷入重签选单，
+// 对无域名验证的产品创建垃圾委托记录。A3 让 willAuto* 只对 ssl 返 true，
+// 使 ExpireCommand::willBeHandledByAutoRenew / CertExpireNotificationBuilder 两处消费点
+// 自动排除非 ssl（改走 cert_expire 到期提醒）。杀手：漏改 willAuto* 致「选单排除但仍被判会处理」两腿断。
+
+test('will auto renew execute returns false for smime product (A3)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => true, 'auto_reissue' => false]]);
+    $product = $this->createTestProduct(['status' => 1, 'renew' => 1, 'product_type' => 'smime']);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10), // ≤15天，本应走续费
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(5)]);
+    $order->refresh();
+
+    expect($this->service->willAutoRenewExecute($order, $user))->toBeFalse();
+});
+
+test('will auto renew execute returns false for codesign product (A3)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => true, 'auto_reissue' => false]]);
+    $product = $this->createTestProduct(['status' => 1, 'renew' => 1, 'product_type' => 'codesign']);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10),
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(5)]);
+    $order->refresh();
+
+    expect($this->service->willAutoRenewExecute($order, $user))->toBeFalse();
+});
+
+test('will auto reissue execute returns false for smime product (A3)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'reissue' => 1, 'product_type' => 'smime']);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_reissue' => true,
+        'period_till' => now()->addDays(30), // >15天，本应走重签
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(10)]);
+    $order->refresh();
+
+    expect($this->service->willAutoReissueExecute($order, $user))->toBeFalse();
+});
+
+test('will auto reissue execute returns false for codesign product (A3)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'reissue' => 1, 'product_type' => 'codesign']);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_reissue' => true,
+        'period_till' => now()->addDays(30),
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(10)]);
+    $order->refresh();
+
+    expect($this->service->willAutoReissueExecute($order, $user))->toBeFalse();
+});
+
+test('will auto reissue execute returns false for docsign product (A3 白名单：非 ssl 一律排除)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'reissue' => 1, 'product_type' => 'docsign']);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_reissue' => true,
+        'period_till' => now()->addDays(30),
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(10)]);
+    $order->refresh();
+
+    expect($this->service->willAutoReissueExecute($order, $user))->toBeFalse();
+});
+
+test('will auto renew execute still true for explicit ssl product_type (A3 回归护栏)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => true, 'auto_reissue' => false]]);
+    $product = $this->createTestProduct(['status' => 1, 'renew' => 1, 'product_type' => 'ssl']);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_renew' => true,
+        'period_till' => now()->addDays(10),
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(5)]);
+    $order->refresh();
+
+    expect($this->service->willAutoRenewExecute($order, $user))->toBeTrue();
+});
+
+test('will auto reissue execute still true for null product_type (A3：null 视为 ssl，模拟历史行)', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'reissue' => 1]);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_reissue' => true,
+        'period_till' => now()->addDays(30),
+    ]);
+    $this->createTestCert($order, ['channel' => 'web', 'expires_at' => now()->addDays(10)]);
+    $order->refresh();
+    // 列 NOT NULL default 'ssl'，DB 无法存 NULL；在内存把关系置 null，验证 isSSL 的兜底（null→ssl）
+    $order->product->product_type = null;
+
+    expect($this->service->willAutoReissueExecute($order, $user))->toBeTrue();
+});
+
 // ==================== checkDelegationValidity ====================
 
 test('check delegation validity auto creates delegation when missing', function () {

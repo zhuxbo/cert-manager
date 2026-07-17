@@ -14,6 +14,7 @@ afterEach(function () {
     foreach (glob(sys_get_temp_dir().'/pcr-test-*') as $dir) {
         File::deleteDirectory($dir);
     }
+    File::deleteDirectory(storage_path('app/plugin-composer'));
 });
 
 /**
@@ -112,6 +113,34 @@ test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路
     expect($cmd)->toContain("'/usr/bin/php' '/usr/local/bin/composer'");
 });
 
+test('runShell 为 composer 子进程提供可写 HOME 和 COMPOSER_HOME', function () {
+    $runner = new class(Mockery::mock(BinaryLocator::class), passingPreflight()) extends PluginComposerRunner
+    {
+        public function exposeRunShell(string $command): array
+        {
+            return $this->runShell($command);
+        }
+    };
+
+    $script = <<<'PHP'
+echo getenv('HOME')."\n";
+echo getenv('COMPOSER_HOME')."\n";
+echo getenv('COMPOSER_CACHE_DIR')."\n";
+PHP;
+
+    [$exitCode, $output] = $runner->exposeRunShell(
+        escapeshellarg(PHP_BINARY).' -r '.escapeshellarg($script)
+    );
+
+    expect($exitCode)->toBe(0);
+    expect(explode("\n", trim($output)))->toBe([
+        storage_path('app/plugin-composer'),
+        storage_path('app/plugin-composer'),
+        storage_path('app/plugin-composer/cache'),
+    ]);
+    expect(is_dir(storage_path('app/plugin-composer/cache')))->toBeTrue();
+});
+
 test('install composer install 退出码非 0 时抛明确错误', function () {
     $locator = Mockery::mock(BinaryLocator::class);
     $locator->shouldReceive('composer')->andReturn("'php' 'composer'");
@@ -133,6 +162,37 @@ test('install composer install 退出码非 0 时抛明确错误', function () {
 
     expect(fn () => $runner->install($pluginDir, 'cloud-deploy'))
         ->toThrow(RuntimeException::class, '插件 cloud-deploy 依赖安装失败');
+});
+
+test('install 执行异常时仍还原 composer 镜像', function () {
+    $locator = Mockery::mock(BinaryLocator::class);
+    $locator->shouldReceive('composer')->andReturn("'php' 'composer'");
+
+    $runner = new class($locator, passingPreflight()) extends PluginComposerRunner
+    {
+        public bool $reset = false;
+
+        protected function configureComposerMirror(string $basePath, string $composerCmd): bool
+        {
+            return true;
+        }
+
+        protected function resetComposerMirror(string $basePath, string $composerCmd): void
+        {
+            $this->reset = true;
+        }
+
+        protected function runShell(string $command): array
+        {
+            throw new RuntimeException('process crashed');
+        }
+    };
+
+    $pluginDir = makePluginDir();
+
+    expect(fn () => $runner->install($pluginDir, 'cloud-deploy'))
+        ->toThrow(RuntimeException::class, 'process crashed');
+    expect($runner->reset)->toBeTrue();
 });
 
 // ==================== install — preflight 失败（composer 不可用 / proc_open 禁用）====================

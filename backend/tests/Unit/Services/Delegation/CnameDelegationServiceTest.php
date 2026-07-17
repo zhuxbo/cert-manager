@@ -2,9 +2,11 @@
 
 use App\Models\CnameDelegation;
 use App\Services\Delegation\CnameDelegationService;
+use App\Services\Delegation\DnsResolver;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
@@ -15,6 +17,18 @@ beforeEach(function () {
     $this->seeder = DatabaseSeeder::class;
     $this->service = new CnameDelegationService;
 });
+
+/**
+ * 确定性化 probeValidity 的 DNS 探测：清空 dnsTools（不打外部 URL）+ 注入三态 DnsResolver 桩。
+ * null=不可达 / []=权威无记录（invalid）/ 命中目标=valid。避免依赖真实网络（反模式 15）。
+ */
+function serviceCnameProbeStub(?array $cnameRecords): void
+{
+    Cache::put('setting:group_name:site', [], 3600); // 无 dnsTools → 仅本地渠道
+    $stub = Mockery::mock(DnsResolver::class);
+    $stub->shouldReceive('cnameRecords')->andReturn($cnameRecords);
+    app()->instance(DnsResolver::class, $stub);
+}
 
 // ==================== createOrGet ====================
 
@@ -246,9 +260,10 @@ test('find valid delegation dnsauth ca normalizes www to root when not exact', f
     expect($found->id)->toBe($created->id);
 });
 
-// ==================== checkAndUpdateValidity ====================
+// ==================== checkAndUpdateValidity（组合，签名保持）====================
 
 test('check and update validity returns boolean', function () {
+    serviceCnameProbeStub([]); // 权威无记录 → invalid（确定性，不依赖真实 DNS）
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, [
         'zone' => 'example.com',
@@ -257,8 +272,6 @@ test('check and update validity returns boolean', function () {
         'fail_count' => 3,
     ]);
 
-    // 实际调用会失败（因为没有真实的 CNAME 记录）
-    // 这个测试验证方法能正常执行并返回布尔值
     $result = $this->service->checkAndUpdateValidity($delegation);
 
     expect($result)->toBeBool();
@@ -266,6 +279,7 @@ test('check and update validity returns boolean', function () {
 });
 
 test('check and update validity failure increments fail count', function () {
+    serviceCnameProbeStub([]); // 权威无记录 → invalid → fail_count++
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, [
         'zone' => 'example.com',
@@ -274,7 +288,6 @@ test('check and update validity failure increments fail count', function () {
         'fail_count' => 0,
     ]);
 
-    // 实际调用会失败（因为没有真实的 CNAME 记录）
     $result = $this->service->checkAndUpdateValidity($delegation);
 
     $delegation->refresh();
@@ -284,6 +297,8 @@ test('check and update validity failure increments fail count', function () {
 });
 
 test('check and update validity caps fail count at 100', function () {
+    serviceCnameProbeStub([]); // 权威无记录 → invalid
+
     $user = $this->createTestUser();
 
     // 99 → 失败一次 → 100
@@ -307,6 +322,99 @@ test('check and update validity caps fail count at 100', function () {
     $this->service->checkAndUpdateValidity($d100);
     $d100->refresh();
     expect($d100->fail_count)->toBe(100);
+});
+
+test('check and update validity unreachable 冻结 fail_count（不误计数）', function () {
+    serviceCnameProbeStub(null); // 死解析器/不可达 → unreachable
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'frozen.com',
+        'prefix' => '_dnsauth',
+        'valid' => true,
+        'fail_count' => 1,
+    ]);
+
+    $result = $this->service->checkAndUpdateValidity($delegation);
+
+    $delegation->refresh();
+    expect($result)->toBeFalse()                    // fail-safe：不可达返 false
+        ->and($delegation->fail_count)->toBe(1)     // 冻结：不递增
+        ->and($delegation->valid)->toBeTrue()       // 冻结：不翻 false
+        ->and($delegation->last_checked_at)->not->toBeNull(); // 仅留痕
+});
+
+// ==================== applyProbeOutcome（三态落库直测）====================
+
+test('apply probe outcome valid → valid=true + 归零 + 清 last_error', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'v.com',
+        'prefix' => '_dnsauth',
+        'valid' => false,
+        'fail_count' => 3,
+        'last_error' => 'prev error',
+    ]);
+
+    $result = $this->service->applyProbeOutcome($delegation, 'valid');
+
+    $delegation->refresh();
+    expect($result)->toBeTrue()
+        ->and($delegation->valid)->toBeTrue()
+        ->and($delegation->fail_count)->toBe(0)
+        ->and($delegation->last_error)->toBe('');
+});
+
+test('apply probe outcome invalid → valid=false + fail_count++ + 固定 last_error（不含原始异常）', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'i.com',
+        'prefix' => '_dnsauth',
+        'valid' => true,
+        'fail_count' => 1,
+    ]);
+
+    $result = $this->service->applyProbeOutcome($delegation, 'invalid');
+
+    $delegation->refresh();
+    expect($result)->toBeFalse()
+        ->and($delegation->valid)->toBeFalse()
+        ->and($delegation->fail_count)->toBe(2)
+        ->and($delegation->last_error)->toBe(CnameDelegationService::INVALID_LAST_ERROR);
+});
+
+test('apply probe outcome unreachable → 冻结 valid/fail_count/last_error（分档核心回归护栏）', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'u.com',
+        'prefix' => '_dnsauth',
+        'valid' => true,
+        'fail_count' => 4,
+        'last_error' => 'prev',
+    ]);
+
+    $result = $this->service->applyProbeOutcome($delegation, 'unreachable');
+
+    $delegation->refresh();
+    expect($result)->toBeFalse()
+        ->and($delegation->valid)->toBeTrue()        // 冻结
+        ->and($delegation->fail_count)->toBe(4)       // 冻结（不 ++）
+        ->and($delegation->last_error)->toBe('prev')  // 冻结
+        ->and($delegation->last_checked_at)->not->toBeNull(); // 仅留痕更新
+});
+
+test('apply probe outcome invalid caps fail_count at 100', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'cap.com',
+        'prefix' => '_dnsauth',
+        'valid' => false,
+        'fail_count' => 100,
+    ]);
+
+    $this->service->applyProbeOutcome($delegation, 'invalid');
+
+    $delegation->refresh();
+    expect($delegation->fail_count)->toBe(100); // 硬截断，不溢出
 });
 
 // ==================== withCnameGuide ====================

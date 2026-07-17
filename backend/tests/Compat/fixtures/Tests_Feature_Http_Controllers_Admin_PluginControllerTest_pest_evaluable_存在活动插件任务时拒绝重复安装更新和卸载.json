@@ -1,0 +1,42 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\PluginControllerTest::__pest_evaluable_存在活动插件任务时拒绝重复安装更新和卸载",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/plugin/install",
+            "request_keys": [
+                "name"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/plugin/uninstall",
+            "request_keys": [
+                "name"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/plugin/update",
+            "request_keys": [
+                "name"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

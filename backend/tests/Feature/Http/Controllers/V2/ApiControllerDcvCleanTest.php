@@ -259,6 +259,25 @@ test('updateDCV 拦截 delegation 验证方法', function () {
     expect($response['msg'])->toContain('委托验证');
 });
 
+test('updateDCV-显式 null method 归一为字符串再传 Action（input 默认值对显式 null 不生效）', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $this->createTestCert($order, ['status' => 'processing']);
+
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('updateDCV')
+        ->once()
+        ->withArgs(fn ($orderId, $method) => $method === '' && is_string($method));
+
+    // 显式传 method=null 模拟客户端 {"method": null}；修复前 input('method','') 会穿透为 null
+    $controller = makeController(['order_id' => $order->id, 'method' => null], 'POST', $action, $user->id);
+
+    $controller->updateDCV();
+
+    expect(true)->toBeTrue();
+});
+
 // ── getProducts delegation 过滤测试 ──
 
 test('getProducts 过滤 validation_methods 中的 delegation', function () {

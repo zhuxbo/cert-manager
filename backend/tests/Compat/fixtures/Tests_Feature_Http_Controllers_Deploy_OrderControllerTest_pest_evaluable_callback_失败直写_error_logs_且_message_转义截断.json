@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败直写_error__logs_且_message_转义截断",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy/callback",
+            "request_keys": [
+                "message",
+                "order_id",
+                "status"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "status": "string",
+                    "recorded": "boolean",
+                    "renew_before_days": "integer"
+                }
+            }
+        }
+    ]
+}

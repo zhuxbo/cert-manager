@@ -129,13 +129,9 @@ trait ActionBatchTrait
             } else {
                 // processing/approving/active 分支：事务 + 行锁 + 锁内 status 二次校验，
                 // 与单体 commitCancel 的 active 分支同构，防止与 cancel TaskJob/revokeCancel 竞态
-                DB::transaction(function () use ($order) {
+                $this->runTaskMutationTransaction(function () use ($order) {
                     // 锁顺序 1：先锁 commit/sync/revalidate task（与 TaskJob::handle 的 task→order 顺序一致）
-                    Task::where('order_id', $order->id)
-                        ->whereIn('action', ['commit', 'sync', 'revalidate'])
-                        ->whereIn('status', ['executing', 'stopped'])
-                        ->lockForUpdate()
-                        ->get();
+                    Task::lockForMutation($order->id, ['commit', 'sync', 'revalidate'])->get();
 
                     // 锁顺序 2：再锁 order
                     $locked = Order::with(['latestCert'])

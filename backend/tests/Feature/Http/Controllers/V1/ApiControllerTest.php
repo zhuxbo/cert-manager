@@ -1,10 +1,13 @@
 <?php
 
+use App\Http\Controllers\V1\ApiController;
 use App\Models\ApiToken;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
+use App\Services\Order\Action;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
 /**
@@ -16,6 +19,23 @@ function createV1AuthHeaders(User $user): array
     $plainToken = ApiToken::createToken($user->id);
 
     return ['Authorization' => "Bearer $plainToken"];
+}
+
+function setV1Prop(ApiController $controller, string $property, mixed $value): void
+{
+    (new ReflectionClass($controller))->getProperty($property)->setValue($controller, $value);
+}
+
+function buildV1Controller(array $input, string $method, Action $action, int $userId): ApiController
+{
+    $request = Request::create('/api/V1/test', $method, $input);
+    $controller = (new ReflectionClass(ApiController::class))->newInstanceWithoutConstructor();
+    setV1Prop($controller, 'request', $request);
+    setV1Prop($controller, 'user_id', $userId);
+    setV1Prop($controller, 'model', new Order);
+    setV1Prop($controller, 'action', $action);
+
+    return $controller;
 }
 
 test('V1 健康检查', function () {
@@ -110,6 +130,36 @@ test('V1 通过 refer_id 获取订单ID-不存在', function () {
         ->postJson('/api/V1/getOidByReferId', ['refer_id' => 'nonexistent'])
         ->assertOk()
         ->assertJson(['code' => 0]);
+});
+
+test('V1 updateDCV-显式 null method 不再 500（input 默认值穿透修复）', function () {
+    $user = User::factory()->create();
+    $headers = createV1AuthHeaders($user);
+    $product = Product::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'alternative_names' => 'example.com',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->withHeaders($headers)
+        ->postJson('/api/V1/updateDCV', ['oid' => $order->id, 'method' => null])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
+test('V1 download-显式 null type 归一为字符串再传 Action（input 默认值对显式 null 不生效）', function () {
+    // download 端点成功/空结果都会 exit 终止进程，无法走 HTTP；反射注入 mock action 验证控制器层把 null 归一为字符串
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('download')
+        ->once()
+        ->withArgs(fn ($ids, $type) => $type === 'all' && is_string($type));
+
+    $controller = buildV1Controller(['oid' => 123, 'type' => null], 'POST', $action, 1);
+    $controller->download();
+
+    expect(true)->toBeTrue();
 });
 
 test('V1 API-未认证', function () {

@@ -7,8 +7,11 @@ use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
 use App\Services\Notification\NotificationCenter;
+use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Tests\Traits\CreatesTestData;
 
 uses(CreatesTestData::class);
@@ -59,6 +62,12 @@ test('有续费订单时调用 renew → pay(不提交) → 创建延时 commit'
 
     $this->autoRenewService->shouldReceive('checkDelegationValidity')
         ->andReturn(true);
+
+    // A4：配置价格行让续费守卫放行（否则缺价跳过、renew 不被调）
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
 
     // Mock Action：renew 和 pay 通过 ApiResponseException 返回成功
     $actionMock = Mockery::mock(Action::class);
@@ -269,6 +278,12 @@ test('上游/系统错误 → 发失败通知但归一文案、不泄露原始�
 
     $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
+    // A4：配置价格行让续费守卫放行（缺价会在余额/renew 之前跳过）
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
+
     // renew 抛上游错误（无 order_id）→ 命令转 \Exception('上游下单失败xyz')
     $actionMock = Mockery::mock(Action::class);
     $actionMock->shouldReceive('renew')->once()
@@ -316,6 +331,36 @@ test('域名包含 IP 地址时跳过订单', function () {
         ->assertSuccessful();
 });
 
+test('A3：smime 重签单被选单 SQL 过滤排除 → 不调 reissue、不建委托', function () {
+    // A3 选单过滤：getReissueOrders 的 whereHas(product) 加 ssl 白名单，非 ssl 不进选单。
+    $user = User::factory()->create([
+        'auto_settings' => ['auto_renew' => false, 'auto_reissue' => true],
+    ]);
+    $product = Product::factory()->create(['status' => 1, 'reissue' => 1, 'product_type' => 'smime']);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addMonths(6), // >15 天，本应走重签
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5), // 证书临期
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    // 被 SQL 排除 → 根本不进 processOrder，故不调委托检查、不调 reissue
+    $this->autoRenewService->shouldNotReceive('checkDelegationValidity');
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldNotReceive('reissue');
+    $actionMock->shouldNotReceive('renew');
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
 test('自动续费构造的 params 不含 encryption（依赖后端 initParams 继承，不注入降级默认）', function () {
     $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
     $product = Product::factory()->create(['status' => 1, 'renew' => 1, 'reuse_csr' => 0]);
@@ -339,6 +384,12 @@ test('自动续费构造的 params 不含 encryption（依赖后端 initParams �
 
     $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
+    // A4：配置价格行让续费守卫放行
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
+
     $captured = null;
     $actionMock = Mockery::mock(Action::class);
     $actionMock->shouldReceive('renew')->once()
@@ -357,4 +408,307 @@ test('自动续费构造的 params 不含 encryption（依赖后端 initParams �
     expect($captured)->not->toBeNull();
     expect(isset($captured['encryption']))->toBeFalse();
     expect($captured['csr_generate'] ?? null)->toBe(1);
+});
+
+// ==================== A2：余额不足独立去重键（脱离节点 gate） ====================
+
+/** A2 余额不足单公共装配：balance 0 + credit 0 + 价格行 100 + 指定 expires_at，触发余额分支 */
+function makeBalanceShortOrder(object $test, $expiresAt, ?User $user = null): array
+{
+    $user ??= User::factory()->withBalance('0.00')->withAutoRenew()->create(['credit_limit' => '0.00']);
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(14),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => $expiresAt,
+        'channel' => 'web',
+        'common_name' => 'shortbalance.example.com',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    return [$user, $product, $order, $cert];
+}
+
+test('A2：余额不足 + 非节点日 → 仍发（脱离节点 gate，独立去重键首发）', function () {
+    // 现状（节点 gate）非节点日不发；A2 改独立去重后首发（Cache::add 成功）→ 本用例改前红
+    [$user] = makeBalanceShortOrder($this, now()->addDays(5)); // 非节点（节点 14/7/3/1）
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'
+            && str_contains($intent->context['reason'] ?? '', '余额不足')));
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
+test('A2：余额不足 N 天内复跑 → 不重发（per-user cache 去重）', function () {
+    [$user] = makeBalanceShortOrder($this, now()->addDays(12)); // 非节点，两轮均非 final-window
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // 两轮合计仅一封
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'));
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+    Carbon::setTestNow(now()->addDay()); // 推进 1 天（< 3 天间隔）
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+    Carbon::setTestNow();
+});
+
+test('A2：余额不足推进 > N 天 → 再发（去重键 TTL 到期）', function () {
+    [$user] = makeBalanceShortOrder($this, now()->addDays(12)); // 推进 4 天后 now+8，仍非节点
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    $this->notificationCenter->shouldReceive('dispatch')->twice()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'));
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+    Carbon::setTestNow(now()->addDays(4)); // > 3 天间隔，键已过期
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+    Carbon::setTestNow();
+});
+
+test('A2：同用户 3 张余额不足单 → 只发一封（per-user 去重防风暴）', function () {
+    $user = User::factory()->withBalance('0.00')->withAutoRenew()->create(['credit_limit' => '0.00']);
+    for ($i = 0; $i < 3; $i++) {
+        makeBalanceShortOrder($this, now()->addDays(5), $user); // 同用户，非节点
+    }
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // per-user 键 → 3 单只一封
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'));
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
+test('A2：final-window（到期≤1天）即使去重键存续也豁免必发（I2 兜底必达下界）', function () {
+    [$user] = makeBalanceShortOrder($this, now()->addHours(12)); // 节点 1 窗口 [now, now+1]
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // 预置去重键（模拟 day-12 已发过）——final-window 应豁免、仍发
+    Cache::put("auto_renew_balance_notified:{$user->id}", true, now()->addDays(3));
+
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'
+            && str_contains($intent->context['reason'] ?? '', '余额不足')));
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
+test('A2：余额充足（续费成功路径）清除欠费去重键 → 恢复后再欠费不被陈旧键抑制', function () {
+    $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '100.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    // 预置欠费去重键（模拟之前欠费发过信）
+    $key = "auto_renew_balance_notified:{$user->id}";
+    Cache::put($key, true, now()->addDays(3));
+    expect(Cache::has($key))->toBeTrue();
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('renew')->once()
+        ->andThrow(new ApiResponseException('', null, ['order_id' => $order->id], 1));
+    $actionMock->shouldReceive('pay')->once()->with($order->id, false)
+        ->andThrow(new ApiResponseException('', null, null, 1));
+    $actionMock->shouldReceive('createTask')->once()
+        ->with($order->id, 'commit', Mockery::type('int'));
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+
+    // 余额充足 → 健康分支清键；恢复后再欠费立即发（键已清）
+    expect(Cache::has($key))->toBeFalse();
+});
+
+test('A2 护栏：委托失败仍受节点 gate（非节点日不发，只改余额分支）', function () {
+    // 与 A2 余额分支对照：委托失败走 sendFailureNotification 节点 gate，非节点日不发（现状保持）
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5), // 非节点
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(false);
+
+    // 委托失败 + 非节点 → 不发（节点 gate 未变）
+    $this->notificationCenter->shouldNotReceive('dispatch');
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
+// ==================== A4：零价成单守卫 ====================
+
+test('A4：续费单缺价格行 → 不调 renew/pay，发兜底通知 + SystemAlert 缺价告警', function () {
+    $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    // 故意不建任何 ProductPrice → 缺价
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(3), // 节点窗口 [now+2,now+3] → 兜底通知会发
+        'channel' => 'web',
+        'common_name' => 'missingprice.example.com',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // SystemAlert 容器 mock：缺价 → 以 missing_price + 固定指纹 + 72h + (product,period) 去重键调用一次
+    $systemAlert = Mockery::mock(SystemAlert::class);
+    $systemAlert->shouldReceive('send')->once()
+        ->with(
+            'missing_price',
+            Mockery::type('string'),
+            Mockery::type('string'),
+            Mockery::on(fn ($details) => (int) $details['product_id'] === $product->id
+                && (int) $details['period'] === (int) $order->period
+                && $details['level_code'] === 'standard'
+                && (int) $details['sample_order_id'] === $order->id),
+            "missing_price:{$product->id}:{$order->period}",
+            72,
+            'missing'
+        )
+        ->andReturnTrue();
+    $systemAlert->shouldNotReceive('clearDedupe');
+    $this->app->instance(SystemAlert::class, $systemAlert);
+
+    // 缺价 → 不建单：renew/pay 不被调
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldNotReceive('renew');
+    $actionMock->shouldNotReceive('pay');
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    // 用户端发兜底文案（节点窗口内），非用户可行动、不暴露内部
+    $this->notificationCenter->shouldReceive('dispatch')->once()
+        ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'
+            && str_contains($intent->context['reason'] ?? '', '自动续签未成功')));
+
+    $this->artisan('schedule:auto-renew')
+        ->expectsOutputToContain('价格未配置')
+        ->assertSuccessful();
+});
+
+test('A4：续费单有价格行（含 price=0.00 真免费）→ 正常 renew→pay→createTask + clearDedupe', function () {
+    $user = User::factory()->withBalance('1000.00')->withAutoRenew()->create();
+    $product = Product::factory()->create(['status' => 1, 'renew' => 1]);
+    // 显式免费产品：行存在 price=0.00 → 守卫放行（不误伤真 0 元）
+    ProductPrice::create([
+        'product_id' => $product->id, 'level_code' => 'standard', 'period' => 12,
+        'price' => '0.00', 'alternative_standard_price' => '0.00', 'alternative_wildcard_price' => '0.00',
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_renew' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addDays(10),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // healthy → clearDedupe 被调（复位再次缺价立即告警），send 不被调
+    $systemAlert = Mockery::mock(SystemAlert::class);
+    $systemAlert->shouldReceive('clearDedupe')->once()->with("missing_price:{$product->id}:{$order->period}");
+    $systemAlert->shouldNotReceive('send');
+    $this->app->instance(SystemAlert::class, $systemAlert);
+
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('renew')->once()
+        ->andThrow(new ApiResponseException('', null, ['order_id' => $order->id], 1));
+    $actionMock->shouldReceive('pay')->once()->with($order->id, false)
+        ->andThrow(new ApiResponseException('', null, null, 1));
+    $actionMock->shouldReceive('createTask')->once()
+        ->with($order->id, 'commit', Mockery::type('int'));
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
+test('A4：重签单缺价格行 → 不受守卫影响（守卫仅 renew），SystemAlert 不被调', function () {
+    $user = User::factory()->create(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = Product::factory()->create(['status' => 1, 'reissue' => 1]); // ssl，无价格行
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addMonths(6), // >15 天 → 走重签
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // 守卫仅 renew → reissue 路径 SystemAlert 完全不被调（send/clearDedupe 皆不）
+    $systemAlert = Mockery::mock(SystemAlert::class);
+    $systemAlert->shouldNotReceive('send');
+    $systemAlert->shouldNotReceive('clearDedupe');
+    $this->app->instance(SystemAlert::class, $systemAlert);
+
+    // reissue 照常被调（守卫不拦重签）
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('reissue')->once()
+        ->andThrow(new ApiResponseException('', null, ['order_id' => $order->id], 1));
+    $actionMock->shouldReceive('pay')->once()->with($order->id, false)
+        ->andThrow(new ApiResponseException('', null, null, 1));
+    $actionMock->shouldReceive('createTask')->once()
+        ->with($order->id, 'commit', Mockery::type('int'));
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
 });

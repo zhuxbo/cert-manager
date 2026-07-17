@@ -5,6 +5,7 @@ use App\Services\Backup\BackupService;
 use App\Services\Backup\IncrementalSqlFilter;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 
 beforeEach(function () {
@@ -100,4 +101,36 @@ test('备份不存在时写 failed 进度并释放锁', function () {
     $lock = Cache::lock(BackupService::MUTEX_LOCK_KEY, 60);
     expect($lock->get())->toBeTrue();
     $lock->release();
+});
+
+test('H3 pre_restore 快照调用点带 --internal-no-lock（持锁父任务重入不自死锁）', function () {
+    $mock = Mockery::mock(BinaryLocator::class);
+    $mock->shouldReceive('mysqldump')->andReturn(fakeMysqlClientBin('mysqldump'));
+    $mock->shouldReceive('mysql')->andReturn(fakeMysqlClientBin('mysql'));
+    $this->app->instance(BinaryLocator::class, $mock);
+
+    // 造一个可解析的备份，让流程走到 snapshot 步骤
+    $backupId = 'backup_20260424_120000';
+    file_put_contents($this->testDir.'/'.$backupId.'.sql.gz', 'fake');
+
+    // 捕获 snapshot 的 schedule:backup 参数，捕获后抛异常停在快照后（避免真实 restore）
+    $captured = null;
+    Artisan::shouldReceive('call')->andReturnUsing(function ($cmd, $params = []) use (&$captured) {
+        if ($cmd === 'schedule:backup') {
+            $captured = $params;
+            throw new RuntimeException('stop after snapshot capture');
+        }
+
+        return 0;
+    });
+
+    $token = 'tok_'.uniqid();
+    (new RestoreBackupJob($token, $backupId, 'full', adminId: 1))
+        ->handle(app(BackupService::class), new IncrementalSqlFilter);
+
+    expect($captured)->toBe([
+        '--prefix' => 'pre_restore',
+        '--keep' => 0,
+        '--internal-no-lock' => true,
+    ]);
 });

@@ -1,0 +1,19 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V1\\ApiControllerTest::__pest_evaluable_V1_updateDCV_显式_null_method_不再_500（input_默认值穿透修复）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/updateDCV",
+            "request_keys": [
+                "method",
+                "oid"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}
