@@ -37,7 +37,8 @@ final class ProductPriceInitializationService
         }
 
         $products = $this->queryProducts(false);
-        $prices = $this->queryPrices($levelCodes, false);
+        $productIds = $products->modelKeys();
+        $prices = $this->queryPrices($levelCodes, $productIds, false);
         $built = $this->buildRows($products, $normalizedParams['levels'], $normalizedParams['precision']);
         $statistics = $this->statistics($built['targets'], $prices, $normalizedParams['force']);
         $warnings = $built['warnings'];
@@ -76,7 +77,8 @@ final class ProductPriceInitializationService
                 $levelCodes = $this->levelCodes($normalizedParams);
                 $levels = $this->queryLevels($levelCodes, true);
                 $products = $this->queryProducts(true);
-                $prices = $this->queryPrices($levelCodes, true);
+                $productIds = $products->modelKeys();
+                $prices = $this->queryPrices($levelCodes, $productIds, true);
 
                 if ($levels->count() !== count($levelCodes)) {
                     return $this->staleResponse();
@@ -121,9 +123,10 @@ final class ProductPriceInitializationService
                 if ($normalizedParams['force']) {
                     $deletedCount = ProductPrice::query()
                         ->whereIn('level_code', $levelCodes)
+                        ->whereIn('product_id', $productIds)
                         ->delete();
                     $this->insertRows($built['rows']);
-                    $afterPrices = $this->queryPrices($levelCodes, false);
+                    $afterPrices = $this->queryPrices($levelCodes, $productIds, false);
                     $afterTargetKeys = array_intersect_key($this->priceKeySet($afterPrices), $targetKeys);
                     $statistics = [
                         'target_count' => count($targetKeys),
@@ -138,7 +141,7 @@ final class ProductPriceInitializationService
                         fn (array $row): bool => ! isset($existingKeys[$this->rowKey($row)]),
                     ));
                     $this->insertRows($missingRows);
-                    $afterPrices = $this->queryPrices($levelCodes, false);
+                    $afterPrices = $this->queryPrices($levelCodes, $productIds, false);
                     $afterTargetKeys = array_intersect_key($this->priceKeySet($afterPrices), $targetKeys);
                     $createdKeys = array_diff_key($afterTargetKeys, $preservedKeys);
                     $statistics = [
@@ -370,16 +373,26 @@ final class ProductPriceInitializationService
     {
         $query = Product::query()->orderBy('id');
 
-        return $lock ? $query->lockForUpdate()->get() : $query->get();
+        if (! $lock) {
+            return $query->where('status', 1)->get();
+        }
+
+        // 正式执行继续锁住完整产品集合，避免禁用状态在指纹校验和写入之间切换。
+        return $query->lockForUpdate()
+            ->get()
+            ->filter(fn (Product $product): bool => $product->status === 1)
+            ->values();
     }
 
     /**
+     * @param  list<int>  $productIds
      * @return EloquentCollection<int, ProductPrice>
      */
-    private function queryPrices(array $levelCodes, bool $lock): EloquentCollection
+    private function queryPrices(array $levelCodes, array $productIds, bool $lock): EloquentCollection
     {
         $query = ProductPrice::query()
             ->whereIn('level_code', $levelCodes)
+            ->whereIn('product_id', $productIds)
             ->orderBy('product_id')
             ->orderBy('level_code')
             ->orderBy('period');

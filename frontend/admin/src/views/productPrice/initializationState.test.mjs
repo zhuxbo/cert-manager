@@ -80,7 +80,7 @@ test("完整资料刷新时保留客户已经逐级修改的倍率", () => {
   assert.equal(result[1].cost_rate, "1.3000");
 });
 
-test("分页累计 12 个基础级别并默认全选，不额外请求第三页", async () => {
+test("分页累计基础级别并保留接口排序，不额外请求第三页", async () => {
   const calls = [];
   const pages = {
     1: Array.from({ length: 10 }, (_, index) =>
@@ -100,7 +100,7 @@ test("分页累计 12 个基础级别并默认全选，不额外请求第三页"
   assert.equal(result.length, 12);
   assert.deepEqual(
     result.map(item => item.code),
-    Array.from({ length: 12 }, (_, index) => `base-${index + 1}`).sort()
+    Array.from({ length: 12 }, (_, index) => `base-${index + 1}`)
   );
   assert.deepEqual(calls, [
     [1, 10],

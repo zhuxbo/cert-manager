@@ -153,7 +153,8 @@ export async function loadAllLevels(
       break;
   }
 
-  return [...levels.values()].sort(compareCodes);
+  // 下拉框沿用接口的 weight、id 排序；请求归一化仍单独按 code 排序。
+  return [...levels.values()];
 }
 
 export function normalizeInitializationParams(
