@@ -76,3 +76,29 @@ test('获取产品列表-只展示上架产品', function () {
 
     expect($response->json('data.total'))->toBe(1);
 });
+
+test('获取产品列表-默认排除 ACME 产品', function () {
+    $sslProduct = Product::factory()->create(['product_type' => Product::TYPE_SSL]);
+    Product::factory()->create(['product_type' => Product::TYPE_ACME]);
+
+    $response = $this->getJson('/api/product')
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($response->json('data.total'))->toBe(1)
+        ->and($response->json('data.items'))->toHaveCount(1)
+        ->and($response->json('data.items.0.id'))->toBe($sslProduct->id);
+});
+
+test('获取产品列表-明确筛选 ACME 时展示 ACME 产品', function () {
+    Product::factory()->create(['product_type' => Product::TYPE_SSL]);
+    $acmeProduct = Product::factory()->create(['product_type' => Product::TYPE_ACME]);
+
+    $response = $this->getJson('/api/product?product_type=acme')
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($response->json('data.total'))->toBe(1)
+        ->and($response->json('data.items'))->toHaveCount(1)
+        ->and($response->json('data.items.0.id'))->toBe($acmeProduct->id);
+});
