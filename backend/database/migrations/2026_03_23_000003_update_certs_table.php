@@ -18,13 +18,6 @@ return new class extends Migration
             });
         }
 
-        // 添加 auto_deploy_at 列
-        if (! Schema::hasColumn('certs', 'auto_deploy_at')) {
-            Schema::table('certs', function (Blueprint $table) {
-                $table->timestamp('auto_deploy_at')->nullable()->comment('自动部署时间')->after('expires_at');
-            });
-        }
-
         // 添加 expires_at 索引
         if (! collect(Schema::getIndexes('certs'))->contains('name', 'certs_expires_at_index')) {
             Schema::table('certs', function (Blueprint $table) {

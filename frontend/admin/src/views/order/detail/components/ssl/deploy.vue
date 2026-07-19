@@ -189,6 +189,12 @@
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="部署记录" name="reports" lazy>
+        <AutoDeployReports
+          :load="AutoDeployReportApi.index"
+          :order-id="order.id"
+        />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -196,7 +202,9 @@
 <script setup lang="ts">
 import { inject, ref, computed, watch } from "vue";
 import * as OrderApi from "@/api/order";
+import * as AutoDeployReportApi from "@/api/autoDeployReport";
 import { message } from "@shared/utils";
+import AutoDeployReports from "@shared/components/AutoDeployReports.vue";
 
 const order = inject("order") as any;
 const cert = inject("cert") as any;

@@ -295,6 +295,9 @@ importers:
       '@iconify/vue':
         specifier: ^4.0.0
         version: 4.2.0(vue@3.5.35(typescript@5.9.3))
+      '@pureadmin/table':
+        specifier: ^3.3.0
+        version: 3.3.0(element-plus@2.14.0(vue@3.5.35(typescript@5.9.3)))(typescript@5.9.3)
       '@pureadmin/utils':
         specifier: ^2.6.4
         version: 2.6.4(echarts@5.6.0)(vue@3.5.35(typescript@5.9.3))
@@ -325,6 +328,9 @@ importers:
       pinia:
         specifier: ^3.0.0
         version: 3.0.4(typescript@5.9.3)(vue@3.5.35(typescript@5.9.3))
+      plus-pro-components:
+        specifier: ^0.1.31
+        version: 0.1.31(element-plus@2.14.0(vue@3.5.35(typescript@5.9.3)))(vue@3.5.35(typescript@5.9.3))
       qs:
         specifier: ^6.15.2
         version: 6.15.2

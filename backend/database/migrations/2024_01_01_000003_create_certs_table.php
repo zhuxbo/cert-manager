@@ -32,7 +32,6 @@ return new class extends Migration
                 $table->string('documents', 2000)->nullable()->comment('验证文档列表');
                 $table->timestamp('issued_at')->nullable()->index()->comment('颁发时间');
                 $table->timestamp('expires_at')->nullable()->index()->comment('过期时间');
-                $table->timestamp('auto_deploy_at')->nullable()->comment('自动部署时间');
                 $table->char('csr_md5', 32)->nullable()->index()->comment('CSR的MD5');
                 $table->mediumText('csr')->nullable()->comment('CSR');
                 $table->mediumText('private_key')->nullable()->comment('私钥');

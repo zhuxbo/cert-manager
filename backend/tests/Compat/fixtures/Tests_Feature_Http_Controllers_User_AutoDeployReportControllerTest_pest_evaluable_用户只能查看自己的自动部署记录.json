@@ -1,0 +1,40 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\AutoDeployReportControllerTest::__pest_evaluable_用户只能查看自己的自动部署记录",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/auto-deploy-report",
+            "request_keys": [
+                "quickSearch",
+                "status"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "order_id": "integer",
+                            "cert_id": "integer",
+                            "status": "string",
+                            "deployed_at": "null",
+                            "ip": "string",
+                            "message": "null",
+                            "created_at": "string",
+                            "cert": {
+                                "id": "integer",
+                                "common_name": "string",
+                                "intermediate_cert": "null"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\Contact;
 use App\Models\Order;
@@ -107,6 +108,13 @@ test('获取订单详情', function () {
         'order_id' => $order->id,
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
+    AutoDeployReport::create([
+        'order_id' => $order->id,
+        'cert_id' => $cert->id,
+        'status' => 'success',
+        'deployed_at' => '2026-01-15 08:30:00',
+        'ip' => '203.0.113.8',
+    ]);
 
     $response = $this->actingAsUser($user)
         ->getJson("/api/order/$order->id")
@@ -119,7 +127,9 @@ test('获取订单详情', function () {
         ->and((string) $response->json('data.product_id'))
         ->toBe((string) $product->id)
         ->and((string) $response->json('data.latest_cert.id'))
-        ->toBe((string) $cert->id);
+        ->toBe((string) $cert->id)
+        ->and($response->json('data'))
+        ->not->toHaveKey('auto_deploy_reports');
 });
 
 test('获取订单详情-不能查看其他用户订单', function () {
@@ -286,6 +296,12 @@ test('批量获取订单详情', function () {
             'order_id' => $order->id,
         ]);
         $order->update(['latest_cert_id' => $cert->id]);
+        AutoDeployReport::create([
+            'order_id' => $order->id,
+            'cert_id' => $cert->id,
+            'status' => 'success',
+            'ip' => "203.0.113.{$i}",
+        ]);
         $orders[] = $order;
     }
 
@@ -321,6 +337,8 @@ test('批量获取订单详情', function () {
     foreach ($orders as $item) {
         expect($returnedIds)->toContain((string) $item->id);
     }
+
+    expect($response->json('data.items.0'))->not->toHaveKey('auto_deploy_reports');
 });
 
 test('批量获取订单详情-全为其他用户订单返回不存在', function () {

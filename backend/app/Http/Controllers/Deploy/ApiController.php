@@ -3,16 +3,14 @@
 namespace App\Http\Controllers\Deploy;
 
 use App\Http\Controllers\Controller;
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
-use App\Models\ErrorLog;
 use App\Models\Order;
-use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
 use App\Services\Order\AutoRenewService;
 use App\Services\Order\OrderCommitResilience;
 use App\Services\Order\Utils\OrderUtil;
 use App\Support\MutexLock;
-use App\Utils\LogScrubber;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -358,8 +356,7 @@ class ApiController extends Controller
             'order_id' => ['required', 'integer'],
             'status' => ['required', 'in:success,failure'],
             'deployed_at' => ['nullable', 'string'],
-            // message 为前向兼容可选字段：当前下游四仓均不上送，供后续版本携失败原因说明；
-            // 服务端转义 + 截断后记录（见 recordCallbackFailure）。
+            // message 为前向兼容可选字段，清理后随自动部署记录保存。
             'message' => ['nullable', 'string', 'max:500'],
         ]);
 
@@ -373,8 +370,13 @@ class ApiController extends Controller
         }
 
         $cert = $order->latestCert;
+        if (! $cert) {
+            $this->error('证书不存在');
+        }
 
-        // 只有部署成功才记录时间
+        $deployTime = null;
+
+        // 成功回调未传或无法解析 deployed_at 时，以服务端接收时间作为部署时间。
         if ($params['status'] === 'success') {
             $deployTime = now();
 
@@ -387,79 +389,33 @@ class ApiController extends Controller
                 }
             }
 
-            $cert->auto_deploy_at = $deployTime;
-            $cert->save();
-        } elseif ($params['status'] === 'failure') {
-            // 部署失败：服务端留痕（error_logs）+ 按 order 7 天滑窗聚合告警（旁路，不改响应封套）
-            $this->recordCallbackFailure($request, $order, $params['message'] ?? null);
+        } elseif (! empty($params['deployed_at'])) {
+            try {
+                $deployTime = Carbon::parse($params['deployed_at']);
+            } catch (\Exception) {
+                // 失败上报的无效部署时间不影响留痕，记录为 null。
+            }
         }
+
+        $message = isset($params['message']) && $params['message'] !== ''
+            ? mb_substr(strip_tags($params['message']), 0, 500)
+            : null;
+
+        AutoDeployReport::create([
+            'order_id' => $order->id,
+            'cert_id' => $cert->id,
+            'status' => $params['status'],
+            'deployed_at' => $deployTime,
+            'ip' => $request->ip(),
+            'message' => $message,
+        ]);
 
         $this->success([
             'order_id' => $params['order_id'],
             'status' => $params['status'],
-            'recorded' => $params['status'] === 'success',
+            'recorded' => true,
             'renew_before_days' => (int) get_system_setting('site', 'renewBeforeDays', 14),
         ]);
-    }
-
-    /**
-     * 记录下游部署失败回调 + 7 天滑窗聚合告警
-     *
-     * 下游 spec「每天执行一次续签检查」→ 单证书每天至多 1 次 failure 回调、200 ack 不重试，
-     * 故用「7 天滑窗计数 ≥ threshold」而非 24h tumbling（后者日频节奏下恒不可达）。
-     */
-    private function recordCallbackFailure(Request $request, Order $order, ?string $message): void
-    {
-        // message 是任意 deploy-token 持有者可控自由文本，且告警走 SystemAlert 模板渲染：
-        // 调用侧 strip_tags + 截断 ≤256 是第一道（Builder denylist/转义为第二道），两道都要在。
-        $safeMsg = '';
-        if ($message !== null && $message !== '') {
-            $safeMsg = mb_substr(strip_tags($message), 0, 256);
-        }
-
-        // 结构化前缀（; 分隔）：滑窗计数用前缀 LIKE "order_id={id};%"，杜绝 order_id=5 误匹配 50/51
-        $prefix = "order_id={$order->id};user_id={$order->user_id};deploy_callback_failure";
-        $logMessage = $safeMsg !== '' ? $prefix.';reason='.$safeMsg : $prefix;
-
-        // 直写 ErrorLog（不走 LogBuffer——buffer 到请求 terminating 才 flush，写后立即计数会漏当前次）
-        ErrorLog::create([
-            'correlation_id' => app()->bound('correlation_id') ? app('correlation_id') : null,
-            'method' => 'POST',
-            'url' => LogScrubber::scrubUrl($request->fullUrl()),
-            'exception' => 'DeployCallbackFailure',
-            'message' => $logMessage,
-            'status_code' => 200,
-            'ip' => $request->ip(),
-        ]);
-
-        $windowDays = (int) config('deploy.callback_failure.window_days', 7);
-        $threshold = (int) config('deploy.callback_failure.threshold', 2);
-        $ttlHours = (int) config('deploy.callback_failure.dedupe_ttl_hours', 168);
-
-        // 7 天滑窗计数（含当前次，因已直写）
-        $count = ErrorLog::where('exception', 'DeployCallbackFailure')
-            ->where('message', 'like', "order_id={$order->id};%")
-            ->where('created_at', '>=', now()->subDays($windowDays))
-            ->count();
-
-        if ($count >= $threshold) {
-            // 固定指纹（非默认内容指纹）：计数逐次变化会击穿 per-order 去重致每日刷屏，
-            // 传固定指纹使同一订单持续失败在 dedupe TTL 内只发一封（对齐 AutoRenewCommand 固定指纹范式，防计数 churn）。
-            app(SystemAlert::class)->send(
-                'deploy_callback',
-                "订单 #{$order->id} 部署回调持续失败",
-                "{$windowDays} 天内 {$count} 次部署失败回调",
-                [
-                    'order_id' => $order->id,
-                    'user_id' => $order->user_id,
-                    'failure_count' => $count,
-                    'latest_message' => $safeMsg,
-                ],
-                dedupeKey: "deploy_callback_fail_{$order->id}",
-                dedupeTtlHours: $ttlHours,
-                fingerprint: 'deploy_callback_failure',
-            );
-        }
     }
 
     /**

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\User\AcmeController;
 use App\Http\Controllers\User\AuthController;
+use App\Http\Controllers\User\AutoDeployReportController;
 use App\Http\Controllers\User\ContactController;
 use App\Http\Controllers\User\DashboardController;
 use App\Http\Controllers\User\DelegationController;
@@ -178,6 +179,8 @@ Route::middleware('api.user')->group(function () {
         Route::post('check/{id}', [DelegationController::class, 'check'])->where('id', '[0-9]+');
         Route::post('batch-store', [DelegationController::class, 'batchStore']);
     });
+
+    Route::get('auto-deploy-report', [AutoDeployReportController::class, 'index']);
 
     // 工商信息查询
     Route::get('enterprise-lookup/status', [EnterpriseLookupController::class, 'status']);

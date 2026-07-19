@@ -1,26 +1,20 @@
 <?php
 
-use App\Jobs\NotificationJob;
-use App\Models\Admin;
 use App\Models\ApiLog;
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\DeployToken;
 use App\Models\ErrorLog;
-use App\Models\NotificationTemplate;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
-use App\Services\Notification\ChannelManager;
-use App\Services\Notification\Channels\MailChannel;
 use App\Services\Notification\SystemAlert;
 use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 
 uses(RefreshDatabase::class);
@@ -639,6 +633,42 @@ test('query field UserScope 隔离', function () {
 // callback() 测试
 // ========================================
 
+test('callback 每次上报独立记录状态与来源 IP', function () {
+    expect(Schema::hasTable('auto_deploy_reports'))->toBeTrue();
+    expect(Schema::hasColumn('certs', 'auto_deploy_at'))->toBeFalse();
+
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'active');
+
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id,
+        'status' => 'success',
+        'deployed_at' => '2026-01-15 08:30:00',
+    ])->assertOk()->assertJson(['code' => 1]);
+
+    $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.8'])
+        ->withHeaders(['Authorization' => "Bearer $token->token"])
+        ->postJson('/api/deploy/callback', [
+            'order_id' => $order->id,
+            'status' => 'failure',
+            'message' => 'Connection refused',
+        ])->assertOk()->assertJson(['code' => 1]);
+
+    $reports = DB::table('auto_deploy_reports')
+        ->where('order_id', $order->id)
+        ->orderBy('id')
+        ->get();
+
+    expect($reports)->toHaveCount(2)
+        ->and($reports[0]->cert_id)->toBe($cert->id)
+        ->and($reports[0]->status)->toBe('success')
+        ->and($reports[0]->deployed_at)->toBe('2026-01-15 08:30:00')
+        ->and($reports[1]->cert_id)->toBe($cert->id)
+        ->and($reports[1]->status)->toBe('failure')
+        ->and($reports[1]->ip)->toBe('203.0.113.8')
+        ->and($reports[1]->message)->toBe('Connection refused');
+});
+
 test('callback 成功记录部署时间', function () {
     [$user, $token] = createDeployAuth();
     [$order, $cert] = createDeployOrder($user, 'active');
@@ -654,7 +684,9 @@ test('callback 成功记录部署时间', function () {
         ->recorded->toBeTrue()
         ->not->toHaveKey('domain');
 
-    expect($cert->fresh()->auto_deploy_at)->not->toBeNull();
+    $report = AutoDeployReport::where('order_id', $order->id)->sole();
+    expect($report->cert_id)->toBe($cert->id)
+        ->and($report->deployed_at)->not->toBeNull();
 });
 
 test('callback 失败不记录部署时间', function () {
@@ -669,14 +701,16 @@ test('callback 失败不记录部署时间', function () {
 
     expect($response->json('data'))
         ->status->toBe('failure')
-        ->recorded->toBeFalse();
+        ->recorded->toBeTrue();
 
-    expect($cert->fresh()->auto_deploy_at)->toBeNull();
+    $report = AutoDeployReport::where('order_id', $order->id)->sole();
+    expect($report->status)->toBe('failure')
+        ->and($report->deployed_at)->toBeNull();
 });
 
 test('callback 使用自定义 deployed_at', function () {
     [$user, $token] = createDeployAuth();
-    [$order, $cert] = createDeployOrder($user, 'active', ['auto_deploy_at' => null]);
+    [$order] = createDeployOrder($user, 'active');
 
     deployPost($token, '/api/deploy/callback', [
         'order_id' => $order->id,
@@ -684,13 +718,13 @@ test('callback 使用自定义 deployed_at', function () {
         'deployed_at' => '2026-01-15 08:30:00',
     ])->assertOk()->assertJson(['code' => 1]);
 
-    expect($cert->fresh()->auto_deploy_at->format('Y-m-d H:i:s'))
+    expect(AutoDeployReport::where('order_id', $order->id)->sole()->deployed_at->format('Y-m-d H:i:s'))
         ->toBe('2026-01-15 08:30:00');
 });
 
 test('callback deployed_at 格式错误使用当前时间', function () {
     [$user, $token] = createDeployAuth();
-    [$order, $cert] = createDeployOrder($user, 'active', ['auto_deploy_at' => null]);
+    [$order] = createDeployOrder($user, 'active');
 
     $this->travelTo(now()->startOfMinute());
 
@@ -700,7 +734,8 @@ test('callback deployed_at 格式错误使用当前时间', function () {
         'deployed_at' => 'not-a-date',
     ])->assertOk()->assertJson(['code' => 1]);
 
-    expect($cert->fresh()->auto_deploy_at)->not->toBeNull();
+    expect(AutoDeployReport::where('order_id', $order->id)->sole()->deployed_at)
+        ->not->toBeNull();
 });
 
 test('callback 订单不存在', function () {
@@ -710,6 +745,18 @@ test('callback 订单不存在', function () {
         'order_id' => 99999,
         'status' => 'success',
     ])->assertOk()->assertJson(['code' => 0]);
+});
+
+test('callback 订单没有证书时返回业务错误且不写记录', function () {
+    [$user, $token] = createDeployAuth();
+    $order = Order::factory()->create(['user_id' => $user->id]);
+
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id,
+        'status' => 'failure',
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '证书不存在']);
+
+    expect(AutoDeployReport::query()->where('order_id', $order->id)->exists())->toBeFalse();
 });
 
 test('callback UserScope 隔离', function () {
@@ -738,136 +785,22 @@ test('callback 参数验证', function () {
     ])->assertOk()->assertJson(['code' => 0]);
 });
 
-// ========================================
-// callback() — 失败留痕 + 7 天滑窗聚合告警（F1-4）
-// ========================================
-
-test('callback 失败直写 error_logs 且 message 转义截断', function () {
+test('callback 失败只写自动部署记录，不写 error_logs 或发送告警', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'active');
 
-    $malicious = '<script>alert(1)</script>'.str_repeat('x', 400);
-
-    deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id,
-        'status' => 'failure',
-        'message' => $malicious,
-    ])->assertOk()->assertJson(['code' => 1]);
-
-    $log = ErrorLog::query()->where('exception', 'DeployCallbackFailure')->latest('id')->first();
-    $reason = Str::after($log->message, ';reason=');
-
-    expect($log)->not->toBeNull()
-        ->and($log->message)->toStartWith("order_id={$order->id};user_id={$user->id};")
-        ->and($log->message)->not->toContain('<script>')  // strip_tags 转义
-        ->and($log->message)->not->toContain('</script>')
-        ->and(mb_strlen($reason))->toBe(256); // reason 截断至 ≤256
-});
-
-test('callback 失败跨日达阈值 SystemAlert 告警一次（禁背靠背）', function () {
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active');
-
-    // 容器 mock SystemAlert：断言恰一次 send，且携正确 category/dedupeKey/ttl/固定指纹/计数
-    $alert = Mockery::mock(SystemAlert::class);
-    $alert->shouldReceive('send')->once()
-        ->with(
-            'deploy_callback',
-            Mockery::type('string'),
-            Mockery::type('string'),
-            Mockery::on(fn ($d) => (int) $d['order_id'] === $order->id
-                && (int) $d['failure_count'] === 2
-                && (int) $d['user_id'] === $user->id),
-            "deploy_callback_fail_{$order->id}",
-            168,
-            'deploy_callback_failure' // 固定指纹：防计数 churn 击穿 per-order 去重
-        )
-        ->andReturnTrue();
-    app()->instance(SystemAlert::class, $alert);
-
-    // day1：第 1 次失败（count=1 < 阈值）→ 不告警
-    $this->travelTo(now()->startOfDay());
-    deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id, 'status' => 'failure',
-    ])->assertOk();
-
-    // day2：第 2 次失败（7 天滑窗 count=2 = 阈值）→ 告警恰一次
-    $this->travelTo(now()->addDay());
-    deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id, 'status' => 'failure',
-    ])->assertOk();
-
-    $this->travelBack();
-});
-
-test('callback 失败 7 天窗口外不累计告警', function () {
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active');
-
-    // 窗口外：day1 与 day9 各一次，滑窗计数恒为 1（<阈值）→ 从不告警
     $alert = Mockery::mock(SystemAlert::class);
     $alert->shouldNotReceive('send');
     app()->instance(SystemAlert::class, $alert);
 
-    $this->travelTo(now()->startOfDay());
     deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id, 'status' => 'failure',
-    ])->assertOk();
+        'order_id' => $order->id,
+        'status' => 'failure',
+        'message' => '部署失败',
+    ])->assertOk()->assertJson(['code' => 1]);
 
-    $this->travelTo(now()->addDays(8)); // 距 day1 已 8 天，超出 7 天窗口
-    deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id, 'status' => 'failure',
-    ])->assertOk();
-
-    $this->travelBack();
-});
-
-test('callback 失败达阈值真推送 NotificationJob 且 per-order 去重', function () {
-    // 端到端真链路（非只断 assertOk）：seed system_alert 模板 + 可用 MailChannel + Queue::fake，
-    // 断 NotificationJob 真推送；跨日第 3 次失败经 SystemAlert 固定指纹 per-order 去重 → 仍恰一封。
-    Queue::fake();
-
-    NotificationTemplate::updateOrCreate(
-        ['code' => 'system_alert'],
-        ['name' => '运维告警', 'content' => '{{ $title }} {{ $message }}', 'variables' => ['title', 'message'], 'status' => 1],
-    );
-    Admin::factory()->create(['email' => 'ops@corp.example']);
-    app()->bind(MailChannel::class, fn () => new class extends MailChannel
-    {
-        public function isAvailable(): bool
-        {
-            return true;
-        }
-    });
-    app()->forgetInstance(ChannelManager::class);
-
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active');
-
-    $this->travelTo(now()->startOfDay());
-    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'failure'])->assertOk();
-    Queue::assertNotPushed(NotificationJob::class); // day1 count=1 未达阈值
-
-    $this->travelTo(now()->addDay());
-    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'failure'])->assertOk();
-    Queue::assertPushed(NotificationJob::class, 1); // day2 count=2 → 真推送一次
-
-    // day2+1：第 3 次失败（count=3）→ SystemAlert 固定指纹 per-order 去重 → 不再推送
-    $this->travelTo(now()->addDay());
-    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'failure'])->assertOk();
-    Queue::assertPushed(NotificationJob::class, 1); // 仍恰 1 封（去重）
-
-    $this->travelBack();
-});
-
-test('⑲：error_logs 有 (exception, created_at) 复合索引支撑回调失败 7 天滑窗计数', function () {
-    // recordCallbackFailure 按 WHERE exception=? AND message LIKE ? AND created_at>=? 做滑窗 count；
-    // 无复合索引时只能走 created_at 范围扫全部异常再逐行过滤 exception。此索引让优化器直接 seek
-    // 到该异常 + 时间范围（exception 高选择性）。RED（无迁移）：无此索引；GREEN（迁移后）：存在。
-    $composite = collect(Schema::getIndexes('error_logs'))
-        ->first(fn ($idx) => $idx['columns'] === ['exception', 'created_at']);
-
-    expect($composite)->not->toBeNull();
+    expect(AutoDeployReport::query()->where('order_id', $order->id)->count())->toBe(1)
+        ->and(ErrorLog::query()->where('exception', 'DeployCallbackFailure')->exists())->toBeFalse();
 });
 
 // ========================================

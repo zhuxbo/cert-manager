@@ -1,11 +1,12 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败达阈值真推送_NotificationJob_且_per_order_去重",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_每次上报独立记录状态与来源_IP",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
             "uri_pattern": "/api/deploy/callback",
             "request_keys": [
+                "deployed_at",
                 "order_id",
                 "status"
             ],

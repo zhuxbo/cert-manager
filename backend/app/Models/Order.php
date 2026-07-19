@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 /**
  * @property-read Cert|null $latestCert
  * @property-read Cert[] $certs
+ * @property-read AutoDeployReport[] $autoDeployReports
  * @property-read User|null $user
  * @property-read Product $product
  * @property-read Notification $notifications
@@ -97,6 +98,17 @@ class Order extends BaseModel
     public function latestCert(): BelongsTo
     {
         return $this->belongsTo(Cert::class, 'latest_cert_id');
+    }
+
+    /**
+     * 获取自动部署上报记录
+     */
+    public function autoDeployReports(): HasMany
+    {
+        return $this->hasMany(AutoDeployReport::class)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->limit(20);
     }
 
     /**

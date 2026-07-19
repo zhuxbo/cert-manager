@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\AcmeController;
 use App\Http\Controllers\Admin\AdminController;
 use App\Http\Controllers\Admin\ApiTokenController;
 use App\Http\Controllers\Admin\AuthController;
+use App\Http\Controllers\Admin\AutoDeployReportController;
 use App\Http\Controllers\Admin\CallbackController;
 use App\Http\Controllers\Admin\CertController;
 use App\Http\Controllers\Admin\ChainController;
@@ -235,6 +236,8 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('check/{id}', [DelegationController::class, 'check'])->where('id', '[0-9]+');
         Route::post('batch-store', [DelegationController::class, 'batchStore']);
     });
+
+    Route::get('auto-deploy-report', [AutoDeployReportController::class, 'index']);
 
     // 通知管理
     Route::prefix('notification')->group(function () {

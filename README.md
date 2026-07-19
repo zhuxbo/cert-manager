@@ -139,6 +139,8 @@ _dnsauth.example.com → *******.your-platform.com
 
 配置后，平台自动完成 DNS 验证，无需手动操作。
 
+管理端和用户端的“自动部署”菜单集中提供域名委托与部署记录查询；部署记录保留每次上报的状态、来源 IP 和失败信息。
+
 ### 自动部署工具
 
 配合 [sslctl](https://github.com/zhuxbo/sslctl) 工具实现全自动化：

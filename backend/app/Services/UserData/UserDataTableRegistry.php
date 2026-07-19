@@ -36,6 +36,7 @@ class UserDataTableRegistry
     {
         return [
             ['table' => 'certs', 'name' => '证书'],
+            ['table' => 'auto_deploy_reports', 'name' => '自动部署上报记录'],
             ['table' => 'tasks', 'name' => '任务'],
             ['table' => 'domain_validation_records', 'name' => '域名验证记录'],
         ];
@@ -71,7 +72,7 @@ class UserDataTableRegistry
      */
     private static array $snowflakeIdTables = [
         'users', 'orders', 'acmes', 'contacts', 'organizations',
-        'funds', 'certs', 'cname_delegations', 'transactions',
+        'funds', 'certs', 'auto_deploy_reports', 'cname_delegations', 'transactions',
     ];
 
     /**
@@ -100,6 +101,7 @@ class UserDataTableRegistry
             ['table' => 'callbacks', 'name' => '回调配置', 'type' => 'direct'],
             // 3. order_id 间接关联（依赖 orders）
             ['table' => 'certs', 'name' => '证书', 'type' => 'indirect'],
+            ['table' => 'auto_deploy_reports', 'name' => '自动部署上报记录', 'type' => 'indirect'],
         ];
     }
 
@@ -113,6 +115,7 @@ class UserDataTableRegistry
             ['table' => 'notifications', 'name' => '通知', 'type' => 'notification'],
             // 2. 间接关联（必须在 orders 之前删除）
             ['table' => 'domain_validation_records', 'name' => '域名验证记录', 'type' => 'indirect'],
+            ['table' => 'auto_deploy_reports', 'name' => '自动部署上报记录', 'type' => 'indirect'],
             ['table' => 'certs', 'name' => '证书', 'type' => 'indirect'],
             // tasks.order_id 同时承载 orders.id 与 acmes.id（ACME 任务），单独路径删除（在 orders/acmes 之前）
             ['table' => 'tasks', 'name' => '任务', 'type' => 'tasks'],

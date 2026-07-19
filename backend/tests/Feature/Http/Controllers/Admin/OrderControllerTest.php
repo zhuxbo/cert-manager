@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
@@ -142,12 +143,20 @@ test('列表支持按 expires_at 排序', function () {
 });
 
 test('管理员可以查看订单详情', function () {
-    [$order, $cert] = createOrderWithCert('pending');
+    [$order] = createOrderWithCert('pending');
+    AutoDeployReport::create([
+        'order_id' => $order->id,
+        'cert_id' => $order->latest_cert_id,
+        'status' => 'failure',
+        'ip' => '2001:db8::8',
+        'message' => 'Connection refused',
+    ]);
 
     $response = $this->actingAsAdmin($this->admin)->getJson("/api/admin/order/$order->id");
 
     $response->assertOk()->assertJson(['code' => 1]);
     $response->assertJsonPath('data.id', $order->id);
+    expect($response->json('data'))->not->toHaveKey('auto_deploy_reports');
 });
 
 test('查看不存在的订单返回错误', function () {

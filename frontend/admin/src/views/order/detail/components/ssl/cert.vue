@@ -83,12 +83,6 @@
             }}
           </td>
         </tr>
-        <tr v-if="cert.auto_deploy_at">
-          <td class="label">部署时间</td>
-          <td class="content">
-            {{ dayjs(cert.auto_deploy_at).format("YYYY-MM-DD HH:mm:ss") }}
-          </td>
-        </tr>
         <tr v-if="cert.expires_at">
           <td class="label">到期时间</td>
           <td class="content">

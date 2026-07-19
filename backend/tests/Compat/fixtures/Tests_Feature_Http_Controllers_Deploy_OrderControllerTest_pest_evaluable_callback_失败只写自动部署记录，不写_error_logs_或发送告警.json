@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败直写_error__logs_且_message_转义截断",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败只写自动部署记录，不写_error__logs_或发送告警",
     "version": "1.0.0",
     "calls": [
         {
