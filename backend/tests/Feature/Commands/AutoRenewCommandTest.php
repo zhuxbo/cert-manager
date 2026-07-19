@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
@@ -711,4 +712,150 @@ test('A4：重签单缺价格行 → 不受守卫影响（守卫仅 renew），S
     $this->app->bind(Action::class, fn () => $actionMock);
 
     $this->artisan('schedule:auto-renew')->assertSuccessful();
+});
+
+// ===== 过期防御 + pull scheduler 签发失败自写记录 =====
+
+test('过期防御：证书已过期（expires_at < now 但 status 仍 active）的订单不再自动重签', function () {
+    // ExpireCommand（09:00）尚未把 active 翻 expired 前的时序缝：00:00 auto-renew 靠 expires_at>=now 兜底
+    $user = User::factory()->create(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = Product::factory()->create(['status' => 1, 'reissue' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addMonths(6), // >15 天 → 本应走重签
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->subDay(), // 已过期
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    // 过期防御生效：不被选单 → renew/reissue 均不被调、无失败记录
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldNotReceive('reissue');
+    $actionMock->shouldNotReceive('renew');
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
+test('pull scheduler 自动重签失败 → 服务端自写 ip 留空的签发失败记录', function () {
+    $user = User::factory()->create(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = Product::factory()->create(['status' => 1, 'reissue' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addMonths(6), // >15 天 → 重签
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5), // 即将到期、未过期、非节点窗口（避免用户兜底通知 dispatch）
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // reissue 抛业务失败（无 data.order_id）→ 内层 rethrow → processOrders catch → 服务端自写签发失败记录
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('reissue')->once()
+        ->andThrow(new ApiResponseException('上游拒绝', null, null, 0));
+    $actionMock->shouldNotReceive('pay');
+    $actionMock->shouldNotReceive('createTask');
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+
+    $report = AutoDeployReport::where('order_id', $order->id)->sole();
+    expect($report->status)->toBe('failure')
+        ->and($report->cert_id)->toBe($cert->id)
+        ->and($report->ip)->toBeNull()
+        ->and($report->message)->toStartWith('自动重签失败：');
+});
+
+test('pull scheduler 自动重签成功且失败在案 → 服务端自写恢复行并清去重键', function () {
+    $user = User::factory()->create(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = Product::factory()->create(['status' => 1, 'reissue' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addMonths(6), // >15 天 → 重签
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    // 失败在案：前一轮失败行 + 去重键已置（M1 场景：无客户端回调的 web 订单）
+    AutoDeployReport::create([
+        'order_id' => $order->id,
+        'cert_id' => $cert->id,
+        'status' => 'failure',
+        'ip' => null,
+        'message' => '自动重签失败：系统处理异常',
+    ]);
+    Cache::put("system_alert:deploy_failure_{$order->id}", 'deploy_failure', 3600);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    // reissue 成功信号：ApiResponseException code=1 携 data.order_id（同订单）→ pay → createTask 延时 commit
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('reissue')->once()
+        ->andThrow(new ApiResponseException('', null, ['order_id' => $order->id], 1));
+    $actionMock->shouldReceive('pay')->once()->with($order->id, false);
+    $actionMock->shouldReceive('createTask')->once();
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+
+    // 恢复行已写（最后一条转 success，reminder 状态判定收敛）+ 去重键已清（复发立即再告警）
+    $recovery = AutoDeployReport::where('order_id', $order->id)->orderByDesc('id')->first();
+    expect($recovery->status)->toBe('success')
+        ->and($recovery->ip)->toBeNull()
+        ->and($recovery->message)->toBe('自动重签成功：前次失败已恢复')
+        ->and(AutoDeployReport::where('order_id', $order->id)->count())->toBe(2)
+        ->and(Cache::get("system_alert:deploy_failure_{$order->id}"))->toBeNull();
+});
+
+test('pull scheduler 自动重签成功但无失败在案 → 不写恢复行（避免全量成功噪音）', function () {
+    $user = User::factory()->create(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
+    $product = Product::factory()->create(['status' => 1, 'reissue' => 1]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'auto_reissue' => true,
+        'period_from' => now()->subYear(),
+        'period_till' => now()->addMonths(6),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'expires_at' => now()->addDays(5),
+        'channel' => 'web',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
+
+    $actionMock = Mockery::mock(Action::class);
+    $actionMock->shouldReceive('reissue')->once()
+        ->andThrow(new ApiResponseException('', null, ['order_id' => $order->id], 1));
+    $actionMock->shouldReceive('pay')->once()->with($order->id, false);
+    $actionMock->shouldReceive('createTask')->once();
+    $this->app->bind(Action::class, fn () => $actionMock);
+
+    $this->artisan('schedule:auto-renew')->assertSuccessful();
+
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
 });

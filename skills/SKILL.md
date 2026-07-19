@@ -15,6 +15,7 @@
 | ACME 模块       | `backend/acme-module.md`                      | ACME 协议服务端、上游对接、订阅计费、状态流转                                                                                                |
 | Source API 接入 | `backend/source-api.md`                       | 新增上游来源（Order\Api + Acme\Api）                                                                                                         |
 | 自动续费重签    | `backend/auto-renew.md`                       | 自动续费/重签、算法继承防静默降级、失败兜底通知堵过期洞                                                                                      |
+| 自动部署上报    | `backend/deploy-renewal.md`                   | auto_deploy_reports 表用途、服务端自写签发失败行（两写入点）、告警消噪（per-order 去重/TTL/持续未解决提醒）、报告清理、与客户端契约对应      |
 | 国密证书        | `backend/sm2-cert.md`                         | 国密 SM2 双证书、能力探测、fail-closed 防降级、下载包、多级透传                                                                              |
 | Certum 文档     | `backend/certum-document.md`                  | 验证文档上传、签发后禁上传、异步转发上游、content_hash 跨级去重                                                                              |
 | 企业信息查询    | `backend/enterprise-lookup.md`                | 工商查询（阿里云市场）+ 邮编查询（本地县级市识别）、企业-联系人绑定                                                                          |

@@ -785,12 +785,25 @@ test('callback 参数验证', function () {
     ])->assertOk()->assertJson(['code' => 0]);
 });
 
-test('callback 失败只写自动部署记录，不写 error_logs 或发送告警', function () {
+test('callback 失败入表并触发按订单固定指纹去重告警（不写 error_logs）', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'active');
 
+    // 记录全量之上做通知消噪：失败触发一封 SystemAlert，per-order dedupeKey + 固定指纹 + TTL 168h
     $alert = Mockery::mock(SystemAlert::class);
-    $alert->shouldNotReceive('send');
+    $alert->shouldReceive('send')->once()
+        ->with(
+            'deploy_failure',
+            Mockery::type('string'),
+            Mockery::type('string'),
+            Mockery::on(fn ($details) => (int) $details['order_id'] === $order->id
+                && (int) $details['user_id'] === $user->id),
+            "deploy_failure_{$order->id}",
+            168,
+            'deploy_failure',
+        )
+        ->andReturnTrue();
+    $alert->shouldNotReceive('clearDedupe');
     app()->instance(SystemAlert::class, $alert);
 
     deployPost($token, '/api/deploy/callback', [
@@ -801,6 +814,56 @@ test('callback 失败只写自动部署记录，不写 error_logs 或发送告�
 
     expect(AutoDeployReport::query()->where('order_id', $order->id)->count())->toBe(1)
         ->and(ErrorLog::query()->where('exception', 'DeployCallbackFailure')->exists())->toBeFalse();
+});
+
+test('callback 成功入表并清除该订单失败告警去重键（复发即恢复）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    $alert = Mockery::mock(SystemAlert::class);
+    $alert->shouldReceive('clearDedupe')->once()->with("deploy_failure_{$order->id}");
+    $alert->shouldNotReceive('send');
+    app()->instance(SystemAlert::class, $alert);
+
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id,
+        'status' => 'success',
+    ])->assertOk()->assertJson(['code' => 1]);
+
+    expect(AutoDeployReport::query()->where('order_id', $order->id)->where('status', 'success')->count())->toBe(1);
+});
+
+test('callback 失败告警异常不影响上报响应且记录只写一次', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    $alert = Mockery::mock(SystemAlert::class);
+    $alert->shouldReceive('send')->once()->andThrow(new RuntimeException('cache-down'));
+    app()->instance(SystemAlert::class, $alert);
+
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id,
+        'status' => 'failure',
+        'message' => '部署失败',
+    ])->assertOk()->assertJson(['code' => 1]);
+
+    expect(AutoDeployReport::query()->where('order_id', $order->id)->count())->toBe(1);
+});
+
+test('callback 成功清键异常不影响上报响应且成功记录保留', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    $alert = Mockery::mock(SystemAlert::class);
+    $alert->shouldReceive('clearDedupe')->once()->andThrow(new RuntimeException('cache-down'));
+    app()->instance(SystemAlert::class, $alert);
+
+    deployPost($token, '/api/deploy/callback', [
+        'order_id' => $order->id,
+        'status' => 'success',
+    ])->assertOk()->assertJson(['code' => 1]);
+
+    expect(AutoDeployReport::query()->where('order_id', $order->id)->where('status', 'success')->count())->toBe(1);
 });
 
 // ========================================
@@ -850,6 +913,55 @@ test('update active 产品不支持委托验证', function () {
         'order_id' => $order->id,
         'validation_method' => 'delegation',
     ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证']);
+});
+
+test('update 本地 CSR 前置校验失败不写签发失败记录', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [], [], [
+        'validation_methods' => ['txt', 'http'],
+    ]);
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----test-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证']);
+
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
+test('update 本地 CSR 进入重签处理后失败自写签发失败记录（ip 留空）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'active', [], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----test-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk()->assertJson(['code' => 0]);
+
+    $report = AutoDeployReport::where('order_id', $order->id)->sole();
+    expect($report->status)->toBe('failure')
+        ->and($report->cert_id)->toBe($cert->id)
+        ->and($report->ip)->toBeNull()          // 服务端自写：来源 IP 留空
+        ->and($report->message)->toStartWith('本地签发失败：');
+});
+
+test('update 非本地（未携 CSR）处理失败不自写签发失败记录', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [], [], [
+        'validation_methods' => ['txt', 'http'],
+    ]);
+
+    // 未携带 csr（服务端生成 CSR 路径）：同步错误由调用方自行感知，不重复留痕
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'validation_method' => 'delegation',
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证']);
+
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
 });
 
 test('update active 产品不支持文件验证', function () {

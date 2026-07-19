@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers\Deploy;
 
+use App\Exceptions\ApiResponseException;
 use App\Http\Controllers\Controller;
 use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Services\Order\Action;
+use App\Services\Order\AutoDeployReportService;
 use App\Services\Order\AutoRenewService;
 use App\Services\Order\OrderCommitResilience;
 use App\Services\Order\Utils\OrderUtil;
@@ -262,49 +264,63 @@ class ApiController extends Controller
                 $updateParams['action'] = 'reissue';
             }
 
-            // order 级互斥 + 外层事务：把本地 renew/reissue（终态化旧证书 + 建新单）+ pay(false)（扣费落 pending）
-            // 串行且原子，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
-            // 关键设计约束：
-            //  1) 与 Action::commit/cancel 共用 order_mutate_{id} 键（下划线格式），撞进行中
-            //     commit/cancel 抢不到抛 MutationBusyException→503（与 V1/V2 同步入口语义一致）；
-            //  2) O3-A：pay(false) 进事务与 renew/reissue 原子（charge 纯本地扣费、无上游、无 mutex → 安全嵌套），
-            //     charge 失败即整体回滚，杜绝「旧证书终态 + 新单卡 unpaid」孤儿（P0-1 路径 2）；
-            //  3) commit 移到互斥锁「外」——reissue 复用同一 orderId，commit 自带同键互斥锁，
-            //     若在锁内则二次抢锁必失败自死锁；且 commit 含上游 HTTP，锁内不做上游调用（红线）。
-            //  4) 【锁纪律】不在此处对订单行做「先于 renew/reissue 的显式 FOR UPDATE 预锁」：
-            //     renew/reissue 的 initParams（CSR keygen + 委托 TXT 逐 token 上游 DNS 写，ProxyDNS 单 token 15s）
-            //     在其内部【源订单行锁之前】执行；并发双开的串行主体是 renew(persistOrder)/reissue 内的
-            //     「源订单行锁 + 前驱翻转 affected-rows CAS」（CAS 是锁定写 current read，不受 initParams 前置
-            //     一致读建立的 RR view 影响，无需外层再叠一把预锁）。此前的预锁会把 keygen + 委托 DNS HTTP 全
-            //     罩进订单行锁内——DNSPod 劣化时 ≥4 token 即超 innodb_lock_wait_timeout=50，同订单 sync/renew
-            //     抢锁 1205，违反锁内不做上游 HTTP 红线。移除后对齐 V2/AutoRenew「CSR/委托生成先于行锁」范式。
-            $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew) {
-                $resolved = $orderId;
+            try {
+                // order 级互斥 + 外层事务：把本地 renew/reissue（终态化旧证书 + 建新单）+ pay(false)（扣费落 pending）
+                // 串行且原子，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
+                // 关键设计约束：
+                //  1) 与 Action::commit/cancel 共用 order_mutate_{id} 键（下划线格式），撞进行中
+                //     commit/cancel 抢不到抛 MutationBusyException→503（与 V1/V2 同步入口语义一致）；
+                //  2) O3-A：pay(false) 进事务与 renew/reissue 原子（charge 纯本地扣费、无上游、无 mutex → 安全嵌套），
+                //     charge 失败即整体回滚，杜绝「旧证书终态 + 新单卡 unpaid」孤儿（P0-1 路径 2）；
+                //  3) commit 移到互斥锁「外」——reissue 复用同一 orderId，commit 自带同键互斥锁，
+                //     若在锁内则二次抢锁必失败自死锁；且 commit 含上游 HTTP，锁内不做上游调用（红线）。
+                //  4) 【锁纪律】不在此处对订单行做「先于 renew/reissue 的显式 FOR UPDATE 预锁」：
+                //     renew/reissue 的 initParams（CSR keygen + 委托 TXT 逐 token 上游 DNS 写，ProxyDNS 单 token 15s）
+                //     在其内部【源订单行锁之前】执行；并发双开的串行主体是 renew(persistOrder)/reissue 内的
+                //     「源订单行锁 + 前驱翻转 affected-rows CAS」（CAS 是锁定写 current read，不受 initParams 前置
+                //     一致读建立的 RR view 影响，无需外层再叠一把预锁）。此前的预锁会把 keygen + 委托 DNS HTTP 全
+                //     罩进订单行锁内——DNSPod 劣化时 ≥4 token 即超 innodb_lock_wait_timeout=50，同订单 sync/renew
+                //     抢锁 1205，违反锁内不做上游 HTTP 红线。移除后对齐 V2/AutoRenew「CSR/委托生成先于行锁」范式。
+                $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew) {
+                    $resolved = $orderId;
 
-                DB::transaction(function () use (&$resolved, $orderId, $action, $updateParams, $isRenew) {
-                    if ($isRenew) {
-                        // renew→new：initParams（CSR+委托，锁前）→ persistOrder 锁源订单行 + 前驱 active→renewed CAS。
-                        // code=1 成功由 getData 吸收返回 data；并发抢先则内部 CAS affected=0 抛「订单已续费」回滚。
-                        $result = $this->getData($action, 'renew', [$updateParams]);
-                        $resolved = $result['data']['order_id'] ?? $orderId;
-                    } else {
-                        // reissue：initParams（CSR+委托，锁前）→ 事务内锁源订单行 + latest_cert_id 基线比对 + 前驱 CAS 翻 reissued。
-                        $this->getData($action, 'reissue', [$updateParams]);
-                    }
+                    DB::transaction(function () use (&$resolved, $orderId, $action, $updateParams, $isRenew) {
+                        if ($isRenew) {
+                            // renew→new：initParams（CSR+委托，锁前）→ persistOrder 锁源订单行 + 前驱 active→renewed CAS。
+                            // code=1 成功由 getData 吸收返回 data；并发抢先则内部 CAS affected=0 抛「订单已续费」回滚。
+                            $result = $this->getData($action, 'renew', [$updateParams]);
+                            $resolved = $result['data']['order_id'] ?? $orderId;
+                        } else {
+                            // reissue：initParams（CSR+委托，锁前）→ 事务内锁源订单行 + latest_cert_id 基线比对 + 前驱 CAS 翻 reissued。
+                            $this->getData($action, 'reissue', [$updateParams]);
+                        }
 
-                    // O3-A：pay(false) 纯本地扣费落 pending，与 renew/reissue 同事务原子（charge 失败 → 整体回滚）
-                    $this->getData($action, 'pay', [$resolved, false]);
+                        // O3-A：pay(false) 纯本地扣费落 pending，与 renew/reissue 同事务原子（charge 失败 → 整体回滚）
+                        $this->getData($action, 'pay', [$resolved, false]);
+                    });
+
+                    return $resolved;
                 });
 
-                return $resolved;
-            });
+                // O3-B：commit 移出互斥锁（commit 自取 order_mutate_{resolved} 锁，此处 mutex 已释放、无自死锁）。
+                // 超时/失败/抢锁忙被 getData('commit') 吞 → 订单停 pending、已扣费保留；权威自愈 = ReconcilePendingCommand
+                // 主扫描（无 channel 过滤），下游 pull（query 跟 last_cert 链 + 以新 id update）仅为条件式加速。
+                $this->getData($action, 'commit', [$orderId]);
 
-            // O3-B：commit 移出互斥锁（commit 自取 order_mutate_{resolved} 锁，此处 mutex 已释放、无自死锁）。
-            // 超时/失败/抢锁忙被 getData('commit') 吞 → 订单停 pending、已扣费保留；权威自愈 = ReconcilePendingCommand
-            // 主扫描（无 channel 过滤），下游 pull（query 跟 last_cert 链 + 以新 id update）仅为条件式加速。
-            $this->getData($action, 'commit', [$orderId]);
+                $reQuery = true;
+            } catch (ApiResponseException $e) {
+                // local CSR 提交（renew_mode=local，携带 CSR）后的服务端签发处理失败：服务端自写一行签发
+                // 失败记录（客户端零参与——签发失败不由客户端上报）。非本地路径（服务端生成 CSR）的同步错误
+                // 由调用方自行感知、不重复留痕。message 以「本地签发失败：」开头，与客户端部署失败天然可辨。
+                if (! empty($params['csr'])) {
+                    app(AutoDeployReportService::class)->recordServerFailure(
+                        $order,
+                        '本地签发失败：'.($e->getApiResponse()['msg'] ?? '未知错误')
+                    );
+                }
 
-            $reQuery = true;
+                throw $e;
+            }
         }
 
         if ($reQuery) {
@@ -409,6 +425,15 @@ class ApiController extends Controller
             'ip' => $request->ip(),
             'message' => $message,
         ]);
+
+        // 记录全量之上做通知消噪：失败触发按订单去重的 SystemAlert；成功即清去重键，
+        // 复发时立即再告警（healthy 分支清键，与服务端自写签发失败共用同一 per-order 去重）。
+        $reportService = app(AutoDeployReportService::class);
+        if ($params['status'] === 'failure') {
+            $reportService->notifyFailure($order, $message);
+        } else {
+            $reportService->clearFailureAlert($order);
+        }
 
         $this->success([
             'order_id' => $params['order_id'],

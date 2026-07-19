@@ -2,6 +2,7 @@
 
 use App\Exceptions\ApiResponseException;
 use App\Models\AdminLog;
+use App\Models\AutoDeployReport;
 use App\Models\ErrorLog;
 use App\Models\Fund;
 use App\Models\Notification;
@@ -10,6 +11,7 @@ use App\Models\Task;
 use App\Models\User;
 use App\Models\UserLog;
 use App\Services\Order\Action;
+use Illuminate\Support\Carbon;
 use Tests\Traits\CreatesTestData;
 
 test('签名为 schedule:purge', function () {
@@ -538,4 +540,74 @@ test('purge 临近退款期取消走 commitCancel：删 sync/revalidate、建 ca
     expect(Task::where('order_id', $order->id)->where('action', 'commit')->where('status', 'executing')->exists())->toBeTrue();
     // 建 cancel 任务
     expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(1);
+});
+
+// ===== 自动部署上报记录清理（订单终态后按 order_id 清理，保留期沿用现有机制）=====
+
+/** 造一条指定 created_at 的自动部署上报记录 */
+function makeReportRow(int $orderId, ?int $certId, string $status, Carbon $createdAt): AutoDeployReport
+{
+    $report = AutoDeployReport::create([
+        'order_id' => $orderId,
+        'cert_id' => $certId ?? $orderId,
+        'status' => $status,
+    ]);
+    $report->forceFill(['created_at' => $createdAt])->save();
+
+    return $report;
+}
+
+test('purge 清订单终态（证书 renewed/expired）且超保留期的自动部署上报', function () {
+    config(['purge.retention.auto_deploy_reports' => 90]);
+
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $cert = $this->createTestCert($order, ['status' => 'renewed']); // 订单终态
+
+    $report = makeReportRow($order->id, $cert->id, 'failure', now()->subDays(91));
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(AutoDeployReport::where('id', $report->id)->exists())->toBeFalse();
+});
+
+test('purge 不清仍 active（部署中）订单的自动部署上报（保住审计视图）', function () {
+    config(['purge.retention.auto_deploy_reports' => 90]);
+
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $cert = $this->createTestCert($order, ['status' => 'active']); // 仍活跃
+
+    $report = makeReportRow($order->id, $cert->id, 'failure', now()->subDays(120));
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(AutoDeployReport::where('id', $report->id)->exists())->toBeTrue();
+});
+
+test('purge 不清订单终态但保留期内的自动部署上报', function () {
+    config(['purge.retention.auto_deploy_reports' => 90]);
+
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $cert = $this->createTestCert($order, ['status' => 'expired']); // 终态
+
+    $report = makeReportRow($order->id, $cert->id, 'failure', now()->subDays(30)); // 保留期内
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(AutoDeployReport::where('id', $report->id)->exists())->toBeTrue();
+});
+
+test('purge 清超保留期的孤儿自动部署上报（订单已不存在）', function () {
+    config(['purge.retention.auto_deploy_reports' => 90]);
+
+    $report = makeReportRow(999999, 888888, 'failure', now()->subDays(91)); // order 不存在
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect(AutoDeployReport::where('id', $report->id)->exists())->toBeFalse();
 });

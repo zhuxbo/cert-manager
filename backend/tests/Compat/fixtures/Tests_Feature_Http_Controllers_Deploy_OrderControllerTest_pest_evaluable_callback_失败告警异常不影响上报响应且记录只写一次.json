@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败只写自动部署记录，不写_error__logs_或发送告警",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_失败告警异常不影响上报响应且记录只写一次",
     "version": "1.0.0",
     "calls": [
         {

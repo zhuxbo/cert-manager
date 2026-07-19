@@ -30,8 +30,9 @@ use Throwable;
  *  - 去重语义 = 状态指纹：同 dedupeKey 下指纹相同 → TTL 内不重发；指纹变化 → 立即再发并覆盖；
  *    TTL 到期 → 重提醒一次。恢复即清键（clearDedupe）是各调用方 healthy 分支义务。
  *  - dedupeTtlHours 契约：必须 ≥ 3× 调用方巡检周期（防 TTL≈周期时去重形同虚设）。
- *  - 并发说明：get→put 非原子是有意取舍——本批调用方全部单 cron 串行无竞态；占位后置正是
- *    为「dispatch 失败不占键」。未来并发调用最坏后果是重复一封告警（fail-open 到无害方向）。
+ *  - 并发说明：get→put 非原子是有意取舍——占位后置正是为「dispatch 失败不占键」。调用方已
+ *    不全是单 cron 串行（Deploy callback 失败告警为并发 HTTP 入口），竞态最坏后果是同一订单
+ *    重复一封告警（fail-open 到无害方向），可接受。
  */
 class SystemAlert
 {

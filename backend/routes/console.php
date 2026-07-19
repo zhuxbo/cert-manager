@@ -83,6 +83,16 @@ Schedule::command('schedule:auto-renew')
     ->description('自动续费/重签即将到期的证书')
     ->onFailure($logScheduleFailure('schedule:auto-renew'));
 
+// 自动部署/签发持续未解决失败提醒 - 每天 08:00（错开 auto-renew 00:00 / purge 02:00 / stuck-orders 06:30 / expire 09:00）
+// 事件驱动告警在失败发生时按订单去重发一封；本命令基于「订单最后一条上报仍为 failure」状态判定，
+// 复用同一 per-order 去重键 + 固定指纹，由 TTL 裁决「TTL 内一封、到期仍未解决再一封」，覆盖客户端触顶静默期
+Schedule::command('schedule:deploy-failure-reminder')
+    ->dailyAt('08:00')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('deploy-failure-reminder')
+    ->description('自动部署/签发持续未解决失败提醒（订单终态或证书过期后停止）');
+
 // 余额前瞻预警 - 每周一 09:30 执行（未来 30 天自动续费余额不足则每用户一封，预估上限）
 // 周一 09:30：错开 auto-renew 00:00 / backup 02:00 / audit 03:00，且避开 schedule:expire 的 09:00
 // （withoutOverlapping 按命令名互斥、不挡不同命令同刻并发）；weekly 天然「每用户每周期一封」去重
@@ -149,7 +159,7 @@ Schedule::command('schedule:sweep-orphan-orders')
     ->onFailure($logScheduleFailure('schedule:sweep-orphan-orders'));
 
 // ============================================================
-// 健康监控命令群（包E：E1~E6）——freeze 期一律 skip（见计划 §0.3）
+// 健康监控命令群——freeze 期一律 skip
 // ============================================================
 
 // E1 上游 CA 凭证健康心跳 - 每 15 分钟（只读探测，仅鉴权维度告警）

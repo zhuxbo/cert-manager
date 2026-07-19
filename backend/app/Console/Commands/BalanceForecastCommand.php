@@ -55,6 +55,8 @@ class BalanceForecastCommand extends Command
             ->whereHas('latestCert', function ($query) {
                 $query->where('status', 'active')
                     ->where('expires_at', '<', now()->addDays(self::FORECAST_DAYS))
+                    // 过期防御（与 getRenewOrders 同构）：已过期证书不会被自动续费，不计入预估
+                    ->where('expires_at', '>=', now())
                     // API 订单由下游续费，不计入
                     ->where(function ($q) {
                         $q->whereNull('channel')->orWhere('channel', '!=', 'api');

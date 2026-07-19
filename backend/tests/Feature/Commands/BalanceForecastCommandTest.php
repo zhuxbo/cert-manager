@@ -164,6 +164,19 @@ test('ssl 过滤：同用户 smime 到期单不进 required 聚合（只计 ssl�
     $this->artisan('schedule:balance-forecast')->assertSuccessful();
 });
 
+test('过期防御（与 getRenewOrders 同构）：已过期证书（expires_at < now 但 status 仍 active）不计入前瞻', function () {
+    $user = User::factory()->withBalance('0.00')->withAutoRenew()->create([
+        'email' => 'expired@example.com', 'credit_limit' => '0.00',
+    ]);
+    makeForecastOrder($user, ['cert' => ['expires_at' => now()->subDay()]]);
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:balance-forecast')->assertSuccessful();
+});
+
 test('channel=api 单不计入前瞻', function () {
     $user = User::factory()->withBalance('0.00')->withAutoRenew()->create([
         'email' => 'api@example.com', 'credit_limit' => '0.00',

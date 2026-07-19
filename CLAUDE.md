@@ -47,6 +47,7 @@ skills/ # 开发规范（详细文档）
 | `skills/backend/acme-module.md`       | ACME 订阅管理（封装下单 + 交付 EAB 模式）                         |
 | `skills/backend/source-api.md`        | 新增上游来源（Order\\Api / Acme\\Api）                            |
 | `skills/backend/auto-renew.md`        | 自动续费/重签、算法继承防降级、失败兜底通知                       |
+| `skills/backend/deploy-renewal.md`    | 自动部署上报记录、服务端自写签发失败行、告警消噪、报告清理        |
 | `skills/backend/sm2-cert.md`          | 国密 SM2 双证书、能力探测、fail-closed、下载包                    |
 | `skills/backend/certum-document.md`   | Certum 验证文档上传、异步转发上游、跨级去重                       |
 | `skills/backend/enterprise-lookup.md` | 工商查询（阿里云）+ 邮编查询、企业-联系人绑定                     |

@@ -10,6 +10,7 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Notification\SystemAlert;
 use App\Services\Order\Action;
+use App\Services\Order\AutoDeployReportService;
 use App\Services\Order\AutoRenewService;
 use App\Services\Order\Utils\DomainUtil;
 use App\Services\Order\Utils\OrderUtil;
@@ -86,6 +87,9 @@ class AutoRenewCommand extends Command
             ->whereHas('latestCert', function ($query) {
                 $query->where('status', 'active')
                     ->where('expires_at', '<', now()->addDays(14))
+                    // 过期防御（与客户端过期静默对齐、堵 00:00 auto-renew 早于 09:00 ExpireCommand 翻转的时序缝）：
+                    // 证书已过期（expires_at < now）不再自动续费/重签，交 ExpireCommand 翻 expired 后由人工处理
+                    ->where('expires_at', '>=', now())
                     // API 订单由下游系统自行处理续费/重签
                     ->where(function ($q) {
                         $q->whereNull('channel')->orWhere('channel', '!=', 'api');
@@ -125,6 +129,9 @@ class AutoRenewCommand extends Command
             ->whereHas('latestCert', function ($query) {
                 $query->where('status', 'active')
                     ->where('expires_at', '<', now()->addDays(14))
+                    // 过期防御（与客户端过期静默对齐、堵 00:00 auto-renew 早于 09:00 ExpireCommand 翻转的时序缝）：
+                    // 证书已过期（expires_at < now）不再自动续费/重签，交 ExpireCommand 翻 expired 后由人工处理
+                    ->where('expires_at', '>=', now())
                     // API 订单由下游系统自行处理续费/重签
                     ->where(function ($q) {
                         $q->whereNull('channel')->orWhere('channel', '!=', 'api');
@@ -157,10 +164,28 @@ class AutoRenewCommand extends Command
         foreach ($orders as $order) {
             try {
                 $this->processOrder($order, $action);
+
+                // 同订单重签成功：失败在案时服务端自写恢复行 + 清去重键（无客户端回调的 web 订单
+                // 唯一恢复路径，否则最后一条报告永远停在 failure、被持续误提醒）。renew 成功建新单、
+                // 旧订单证书翻 renewed 终态，提醒天然停止，无需恢复行。
+                if ($action === 'reissue') {
+                    app(AutoDeployReportService::class)->recordServerRecovery(
+                        $order,
+                        '自动重签成功：前次失败已恢复'
+                    );
+                }
             } catch (Throwable $e) {
                 // 原始异常进 cron 日志供运维排查；用户端归一为兜底文案，不泄露系统细节
                 $this->error("订单 #{$order->id} {$action} 失败: {$e->getMessage()}");
                 $this->sendFailureNotification($order, $action, self::FALLBACK_REASON);
+
+                // pull scheduler 自动重签/续费失败：服务端自写一行 status=failure 记录 + 按订单去重告警
+                // （客户端零参与）。message 归一（不泄露原始异常）、以「自动{续费|重签}失败：」开头，与客户端
+                // 部署失败天然可辨。跳过类（IP/委托/缺价/余额）不进本 catch，保持既有仅用户兜底通知语义不变。
+                app(AutoDeployReportService::class)->recordServerFailure(
+                    $order,
+                    ($action === 'renew' ? '自动续费失败：' : '自动重签失败：').self::FALLBACK_REASON
+                );
             }
         }
     }
