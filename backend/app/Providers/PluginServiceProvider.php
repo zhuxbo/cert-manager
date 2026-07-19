@@ -45,8 +45,18 @@ class PluginServiceProvider extends ServiceProvider
             return;
         }
 
-        foreach (glob("$pluginsPath/*/plugin.json") as $manifestFile) {
-            $manifest = json_decode(file_get_contents($manifestFile), true);
+        foreach (glob("$pluginsPath/*/plugin.json") ?: [] as $manifestFile) {
+            // 并行测试会动态创建/删除临时插件目录，glob 枚举后文件可能已消失（TOCTOU），静默跳过
+            if (! is_file($manifestFile)) {
+                continue;
+            }
+
+            $content = @file_get_contents($manifestFile);
+            if ($content === false) {
+                continue;
+            }
+
+            $manifest = json_decode($content, true);
             if (! $manifest) {
                 continue;
             }
