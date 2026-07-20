@@ -304,7 +304,7 @@ class CnameDelegationService
      * @param  int  $delegationId  委托 ID
      * @param  string  $outcome  probeValidity 的返回值（valid|invalid|unreachable）
      * @param  CarbonInterface|null  $expectedLastCheckedAt  阶段①探测前加载的 last_checked_at 快照（勿传落库前重读的现值，否则 CAS 恒命中、守卫虚设）
-     * @return bool 是否实际落库；false=行已被并发更新/删除，调用方应跳过该条的删除/通知 gate
+     * @return bool 是否实际落库；false=行已被并发更新/删除，调用方应跳过该条的清理 gate
      */
     public function applyProbeOutcomeIfUnchanged(int $delegationId, string $outcome, ?CarbonInterface $expectedLastCheckedAt): bool
     {

@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use RuntimeException;
 
 /**
- * 接替单取消一次性通知 Builder（镜像 CertRenewStalledNotificationBuilder / DelegationInvalidNotificationBuilder）。
+ * 接替单取消一次性通知 Builder。
  *
  * 续费/重签接替单在 processing/approving（已提交上游 CA，含已签发 active）状态被取消后，前驱证书
  * （renewed/reissued 终态）脱离 cert_expire / AutoRenew / cert_renew_stalled 三重监控——原证书物理上

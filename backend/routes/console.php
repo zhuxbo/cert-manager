@@ -65,14 +65,14 @@ Schedule::command('delegation:cleanup')
     ->description('清理非processing状态订单的委托DNS记录');
 
 // CNAME委托健康周巡检 - 每周一 07:00 执行（错开 cleanup 06:00 / expire 09:00 / balance-forecast 周一 09:30）
-// 无效委托达失败阈值发用户通知（按 user 聚合），无 active 证书的失效委托清理；两阶段+熔断防 dnsTools
-// 系统性停摆误报/误删；weekly 天然「每用户每周期一封」去重
+// 无 active 证书的失效委托清理；两阶段+熔断防 dnsTools 系统性停摆误删。
+// 委托失效的用户通知由 schedule:auto-renew 在真正发起续签/重签前检查并触发。
 Schedule::command('delegation:check')
     ->weeklyOn(1, '07:00')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('check-delegation-health')
-    ->description('CNAME委托健康周巡检（失效通知 + 无用记录清理 + 停摆熔断）');
+    ->description('CNAME委托健康周巡检（无用记录清理 + 停摆熔断）');
 
 // 自动续费/重签任务 - 每天0点执行，commit 分散在0~8点
 Schedule::command('schedule:auto-renew')
