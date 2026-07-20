@@ -558,6 +558,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Agent config drift check
+        run: make check-agent-config
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:

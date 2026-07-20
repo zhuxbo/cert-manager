@@ -149,7 +149,7 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 
 `Order\Api\default\Sdk::call()` 与 `Acme\Api\default\Sdk` 的上游 HTTP 调用**必须有 timeout 上限**，且**锁内调用的 timeout 必须 < `innodb_lock_wait_timeout`（已通过 `config/database.php` 的 PDO `MYSQL_ATTR_INIT_COMMAND` 固化为 session=50、覆盖 global 漂移，见 `InnodbLockWaitTimeoutTest`）**。
 
-**为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求，见主 `CLAUDE.md`「资金/状态变更必须在事务 + 行锁内」）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
+**为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求见 `skills/backend/order-fund.md`）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
 
 **Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(10, $timeout)` + `timeout`；Guzzle `timeout` 含 connect，单次墙钟上限 = `timeout`）。connect_timeout 取 10s（早期 3s）：manager 是多级代理，上游可能是任意深度的另一个 manager，网络路径/DNS/地域全不可控，按"不可控上游"处理，对齐 callback 的 `connectTimeout(10)`；10 < 50 不破坏 1205 防护（总 timeout 45s 封顶不变，connect 不叠加），黑洞上游失败慢一点换多级链路的连接宽容，是有意取舍。
 

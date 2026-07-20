@@ -38,7 +38,7 @@ class NotificationJob implements ShouldBeEncrypted, ShouldQueue
     use Dispatchable, HasUpgradeFreezeMiddleware, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * 幂等 ShouldQueue 约定（CLAUDE.md）：tries=5 + maxExceptions=1。
+     * 幂等 ShouldQueue 约定（skills/backend/notification.md）：tries=5 + maxExceptions=1。
      *  - tries=5：给 SkipWhenUpgradeFrozen 的 release(60) 烧 attempts 留余量（freeze 每分钟烧 1 个）；
      *    正常态瞬态重试走 retryDelay() backoff [60,300,300,300]。
      *  - maxExceptions=1：本设计瞬态路径 catch 后 release/fail 均不抛，maxExceptions 只对「真·未捕获

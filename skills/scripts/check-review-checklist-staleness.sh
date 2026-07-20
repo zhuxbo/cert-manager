@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 案例腐烂检测 — 验证守护文件（skills/review-checklist.md + .claude/commands/finish-check.md）
+# 案例腐烂检测 — 验证守护文件（skills/review-checklist.md + skills/finish-check.md）
 # 反模式案例引用的类/方法/文件仍存在，commit SHA 锚点仍可解析，并输出条目规模信号
 # 失败不阻塞（warning 性质），结果贴入 finish-check 总结的"已知局限性"段
 set -euo pipefail
@@ -17,11 +17,11 @@ cd "$REPO_ROOT"
 # 否则 finish-check.md 的条目在自身/对方文件命中即假绿
 CHECKLISTS=(
     "skills/review-checklist.md"
-    ".claude/commands/finish-check.md"
+    "skills/finish-check.md"
 )
 GREP_EXCLUDES=(
     ':!skills/review-checklist.md'
-    ':!.claude/commands/finish-check.md'
+    ':!skills/finish-check.md'
 )
 
 ALLOWLIST="$REPO_ROOT/skills/scripts/.staleness-allowlist"

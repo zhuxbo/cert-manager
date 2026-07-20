@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# derive-scope.sh — 从 git diff 机器推导 .claude/commands/finish-check.md §1 范围表
+# derive-scope.sh — 从 git diff 机器推导 skills/finish-check.md §1 范围表
 # 取代纯自报枚举制：路径行 glob 推导、内容行只扫 + 新增行、安全面/删除审核保持人工（仅给关键词提示）
 #
 # 规则 ↔ finish-check.md §1 范围表行 映射（**范围表行增删时必须同步本脚本**）：

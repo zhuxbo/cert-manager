@@ -20,8 +20,15 @@
 | Certum 文档     | `backend/certum-document.md`                  | 验证文档上传、签发后禁上传、异步转发上游、content_hash 跨级去重                                                                              |
 | 企业信息查询    | `backend/enterprise-lookup.md`                | 工商查询（阿里云市场）+ 邮编查询（本地县级市识别）、企业-联系人绑定                                                                          |
 | 通知体系        | `backend/notification.md`                     | 主系统 mail + 插件通道注入、ChannelManager singleton、携密不入库、cert_renew_cancelled 接替单取消、SystemAlert 运维告警（去重指纹/净化管线） |
-| 前端开发        | `frontend/frontend-dev.md`                    | Vue 3、Monorepo、共享组件                                                                                                                    |
-| 插件开发        | `plugins/plugin-dev.md`                       | 插件系统、IIFE 打包、安装/更新/卸载                                                                                                          |
+| 前端·基础       | `frontend/core.md`                            | Vue 3、Monorepo、共享组件、开发命令、配置与环境                                                                                              |
+| 前端·通用 UI    | `frontend/ui.md`                              | 代码组织、轮询、视口懒加载、图表与详情聚合页刷新                                                                                             |
+| 前端·表格       | `frontend/table.md`                           | 菜单表格使用 PureAdmin、内嵌表格使用 Element Plus、选择态与字典显示                                                                          |
+| 插件·核心       | `plugins/core.md`                             | 插件目录、plugin.json、后端、迁移与解耦                                                                                                      |
+| 插件·前端       | `plugins/frontend.md`                         | IIFE 打包、依赖锁定、共享依赖、样式、路由、Widget 与字典扩展                                                                                 |
+| 插件·生命周期   | `plugins/lifecycle.md`                        | 测试与 CI、构建发布、安装/更新/卸载、安全机制与内置实现                                                                                      |
+| 数据库结构导出  | `db-structure.md`                             | 重新生成并验证主系统 `backend/database/structure.json`                                                                                       |
+| 完成检查        | `finish-check.md`                             | 完整本地门禁、范围推导、专项验证、文档同步与 reviewer 循环                                                                                   |
+| 远程发布        | `remote-release.md`                           | dev/main 通道判定、发布前门禁、远端发布与发布后分支同步                                                                                      |
 | 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、健康监控/外部拨测/孤儿退款 arm-switch                                                              |
 | 构建发布        | `ops/build-release.md`                        | 版本发布、打包、CI/CD                                                                                                                        |
 | Review 清单     | `review-checklist.md`                         | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描                                                                      |
@@ -41,5 +48,5 @@
 
 - 只记录已确定且经过验证的信息
 - 保持简洁，避免冗余
-- **按领域子目录归类**：`backend/`（core/order-fund/auth/upgrade/database/delegation/acme-module/source-api/auto-renew/sm2-cert/certum-document/enterprise-lookup/notification）、`frontend/`、`plugins/`、`ops/`；跨领域（review-checklist、acme-e2e-test）放根目录。单文件过大或多主题混杂（经验阈值 ~600 行）时按子主题拆分
-- **详情下沉、红线上浮**：skill 是实现细节/坑/复现的**唯一落点**；仅当某约定属"任何改动都可能踩、不读 skill 就会违规"的安全铁律（资金/死锁/事务/安全）时，才在 `CLAUDE.md` 系统架构约定补一句**可执行红线 + 本目录指针**，绝不把细节复制进 CLAUDE.md
+- **按领域子目录归类**：`backend/`（core/order-fund/auth/upgrade/database/delegation/acme-module/source-api/auto-renew/sm2-cert/certum-document/enterprise-lookup/notification）、`frontend/`（core/ui/table）、`plugins/`（core/frontend/lifecycle）、`ops/`；跨领域（review-checklist、acme-e2e-test）放根目录。单文件过大或多主题混杂（经验阈值 ~600 行）时按子主题拆分
+- **详情下沉、红线上浮**：skill 是实现细节/坑/复现的**唯一落点**；仅当某约定属于长期、项目级、会影响智能体行为的安全铁律时，才在 `AGENTS.md` 简述约束并指向本目录，绝不把细节复制进 `AGENTS.md` 或 `CLAUDE.md`

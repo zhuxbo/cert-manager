@@ -16,11 +16,14 @@ PROCESSES ?= 4 # 并行测试 worker 数（amd64 Rosetta 下不宜过高，防 O
 .DEFAULT_GOAL := help
 
 .PHONY: help up down stop restart build rebuild ps logs shell test test-compat migrate fresh seed \
-        tinker composer artisan php exec pint db db-structure redis-cli front install
+        tinker composer artisan php exec pint db db-structure redis-cli front install check-agent-config
 
 help: ## 显示本帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+check-agent-config: ## 检查共享智能体配置和 Claude/Codex 薄入口
+	python3 skills/scripts/check-agent-config.py
 
 up: ## 启动容器（后台）
 	$(DC) up -d
