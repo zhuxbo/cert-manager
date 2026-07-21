@@ -346,6 +346,7 @@ class ApiController extends Controller
             'alternative_names',
             'dcv',
             'validation',
+            'documents',
             'csr',
             'cert',
             'intermediate_cert',

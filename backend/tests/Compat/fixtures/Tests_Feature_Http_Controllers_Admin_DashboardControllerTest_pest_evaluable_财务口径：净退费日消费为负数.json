@@ -13,6 +13,8 @@
                     "monthly": {
                         "total_users": "integer",
                         "total_orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "active_orders": "integer",
                         "expiring_orders": "integer"
                     },
@@ -51,6 +53,23 @@
                         "daily": "integer",
                         "weekly": "integer",
                         "monthly": "integer"
+                    },
+                    "order_stats": {
+                        "daily": {
+                            "orders": "integer",
+                            "cancelled_orders": "integer",
+                            "net_orders": "integer"
+                        },
+                        "weekly": {
+                            "orders": "integer",
+                            "cancelled_orders": "integer",
+                            "net_orders": "integer"
+                        },
+                        "monthly": {
+                            "orders": "integer",
+                            "cancelled_orders": "integer",
+                            "net_orders": "integer"
+                        }
                     }
                 }
             }

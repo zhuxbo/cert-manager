@@ -411,6 +411,12 @@ components:
         validation:
           type: array
           items: { $ref: "#/components/schemas/ValidationItem" }
+        documents:
+          type: [array, "null"]
+          description: 上游 CA 返回的审核文档要求及审核状态，字段原样透传
+          items:
+            type: object
+            additionalProperties: true
 
     Dcv:
       type: [object, "null"]

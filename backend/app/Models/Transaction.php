@@ -20,6 +20,10 @@ class Transaction extends BaseModel
 
     const string TYPE_ACME_CANCEL = 'acme_cancel';
 
+    public const array ORDER_TYPES = ['order', self::TYPE_ACME_ORDER];
+
+    public const array CANCEL_TYPES = ['cancel', self::TYPE_ACME_CANCEL];
+
     protected $fillable = [
         'user_id',
         'type',

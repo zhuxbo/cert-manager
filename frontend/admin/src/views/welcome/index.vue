@@ -227,9 +227,19 @@ const systemTrendsChartData = computed(() => {
         color: "#3B82F6"
       },
       {
-        name: "新增订单",
+        name: "订单交易",
         data: trendsData.value.map(item => item.orders),
         color: "#10B981"
+      },
+      {
+        name: "取消交易",
+        data: trendsData.value.map(item => item.cancelled_orders),
+        color: "#F97316"
+      },
+      {
+        name: "净增订单",
+        data: trendsData.value.map(item => item.net_orders),
+        color: "#8B5CF6"
       },
       {
         name: "净充值",
@@ -463,13 +473,13 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
         </div>
 
-        <!-- 有效/总 订单数 -->
+        <!-- 交易流水订单统计 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between">
             <div>
               <div class="flex items-center gap-2">
                 <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                  有效/总 订单数
+                  净增/总订单数
                 </p>
                 <div class="flex gap-1">
                   <span
@@ -488,12 +498,22 @@ useLazyVisible(chartsSentinel, fetchChartsData);
                 </div>
               </div>
               <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                {{ formatNumber(systemOverview?.monthly?.active_orders || 0) }}
+                {{
+                  formatNumber(
+                    systemOverview?.order_stats?.[orderPeriod]?.net_orders || 0
+                  )
+                }}
                 /
                 {{ formatNumber(systemOverview?.monthly?.total_orders || 0) }}
               </p>
               <p class="text-xs text-gray-500 dark:text-gray-400">
-                新增: +{{ systemOverview?.new_orders?.[orderPeriod] || 0 }}
+                订单 +{{
+                  systemOverview?.order_stats?.[orderPeriod]?.orders || 0
+                }}
+                · 取消 -{{
+                  systemOverview?.order_stats?.[orderPeriod]
+                    ?.cancelled_orders || 0
+                }}
               </p>
             </div>
             <div class="p-3 bg-green-100 dark:bg-green-900 rounded-full">

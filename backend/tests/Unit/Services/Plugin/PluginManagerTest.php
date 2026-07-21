@@ -542,19 +542,84 @@ test('rollbackPluginMigrations 重置插件全部迁移批次', function () {
     ]]);
 });
 
+/**
+ * 可靠删除插件测试目录。File::deleteDirectory 在 macOS Docker VirtioFS 下偶发静默失败
+ * （@rmdir 因缓存视目录仍非空却返回 true），残目录会污染宿主 plugins/ 工作区（git status
+ * 出现未跟踪 test-reset-*）。删除后校验，未净则清缓存重试，仍残留使用绝对路径强制清理。
+ */
+function removeResidualPluginDir(string $dir): void
+{
+    for ($attempt = 0; $attempt < 3; $attempt++) {
+        File::deleteDirectory($dir);
+        clearstatcache(true, $dir);
+        if (! is_dir($dir)) {
+            return;
+        }
+    }
+    forceRemoveResidualPluginDir($dir);
+}
+
+function forceRemoveResidualPluginDir(string $dir): void
+{
+    $rm = '/bin/rm';
+    if (! is_executable($rm)) {
+        throw new RuntimeException("插件测试目录清理失败：$rm 不可执行");
+    }
+
+    $output = [];
+    $exitCode = 0;
+    exec(escapeshellarg($rm).' -rf '.escapeshellarg($dir).' 2>&1', $output, $exitCode);
+    clearstatcache(true, $dir);
+
+    if ($exitCode !== 0 || is_dir($dir)) {
+        throw new RuntimeException(
+            "插件测试目录清理失败：$dir；exit=$exitCode；output=".implode("\n", $output)
+        );
+    }
+}
+
+test('插件测试目录强制清理不依赖 PATH 且会删除残留目录', function () {
+    $dir = sys_get_temp_dir().'/plugin-cleanup-'.uniqid();
+    File::ensureDirectoryExists($dir);
+    File::put("$dir/residual.txt", 'residual');
+    $originalPath = getenv('PATH');
+
+    try {
+        putenv('PATH=/nonexistent');
+        forceRemoveResidualPluginDir($dir);
+    } finally {
+        putenv($originalPath === false ? 'PATH' : 'PATH='.$originalPath);
+        is_dir($dir) && File::deleteDirectory($dir);
+    }
+
+    expect(is_dir($dir))->toBeFalse();
+});
+
 test('migrate reset 实际清理插件跨批次迁移且保留全局最新批次', function () {
+    // 自愈历史残留：worker 被强杀或 VirtioFS 静默删除失败会在宿主 plugins/ 留下 test-reset-*
+    // 残目录。仅清 mtime 已老的（>120s 必为往次遗留，本用例远快于此，绝不会误删并发中的目录）。
+    foreach (glob(base_path('../plugins/test-reset-*')) ?: [] as $stale) {
+        if (is_dir($stale) && time() - (int) filemtime($stale) > 120) {
+            removeResidualPluginDir($stale);
+        }
+    }
+
     $suffix = strtolower(substr(str_replace('.', '', uniqid('', true)), -10));
     $pluginName = "test-reset-$suffix";
-    $migrationDir = base_path("../plugins/$pluginName/backend/migrations");
+    $pluginDir = base_path("../plugins/$pluginName");
+    $migrationDir = "$pluginDir/backend/migrations";
     $migrationOne = "2099_01_01_000001_create_pm_reset_a_$suffix";
     $migrationTwo = "2099_01_01_000002_create_pm_reset_b_$suffix";
     $unrelated = "2099_01_01_000003_unrelated_latest_$suffix";
     $tableOne = "pm_reset_a_$suffix";
     $tableTwo = "pm_reset_b_$suffix";
 
-    File::ensureDirectoryExists($migrationDir);
-    foreach ([[$migrationOne, $tableOne], [$migrationTwo, $tableTwo]] as [$migration, $table]) {
-        File::put("$migrationDir/$migration.php", <<<PHP
+    try {
+        // 目录/文件/表/迁移行的创建全部纳入 try：任一步抛异常时 finally 仍会清理，不再像旧写法
+        // （创建在 try 之外）那样把 plugins/test-reset-* 泄漏到工作区。
+        File::ensureDirectoryExists($migrationDir);
+        foreach ([[$migrationOne, $tableOne], [$migrationTwo, $tableTwo]] as [$migration, $table]) {
+            File::put("$migrationDir/$migration.php", <<<PHP
 <?php
 
 use Illuminate\\Database\\Migrations\\Migration;
@@ -570,15 +635,14 @@ return new class extends Migration
     }
 };
 PHP);
-        Schema::create($table, fn ($blueprint) => $blueprint->id());
-    }
-    DB::table('migrations')->insert([
-        ['migration' => $migrationOne, 'batch' => 1],
-        ['migration' => $migrationTwo, 'batch' => 2],
-        ['migration' => $unrelated, 'batch' => 3],
-    ]);
+            Schema::create($table, fn ($blueprint) => $blueprint->id());
+        }
+        DB::table('migrations')->insert([
+            ['migration' => $migrationOne, 'batch' => 1],
+            ['migration' => $migrationTwo, 'batch' => 2],
+            ['migration' => $unrelated, 'batch' => 3],
+        ]);
 
-    try {
         $exitCode = Artisan::call('migrate:reset', [
             '--path' => "../plugins/$pluginName/backend/migrations",
             '--force' => true,
@@ -595,7 +659,7 @@ PHP);
         DB::table('migrations')
             ->whereIn('migration', [$migrationOne, $migrationTwo, $unrelated])
             ->delete();
-        File::deleteDirectory(base_path("../plugins/$pluginName"));
+        removeResidualPluginDir($pluginDir);
     }
 });
 

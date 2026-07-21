@@ -1,7 +1,49 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_财务口径：净充值反映_refunds_抵扣、净消费含_ACME_且可为负",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DashboardControllerTest::__pest_evaluable_订单数量按购买和取消交易流水及交易时间统计",
     "version": "1.0.0",
     "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/overview",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "total_users": "integer",
+                    "total_orders": "integer",
+                    "cancelled_orders": "integer",
+                    "net_orders": "integer",
+                    "total_revenue": "string",
+                    "active_orders": "integer"
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/realtime",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "online_users": "integer",
+                    "today": {
+                        "processing_orders": "integer",
+                        "new_orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "new_users": "integer"
+                    },
+                    "alerts": {
+                        "expiring_7_days": "integer",
+                        "expiring_30_days": "integer",
+                        "issued_7_days": "integer",
+                        "issued_30_days": "integer"
+                    }
+                }
+            }
+        },
         {
             "method": "GET",
             "uri_pattern": "/api/admin/dashboard/system-overview",
@@ -70,6 +112,28 @@
                             "cancelled_orders": "integer",
                             "net_orders": "integer"
                         }
+                    }
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/dashboard/trends",
+            "request_keys": [
+                "days"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "date": "string",
+                        "users": "integer",
+                        "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "recharge": "integer",
+                        "consumption": "integer"
                     }
                 }
             }

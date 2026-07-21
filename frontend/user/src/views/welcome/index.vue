@@ -208,9 +208,21 @@ const trendChartData = computed(() => {
     }),
     series: [
       {
-        name: "订单数量",
+        name: "订单交易",
         data: trendData.value.map(item => item.orders),
         color: "#3B82F6",
+        yAxisIndex: 0
+      },
+      {
+        name: "取消交易",
+        data: trendData.value.map(item => item.cancelled_orders),
+        color: "#F97316",
+        yAxisIndex: 0
+      },
+      {
+        name: "净增订单",
+        data: trendData.value.map(item => item.net_orders),
+        color: "#8B5CF6",
         yAxisIndex: 0
       },
       {
@@ -234,16 +246,26 @@ const monthlyComparisonChartData = computed(() => {
   const data = monthlyComparison.value;
 
   return {
-    xAxisData: ["订单数量", "消费金额"],
+    xAxisData: ["订单", "取消", "净增", "消费金额"],
     series: [
       {
         name: "上月",
-        data: [data.last_month.orders, data.last_month.consumption],
+        data: [
+          data.last_month.orders,
+          data.last_month.cancelled_orders,
+          data.last_month.net_orders,
+          data.last_month.consumption
+        ],
         color: "#9CA3AF"
       },
       {
         name: "本月",
-        data: [data.current_month.orders, data.current_month.consumption],
+        data: [
+          data.current_month.orders,
+          data.current_month.cancelled_orders,
+          data.current_month.net_orders,
+          data.current_month.consumption
+        ],
         color: "#3B82F6"
       }
     ]
@@ -475,19 +497,25 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
         </div>
 
-        <!-- 总订单数 -->
+        <!-- 交易流水订单统计 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between">
             <div class="flex flex-col justify-center">
               <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                总订单数
+                净增/总订单数
               </p>
               <p
                 class="text-2xl font-bold text-gray-900 dark:text-white hover:text-orange-600 cursor-pointer transition-colors duration-200"
                 title="点击查看所有订单"
                 @click="handleClickTotalOrders"
               >
+                {{ ordersData?.net_orders || 0 }} /
                 {{ ordersData?.total_orders || 0 }}
+              </p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                订单 +{{ ordersData?.total_orders || 0 }} · 取消 -{{
+                  ordersData?.cancelled_orders || 0
+                }}
               </p>
             </div>
             <div class="p-3 bg-orange-100 dark:bg-orange-900 rounded-full">

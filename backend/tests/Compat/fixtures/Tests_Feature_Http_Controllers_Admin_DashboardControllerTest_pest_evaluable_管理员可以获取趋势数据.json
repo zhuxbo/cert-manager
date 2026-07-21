@@ -16,6 +16,8 @@
                         "date": "string",
                         "users": "integer",
                         "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "recharge": "integer",
                         "consumption": "integer"
                     }

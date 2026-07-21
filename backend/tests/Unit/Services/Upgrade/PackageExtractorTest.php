@@ -9,11 +9,15 @@ uses(TestCase::class);
 
 beforeEach(function () {
     $this->extractor = new PackageExtractor;
+    $this->originalStoragePath = storage_path();
     $this->testDir = storage_path('upgrades/test_'.uniqid());
     File::makeDirectory($this->testDir, 0755, true);
+    app()->useStoragePath("$this->testDir/storage");
 });
 
 afterEach(function () {
+    app()->useStoragePath($this->originalStoragePath);
+
     // 清理测试目录
     if (File::isDirectory($this->testDir)) {
         File::deleteDirectory($this->testDir);

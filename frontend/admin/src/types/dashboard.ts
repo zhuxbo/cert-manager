@@ -28,6 +28,8 @@ export interface SystemOverviewData {
   monthly: {
     total_users: number;
     total_orders: number;
+    cancelled_orders: number;
+    net_orders: number;
     active_orders: number;
     expiring_orders: number;
   };
@@ -46,6 +48,14 @@ export interface SystemOverviewData {
     weekly: number;
     monthly: number;
   };
+  order_stats: Record<
+    "daily" | "weekly" | "monthly",
+    {
+      orders: number;
+      cancelled_orders: number;
+      net_orders: number;
+    }
+  >;
 }
 
 // 实时统计数据
@@ -54,6 +64,8 @@ export interface RealtimeData {
   today: {
     new_users: number;
     new_orders: number;
+    cancelled_orders: number;
+    net_orders: number;
     processing_orders: number;
     revenue: number;
   };
@@ -70,6 +82,8 @@ export interface TrendDataPoint {
   date: string;
   users: number;
   orders: number;
+  cancelled_orders: number;
+  net_orders: number;
   recharge: number;
   consumption: number;
 }

@@ -80,6 +80,9 @@ test('V1 获取订单', function () {
     ]);
     $cert = Cert::factory()->active()->create([
         'order_id' => $order->id,
+        'documents' => [
+            ['type' => 'organization', 'status' => 'required', 'name' => '营业执照'],
+        ],
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
@@ -89,7 +92,9 @@ test('V1 获取订单', function () {
     $this->withHeaders($headers)
         ->postJson('/api/V1/get', ['oid' => $order->id])
         ->assertOk()
-        ->assertJson(['code' => 1]);
+        ->assertJson(['code' => 1])
+        ->assertJsonPath('data.documents.0.type', 'organization')
+        ->assertJsonPath('data.documents.0.status', 'required');
 });
 
 test('V1 获取订单-不存在', function () {

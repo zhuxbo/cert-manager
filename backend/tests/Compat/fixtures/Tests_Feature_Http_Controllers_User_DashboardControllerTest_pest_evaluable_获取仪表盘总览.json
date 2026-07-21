@@ -24,8 +24,11 @@
                         "expiring_7_days": "integer",
                         "expiring_30_days": "integer",
                         "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "status_distribution": "array<unknown>",
                         "monthly_orders": "integer",
+                        "monthly_cancelled_orders": "integer",
+                        "monthly_net_orders": "integer",
                         "monthly_consumption": "integer"
                     }
                 }

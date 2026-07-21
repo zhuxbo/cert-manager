@@ -103,17 +103,68 @@ test('未认证用户无法访问仪表盘', function () {
 /**
  * 创建订单类 transaction（不在 L3 资金类配对约束内，可直接 INSERT）
  */
-function seedOrderTransaction(User $user, string $type, float $amount, int $transactionId): void
+function seedOrderTransaction(User $user, string $type, float $amount, int $transactionId, $createdAt = null): Transaction
 {
-    DB::transaction(function () use ($user, $type, $amount, $transactionId) {
-        Transaction::create([
+    $transaction = DB::transaction(function () use ($user, $type, $amount, $transactionId) {
+        return Transaction::create([
             'user_id' => $user->id,
             'type' => $type,
             'transaction_id' => $transactionId,
             'amount' => $amount,
         ]);
     });
+
+    if ($createdAt !== null) {
+        DB::table('transactions')->where('id', $transaction->id)->update(['created_at' => $createdAt]);
+        $transaction->created_at = $createdAt;
+    }
+
+    return $transaction;
 }
+
+test('订单数量按购买和取消交易流水及交易时间统计', function () {
+    Cache::flush();
+
+    $user = User::factory()->withBalance('1000')->create();
+    $product = Product::factory()->create();
+    $oldOrder = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'created_at' => now()->subDays(10),
+    ]);
+
+    seedOrderTransaction($user, 'order', -100, $oldOrder->id);
+    seedOrderTransaction($user, 'order', -20, $oldOrder->id);
+    seedOrderTransaction($user, 'acme_order', -30, 90001);
+    seedOrderTransaction($user, 'cancel', 50, $oldOrder->id);
+    seedOrderTransaction($user, 'acme_cancel', 10, 90001);
+    seedOrderTransaction($user, 'reverse', 5, 90002);
+
+    $overview = $this->actingAsAdmin($this->admin)->getJson('/api/admin/dashboard/overview');
+    $overview->assertOk()->assertJsonPath('data.total_orders', 3)
+        ->assertJsonPath('data.cancelled_orders', 2)
+        ->assertJsonPath('data.net_orders', 1);
+
+    $system = $this->actingAsAdmin($this->admin)->getJson('/api/admin/dashboard/system-overview');
+    foreach (['daily', 'weekly', 'monthly'] as $period) {
+        $system->assertJsonPath("data.order_stats.$period.orders", 3)
+            ->assertJsonPath("data.order_stats.$period.cancelled_orders", 2)
+            ->assertJsonPath("data.order_stats.$period.net_orders", 1);
+    }
+
+    $realtime = $this->actingAsAdmin($this->admin)->getJson('/api/admin/dashboard/realtime');
+    $realtime->assertJsonPath('data.today.new_orders', 3)
+        ->assertJsonPath('data.today.cancelled_orders', 2)
+        ->assertJsonPath('data.today.net_orders', 1);
+
+    $trends = $this->actingAsAdmin($this->admin)->getJson('/api/admin/dashboard/trends?days=7');
+    $today = collect($trends->json('data'))->firstWhere('date', now()->format('Y-m-d'));
+    expect($today)->toMatchArray([
+        'orders' => 3,
+        'cancelled_orders' => 2,
+        'net_orders' => 1,
+    ]);
+});
 
 test('财务口径：净充值反映 refunds 抵扣、净消费含 ACME 且可为负', function () {
     Cache::forget('dashboard:admin:system_overview');

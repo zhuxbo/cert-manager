@@ -12,6 +12,8 @@
                 "data": {
                     "total_users": "integer",
                     "total_orders": "integer",
+                    "cancelled_orders": "integer",
+                    "net_orders": "integer",
                     "total_revenue": "string",
                     "active_orders": "integer"
                 }

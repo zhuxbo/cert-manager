@@ -24,6 +24,13 @@
                         }
                     },
                     "validation": "array<unknown>",
+                    "documents": {
+                        "__list_of__": {
+                            "type": "string",
+                            "status": "string",
+                            "name": "string"
+                        }
+                    },
                     "status": "string",
                     "issue_time": "string",
                     "expiry_time": "string",

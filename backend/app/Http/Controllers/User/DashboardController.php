@@ -4,6 +4,7 @@ namespace App\Http\Controllers\User;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Models\Transaction;
 use App\Models\User;
 use App\Traits\ApiResponse;
 use Cache;
@@ -96,22 +97,34 @@ class DashboardController extends Controller
             $startDate = now()->subDays($days - 1)->startOfDay();
 
             $dateExpr = 'DATE(created_at)';
-            $rows = Order::where('user_id', $userId)
+            $orderRows = Transaction::where('user_id', $userId)
                 ->where('created_at', '>=', $startDate)
-                ->selectRaw("$dateExpr as date, COUNT(*) as orders, COALESCE(SUM(amount), 0) as consumption")
+                ->selectRaw("$dateExpr as date")
+                ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as orders', Transaction::ORDER_TYPES)
+                ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as cancelled_orders', Transaction::CANCEL_TYPES)
                 ->groupByRaw($dateExpr)
                 ->get()
                 ->keyBy('date');
+
+            $consumptionRows = Order::where('user_id', $userId)
+                ->where('created_at', '>=', $startDate)
+                ->selectRaw("$dateExpr as date, COALESCE(SUM(amount), 0) as consumption")
+                ->groupByRaw($dateExpr)
+                ->pluck('consumption', 'date');
 
             $trends = [];
             for ($i = $days - 1; $i >= 0; $i--) {
                 $dateStr = now()->subDays($i)->format('Y-m-d');
                 /** @var object|null $row */
-                $row = $rows[$dateStr] ?? null;
+                $row = $orderRows[$dateStr] ?? null;
+                $orders = $row ? (int) $row->orders : 0;
+                $cancelledOrders = $row ? (int) $row->cancelled_orders : 0;
                 $trends[] = [
                     'date' => $dateStr,
-                    'orders' => $row ? (int) $row->orders : 0,
-                    'consumption' => $row ? (float) $row->consumption : 0,
+                    'orders' => $orders,
+                    'cancelled_orders' => $cancelledOrders,
+                    'net_orders' => $orders - $cancelledOrders,
+                    'consumption' => (float) ($consumptionRows[$dateStr] ?? 0),
                 ];
             }
 
@@ -136,32 +149,50 @@ class DashboardController extends Controller
             $lastMonth = $currentMonth->copy()->subMonth();
 
             $monthExpr = "DATE_FORMAT(created_at, '%Y-%m')";
-            $rows = Order::where('user_id', $userId)
+            $orderRows = Transaction::where('user_id', $userId)
                 ->where('created_at', '>=', $lastMonth)
-                ->selectRaw("$monthExpr as month, COUNT(*) as orders, COALESCE(SUM(amount), 0) as consumption")
+                ->selectRaw("$monthExpr as month")
+                ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as orders', Transaction::ORDER_TYPES)
+                ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as cancelled_orders', Transaction::CANCEL_TYPES)
                 ->groupByRaw($monthExpr)
                 ->get()
                 ->keyBy('month');
 
+            $consumptionRows = Order::where('user_id', $userId)
+                ->where('created_at', '>=', $lastMonth)
+                ->selectRaw("$monthExpr as month, COALESCE(SUM(amount), 0) as consumption")
+                ->groupByRaw($monthExpr)
+                ->pluck('consumption', 'month');
+
             $currentKey = $currentMonth->format('Y-m');
             $lastKey = $lastMonth->format('Y-m');
 
-            $currentOrders = (int) ($rows[$currentKey]->orders ?? 0);
-            $currentConsumption = (float) ($rows[$currentKey]->consumption ?? 0);
-            $lastOrders = (int) ($rows[$lastKey]->orders ?? 0);
-            $lastConsumption = (float) ($rows[$lastKey]->consumption ?? 0);
+            $currentOrders = (int) ($orderRows[$currentKey]->orders ?? 0);
+            $currentCancelledOrders = (int) ($orderRows[$currentKey]->cancelled_orders ?? 0);
+            $currentNetOrders = $currentOrders - $currentCancelledOrders;
+            $currentConsumption = (float) ($consumptionRows[$currentKey] ?? 0);
+            $lastOrders = (int) ($orderRows[$lastKey]->orders ?? 0);
+            $lastCancelledOrders = (int) ($orderRows[$lastKey]->cancelled_orders ?? 0);
+            $lastNetOrders = $lastOrders - $lastCancelledOrders;
+            $lastConsumption = (float) ($consumptionRows[$lastKey] ?? 0);
 
             return [
                 'current_month' => [
                     'orders' => $currentOrders,
+                    'cancelled_orders' => $currentCancelledOrders,
+                    'net_orders' => $currentNetOrders,
                     'consumption' => $currentConsumption,
                 ],
                 'last_month' => [
                     'orders' => $lastOrders,
+                    'cancelled_orders' => $lastCancelledOrders,
+                    'net_orders' => $lastNetOrders,
                     'consumption' => $lastConsumption,
                 ],
                 'growth' => [
                     'orders' => $this->calculateGrowth($lastOrders, $currentOrders),
+                    'cancelled_orders' => $this->calculateGrowth($lastCancelledOrders, $currentCancelledOrders),
+                    'net_orders' => $this->calculateGrowth($lastNetOrders, $currentNetOrders),
                     'consumption' => $this->calculateGrowth($lastConsumption, $currentConsumption),
                 ],
             ];
@@ -217,25 +248,34 @@ class DashboardController extends Controller
             }
         }
 
-        // 单次查询：总数 + 取消数 + 本月统计
         /** @var object $orderStats */
-        $orderStats = Order::where('user_id', $userId)
-            ->selectRaw('COUNT(*) as total,
-                SUM(CASE WHEN cancelled_at IS NOT NULL THEN 1 ELSE 0 END) as cancelled,
-                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as monthly_orders,
-                SUM(CASE WHEN created_at >= ? THEN amount ELSE 0 END) as monthly_consumption',
-                [$monthStart, $monthStart])
+        $orderStats = Transaction::where('user_id', $userId)
+            ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as total', Transaction::ORDER_TYPES)
+            ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as cancelled', Transaction::CANCEL_TYPES)
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as monthly_orders', [$monthStart, ...Transaction::ORDER_TYPES])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as monthly_cancelled', [$monthStart, ...Transaction::CANCEL_TYPES])
             ->first();
 
+        $totalOrders = (int) ($orderStats->total ?? 0);
+        $cancelledOrders = (int) ($orderStats->cancelled ?? 0);
+        $monthlyOrders = (int) ($orderStats->monthly_orders ?? 0);
+        $monthlyCancelledOrders = (int) ($orderStats->monthly_cancelled ?? 0);
+        $monthlyConsumption = (float) Order::where('user_id', $userId)
+            ->where('created_at', '>=', $monthStart)
+            ->sum('amount');
+
         return [
-            'total_orders' => (int) $orderStats->total,
+            'total_orders' => $totalOrders,
             'active_orders' => $activeOrders,
             'expiring_7_days' => $expiring7Days,
             'expiring_30_days' => $expiring30Days,
-            'cancelled_orders' => (int) $orderStats->cancelled,
+            'cancelled_orders' => $cancelledOrders,
+            'net_orders' => $totalOrders - $cancelledOrders,
             'status_distribution' => $statusDistribution,
-            'monthly_orders' => (int) $orderStats->monthly_orders,
-            'monthly_consumption' => (float) $orderStats->monthly_consumption,
+            'monthly_orders' => $monthlyOrders,
+            'monthly_cancelled_orders' => $monthlyCancelledOrders,
+            'monthly_net_orders' => $monthlyOrders - $monthlyCancelledOrders,
+            'monthly_consumption' => $monthlyConsumption,
         ];
     }
 
