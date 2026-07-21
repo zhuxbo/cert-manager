@@ -7,7 +7,9 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\User;
 use App\Services\Order\Action;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Sleep;
 
 uses(RefreshDatabase::class);
 
@@ -34,6 +36,14 @@ function createCallbackTestOrder(array $productOverrides = [], array $certOverri
     $order->update(['latest_cert_id' => $cert->id]);
 
     return ['user' => $user, 'product' => $product, 'order' => $order, 'cert' => $cert];
+}
+
+function createCallbackDatabaseException(int $errorCode, string $message): QueryException
+{
+    $pdo = new PDOException("SQLSTATE[HY000]: $errorCode $message");
+    $pdo->errorInfo = ['HY000', $errorCode, $message];
+
+    return new QueryException('mysql', 'insert into `tasks` ...', [], $pdo);
 }
 
 // ==========================================
@@ -522,6 +532,80 @@ test('processing 状态创建 sync 任务', function () {
         'id' => 'processing-api',
     ])->assertOk()
         ->assertJson(['code' => 1]);
+});
+
+test('processing 状态创建 sync 任务遇 1213 时短暂退避后重试成功', function () {
+    setupCallbackEndpoint('default', [
+        'sources' => '',
+        'token' => '',
+        'id_field' => 'id',
+        'allowed_ips' => '127.0.0.1',
+    ]);
+
+    $attempts = 0;
+    $mockAction = Mockery::mock(Action::class);
+    $mockAction->shouldReceive('createTask')
+        ->with(Mockery::any(), 'sync')
+        ->times(3)
+        ->andReturnUsing(function () use (&$attempts) {
+            if (++$attempts < 3) {
+                throw createCallbackDatabaseException(1213, 'Deadlock found when trying to get lock; try restarting transaction');
+            }
+        });
+    app()->instance(Action::class, $mockAction);
+
+    createCallbackTestOrder(
+        [],
+        ['api_id' => 'deadlock-retry-api', 'status' => 'processing'],
+    );
+
+    Sleep::fake();
+    try {
+        $this->postJson('/callback/default', [
+            'id' => 'deadlock-retry-api',
+        ])->assertOk()
+            ->assertJson(['code' => 1]);
+
+        Sleep::assertSequence([
+            Sleep::for(25)->milliseconds(),
+            Sleep::for(75)->milliseconds(),
+        ]);
+    } finally {
+        Sleep::fake(false);
+    }
+});
+
+test('processing 状态创建 sync 任务遇 1205 时不延长上游回调等待', function () {
+    setupCallbackEndpoint('default', [
+        'sources' => '',
+        'token' => '',
+        'id_field' => 'id',
+        'allowed_ips' => '127.0.0.1',
+    ]);
+
+    $mockAction = Mockery::mock(Action::class);
+    $mockAction->shouldReceive('createTask')
+        ->with(Mockery::any(), 'sync')
+        ->once()
+        ->andThrow(createCallbackDatabaseException(1205, 'Lock wait timeout exceeded; try restarting transaction'));
+    app()->instance(Action::class, $mockAction);
+
+    createCallbackTestOrder(
+        [],
+        ['api_id' => 'lock-wait-no-retry-api', 'status' => 'processing'],
+    );
+
+    Sleep::fake();
+    try {
+        $this->postJson('/callback/default', [
+            'id' => 'lock-wait-no-retry-api',
+        ])->assertStatus(503)
+            ->assertJson(['code' => 0, 'msg' => '系统繁忙，请稍后重试']);
+
+        Sleep::assertNeverSlept();
+    } finally {
+        Sleep::fake(false);
+    }
 });
 
 test('active 状态创建 sync 任务', function () {

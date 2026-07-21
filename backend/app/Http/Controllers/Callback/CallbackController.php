@@ -8,9 +8,14 @@ use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Services\Order\Action;
 use Illuminate\Http\Request;
+use PDOException;
+use Throwable;
 
 class CallbackController extends Controller
 {
+    /** @var array<int, int> */
+    private const TASK_DEADLOCK_RETRY_DELAYS_MS = [25, 75];
+
     public function index(Request $request, string $endpoint = 'default'): void
     {
         $config = get_system_setting('callback', $endpoint);
@@ -73,9 +78,30 @@ class CallbackController extends Controller
         }
 
         if (in_array($order->latestCert->status, ['processing', 'active', 'approving'])) {
-            app(Action::class)->createTask($order->id, 'sync');
+            // 上游回调通常有较短请求超时；仅对会立即回滚的 MySQL 1213 做毫秒级局部重试。
+            // 1205 锁等待可能已耗时接近 innodb_lock_wait_timeout，不在这里继续放大等待。
+            retry(
+                self::TASK_DEADLOCK_RETRY_DELAYS_MS,
+                fn () => app(Action::class)->createTask($order->id, 'sync'),
+                when: fn (Throwable $e) => $this->causedByMysqlDeadlock($e),
+            );
         }
 
         $this->success();
+    }
+
+    private function causedByMysqlDeadlock(Throwable $e): bool
+    {
+        do {
+            if ($e instanceof PDOException && (int) ($e->errorInfo[1] ?? 0) === 1213) {
+                return true;
+            }
+
+            if (str_contains($e->getMessage(), 'Deadlock found when trying to get lock')) {
+                return true;
+            }
+        } while ($e = $e->getPrevious());
+
+        return false;
     }
 }
