@@ -34,7 +34,15 @@ class HealthController extends Controller
      *     "queue_lag_seconds": int,
      *     "disk_free_gb": float,
      *     "heartbeat_age_seconds": int|null
-     *   }
+     *   },
+     *   "check_statuses": {
+     *     "db": "ok" | "degraded" | "error",
+     *     "cache": "ok" | "degraded" | "error",
+     *     "heartbeat": "ok" | "degraded" | "error",
+     *     "queue": "ok" | "degraded" | "error",
+     *     "disk": "ok" | "degraded" | "error"
+     *   },
+     *   "queue_lag_unit": "seconds" | "jobs"
      * }
      *
      * HTTP 状态码：error → 503；ok / degraded → 200。
@@ -55,6 +63,7 @@ class HealthController extends Controller
         ];
 
         $status = $this->aggregate($checks, $freeze);
+        $checkStatuses = $this->checkStatuses($checks, $freeze);
         // 仅 error → 503；degraded（心跳缺失）与 ok 均 200：
         // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，便于后台准确展示状态。
         $httpStatus = $status === 'error'
@@ -65,7 +74,53 @@ class HealthController extends Controller
             'status' => $status,
             'freeze' => $freeze,
             'checks' => $checks,
+            'check_statuses' => $checkStatuses,
+            'queue_lag_unit' => config('queue.default') === 'redis' ? 'jobs' : 'seconds',
         ], $httpStatus);
+    }
+
+    /**
+     * 逐项状态供管理后台着色；不改变 aggregate() 的整体健康判定。
+     *
+     * freeze 期间队列积压和心跳过旧是升级流程的预期现象，显示 degraded 而非 error。
+     * cache 故障时无法可靠读取可配置阈值，其余依赖阈值的项目显示 degraded。
+     *
+     * @param  array{db: array{ok: bool, latency_ms: int}, cache: array{ok: bool}, queue_lag_seconds: int, disk_free_gb: float, heartbeat_age_seconds: int|null}  $checks
+     * @return array{db: string, cache: string, heartbeat: string, queue: string, disk: string}
+     */
+    protected function checkStatuses(array $checks, bool $freeze): array
+    {
+        $statuses = [
+            'db' => $checks['db']['ok'] === true ? 'ok' : 'error',
+            'cache' => $checks['cache']['ok'] === true ? 'ok' : 'error',
+            'heartbeat' => 'degraded',
+            'queue' => 'degraded',
+            'disk' => 'degraded',
+        ];
+
+        if ($checks['db']['ok'] !== true || $checks['cache']['ok'] !== true) {
+            return $statuses;
+        }
+
+        $statuses['disk'] = $checks['disk_free_gb'] < (float) get_system_setting(
+            'health',
+            'disk_free_threshold_gb',
+            1.0
+        ) ? 'error' : 'ok';
+
+        $queueExceeded = $checks['queue_lag_seconds'] > $this->queueThreshold();
+        $statuses['queue'] = $queueExceeded ? ($freeze ? 'degraded' : 'error') : 'ok';
+
+        if ($checks['heartbeat_age_seconds'] !== null) {
+            $heartbeatStale = $checks['heartbeat_age_seconds'] > (int) get_system_setting(
+                'health',
+                'heartbeat_stale_seconds',
+                300
+            );
+            $statuses['heartbeat'] = $heartbeatStale ? ($freeze ? 'degraded' : 'error') : 'ok';
+        }
+
+        return $statuses;
     }
 
     /**

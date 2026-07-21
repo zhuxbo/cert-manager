@@ -27,7 +27,7 @@ import type {
   UserLevelDistribution,
   FinanceOverviewData
 } from "@/types/dashboard";
-import type { SystemHealthData } from "@/types/health";
+import type { HealthStatus, SystemHealthData } from "@/types/health";
 import { message } from "@shared/utils";
 import { useLazyVisible } from "@shared/hooks";
 import { brandLabels } from "@/views/system/dictionary";
@@ -118,10 +118,28 @@ const healthStatus = computed(() => {
 
 const heartbeatText = computed(() => {
   const age = systemHealth.value?.checks.heartbeat_age_seconds;
-  if (age === null || age === undefined) return "尚未建立";
+  if (age === null || age === undefined) return "-";
   if (age < 60) return `${age} 秒前`;
   return `${Math.floor(age / 60)} 分钟前`;
 });
+
+const healthValueClass = (status?: HealthStatus) => {
+  if (status === "ok") return "text-green-600 dark:text-green-400";
+  if (status === "degraded") return "text-yellow-600 dark:text-yellow-400";
+  if (status === "error") return "text-red-600 dark:text-red-400";
+  return "text-gray-500 dark:text-gray-400";
+};
+
+const healthDotClass = (status?: HealthStatus) => {
+  if (status === "ok") return "bg-green-500";
+  if (status === "degraded") return "bg-yellow-500";
+  if (status === "error") return "bg-red-500";
+  return "bg-gray-400";
+};
+
+const queueLagUnit = computed(() =>
+  systemHealth.value?.queue_lag_unit === "jobs" ? "条" : "秒"
+);
 
 // 图表区域哨兵元素：进入视口才加载二屏图表（懒加载由 useLazyVisible 统一处理）
 const chartsSentinel = ref<HTMLElement>();
@@ -818,57 +836,53 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               </p>
               <p
                 class="text-lg font-bold"
-                :class="
-                  systemHealth?.checks.db.ok
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-red-600 dark:text-red-400'
-                "
+                :class="healthValueClass(systemHealth?.check_statuses?.db)"
               >
                 {{
                   healthUnavailable
-                    ? "未知"
+                    ? "-"
                     : systemHealth?.checks.db.ok
-                      ? `正常 ${systemHealth.checks.db.latency_ms}ms`
-                      : "异常"
+                      ? `${systemHealth.checks.db.latency_ms} ms`
+                      : "-"
                 }}
               </p>
             </div>
             <div class="text-center">
               <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">缓存</p>
-              <p
-                class="text-lg font-bold"
-                :class="
-                  systemHealth?.checks.cache.ok
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-red-600 dark:text-red-400'
-                "
-              >
-                {{
-                  healthUnavailable
-                    ? "未知"
-                    : systemHealth?.checks.cache.ok
-                      ? "正常"
-                      : "异常"
-                }}
+              <p class="flex h-7 items-center justify-center">
+                <span
+                  class="inline-block h-3 w-3 rounded-full"
+                  :class="healthDotClass(systemHealth?.check_statuses?.cache)"
+                />
               </p>
             </div>
             <div class="text-center">
               <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
                 调度心跳
               </p>
-              <p class="text-lg font-bold text-gray-900 dark:text-white">
-                {{ healthUnavailable ? "未知" : heartbeatText }}
+              <p
+                class="text-lg font-bold"
+                :class="
+                  healthValueClass(systemHealth?.check_statuses?.heartbeat)
+                "
+              >
+                {{ healthUnavailable ? "-" : heartbeatText }}
               </p>
             </div>
             <div class="text-center">
               <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
                 队列积压
               </p>
-              <p class="text-lg font-bold text-gray-900 dark:text-white">
+              <p
+                class="text-lg font-bold"
+                :class="healthValueClass(systemHealth?.check_statuses?.queue)"
+              >
                 {{
                   healthUnavailable
-                    ? "未知"
-                    : (systemHealth?.checks.queue_lag_seconds ?? "-")
+                    ? "-"
+                    : systemHealth
+                      ? `${systemHealth.checks.queue_lag_seconds} ${queueLagUnit}`
+                      : "-"
                 }}
               </p>
             </div>
@@ -876,10 +890,13 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
                 磁盘剩余
               </p>
-              <p class="text-lg font-bold text-gray-900 dark:text-white">
+              <p
+                class="text-lg font-bold"
+                :class="healthValueClass(systemHealth?.check_statuses?.disk)"
+              >
                 {{
                   healthUnavailable
-                    ? "未知"
+                    ? "-"
                     : systemHealth
                       ? `${systemHealth.checks.disk_free_gb} GB`
                       : "-"

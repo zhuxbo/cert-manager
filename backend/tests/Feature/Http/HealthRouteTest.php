@@ -112,6 +112,14 @@ test('health 全部检查通过返回 200 / status=ok / freeze=false', function 
             'disk_free_gb' => 50.0,
             'heartbeat_age_seconds' => 0,
         ],
+        'check_statuses' => [
+            'db' => 'ok',
+            'cache' => 'ok',
+            'heartbeat' => 'ok',
+            'queue' => 'ok',
+            'disk' => 'ok',
+        ],
+        'queue_lag_unit' => 'seconds',
     ]);
 });
 
@@ -133,6 +141,13 @@ test('DB ping 失败返回 503 / status=error', function () {
         'status' => 'error',
         'checks' => [
             'db' => ['ok' => false],
+        ],
+        'check_statuses' => [
+            'db' => 'error',
+            'cache' => 'ok',
+            'heartbeat' => 'degraded',
+            'queue' => 'degraded',
+            'disk' => 'degraded',
         ],
     ]);
 });
@@ -166,6 +181,7 @@ test('queue lag 超阈值返回 503 / status=error', function () {
 
     $response->assertStatus(503);
     expect($response->json('status'))->toBe('error');
+    expect($response->json('check_statuses.queue'))->toBe('error');
     expect($response->json('checks.queue_lag_seconds'))->toBeGreaterThan(600);
 });
 
@@ -390,7 +406,8 @@ test('心跳键缺失时 status=degraded 且返回 200（非 stale 503）', func
 
     $response->assertOk();
     expect($response->json('status'))->toBe('degraded')
-        ->and($response->json('checks.heartbeat_age_seconds'))->toBeNull();
+        ->and($response->json('checks.heartbeat_age_seconds'))->toBeNull()
+        ->and($response->json('check_statuses.heartbeat'))->toBe('degraded');
 });
 
 // ==========================================
@@ -409,6 +426,7 @@ test('心跳过旧（age>300）且未 freeze 时 status=error 返回 503', funct
 
     $response->assertStatus(503);
     expect($response->json('status'))->toBe('error');
+    expect($response->json('check_statuses.heartbeat'))->toBe('error');
 });
 
 // ==========================================
@@ -428,7 +446,8 @@ test('freeze 期心跳过旧仍返回 200（豁免 stale）', function () {
 
     $response->assertOk();
     expect($response->json('status'))->toBe('ok')
-        ->and($response->json('freeze'))->toBeTrue();
+        ->and($response->json('freeze'))->toBeTrue()
+        ->and($response->json('check_statuses.heartbeat'))->toBe('degraded');
 });
 
 // ==========================================
@@ -527,7 +546,9 @@ test('redis 队列深度超 queue_depth_threshold 时 status=error 503', functio
 
     $response->assertStatus(503);
     expect($response->json('status'))->toBe('error')
-        ->and($response->json('checks.queue_lag_seconds'))->toBeGreaterThan(500);
+        ->and($response->json('checks.queue_lag_seconds'))->toBeGreaterThan(500)
+        ->and($response->json('check_statuses.queue'))->toBe('error')
+        ->and($response->json('queue_lag_unit'))->toBe('jobs');
 
     resetRedisQueueKeys();
 });

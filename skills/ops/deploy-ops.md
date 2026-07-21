@@ -128,6 +128,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 - `disk_free_gb`：低于 `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）。
 - `queue_lag_seconds`：redis 驱动=各队列就绪深度 + **已到期**延时之和（阈 `health.queue_depth_threshold`，默认 500 条）；database 驱动=积压秒数（阈 `health.queue_lag_threshold`，默认 600 秒）。超阈 → `error`（503）。
 - `heartbeat_age_seconds`：`schedule:heartbeat` 每分钟写 `Cache::forever`；**过旧**（> `health.heartbeat_stale_seconds`，默认 300）→ `error`（503，死 scheduler）；**缺失**（null）→ `degraded`（**200**，新装机未跑调度 / `cache:clear` 清键，不误报）。
+- `check_statuses`：逐项返回 `ok/degraded/error` 供后台用绿/黄/红着色；`queue_lag_unit` 明确队列值单位（database=`seconds`、redis=`jobs`）。后台只消费服务端判定，不自行复制健康阈值。
 - **freeze 期**（升级冻结）：`queue_lag` 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止），避免升级窗误报。
 
 **已知边界**：「scheduler 已死 + 之后 `cache:clear`」会使心跳键缺失，健康接口返回 `degraded` 200；管理后台显示黄色“需要关注”，不会主动发信。这是低频后台系统采用访问时检测的明确取舍。

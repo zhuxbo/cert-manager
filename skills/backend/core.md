@@ -139,6 +139,7 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 - **redis**：遍历 `config('queue.names')` 全部队列（notifications/tasks/default）求和——就绪深度 `llen queues:{name}` + **已到期**延时 `zcount queues:{name}:delayed -inf now`。**只计已到期**：整包 zcard 会把 auto-renew 夜间 0~8h 延时 commit 批次（score 在未来）当积压 → 00:00-08:00 持续误报。含 default 与 database 全队列扫描语义对称（约定恒空、非空即真积压——漏写 onQueue 的 Job——应报）。
 - **阈值按驱动取义**（`queueThreshold`）消除「秒 vs 条数」两义：redis 返回**深度条数**用 `health.queue_depth_threshold`（默认 500 条）；database 返回**积压秒数**用 `health.queue_lag_threshold`（默认 600 秒）。低量 redis 部署误用 600「秒」当深度门槛会堆 600 条才 503、worker 死检测显著延迟。
+- `/api/health` 通过 `queue_lag_unit` 明确前端显示单位（database=`seconds`、redis=`jobs`），并通过 `check_statuses` 返回各维度的 `ok/degraded/error`，前端不自行复制可配置阈值。心跳缺失为 `degraded`；freeze 期间超阈队列与过旧心跳也显示 `degraded`，避免把升级窗口的预期暂停标红。
 
 ### M6 cron 可见性
 

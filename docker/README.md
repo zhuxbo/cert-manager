@@ -6,11 +6,12 @@
 
 ## 组成
 
-| 服务    | 镜像           | 宿主端口 | 说明                                                            |
-| ------- | -------------- | -------- | --------------------------------------------------------------- |
-| `app`   | 自建 PHP 8.4   | **5300** | `php artisan serve`，前端 proxy 默认指向它                      |
-| `mysql` | mysql:8.4      | 3306     | root / `password`，库 `ssl_manager`（本地 ARM 原生；CI 用 5.7） |
-| `redis` | redis:7-alpine | 6379     | 默认 file 缓存即可跑，按需切 redis                              |
+| 服务        | 镜像           | 宿主端口 | 说明                                                            |
+| ----------- | -------------- | -------- | --------------------------------------------------------------- |
+| `app`       | 自建 PHP 8.4   | **5300** | `php artisan serve`，前端 proxy 默认指向它                      |
+| `scheduler` | 自建 PHP 8.4   | -        | `php artisan schedule:work`，持续执行开发环境调度任务           |
+| `mysql`     | mysql:8.4      | 3306     | root / `password`，库 `ssl_manager`（本地 ARM 原生；CI 用 5.7） |
+| `redis`     | redis:7-alpine | 6379     | 默认 file 缓存即可跑，按需切 redis                              |
 
 前端：admin → `5201`，user → `5202`（宿主机 `pnpm dev`）。
 
@@ -65,6 +66,7 @@ PHP_VERSION=8.3 make test       # 用 8.3 跑测试
 - **vendor 在宿主可见**：`backend/vendor` 通过 bind mount 落到宿主，IDE 可正常跳转。
 - **端口冲突**：本机已占用 3306 时，改 `compose.yaml` 的 mysql 端口为 `"3307:3306"`。
 - **前端要连别的后端**：设 `VITE_API_TARGET` 即可覆盖默认的 `http://localhost:5300`。
+- **开发调度器默认启动**：`scheduler` 等待 `app` 完成依赖安装、环境配置和迁移后运行 `schedule:work`，为调度心跳和定时业务任务提供与生产一致的执行路径；生产仍由宝塔每分钟运行 `schedule:run`。
 - **可选 Redis 队列/缓存**：默认 `file`/`sync` 即可开发；需要时在 `backend/.env` 设 `CACHE_DRIVER=redis`、`QUEUE_CONNECTION=redis`（redis 扩展镜像已内置）。
 - **MySQL 版本（5.7 与 8.x 双覆盖）**：生产二者都有。本地默认 `mysql:8.4`（ARM 原生，不依赖将被淘汰的 Rosetta）；CI core 跑 `5.7×{8.3,8.4}` + `8.4×{8.4,8.5}`、各 plugin 跑 5.7+8.4，两版本都验证。本地要复现 5.7 用内网实例或看 CI。新增迁移/SQL 避开 8.0+ 保留字（`rank`/`groups`/`system`）与 5.7 不支持的语法。
 - **collation 按版本自动选择**（与 `bt-install.sh`/生产一致）：MySQL 8.x→`utf8mb4_0900_ai_ci`、5.7→`utf8mb4_unicode_520_ci`、MariaDB→`utf8mb4_unicode_ci`。三处逻辑统一：容器 `entrypoint.sh`（PDO 探测 `SELECT VERSION()`）、CI 的 `matrix.collation`、`bt-install.sh` 的 `_detect_db_collation`。`structure.json` 以 8.4 为基准（`db:structure --export` 临时容器已改 `mysql:8.4`）。

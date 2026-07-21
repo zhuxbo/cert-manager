@@ -25,6 +25,29 @@ services:
       redis:
         condition: service_healthy
 
+  scheduler:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.4}
+    image: ssl-manager-app:php${PHP_VERSION:-8.4}
+    restart: unless-stopped
+    volumes:
+      - ./backend:/var/www
+      - ./plugins:/var/plugins
+    # app 监听端口时，依赖安装、环境配置和迁移均已完成；随后再启动调度器，避免并发初始化。
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        until php -r '$$socket = @fsockopen("app", 8000); if ($$socket === false) { exit(1); } fclose($$socket);'; do
+          sleep 1
+        done
+        exec php artisan schedule:work
+    depends_on:
+      app:
+        condition: service_started
+
   mysql:
     image: mysql:8.4 # 本地 ARM 原生（不依赖 Rosetta）；CI 仍 mysql:5.7，故锁 5.7 风格 collation 缩小差异
     restart: unless-stopped

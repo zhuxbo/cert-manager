@@ -1,8 +1,17 @@
 export type HealthStatus = "ok" | "degraded" | "error";
+export type QueueLagUnit = "seconds" | "jobs";
 
 export interface SystemHealthData {
   status: HealthStatus;
   freeze: boolean;
+  check_statuses: {
+    db: HealthStatus;
+    cache: HealthStatus;
+    heartbeat: HealthStatus;
+    queue: HealthStatus;
+    disk: HealthStatus;
+  };
+  queue_lag_unit: QueueLagUnit;
   checks: {
     db: {
       ok: boolean;

@@ -46,8 +46,8 @@ rebuild: ## 无缓存重建镜像
 ps: ## 查看容器状态
 	$(DC) ps
 
-logs: ## 跟踪后端日志
-	$(DC) logs -f app
+logs: ## 跟踪后端与调度器日志
+	$(DC) logs -f app scheduler
 
 shell: ## 进后端容器 bash
 	$(DC) exec app bash
