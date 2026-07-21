@@ -58,13 +58,6 @@ return [
         'dedupe_ttl_hours' => (int) env('MONITORING_FAILED_JOBS_TTL_HOURS', 72),
     ],
 
-    // M3 外部健康拨测（monitor:probe，独立 BT cron 5min，脱离 Laravel 队列）
-    // url 可覆盖：若站点强制 301→https 且回环 hairpin 不通，配为 https://127.0.0.1/api/health（verify=false 已豁免证书）
-    'probe' => [
-        'url' => env('MONITORING_PROBE_URL', 'http://127.0.0.1/api/health'),
-        'dedupe_ttl_hours' => (int) env('MONITORING_PROBE_DEDUPE_TTL_HOURS', 1),
-    ],
-
     // E6 卡单聚合告警（schedule:stuck-orders，周期 1d，周提醒）
     // stuck_days：按 products.validation_type 分档；null/未知 validation_type 回落最长档
     'stuck_orders' => [

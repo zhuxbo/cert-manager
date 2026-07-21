@@ -9,8 +9,8 @@ use Illuminate\Support\Facades\Schedule;
 // 升级 freeze 期间跳过定时任务，避免 migrate 中途运行 Command 引发错误
 $skipWhenFrozen = fn () => UpgradeFreezeLock::isFrozen();
 
-// M6：schedule 命令非零退出时落 Log::error（弱信号兜底可见性——多数命令自 catch 返 SUCCESS，
-// 主信号是 M1 心跳 + M3 拨测）。仅挂 validate/auto-renew/reconcile-pending（backup/finance/E 系自带告警）。
+// M6：schedule 命令非零退出时落 Log::error（弱信号兜底可见性——多数命令自 catch 返 SUCCESS）。
+// 仅挂 validate/auto-renew/reconcile-pending（backup/finance/E 系自带告警）。
 $logScheduleFailure = fn (string $name) => function () use ($name) {
     Log::error("[schedule.failed] $name 非零退出");
 };
@@ -229,8 +229,7 @@ Schedule::command('upgrade:watchdog')
 // ============================================================
 // M1 调度器心跳（P0-4.1）——继 watchdog 后第二个有意 freeze 存活者：
 //   - evenInMaintenanceMode()：与 watchdog 同款，freeze/down 全窗跳动，unfreeze 后即新鲜；
-//   - **不挂** ->skip($skipWhenFrozen)：挂了则 freeze 期心跳停 → /api/health 判 stale 503
-//     → M3 拨测/外部监控在每次升级窗误报「scheduler 死」。
+//   - **不挂** ->skip($skipWhenFrozen)：挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。
 // 写 Cache::forever('schedule:heartbeat')，供 /api/health 判活；health 侧 freeze 期不评估 stale（双保险）。
 // ============================================================
 Schedule::command('schedule:heartbeat')

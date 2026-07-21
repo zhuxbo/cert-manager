@@ -14,7 +14,7 @@ use Throwable;
  * 公开运维健康检查
  *
  * 路由 GET /api/health（命名空间无关），供安装等待、升级 smoke test、
- * 外部健康检查使用。不鉴权、不写日志、不受 MaintenanceMode 拦截。
+ * 管理后台健康度及可选外部健康检查使用。不鉴权、不写日志、不受 MaintenanceMode 拦截。
  *
  * 与现有 /api/v1/health、/api/v2/health 区别：现有两个端点是 API 业务接口
  * （挂在 v1/v2 命名空间下，未来 v3 可能改），本端点是命名空间无关的运维标准入口。
@@ -56,7 +56,7 @@ class HealthController extends Controller
 
         $status = $this->aggregate($checks, $freeze);
         // 仅 error → 503；degraded（心跳缺失）与 ok 均 200：
-        // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，防止误报卡外部监控。
+        // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，便于后台准确展示状态。
         $httpStatus = $status === 'error'
             ? Response::HTTP_SERVICE_UNAVAILABLE
             : Response::HTTP_OK;
@@ -95,7 +95,7 @@ class HealthController extends Controller
      * 心跳年龄（heartbeatAge）与 health 阈值（aggregate/queueThreshold 经 get_system_setting →
      * Cache::remember）均依赖 Cache（driver=redis 时）。Cache 后端故障绝不能让 /api/health 白屏
      * 500 丢弃结构化输出——须显式探活并结构化上报 error（503）。用只读 get 探连通性（不写键，
-     * 避免 probe / 外部监控高频拨测频繁写 cache）；不抛异常，失败 ok=false。
+     * 避免后台刷新或外部监控访问时频繁写 cache）；不抛异常，失败 ok=false。
      *
      * @return array{ok: bool}
      */

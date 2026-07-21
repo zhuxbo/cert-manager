@@ -96,14 +96,10 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
    ```
 3. **定时任务**（宝塔 → 计划任务 → 每分钟，**以 www 用户运行**）：
    ```
-   /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan schedule:run >> /www/wwwroot/ssl-manager/backend/storage/logs/schedule.log 2>&1
-   ```
-4. **外部健康拨测**（宝塔 → 计划任务 → 每 5 分钟，**以 www 用户运行**）：
-   ```
-   /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan monitor:probe >> /www/wwwroot/ssl-manager/backend/storage/logs/probe.log 2>&1
+   /www/server/php/83/bin/php /www/wwwroot/ssl-manager/backend/artisan schedule:run
    ```
 
-> **⚠ cron 必须以 www 运行**：`schedule:run` / `monitor:probe` 勿用 root crontab 添加——root 写 file cache 后 www 的 FPM 读不到调度心跳键，`/api/health` 会误判心跳 stale/缺失（属主坑）。
+> **⚠ cron 必须以 www 运行**：`schedule:run` 勿用 root crontab 添加——root 写 file cache 后 www 的 FPM 读不到调度心跳键，`/api/health` 会误判心跳 stale/缺失（属主坑）。任务输出由宝塔面板保存，不额外重定向到项目日志。
 
 ### 目录结构
 
@@ -121,7 +117,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 ## 健康监控与告警（部署必读）
 
-监控最小闭环（P0-4）：`/api/health` 判活 + 调度心跳 + 外部拨测 + 上游连通性告警，打破「告警与执行通道同生共死」。
+健康度由 `/api/health` 判活 + 调度心跳 + 管理后台展示 + 上游连通性告警组成。后台首页进入时检测一次，手工刷新时重新检测，不额外创建健康拨测 cron。
 
 ### /api/health 判活维度
 
@@ -134,28 +130,20 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 - `heartbeat_age_seconds`：`schedule:heartbeat` 每分钟写 `Cache::forever`；**过旧**（> `health.heartbeat_stale_seconds`，默认 300）→ `error`（503，死 scheduler）；**缺失**（null）→ `degraded`（**200**，新装机未跑调度 / `cache:clear` 清键，不误报）。
 - **freeze 期**（升级冻结）：`queue_lag` 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止），避免升级窗误报。
 
-**F1 已知死角**：「scheduler 已死 + 之后 `cache:clear`」→ 心跳键缺失 → `degraded` 200 → 本机拨测（只对非 2xx/`status=error` 发信）**静默**。这是 `Cache::forever`+missing→degraded 换取「新装机不 503」的固有对价；**兜底靠下方外部站点监控**（无视本机 cache 状态）。
+**已知边界**：「scheduler 已死 + 之后 `cache:clear`」会使心跳键缺失，健康接口返回 `degraded` 200；管理后台显示黄色“需要关注”，不会主动发信。这是低频后台系统采用访问时检测的明确取舍。
 
-### 外部站点监控（部署必选项，非可选兜底）
+### 外部站点监控（可选）
 
-本机 `monitor:probe` 拨测独立于 Laravel 队列，可检出 **worker 死 / scheduler 死**（打破同生共死）；但 **crond 死 / 机器死 / 断电 / PHP fatal** 层本机无内部兜底——此层唯一兜底是外部监控，同时兜 F1 死角。**另 `db 死` 场景**：`/api/health` 虽返 503，但本机拨测发信端要解析 admin 邮箱（查 DB）也随之失败——邮件发不出（catch 后不占去重键、每 5min 重试到 DB 恢复），故 db 故障下本机拨测邮件可能同不可用，外部监控是该层唯一可靠信号。**对照 `cache 死` 场景**：`monitor:probe` 去重键读写 fail-open、发信链 settings（admin 邮箱 / mail 配置）经 `Setting` 在 cache 故障时回落 DB 直读，故 redis 全故障下本机拨测**仍能发信**（DB 存活即可），不随 cache 死而哑火。
-
-**部署必做**：宝塔面板 → 监控报警 / 网站监控，为本站配置外部站点监控拨测 `https://<域名>/api/health`，非 2xx 告警。存量机器升级后同样必须核对此项已配置。
-
-### 日志与轮转
-
-- `schedule:run` → `storage/logs/schedule.log`；`monitor:probe` → `storage/logs/probe.log`（不再 `>> /dev/null`，`onFailure` 弱信号兜底 + 输出可查）。
-- `bt-install.sh` / `upgrade.sh` 自动写 `/etc/logrotate.d/ssl-manager`（weekly rotate 4 compress，防日志涨满盘触发 disk_free 503）；`/etc/logrotate.d` 不可写时降级跳过（需手工轮转）。
+如需无人访问后台时仍主动发现整机、网络、crond 或 PHP 故障，可选配外部站点监控拨测 `https://<域名>/api/health`。这不属于 ssl-manager 必需部署项。
 
 ### 存量机器升级后核对清单（§1.5）
 
-`upgrade.sh` 的 cron 管理段（`update_jobs_php_path`）在升级时自动：① 修正 `schedule:run` / `monitor:probe` cron 的 PHP 绝对路径（PHP 大版本切换后不失效）；② 迁移旧 `schedule:run >> /dev/null` → `schedule.log`；③ **缺失时幂等新增 `monitor:probe` 拨测 cron**（守卫：本机确有 `schedule:run` 自管行才补发）。升级后请核对：
+`upgrade.sh` 的 cron 管理段在升级时只修正 `schedule:run` 的 PHP 绝对路径，不改变现有 schedule 命令的日志重定向。升级后请核对：
 
-1. 宝塔计划任务存在两条：`<域名>`（schedule:run，每分钟）+ `<目录名>-probe`（monitor:probe，每 5 分钟），均以 www 运行、输出落对应 `.log`。
-2. `/etc/logrotate.d/ssl-manager` 存在。
-3. 外部站点监控已配置。
+1. 宝塔计划任务只保留 `<域名>` 的 `schedule:run`，每分钟以 www 运行。
+2. 后台首页“系统健康”可正常显示数据库、缓存、调度心跳、队列和磁盘状态。
 
-**无宝塔 API key 时**（`update_jobs_php_path` 提前 return）：以上 cron 自动管理跳过，需手工到面板核对/添加两条 cron（命令见上方「手工配置步骤」3/4）。
+**无宝塔 API key 时**，升级脚本跳过 cron/supervisor PHP 路径检查；`schedule:run` 缺失时按上方步骤 3 手工添加。
 
 ### 卡单孤儿清理与 pending 退款 arm-switch（RECONCILE_ORPHAN_PENDING_ENABLED）
 

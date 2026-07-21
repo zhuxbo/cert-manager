@@ -119,6 +119,8 @@ sudo -u www php artisan schedule:backup:restore <id>
 
 ## 健康检查端点
 
+升级末尾仅在站点 PHP 版本发生变化时修正宝塔 `schedule:run` 计划任务的 PHP 绝对路径，保留任务原有命令主体和日志策略；新安装的任务输出由宝塔面板记录。
+
 ```bash
 # 公开端点
 curl http://your-host/api/health

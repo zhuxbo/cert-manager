@@ -4,6 +4,7 @@ import { ElProgress, ElTag, ElButton } from "element-plus";
 import { Refresh } from "@element-plus/icons-vue";
 import { useRouter } from "vue-router";
 import { getProfile } from "@/api/auth";
+import { getSystemHealth } from "@/api/health";
 import {
   getSystemOverview,
   getRealtimeData,
@@ -26,6 +27,7 @@ import type {
   UserLevelDistribution,
   FinanceOverviewData
 } from "@/types/dashboard";
+import type { SystemHealthData } from "@/types/health";
 import { message } from "@shared/utils";
 import { useLazyVisible } from "@shared/hooks";
 import { brandLabels } from "@/views/system/dictionary";
@@ -49,6 +51,8 @@ const topProducts = ref<TopProduct[]>([]);
 const brandStats = ref<BrandStats[]>([]);
 const userLevelDistribution = ref<UserLevelDistribution[]>([]);
 const financeOverview = ref<FinanceOverviewData>();
+const systemHealth = ref<SystemHealthData>();
+const healthUnavailable = ref(false);
 
 // 产品销售排行和品牌统计的周期切换
 const topProductsDays = ref(30);
@@ -93,6 +97,31 @@ const consumptionDelta = computed(() => {
 // 次批（图表/排行）加载状态：与首批卡片解耦，进入视口后才触发
 const chartsLoading = ref(true);
 const refreshing = ref(false);
+
+const healthStatus = computed(() => {
+  if (healthUnavailable.value) {
+    return { label: "无法检测", type: "info" as const };
+  }
+  if (!systemHealth.value) {
+    return { label: "检测中", type: "info" as const };
+  }
+  if (systemHealth.value.freeze) {
+    return { label: "升级维护中", type: "warning" as const };
+  }
+
+  return {
+    ok: { label: "运行正常", type: "success" as const },
+    degraded: { label: "需要关注", type: "warning" as const },
+    error: { label: "系统异常", type: "danger" as const }
+  }[systemHealth.value.status];
+});
+
+const heartbeatText = computed(() => {
+  const age = systemHealth.value?.checks.heartbeat_age_seconds;
+  if (age === null || age === undefined) return "尚未建立";
+  if (age < 60) return `${age} 秒前`;
+  return `${Math.floor(age / 60)} 分钟前`;
+});
 
 // 图表区域哨兵元素：进入视口才加载二屏图表（懒加载由 useLazyVisible 统一处理）
 const chartsSentinel = ref<HTMLElement>();
@@ -331,6 +360,16 @@ const fetchOverviewData = async () => {
   }
 };
 
+const fetchSystemHealth = async () => {
+  try {
+    healthUnavailable.value = false;
+    systemHealth.value = await getSystemHealth();
+  } catch {
+    systemHealth.value = undefined;
+    healthUnavailable.value = true;
+  }
+};
+
 // 次批：图表/排行（系统趋势 / 产品销售排行 / 品牌分布 / 用户等级分布），二屏内容延后加载
 const fetchChartsData = async () => {
   try {
@@ -370,7 +409,11 @@ const handleRefreshData = async () => {
     await clearDashboardCache();
 
     // 首批与次批并行刷新，互不阻塞
-    await Promise.all([fetchOverviewData(), fetchChartsData()]);
+    await Promise.all([
+      fetchOverviewData(),
+      fetchChartsData(),
+      fetchSystemHealth()
+    ]);
 
     message("数据刷新成功", { type: "success" });
   } finally {
@@ -381,7 +424,11 @@ const handleRefreshData = async () => {
 onMounted(async () => {
   loading.value = true;
   // 首屏仅等待管理员信息 + 首批关键卡片数据
-  await Promise.all([fetchAdminInfo(), fetchOverviewData()]);
+  await Promise.all([
+    fetchAdminInfo(),
+    fetchOverviewData(),
+    fetchSystemHealth()
+  ]);
   loading.value = false;
 });
 
@@ -663,7 +710,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               在线用户: {{ realtimeData?.online_users || 0 }}
             </ElTag>
           </div>
-          <div class="grid grid-cols-3 gap-4">
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
             <div class="text-center">
               <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
                 处理中订单
@@ -722,16 +769,6 @@ useLazyVisible(chartsSentinel, fetchChartsData);
                 </span>
               </p>
             </div>
-          </div>
-        </div>
-
-        <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
-          <div class="flex items-center justify-between mb-6">
-            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
-              财务概览
-            </h3>
-          </div>
-          <div class="grid grid-cols-2 gap-4">
             <div class="text-center">
               <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
                 总余额
@@ -760,6 +797,93 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               </p>
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {{ financeOverview?.negative_count || 0 }} 个用户
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
+          <div class="flex items-center justify-between mb-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+              系统健康
+            </h3>
+            <ElTag :type="healthStatus.type">
+              {{ healthStatus.label }}
+            </ElTag>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <div class="text-center">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                数据库
+              </p>
+              <p
+                class="text-lg font-bold"
+                :class="
+                  systemHealth?.checks.db.ok
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-red-600 dark:text-red-400'
+                "
+              >
+                {{
+                  healthUnavailable
+                    ? "未知"
+                    : systemHealth?.checks.db.ok
+                      ? `正常 ${systemHealth.checks.db.latency_ms}ms`
+                      : "异常"
+                }}
+              </p>
+            </div>
+            <div class="text-center">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">缓存</p>
+              <p
+                class="text-lg font-bold"
+                :class="
+                  systemHealth?.checks.cache.ok
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-red-600 dark:text-red-400'
+                "
+              >
+                {{
+                  healthUnavailable
+                    ? "未知"
+                    : systemHealth?.checks.cache.ok
+                      ? "正常"
+                      : "异常"
+                }}
+              </p>
+            </div>
+            <div class="text-center">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                调度心跳
+              </p>
+              <p class="text-lg font-bold text-gray-900 dark:text-white">
+                {{ healthUnavailable ? "未知" : heartbeatText }}
+              </p>
+            </div>
+            <div class="text-center">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                队列积压
+              </p>
+              <p class="text-lg font-bold text-gray-900 dark:text-white">
+                {{
+                  healthUnavailable
+                    ? "未知"
+                    : (systemHealth?.checks.queue_lag_seconds ?? "-")
+                }}
+              </p>
+            </div>
+            <div class="text-center">
+              <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                磁盘剩余
+              </p>
+              <p class="text-lg font-bold text-gray-900 dark:text-white">
+                {{
+                  healthUnavailable
+                    ? "未知"
+                    : systemHealth
+                      ? `${systemHealth.checks.disk_free_gb} GB`
+                      : "-"
+                }}
               </p>
             </div>
           </div>

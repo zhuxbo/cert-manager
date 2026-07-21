@@ -112,7 +112,7 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ## 健康监控与调度心跳（P0-4 监控最小闭环）
 
-`GET /api/health`（`HealthController`，无鉴权、命名空间无关、不受 `MaintenanceMode` 拦截）+ 调度心跳（M1）+ 队列积压（M2）+ 外部拨测（M3），打破「告警与执行通道同生共死」。**运维部署视角（外部监控必选项 / cron 属主 / logrotate）见 `skills/ops/deploy-ops.md`**，此处固化判定机制。
+`GET /api/health`（`HealthController`，无鉴权、命名空间无关、不受 `MaintenanceMode` 拦截）+ 调度心跳（M1）+ 队列积压（M2），供管理后台首页展示系统健康度。**运维部署视角（cron 属主 / 可选外部监控）见 `skills/ops/deploy-ops.md`**，此处固化判定机制。
 
 ### /api/health 三态判定（error 优先序不可乱）
 
@@ -122,16 +122,16 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - ② **cache 后端故障** → `error`（503）：`cacheCheck` 只读 `Cache::get('schedule:heartbeat')` 探连通性（redis 宕机时抛）。**必须先于下方 disk/queue/heartbeat**——它们经 `get_system_setting`→`Cache::remember` 读阈值/心跳，cache 故障时会抛，早 return 规避二次抛异常；`heartbeatAge` 的 `Cache::get` 亦 try/catch 返 null（不误判 degraded，因 cache error 已先 return）
 - ③ `disk_free_gb` < `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）
 - ④ freeze=false 时：`queue_lag` 超阈 → error；心跳**存在且过旧**（stale，> `health.heartbeat_stale_seconds` 默认 300）→ `error`（503，死 scheduler）
-- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，判 degraded 而非 stale 503，防误报卡外部监控）
+- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，后台显示“需要关注”）
 - ⑥ 其他 → `ok`（200）
 - **freeze 期**：`queue_lag` 与心跳 stale 均不参与 503（worker/scheduler 已按升级流程停止），避免升级窗误报（双保险：console.php 侧心跳不挂 skip、health 侧 freeze 期不评估 stale）；**cache 后端故障不受 freeze 豁免**（cache 是独立于升级流程的基础设施）
 
 ### schedule:heartbeat（M1，第二个有意 freeze 存活者）
 
-`HeartbeatCommand` 每分钟 `Cache::forever('schedule:heartbeat', now()->timestamp)`。调度接线与 `upgrade:watchdog` 同款**有意不对称**：`->everyMinute()->evenInMaintenanceMode()` 且**不挂** `->skip($skipWhenFrozen)`——挂了则 freeze 期心跳停 → health 判 stale 503 → 每次升级窗 M3 拨测/外部监控误报「scheduler 死」。`ScheduleFreezeSkipTest` 对 heartbeat/watchdog 断言 `filtersPass=true`。
+`HeartbeatCommand` 每分钟 `Cache::forever('schedule:heartbeat', now()->timestamp)`。调度接线与 `upgrade:watchdog` 同款**有意不对称**：`->everyMinute()->evenInMaintenanceMode()` 且**不挂** `->skip($skipWhenFrozen)`——挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。`ScheduleFreezeSkipTest` 对 heartbeat/watchdog 断言 `filtersPass=true`。
 
 - **用 forever 无 TTL 是刻意选型**：死 scheduler 留旧时间戳 → age 超阈 → stale 503（正确检出）；带 TTL 则键到期消失 → 缺失 → degraded 200，把死 scheduler 误判「未装机」。
-- **F1 死角**（文档化于 deploy-ops.md）：「已死 scheduler + 之后 `cache:clear`」→ 键缺失 → degraded 200 → 本机拨测静默。这是 `forever`+missing→degraded 换「新装机不 503」的固有对价，兜底 = 外部站点监控（部署必选项，无视本机 cache 状态）。
+- **访问时检测边界**（文档化于 deploy-ops.md）：「已死 scheduler + 之后 `cache:clear`」→ 键缺失 → degraded 200，后台健康度显示黄色“需要关注”，不主动发信。
 
 ### queueLag 队列语义（M2）
 
@@ -142,8 +142,8 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ### M6 cron 可见性
 
-- schedule 命令非零退出挂 `->onFailure(...)` 落 `Log::error('[schedule.failed] ...')`（弱信号兜底；主信号是 M1 心跳 + M3 拨测）。仅挂 validate / auto-renew / reconcile-pending / sweep-stale-tasks / reconcile-acme / sweep-orphan-orders（backup / finance / E 系监控自带告警）。
-- 生产 cron `schedule:run` / `monitor:probe` 输出落 `storage/logs/{schedule,probe}.log`（不再 `>/dev/null`）+ logrotate（weekly rotate 4，防日志涨满盘触发 disk_free 503）。存量机交付细节见 `skills/backend/upgrade.md` §1.5 与 `skills/ops/deploy-ops.md`。
+- schedule 命令非零退出挂 `->onFailure(...)` 落 `Log::error('[schedule.failed] ...')`。仅挂 validate / auto-renew / reconcile-pending / sweep-stale-tasks / reconcile-acme / sweep-orphan-orders（backup / finance / E 系监控自带告警）。
+- 生产仅创建一个 `schedule:run` 宝塔计划任务，不额外重定向输出，由宝塔面板保存任务日志。
 
 ---
 
@@ -193,19 +193,18 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ### 调度配置
 
-| 命令                           | 调度            | 说明                                                          |
-| ------------------------------ | --------------- | ------------------------------------------------------------- |
-| `schedule:validate`            | 每分钟          | 证书验证任务                                                  |
-| `schedule:heartbeat`           | 每分钟          | 调度心跳（写 Cache 供 /api/health 判活；freeze 存活者，见下） |
-| `schedule:auto-renew`          | 每天 00:00      | 自动续费/重签（延时 commit 0~8h）                             |
-| `schedule:reconcile-pending`   | 每 5 分钟       | pending 卡单对账重发 commit（见 order-fund.md）               |
-| `schedule:sweep-stale-tasks`   | 每 5 分钟       | 重派僵尸 executing 任务（T1，见 order-fund.md）               |
-| `schedule:reconcile-acme`      | 每 5 分钟       | ACME 卡单对账（T6，见 acme-module.md）                        |
-| `schedule:sweep-orphan-orders` | 每小时          | 清理 channel=auto 孤儿续费单（O4，见 order-fund.md）          |
-| `schedule:ca-healthcheck`      | 每 15 分钟      | 上游 CA 凭证 + 连通性告警（M7，见 notification.md）           |
-| `monitor:probe`                | 每 5 分钟（BT） | 外部健康拨测（M3，独立 cron 非 schedule:run，见 deploy-ops）  |
-| `delegation:check`             | 每天 05:30      | CNAME 委托健康检查                                            |
-| `delegation:cleanup`           | 每天 06:00      | 委托 DNS 清理                                                 |
+| 命令                           | 调度       | 说明                                                          |
+| ------------------------------ | ---------- | ------------------------------------------------------------- |
+| `schedule:validate`            | 每分钟     | 证书验证任务                                                  |
+| `schedule:heartbeat`           | 每分钟     | 调度心跳（写 Cache 供 /api/health 判活；freeze 存活者，见下） |
+| `schedule:auto-renew`          | 每天 00:00 | 自动续费/重签（延时 commit 0~8h）                             |
+| `schedule:reconcile-pending`   | 每 5 分钟  | pending 卡单对账重发 commit（见 order-fund.md）               |
+| `schedule:sweep-stale-tasks`   | 每 5 分钟  | 重派僵尸 executing 任务（T1，见 order-fund.md）               |
+| `schedule:reconcile-acme`      | 每 5 分钟  | ACME 卡单对账（T6，见 acme-module.md）                        |
+| `schedule:sweep-orphan-orders` | 每小时     | 清理 channel=auto 孤儿续费单（O4，见 order-fund.md）          |
+| `schedule:ca-healthcheck`      | 每 15 分钟 | 上游 CA 凭证 + 连通性告警（M7，见 notification.md）           |
+| `delegation:check`             | 每天 05:30 | CNAME 委托健康检查                                            |
+| `delegation:cleanup`           | 每天 06:00 | 委托 DNS 清理                                                 |
 
 ---
 

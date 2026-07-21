@@ -91,7 +91,7 @@ class CaHealthcheckCommand extends Command
      * 连通性失败处理：累计计数，达阈值发 SystemAlert（固定指纹 ca_outage 防计数 churn 击穿去重）。
      *
      * 阈值 3×15min=45min 滤上游滚动重启瞬断；TTL 6h ≥ 3×45min 契约。计数用 Cache::forever
-     * 跨 cron 周期累计（cache:clear 清计数 = 延迟一周期非永久静默，M1 心跳/M3 拨测独立信号兜底）。
+     * 跨 cron 周期累计（cache:clear 清计数 = 延迟一周期非永久静默，M1 心跳仍可反映调度状态）。
      */
     private function handleConnectivityFailure(string $msg): void
     {

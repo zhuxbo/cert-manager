@@ -123,8 +123,8 @@ class Setting extends BaseModel
         try {
             return Cache::remember($cacheKey, self::CACHE_TTL, $loader);
         } catch (Throwable) {
-            // Cache 后端故障（如 redis 宕机）→ 直读 DB。settings 是告警最后防线（HealthProbeCommand
-            // 读 site.adminEmail / mail 配置发信）与 health 阈值的依赖，绝不能因 cache 死而整链哑火。
+            // Cache 后端故障（如 redis 宕机）→ 直读 DB。settings 是告警配置与 health 阈值的依赖，
+            // 绝不能因 cache 死而整链哑火。
             return $loader();
         }
     }

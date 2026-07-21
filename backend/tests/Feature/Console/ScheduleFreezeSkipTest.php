@@ -38,7 +38,7 @@ test('upgrade freeze 期间所有 Schedule event 都被跳过', function () {
 
         // 有意 freeze 存活者（不挂 skip($skipWhenFrozen)，见 console.php 注释）：
         //   - upgrade:watchdog：升级进程死后自愈命令，freeze 期恰是它收拾残局之时；
-        //   - schedule:heartbeat：M1 心跳，freeze 期若停则 /api/health 误判 stale 503 → 拨测/外部监控误报。
+        //   - schedule:heartbeat：M1 心跳，freeze 期若停则后台健康度误报 scheduler 异常。
         // 二者冻结期均 filtersPass=true。
         $command = (string) ($event->command ?? '');
         if (str_contains($command, 'upgrade:watchdog') || str_contains($command, 'schedule:heartbeat')) {

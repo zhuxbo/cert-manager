@@ -29,7 +29,7 @@
 | 数据库结构导出  | `db-structure.md`                             | 重新生成并验证主系统 `backend/database/structure.json`                                                                                       |
 | 完成检查        | `finish-check.md`                             | 完整本地门禁、范围推导、专项验证、文档同步与 reviewer 循环                                                                                   |
 | 远程发布        | `remote-release.md`                           | dev/main 通道判定、发布前门禁、远端发布与发布后分支同步                                                                                      |
-| 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、健康监控/外部拨测/孤儿退款 arm-switch                                                              |
+| 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、后台健康度/可选外部监控/孤儿退款 arm-switch                                                        |
 | 构建发布        | `ops/build-release.md`                        | 版本发布、打包、CI/CD                                                                                                                        |
 | Review 清单     | `review-checklist.md`                         | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描                                                                      |
 | ACME E2E 测试   | `acme-e2e-test/`                              | certbot 端到端测试（Manager + 上游系统）                                                                                                     |

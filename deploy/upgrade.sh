@@ -1197,7 +1197,7 @@ _php_env_try_bt_fix() {
 
     # 此处不再 bt_reload_php_fpm：升级流程全程 CLI（重新校验、artisan migrate、composer install 等都是新启 PHP-CLI 进程，
     # 直接读 ini 文件，不依赖 PHP-FPM reload）。bt-deps.sh::auto_install_ext 内部已用 systemctl restart 兜底 FPM；
-    # 升级末尾步骤 15b 会做一次 BT API reload 给 web 入口生效（届时 FPM 已稳定，不撞 systemctl 余波）。
+    # 升级末尾步骤 15a 会做一次 BT API reload 给 web 入口生效（届时 FPM 已稳定，不撞 systemctl 余波）。
     return 0
 }
 
@@ -1287,56 +1287,23 @@ check_php_environment() {
     exit 1
 }
 
-# 写 logrotate 配置（schedule.log / probe.log 轮转，防日增日志涨满盘触发 disk_free 503）
-# 与 bt-install.sh::write_logrotate_conf 对称（两脚本独立发布不能 source），修改时请同步
-# 落点在 update_jobs_php_path 之外（perform_upgrade 主流程），不受函数内 total_mismatch / BT key 早返影响
-write_logrotate_conf() {
-    local conf="/etc/logrotate.d/ssl-manager"
-    local logdir="$INSTALL_DIR/backend/storage/logs"
-
-    if [ ! -d /etc/logrotate.d ] || [ ! -w /etc/logrotate.d ]; then
-        log_warning "/etc/logrotate.d 不可写，跳过 logrotate 配置（schedule.log/probe.log 需手工轮转）"
-        return 0
-    fi
-
-    # cron `>>` 每次执行独立 open-append，rotate 后自动写新文件，无需 copytruncate
-    cat >"$conf" <<EOF
-$logdir/schedule.log
-$logdir/probe.log {
-    weekly
-    rotate 4
-    compress
-    missingok
-    notifempty
-    create 0664 www www
-}
-EOF
-    log_success "logrotate 配置已写入: ${conf}（weekly rotate 4）"
-}
-
-# 修复单条 install.sh 自管 cron 的 PHP 路径（schedule 组另追加 one-shot /dev/null → schedule.log 迁移）
-# 参数：$1=entry(id|name|paths|ctype|cwhere1|body_enc)  $2=kind(schedule|probe)
+# 修复单条 install.sh 自管 cron 的 PHP 路径。
+# 参数：$1=entry(id|name|paths|ctype|cwhere1|body_enc)
 # 三段语义（原样保留）：DelCrontab → bt_add_crontab 新 → 失败用原 body 回滚 + 落 other 提示
 # 返回：0=已修复；非 0=no-op skip 或失败（失败已 push 全局 other_cron_entries，bash 动态作用域）
 _fix_installer_cron() {
-    local entry="$1" kind="$2"
+    local entry="$1"
     local cid cname paths ctype cwhere1 cbody_enc cbody new_body
     IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
     cbody=$(_entry_decode "$cbody_enc")
     # 两步 PHP sed：① 绝对路径版本不对整体替换 ② 裸 php token → target_php
     new_body=$(echo "$cbody" | sed -E "s#/www/server/php/[0-9]+/bin/php#$target_php#g")
     new_body=$(echo "$new_body" | sed -E "s#(^|[[:space:];&|])php([[:space:]]+)#\1${target_php}\2#g")
-    # schedule 组追加 one-shot 重定向迁移（检测模式与此 sed 同构 `>> */dev/null 2>&1`）；
-    # 已迁移 / 用户自定义重定向形态无匹配 no-op（幂等）。
-    # 替换串里的 & 必须转义为 \&（sed 替换段 & = 整个匹配文本），否则 2>&1 会展开成匹配串致 body 损坏
-    if [ "$kind" = "schedule" ]; then
-        new_body=$(echo "$new_body" | sed "s#>> */dev/null 2>&1#>> $INSTALL_DIR/backend/storage/logs/schedule.log 2>\&1#")
-    fi
     # no-op 守卫（Mi6 双保险）：new_body 与原 body 一致则不 Del/Add，杜绝无效 churn 与 Del→Add 风险窗
     if [ "$new_body" = "$cbody" ]; then
         return 1
     fi
-    log_step "自动更新 cron [${cname}] PHP 路径/日志重定向（install.sh 自管，唯一；保留频率 ${ctype}=${cwhere1}）"
+    log_step "自动更新 cron [${cname}] PHP 路径（install.sh 自管，唯一；保留频率 ${ctype}=${cwhere1}）"
     # 防止 DelCrontab 成功 + AddCrontab 失败的窗口里 cron 静默消失
     if _bt_api_post "/crontab?action=DelCrontab" "--data-urlencode 'id=$cid'" >/dev/null 2>&1; then
         sleep 1
@@ -1363,7 +1330,6 @@ _fix_installer_cron() {
 # 对 install.sh 自管（命令含 $INSTALL_DIR/backend/artisan）且类型内唯一的项，自动覆盖更新
 # 不满足"自管 + 唯一"的项保留原"列出 + 警告"行为，由用户手工到面板改
 # 通常在切换 PHP 版本后才有不一致；常规升级是 no-op
-# M3/M6 §1.5：schedule / probe 双 marker 分组、probe 缺失幂等 ensure、schedule body /dev/null→schedule.log 迁移
 update_jobs_php_path() {
     local target_php="$PHP_CMD"
 
@@ -1394,20 +1360,14 @@ update_jobs_php_path() {
     log_step "扫描 cron / supervisor 的 PHP 绝对路径..."
     log_info "  期望 PHP: $target_php"
 
-    # install.sh 自管特征（cron: schedule:run + monitor:probe；supervisor: queue:work），按 INSTALL_DIR 锚定
+    # install.sh 自管特征（cron: schedule:run；supervisor: queue:work），按 INSTALL_DIR 锚定。
     # marker 即 artisan 命令串本身（面板可见 shell 命令，已是唯一稳定特征，不引额外注释 token）
     local installer_cron_marker="$INSTALL_DIR/backend/artisan schedule:run"
-    local installer_probe_marker="$INSTALL_DIR/backend/artisan monitor:probe"
     local installer_supervisor_marker="$INSTALL_DIR/backend/artisan queue:work"
 
-    # 分类容器：install.sh 自管 schedule / probe 分组 vs 其他（仅手工提示）
-    local installer_cron_entries=() installer_probe_entries=() other_cron_entries=()
+    # 分类容器：install.sh 自管 vs 其他（仅手工提示）
+    local installer_cron_entries=() other_cron_entries=()
     local installer_supervisor_entries=() other_supervisor_entries=()
-
-    # 存在性 flag（§1.5）：probe ensure 守卫用，须在 needs_fix 短路之前置位
-    #   schedule_marker_seen：确认本机是 install.sh 自管站点（有 schedule:run 自管行）
-    #   probe_cron_exists：面板已有 probe 行（按 body marker 判定，PHP 路径已对的行也算存在）
-    local schedule_marker_seen=false probe_cron_exists=false
 
     # cron
     # 扫描分两类不一致：
@@ -1419,21 +1379,10 @@ update_jobs_php_path() {
         body=$(echo "$line" | _json_field "sBody")
         [ -z "$body" ] && continue
 
-        # 分组：命中 schedule marker → schedule 组；命中 probe marker → probe 组；否则 other
-        # 存在性 flag 在此置位（needs_fix 短路之前）：PHP 路径已对的 probe 行不进 entries，
-        # 但 probe_cron_exists 须已 true，否则下方 ensure 误判缺失 → 重复新增第二条 probe cron
-        local cron_kind=other
-        # set -e 下不能写 `cmd && x=y` —— grep 无匹配时整体非零会触发 exit
-        if echo "$body" | grep -qF "$installer_cron_marker"; then
-            cron_kind=schedule
-            schedule_marker_seen=true
-        elif echo "$body" | grep -qF "$installer_probe_marker"; then
-            cron_kind=probe
-            probe_cron_exists=true
-        fi
-
         local is_installer=false
-        [ "$cron_kind" != "other" ] && is_installer=true
+        if echo "$body" | grep -qF "$installer_cron_marker"; then
+            is_installer=true
+        fi
 
         local found_paths=""
         local has_bare_php=false
@@ -1457,10 +1406,6 @@ update_jobs_php_path() {
             needs_fix=true
         fi
         # 非 installer 自管 + 裸 php → 不动（用户脚本，可能有意依赖 PATH）
-        # schedule 组 M6 迁移信号：body 仍写 /dev/null → 需修（检测模式与迁移 sed 同构 `>> */dev/null 2>&1`）
-        if [ "$cron_kind" = "schedule" ] && echo "$body" | grep -qE '>> */dev/null 2>&1'; then
-            needs_fix=true
-        fi
 
         if [ "$needs_fix" = false ]; then
             continue
@@ -1478,11 +1423,7 @@ update_jobs_php_path() {
             ctype=$(echo "$line" | _json_field "type")
             cwhere1=$(echo "$line" | _json_field "where1")
             if [ "$ctype" = "minute-n" ] && [ -n "$cwhere1" ]; then
-                if [ "$cron_kind" = "probe" ]; then
-                    installer_probe_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
-                else
-                    installer_cron_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
-                fi
+                installer_cron_entries+=("$id|$name|$display_paths|$ctype|$cwhere1|$body_enc")
             else
                 other_cron_entries+=("$id|$name|$display_paths|$body_enc")
             fi
@@ -1554,24 +1495,7 @@ update_jobs_php_path() {
         fi
     done < <(bt_list_supervisor_all 2>/dev/null)
 
-    # ===== probe ensure（§1.5，I3 前移至早返之前）=====
-    # 本机是 install.sh 自管站点（见 schedule marker）且面板无 probe cron → 幂等新增。
-    # 守卫用 schedule_marker_seen 天然排除 bt_list_crontab_all 瞬时失败/空响应（列表拿不到 →
-    # marker 必未见 → skip，防重复新增第二条 probe cron）。这是常驻自愈（非仅首次交付），
-    # 故须在 total_mismatch -eq 0 早返之前，否则干净存量机（cron 全对+probe 缺失）永不获 probe。
-    # 存在性按 body marker 判定（probe_cron_exists），name 用 basename（upgrade.sh 无 SITE_DOMAIN）仅展示用。
-    if [ "$schedule_marker_seen" = true ] && [ "$probe_cron_exists" = false ]; then
-        log_step "补充缺失的外部健康拨测 cron（monitor:probe，每 5min）"
-        if bt_add_crontab "$(basename "$INSTALL_DIR")-probe" "minute-n" 5 \
-            "$target_php $INSTALL_DIR/backend/artisan monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1"; then
-            log_success "  已新增拨测 cron: $(basename "$INSTALL_DIR")-probe（每 5 分钟）"
-        else
-            log_warning "  拨测 cron 新增失败，请手工到宝塔面板 → 计划任务添加（每 5min，www 运行）："
-            log_warning "  $target_php $INSTALL_DIR/backend/artisan monitor:probe >> $INSTALL_DIR/backend/storage/logs/probe.log 2>&1"
-        fi
-    fi
-
-    local total_mismatch=$((${#installer_cron_entries[@]} + ${#installer_probe_entries[@]} + ${#other_cron_entries[@]} + \
+    local total_mismatch=$((${#installer_cron_entries[@]} + ${#other_cron_entries[@]} + \
         ${#installer_supervisor_entries[@]} + ${#other_supervisor_entries[@]}))
     if [ "$total_mismatch" -eq 0 ]; then
         log_success "  cron / supervisor 的 PHP 路径与当前一致"
@@ -1581,28 +1505,14 @@ update_jobs_php_path() {
     # ===== 自动修复阶段：install.sh 自管 + 组内唯一才覆盖更新 =====
     local auto_fixed=0
 
-    # schedule 组：组内 -eq 1 才修（对单行存量机与原全局 -eq 1 等价；probe 存在不使 schedule 退手工）
+    # schedule 组：组内 -eq 1 才修。
     if [ ${#installer_cron_entries[@]} -eq 1 ]; then
-        if _fix_installer_cron "${installer_cron_entries[0]}" schedule; then
+        if _fix_installer_cron "${installer_cron_entries[0]}"; then
             auto_fixed=$((auto_fixed + 1))
         fi
     elif [ ${#installer_cron_entries[@]} -gt 1 ]; then
         log_info "  检测到 ${#installer_cron_entries[@]} 个 schedule:run cron，非唯一，保留手工提示"
         for entry in "${installer_cron_entries[@]}"; do
-            local cid cname paths ctype cwhere1 cbody_enc
-            IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
-            other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
-        done
-    fi
-
-    # probe 组：组内 -eq 1 才修（PHP 大版本升级后修正 probe 路径，消除静默失效；与 schedule 组独立）
-    if [ ${#installer_probe_entries[@]} -eq 1 ]; then
-        if _fix_installer_cron "${installer_probe_entries[0]}" probe; then
-            auto_fixed=$((auto_fixed + 1))
-        fi
-    elif [ ${#installer_probe_entries[@]} -gt 1 ]; then
-        log_info "  检测到 ${#installer_probe_entries[@]} 个 monitor:probe cron，非唯一，保留手工提示"
-        for entry in "${installer_probe_entries[@]}"; do
             local cid cname paths ctype cwhere1 cbody_enc
             IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
             other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
@@ -2200,11 +2110,7 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     # 15. 扫描 cron / supervisor 的 PHP 绝对路径（PHP 版本切换后保护性检查 + 自动修复 install.sh 自管项）
     update_jobs_php_path
 
-    # 15a. logrotate（schedule.log / probe.log 轮转）——函数外调用，不受 update_jobs_php_path
-    # 的 total_mismatch / BT key 早返影响（写盘不依赖 BT API）
-    write_logrotate_conf
-
-    # 15b. 重载 PHP-FPM 清 opcache，加载新代码
+    # 15a. 重载 PHP-FPM 清 opcache，加载新代码
     # 仅宝塔环境（PHP_CMD 形如 /www/server/php/83/bin/php）；其他环境提示手工重启
     # 独立于 update_jobs_php_path：那里 BT_KEY 不可用会提前 return 不 source；这里自己再尝试一次
     log_step "重载 PHP-FPM..."

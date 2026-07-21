@@ -13,8 +13,7 @@ afterEach(function () {
     restoreArrayCache();
 });
 
-// cache 后端故障（redis 宕机）时 settings 读取必须回落 DB 直读——否则 HealthProbeCommand 发信链
-// （site.adminEmail + Email 构造读 mail 配置）与 health 阈值全部随 cache 死。
+// cache 后端故障（redis 宕机）时 settings 读取必须回落 DB 直读，否则 health 阈值等配置随 cache 死。
 test('getByGroupName 在 cache 后端故障时回落 DB 直读', function () {
     $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点', 'weight' => 1]);
     Setting::updateOrCreate(
@@ -43,8 +42,7 @@ test('getValue / get_system_setting 在 cache 后端故障时回落 DB 直读', 
         ->and(get_system_setting('site', 'adminEmail'))->toBe('ops@corp.example');
 });
 
-// 加重项对端：mail 组配置（Email 构造读 get_system_setting('mail')）同样须在 cache 故障时可读，
-// 否则告警邮件构造 configured=false，最后防线发不出信。
+// mail 组配置（Email 构造读 get_system_setting('mail')）同样须在 cache 故障时可读。
 test('mail 组配置在 cache 后端故障时回落 DB 直读（Email 构造依赖）', function () {
     $group = SettingGroup::firstOrCreate(['name' => 'mail'], ['title' => '邮件', 'weight' => 2]);
     $mailConfig = [
