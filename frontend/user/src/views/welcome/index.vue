@@ -13,6 +13,7 @@ import PieChart from "@shared/components/Charts/PieChart.vue";
 import LineChart from "@shared/components/Charts/LineChart.vue";
 import BarChart from "@shared/components/Charts/BarChart.vue";
 import { getPluginWidgets } from "@shared/utils/plugin-loader";
+import { defaultQrcodePath, resolveSiteQrcode } from "@shared/utils";
 import { useLazyVisible } from "@shared/hooks";
 import type {
   AssetsData,
@@ -49,6 +50,12 @@ const chartsSentinel = ref<HTMLElement>();
 
 // 二维码放大模态框
 const showQRModal = ref(false);
+const qrcodeUrl = computed(() =>
+  resolveSiteQrcode(
+    getConfig("Qrcode"),
+    defaultQrcodePath(import.meta.env.BASE_URL)
+  )
+);
 
 // 格式化金额
 const formatCurrency = (amount: number): string => {
@@ -376,7 +383,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
           <div class="flex-shrink-0 m-2">
             <img
-              :src="getConfig('Qrcode') || '/qrcode.png'"
+              :src="qrcodeUrl"
               alt="二维码"
               class="w-24 h-24 rounded-sm block cursor-pointer hover:opacity-80! transition-opacity! duration-200!"
               title="点击放大"
@@ -608,7 +615,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
         </div>
         <div class="flex justify-center">
           <img
-            :src="getConfig('Qrcode') || '/qrcode.png'"
+            :src="qrcodeUrl"
             alt="二维码"
             class="w-64 h-64 rounded-lg"
             @click.stop

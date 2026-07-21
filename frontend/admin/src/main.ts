@@ -70,12 +70,12 @@ import "tippy.js/themes/light.css";
 import VueTippy from "vue-tippy";
 app.use(VueTippy);
 
-getPlatformConfig(app).then(async config => {
+const bootstrap = async () => {
+  const meta = await fetchMeta("admin");
+  const config = await getPlatformConfig(app, meta?.platform);
   // 启动期检测 channels（前端编排）
   // 后端 channels.admin=false 时跳过主应用初始化，渲染降级页
   // 注意：app.unmount() 释放 createApp(App) 已经创建的实例，避免持有 router/store 等模块的孤儿引用
-  const meta = await fetchMeta("admin");
-  if (meta?.platform) Object.assign(config, meta.platform);
   if (meta && meta.channels.admin === false) {
     renderChannelDisabled("admin");
     app.unmount();
@@ -131,4 +131,6 @@ getPlatformConfig(app).then(async config => {
   });
 
   app.mount("#app");
-});
+};
+
+void bootstrap();

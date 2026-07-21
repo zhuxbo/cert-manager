@@ -102,6 +102,7 @@ const handleUpload = async (file: File) => {
         </div>
         <el-button
           v-else
+          size="small"
           type="primary"
           plain
           :loading="uploading"
