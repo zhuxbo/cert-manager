@@ -76,6 +76,11 @@ load_config() {
         exit 1
     fi
 
+    if ! [[ "$KEEP_VERSIONS" =~ ^[1-9][0-9]*$ ]]; then
+        log_error "KEEP_VERSIONS 必须是正整数，当前值: $KEEP_VERSIONS"
+        exit 1
+    fi
+
     # 展开 SSH_KEY 路径中的 ~
     SSH_KEY="${SSH_KEY/#\~/$HOME}"
 
@@ -193,8 +198,44 @@ update_releases_json_remote() {
 
     # 在远程执行 Python 脚本
     ssh_cmd "$SERVER_HOST" "$SERVER_PORT" "python3 << 'PYEOF'
-$(generate_releases_update_script "$releases_file" "$version" "$channel" "$version_dir" "$rel_path")
+$(generate_releases_update_script "$releases_file" "$version" "$channel" "$version_dir" "$rel_path" "$KEEP_VERSIONS")
 PYEOF"
+}
+
+# ========================================
+# 校验远程文件、索引、哈希与 latest 链接
+# ========================================
+verify_release_remote() {
+    local server_str="$1"
+    local version="$2"
+    local channel="$3"
+
+    parse_server "$server_str"
+
+    local releases_file="$SERVER_DIR/releases.json"
+    local version_dir="$SERVER_DIR/$channel/v$version"
+    local rel_path="$channel/v$version"
+    local latest_dir="$SERVER_DIR/latest"
+    [ "$channel" = "dev" ] && latest_dir="$SERVER_DIR/dev-latest"
+
+    log_info "校验远程文件与 releases.json..."
+    ssh_cmd "$SERVER_HOST" "$SERVER_PORT" "python3 << 'PYEOF'
+$(generate_release_verify_script "$releases_file" "$version" "$channel" "$version_dir" "$rel_path" "$latest_dir" "$KEEP_VERSIONS")
+PYEOF"
+}
+
+# ========================================
+# 从公网下载并校验索引、脚本与全部发布包
+# ========================================
+verify_release_public() {
+    local server_str="$1"
+    local version="$2"
+    local channel="$3"
+
+    parse_server "$server_str"
+
+    log_info "校验公网发布地址: $SERVER_URL"
+    generate_public_release_verify_script "$SERVER_URL" "$version" "$channel" "$KEEP_VERSIONS" | python3
 }
 
 # ========================================
@@ -313,7 +354,17 @@ upload_to_server() {
     # 清理旧版本
     cleanup_old_versions_remote "$server_str" "$channel"
 
-    log_success "$SERVER_NAME: 部署完成"
+    # 发布验收：远程落盘与公网下载均必须通过
+    if ! verify_release_remote "$server_str" "$version" "$channel"; then
+        log_error "$SERVER_NAME: 远程发布校验失败"
+        return 1
+    fi
+    if ! verify_release_public "$server_str" "$version" "$channel"; then
+        log_error "$SERVER_NAME: 公网发布校验失败"
+        return 1
+    fi
+
+    log_success "$SERVER_NAME: 部署并校验完成"
 }
 
 # ========================================
@@ -547,17 +598,9 @@ main() {
 
     echo ""
     if [ $result -eq 0 ]; then
-        log_success "发布完成！"
-        echo ""
-        log_info "验证命令:"
-        for server in "${SERVERS[@]}"; do
-            parse_server "$server"
-            if [ -z "$target_server" ] || [ "$SERVER_NAME" = "$target_server" ]; then
-                echo "  curl $SERVER_URL/releases.json | jq ."
-            fi
-        done
+        log_success "发布完成，所有目标服务器均已通过远程与公网校验！"
     else
-        log_error "部分服务器发布失败"
+        log_error "部分服务器发布或校验失败"
     fi
 
     return $result

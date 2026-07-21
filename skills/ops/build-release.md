@@ -110,7 +110,9 @@ bash build/build.sh --clear-cache
 }
 ```
 
-`build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
+`build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`；main/dev 通道分别按发布时间保留 `KEEP_VERSIONS` 条（默认各 5 条）。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
+
+每台服务器完成上传、索引更新、脚本部署、latest 链接更新和旧目录清理后，`release.sh` 自动执行两层验收：先经 SSH 校验远程 `releases.json`、三个 zip 的大小/sha256、latest 链接及入口脚本，再从该服务器的公网 URL 下载索引和全部 zip 复算大小/sha256。任一目标服务器的任一校验失败，发布命令返回失败，不得只凭上传命令成功判定发布完成。
 
 后台升级（PHP 端 `ReleaseClient`）同样 **fail-closed**：releases.json 缺 sha256 或下载产物不匹配时拒绝升级（不降级放行）；`validateReleaseUrl` 对下载 URL 做 SSRF 校验（https 放行 / 公网 http 拒绝 / 明文 http 仅放行 RFC1918 私网 + loopback，link-local 169.254 含云元数据 / CGNAT / 保留段拒绝），下载 curl/Http 重定向限 https + 限 5 跳，防「https 校验通过 → 302 降级到 http 内网」绕过。
 

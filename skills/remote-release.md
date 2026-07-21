@@ -112,6 +112,8 @@ bash build/release.sh <版本号>
 - 本地 main 必须与 origin/main 一致
 - 自动打 `v<版本号>` tag 并推送
 - 自动把 `latest` tag 移到当前提交并推送
+- main/dev 的远程目录和 `releases.json` 记录分别只保留最新 `KEEP_VERSIONS` 条（默认各 5 条）
+- 每台目标服务器上传后必须通过远程文件/哈希/latest 链接校验和公网全量下载哈希校验，任一失败则发布失败
 
 #### 3.3 发布后：同步分支 + 切回 dev
 

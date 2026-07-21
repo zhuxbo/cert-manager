@@ -99,6 +99,7 @@ generate_releases_update_script() {
     local channel="$3"
     local version_dir="$4"
     local rel_path="$5"
+    local keep="${6:-5}"
 
     local created_at=$(date -Iseconds)
     local prerelease="False"
@@ -117,6 +118,7 @@ prerelease = $prerelease
 created_at = '$created_at'
 rel_path = '$rel_path'
 version_dir = '$version_dir'
+keep = int('$keep')
 
 def _sha256(path):
     h = hashlib.sha256()
@@ -164,11 +166,248 @@ data['releases'].insert(0, new_release)
 # 按发布时间排序
 data['releases'].sort(key=lambda x: x.get('published_at', ''), reverse=True)
 
+# main/dev 两个通道分别只保留最新 keep 条，避免一个通道挤占另一个通道的配额
+kept = []
+channel_counts = {'main': 0, 'dev': 0}
+for release in data['releases']:
+    release_channel = 'dev' if release.get('prerelease') is True else 'main'
+    if channel_counts[release_channel] >= keep:
+        continue
+    kept.append(release)
+    channel_counts[release_channel] += 1
+data['releases'] = kept
+
 # 保存
 with open(releases_file, 'w') as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 
-print(f'releases.json 已更新: v{version}')
+print(
+    f'releases.json 已更新: v{version} '
+    f'(main={channel_counts["main"]}, dev={channel_counts["dev"]})'
+)
+PYEOF
+}
+
+# ========================================
+# 生成远程发布结果校验的 Python 脚本
+# ========================================
+generate_release_verify_script() {
+    local releases_file="$1"
+    local version="$2"
+    local channel="$3"
+    local version_dir="$4"
+    local rel_path="$5"
+    local latest_dir="$6"
+    local keep="${7:-5}"
+
+    local prerelease="False"
+    [ "$channel" = "dev" ] && prerelease="True"
+
+    cat <<PYEOF
+import hashlib
+import json
+import os
+
+releases_file = '$releases_file'
+version = '$version'
+channel = '$channel'
+version_dir = '$version_dir'
+rel_path = '$rel_path'
+latest_dir = '$latest_dir'
+keep = int('$keep')
+prerelease = $prerelease
+
+def fail(message):
+    raise SystemExit(f'发布校验失败: {message}')
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as fp:
+        for chunk in iter(lambda: fp.read(65536), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+try:
+    with open(releases_file, 'r') as fp:
+        data = json.load(fp)
+except Exception as exc:
+    fail(f'无法读取 releases.json: {exc}')
+
+releases = data.get('releases')
+if not isinstance(releases, list):
+    fail('releases.json 缺少 releases 数组')
+
+counts = {'main': 0, 'dev': 0}
+for release in releases:
+    release_channel = 'dev' if release.get('prerelease') is True else 'main'
+    counts[release_channel] += 1
+if counts['main'] > keep or counts['dev'] > keep:
+    fail(f'版本记录超限: main={counts["main"]}, dev={counts["dev"]}, keep={keep}')
+
+matches = [release for release in releases if release.get('tag_name') == f'v{version}']
+if len(matches) != 1:
+    fail(f'releases.json 中 v{version} 记录数量为 {len(matches)}')
+release = matches[0]
+if release.get('prerelease') is not prerelease:
+    fail(f'v{version} 的通道标记不正确')
+
+expected_names = {
+    f'ssl-manager-full-{version}.zip',
+    f'ssl-manager-upgrade-{version}.zip',
+    f'ssl-manager-script-{version}.zip',
+}
+actual_files = {
+    name for name in os.listdir(version_dir)
+    if name.startswith('ssl-manager-') and name.endswith('.zip')
+}
+if actual_files != expected_names:
+    fail(f'远程包文件不完整: expected={sorted(expected_names)}, actual={sorted(actual_files)}')
+
+assets = release.get('assets')
+if not isinstance(assets, list):
+    fail(f'v{version} 缺少 assets 数组')
+assets_by_name = {asset.get('name'): asset for asset in assets}
+if set(assets_by_name) != expected_names or len(assets) != len(expected_names):
+    fail(f'assets 不完整或重复: {sorted(assets_by_name)}')
+
+for name in sorted(expected_names):
+    path = os.path.join(version_dir, name)
+    asset = assets_by_name[name]
+    if asset.get('size') != os.path.getsize(path):
+        fail(f'{name} 大小不一致')
+    if asset.get('sha256') != sha256(path):
+        fail(f'{name} sha256 不一致')
+    if asset.get('browser_download_url') != f'{rel_path}/{name}':
+        fail(f'{name} 下载路径不正确')
+
+for package_type in ('full', 'upgrade', 'script'):
+    link = os.path.join(latest_dir, f'ssl-manager-{package_type}-latest.zip')
+    target = os.path.join(version_dir, f'ssl-manager-{package_type}-{version}.zip')
+    if not os.path.islink(link) or os.path.realpath(link) != os.path.realpath(target):
+        fail(f'latest 链接不正确: {link}')
+
+root_dir = os.path.dirname(releases_file)
+for script_name in ('install.sh', 'upgrade.sh'):
+    path = os.path.join(root_dir, script_name)
+    if not os.path.isfile(path) or not os.access(path, os.X_OK):
+        fail(f'{script_name} 不存在或不可执行')
+
+print(
+    f'远程发布校验通过: v{version}, '
+    f'main={counts["main"]}, dev={counts["dev"]}, assets={len(expected_names)}'
+)
+PYEOF
+}
+
+# ========================================
+# 生成公网发布结果校验的 Python 脚本
+# ========================================
+generate_public_release_verify_script() {
+    local base_url="$1"
+    local version="$2"
+    local channel="$3"
+    local keep="${4:-5}"
+
+    local prerelease="False"
+    [ "$channel" = "dev" ] && prerelease="True"
+
+    cat <<PYEOF
+import hashlib
+import json
+import time
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
+
+base_url = '$base_url'.rstrip('/') + '/'
+version = '$version'
+channel = '$channel'
+keep = int('$keep')
+prerelease = $prerelease
+
+def fail(message):
+    raise RuntimeError(message)
+
+def open_with_retry(url):
+    last_error = None
+    for attempt in range(1, 6):
+        try:
+            return urlopen(Request(url, headers={'Cache-Control': 'no-cache'}), timeout=60)
+        except Exception as exc:
+            last_error = exc
+            if attempt < 5:
+                time.sleep(attempt)
+    fail(f'访问失败 {url}: {last_error}')
+
+last_error = None
+for attempt in range(1, 6):
+    try:
+        with open_with_retry(urljoin(base_url, 'releases.json')) as response:
+            data = json.load(response)
+
+        releases = data.get('releases')
+        if not isinstance(releases, list):
+            fail('releases.json 缺少 releases 数组')
+
+        counts = {'main': 0, 'dev': 0}
+        for item in releases:
+            item_channel = 'dev' if item.get('prerelease') is True else 'main'
+            counts[item_channel] += 1
+        if counts['main'] > keep or counts['dev'] > keep:
+            fail(f'版本记录超限: main={counts["main"]}, dev={counts["dev"]}, keep={keep}')
+
+        matches = [item for item in releases if item.get('tag_name') == f'v{version}']
+        if len(matches) != 1 or matches[0].get('prerelease') is not prerelease:
+            fail(f'未找到通道正确且唯一的 v{version} 记录')
+        release = matches[0]
+
+        expected_names = {
+            f'ssl-manager-full-{version}.zip',
+            f'ssl-manager-upgrade-{version}.zip',
+            f'ssl-manager-script-{version}.zip',
+        }
+        assets = release.get('assets')
+        if not isinstance(assets, list):
+            fail(f'v{version} 缺少 assets 数组')
+        assets_by_name = {asset.get('name'): asset for asset in assets}
+        if set(assets_by_name) != expected_names or len(assets) != len(expected_names):
+            fail(f'assets 不完整或重复: {sorted(assets_by_name)}')
+
+        for name in sorted(expected_names):
+            asset = assets_by_name[name]
+            expected_path = f'{channel}/v{version}/{name}'
+            if asset.get('browser_download_url') != expected_path:
+                fail(f'{name} 下载路径不正确')
+            asset_url = urljoin(base_url, expected_path)
+            digest = hashlib.sha256()
+            size = 0
+            with open_with_retry(asset_url) as response:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    size += len(chunk)
+            if size != asset.get('size'):
+                fail(f'{name} 公网下载大小不一致')
+            if digest.hexdigest() != asset.get('sha256'):
+                fail(f'{name} 公网下载 sha256 不一致')
+
+        for script_name in ('install.sh', 'upgrade.sh'):
+            with open_with_retry(urljoin(base_url, script_name)) as response:
+                if not response.read(1):
+                    fail(f'{script_name} 公网内容为空')
+
+        print(
+            f'公网发布校验通过: v{version}, '
+            f'main={counts["main"]}, dev={counts["dev"]}, assets={len(expected_names)}'
+        )
+        break
+    except Exception as exc:
+        last_error = exc
+        if attempt < 5:
+            time.sleep(attempt)
+else:
+    raise SystemExit(f'发布校验失败: {last_error}')
 PYEOF
 }
 
@@ -180,6 +419,7 @@ update_releases_json_local() {
     local version="$2"
     local channel="$3"
     local version_dir="$4"
+    local keep="${5:-5}"
 
     log_step "更新 releases.json..."
 
@@ -187,7 +427,7 @@ update_releases_json_local() {
     local rel_path="${version_dir#$release_dir/}"
 
     if command -v python3 &>/dev/null; then
-        generate_releases_update_script "$releases_file" "$version" "$channel" "$version_dir" "$rel_path" | python3
+        generate_releases_update_script "$releases_file" "$version" "$channel" "$version_dir" "$rel_path" "$keep" | python3
     else
         log_error "需要 python3 来更新 releases.json"
         return 1
