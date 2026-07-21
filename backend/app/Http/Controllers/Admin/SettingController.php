@@ -5,9 +5,13 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Requests\Setting\GetIdsRequest;
 use App\Http\Requests\Setting\StoreRequest;
 use App\Http\Requests\Setting\UpdateRequest;
+use App\Http\Requests\Setting\UploadSiteImageRequest;
 use App\Models\Setting;
 use App\Models\SettingGroup;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class SettingController extends BaseController
 {
@@ -185,9 +189,84 @@ class SettingController extends BaseController
     {
         try {
             Artisan::call('cache:clear-all', ['--quick' => true, '--without-composer' => true]);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             $this->error('缓存清除失败');
         }
         $this->success();
+    }
+
+    /**
+     * 上传站点 Logo 或客服二维码。
+     */
+    public function uploadSiteImage(UploadSiteImageRequest $request, string $kind): void
+    {
+        /** @var UploadedFile $file */
+        $file = $request->file('file');
+        $extension = match ($file->getMimeType()) {
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/svg+xml' => $kind === 'logo' ? 'svg' : null,
+            default => null,
+        };
+        if ($extension === null) {
+            $this->error('不支持的图片格式');
+        }
+
+        $contents = file_get_contents($file->getRealPath());
+        if ($contents === false) {
+            $this->error('读取上传图片失败');
+        }
+
+        $path = 'site/'.$kind.'-'.hash('sha256', $contents).'.'.$extension;
+        $group = SettingGroup::where('name', 'site')->first();
+        if (! $group) {
+            $this->error('站点设置不存在');
+        }
+
+        $setting = Setting::where('group_id', $group->id)
+            ->where('key', $kind)
+            ->where('type', 'image')
+            ->first();
+        if (! $setting) {
+            $this->error('站点图片设置不存在');
+        }
+
+        $oldUrl = is_string($setting->value) ? $setting->value : '';
+        $oldPath = $this->managedSiteImagePath($oldUrl, $kind);
+        $url = '/api/meta/site-image/'.basename($path);
+        if (! Storage::disk('public')->put($path, $contents)) {
+            $this->error('保存图片失败');
+        }
+
+        try {
+            $setting->value = $url;
+            $setting->save();
+        } catch (Throwable) {
+            if ($oldPath !== $path) {
+                Storage::disk('public')->delete($path);
+            }
+            $this->error('保存站点图片设置失败');
+        }
+
+        if ($oldPath !== null && $oldPath !== $path) {
+            Storage::disk('public')->delete($oldPath);
+        }
+
+        $this->success(['url' => $url]);
+    }
+
+    private function managedSiteImagePath(string $url, string $kind): ?string
+    {
+        $prefix = "/api/meta/site-image/$kind-";
+        if (! str_starts_with($url, $prefix)) {
+            return null;
+        }
+
+        $path = 'site/'.substr($url, strlen('/api/meta/site-image/'));
+
+        return preg_match('/^site\/(?:logo-[a-f0-9]{64}\.(?:jpg|png|webp|svg)|qrcode-[a-f0-9]{64}\.(?:jpg|png|webp))$/', $path) === 1
+            ? $path
+            : null;
     }
 }

@@ -74,7 +74,8 @@ getPlatformConfig(app).then(async config => {
   // 启动期检测 channels（前端编排）
   // 后端 channels.user=false 时跳过主应用初始化，渲染降级页
   // 注意：app.unmount() 释放 createApp(App) 已经创建的实例，避免持有 router/store 等模块的孤儿引用
-  const meta = await fetchMeta();
+  const meta = await fetchMeta("user");
+  if (meta?.platform) Object.assign(config, meta.platform);
   if (meta && meta.channels.user === false) {
     renderChannelDisabled("user");
     app.unmount();

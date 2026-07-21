@@ -4,6 +4,8 @@ use App\Models\Admin;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Tests\Traits\ActsAsAdmin;
 
 uses(ActsAsAdmin::class);
@@ -63,6 +65,21 @@ test('管理员可以添加设置项', function () {
     expect(Setting::where('key', 'test_key')->exists())->toBeTrue();
 });
 
+test('管理员可以创建空值的图片设置项', function () {
+    $group = SettingGroup::factory()->create();
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/setting', [
+        'group_id' => $group->id,
+        'key' => 'image',
+        'type' => 'image',
+        'value' => '',
+        'description' => '图片设置',
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect(Setting::where('group_id', $group->id)->where('key', 'image')->value('type'))->toBe('image');
+});
+
 test('管理员可以更新设置', function () {
     $setting = Setting::factory()->create();
 
@@ -117,4 +134,194 @@ test('未认证用户无法访问设置管理', function () {
     $response = $this->getJson('/api/admin/setting');
 
     $response->assertUnauthorized();
+});
+
+test('管理员上传站点 Logo 后更新设置并清理旧托管文件', function () {
+    Storage::fake('public');
+    $oldPath = 'site/logo-'.str_repeat('a', 64).'.png';
+    Storage::disk('public')->put($oldPath, 'old');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    $setting = Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'logo'],
+        ['type' => 'image', 'value' => '/api/meta/site-image/'.basename($oldPath)],
+    );
+
+    $response = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->image('brand.png', 200, 200)->size(100),
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    $url = $response->json('data.url');
+    expect($url)->toMatch('#^/api/meta/site-image/logo-[a-f0-9]{64}\.png$#')
+        ->and($setting->fresh()->value)->toBe($url);
+    Storage::disk('public')->assertExists('site/'.basename($url));
+    Storage::disk('public')->assertMissing($oldPath);
+    $imageResponse = $this->get($url)->assertOk();
+    expect($imageResponse->headers->get('Cache-Control'))
+        ->toContain('public')
+        ->toContain('max-age=31536000')
+        ->toContain('immutable');
+});
+
+test('管理员可以上传 SVG Logo 但二维码不接受 SVG', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'logo'],
+        ['type' => 'image', 'value' => ''],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'qrcode'],
+        ['type' => 'image', 'value' => ''],
+    );
+    $svg = UploadedFile::fake()->createWithContent(
+        'brand.svg',
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>',
+    );
+
+    $logo = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => $svg,
+    ]);
+
+    $logo->assertOk()->assertJson(['code' => 1]);
+    $url = $logo->json('data.url');
+    expect($url)->toMatch('#^/api/meta/site-image/logo-[a-f0-9]{64}\.svg$#');
+    $this->get($url)
+        ->assertOk()
+        ->assertHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+        ->assertHeader('X-Content-Type-Options', 'nosniff');
+
+    $qrcode = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/qrcode', [
+        'file' => UploadedFile::fake()->createWithContent('wechat.svg', $svg->getContent()),
+    ]);
+    $qrcode->assertOk()->assertJson(['code' => 0]);
+
+    // 矢量 SVG 不受 200×200 像素上限约束（大 viewBox 的真实矢量 Logo 应可上传）
+    $largeViewBox = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'vector.svg',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path d="M0 0h1024v1024H0z"/></svg>',
+        ),
+    ]);
+    $largeViewBox->assertOk()->assertJson(['code' => 1]);
+
+    // 带前置 Generator 注释的真实导出 SVG（Inkscape/Illustrator）应可上传
+    $withComment = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'inkscape.svg',
+            "<?xml version=\"1.0\"?>\n<!-- Created with Inkscape (http://www.inkscape.org/) -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\"><path d=\"M0 0h48v48H0z\"/></svg>",
+        ),
+    ]);
+    $withComment->assertOk()->assertJson(['code' => 1]);
+
+    // 带 DOCTYPE 的 SVG（实体注入面）仍被安全校验拒绝
+    $unsafe = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'unsafe.svg',
+            '<!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>',
+        ),
+    ]);
+    $unsafe->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('errors.file.0', 'SVG 文件格式不合法');
+});
+
+test('站点图片上传限制尺寸和文件大小', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    foreach (['logo', 'qrcode'] as $key) {
+        Setting::updateOrCreate(
+            ['group_id' => $group->id, 'key' => $key],
+            ['type' => 'image', 'value' => ''],
+        );
+    }
+
+    $validLogo = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->image('logo.png', 200, 200)->size(200),
+    ]);
+    $validLogo->assertOk()->assertJson(['code' => 1]);
+
+    foreach ([
+        UploadedFile::fake()->image('wide-logo.png', 201, 200)->size(200),
+        UploadedFile::fake()->image('large-logo.png', 200, 200)->size(201),
+    ] as $file) {
+        $this->actingAsAdmin($this->admin)
+            ->post('/api/admin/setting/site-image/logo', ['file' => $file])
+            ->assertOk()
+            ->assertJson(['code' => 0]);
+    }
+
+    $validQrcode = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/qrcode', [
+        'file' => UploadedFile::fake()->image('qrcode.png', 800, 800)->size(1024),
+    ]);
+    $validQrcode->assertOk()->assertJson(['code' => 1]);
+
+    foreach ([
+        UploadedFile::fake()->image('wide-qrcode.png', 801, 800)->size(1024),
+        UploadedFile::fake()->image('large-qrcode.png', 800, 800)->size(1025),
+    ] as $file) {
+        $this->actingAsAdmin($this->admin)
+            ->post('/api/admin/setting/site-image/qrcode', ['file' => $file])
+            ->assertOk()
+            ->assertJson(['code' => 0]);
+    }
+});
+
+test('管理员可以上传二维码且非图片文件会被拒绝', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'qrcode'],
+        ['type' => 'image', 'value' => '/qrcode.png'],
+    );
+
+    $invalid = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/qrcode', [
+        'file' => UploadedFile::fake()->create('payload.txt', 10, 'text/plain'),
+    ]);
+    $invalid->assertOk()->assertJson(['code' => 0]);
+
+    $valid = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/qrcode', [
+        'file' => UploadedFile::fake()->image('wechat.jpg', 512, 512)->size(200),
+    ]);
+    $valid->assertOk()->assertJson(['code' => 1]);
+    expect($valid->json('data.url'))->toMatch('#^/api/meta/site-image/qrcode-[a-f0-9]{64}\.jpg$#');
+});
+
+test('站点图片上传只接受 logo 和 qrcode 类型', function () {
+    Storage::fake('public');
+
+    $response = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/banner', [
+        'file' => UploadedFile::fake()->image('banner.png'),
+    ]);
+
+    $response->assertNotFound();
+});
+
+test('站点图片上传要求设置项为图片类型', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'logo'],
+        ['type' => 'string', 'value' => ''],
+    );
+
+    $response = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->image('logo.png', 200, 200),
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 0, 'msg' => '站点图片设置不存在']);
 });

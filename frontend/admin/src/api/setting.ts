@@ -121,3 +121,17 @@ export function clearCache(): Promise<BaseResponse> {
 export function clearAllCache(): Promise<BaseResponse> {
   return http.request<BaseResponse>("post", "/setting/clear-all-cache");
 }
+
+export function uploadSiteImage(
+  kind: "logo" | "qrcode",
+  file: File
+): Promise<BaseResponse<{ url: string }>> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return http.request<BaseResponse<{ url: string }>>(
+    "post",
+    `/setting/site-image/${kind}`,
+    { data: formData }
+  );
+}

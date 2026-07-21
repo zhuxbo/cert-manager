@@ -230,15 +230,10 @@ _restore_preserved_extras() {
             failed=1
         fi
     done
-    # 前端用户配置（logo / platform-config / qrcode）
+    # 前端静态回落资源（logo / qrcode）；platform-config 由升级包更新，不再保留。
     if [ -d "$PRESERVE_DIR/frontend_config" ]; then
         local file
-        for file in logo.svg platform-config.json; do
-            [ -f "$PRESERVE_DIR/frontend_config/admin_$file" ] || continue
-            mkdir -p "$INSTALL_DIR/frontend/admin" 2>/dev/null || true
-            cp "$PRESERVE_DIR/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file" 2>/dev/null || failed=1
-        done
-        for file in logo.svg platform-config.json qrcode.png; do
+        for file in logo.svg qrcode.png; do
             [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] || continue
             mkdir -p "$INSTALL_DIR/frontend/user" 2>/dev/null || true
             cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file" 2>/dev/null || failed=1
@@ -287,7 +282,7 @@ cleanup() {
     if _restore_preserved_extras; then
         [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] && rm -rf "$PRESERVE_DIR"
     else
-        log_error "自定义 API 适配器 / 前端配置副本还原失败，已保留 preserve 供人工恢复：$PRESERVE_DIR"
+        log_error "自定义 API 适配器 / 前端静态资源副本还原失败，已保留 preserve 供人工恢复：$PRESERVE_DIR"
     fi
     exit "$rc"
 }
@@ -1804,6 +1799,18 @@ perform_upgrade() {
     # 保留 storage（使用 mv 避免大目录复制失败导致数据丢失）
     # 注意：freeze 锁文件（storage/framework/upgrade.lock）随此 mv 一并移走 → 至下方恢复前
     # isFrozen()=false、HTTP-503 暂失效；此[切代码窗]靠 storage 缺失致 app 500 兜底挡写。
+    # 存量 platform-config.json 一次性暂存到 storage（随下方 storage mv/恢复走），
+    # 供平台设置迁移导入历史定制值（Beian/Title/Brands）；migrate 后统一清理，不还原到前端。
+    # 仅当源文件含迁移键时才暂存（新版配置已不含这些键，后续升级自然不再暂存）；
+    # 已存在的暂存不覆盖：升级中断重跑时前端已是新包配置，覆盖会把首跑幸存的旧值冲掉
+    for side in admin user; do
+        [ -f "$INSTALL_DIR/frontend/$side/platform-config.json" ] || continue
+        grep -qE '"(Title|Beian|Brands)"' "$INSTALL_DIR/frontend/$side/platform-config.json" || continue
+        [ -f "$INSTALL_DIR/backend/storage/app/legacy-platform-config/$side.json" ] && continue
+        mkdir -p "$INSTALL_DIR/backend/storage/app/legacy-platform-config"
+        cp "$INSTALL_DIR/frontend/$side/platform-config.json" \
+            "$INSTALL_DIR/backend/storage/app/legacy-platform-config/$side.json"
+    done
     if [ -d "$INSTALL_DIR/backend/storage" ]; then
         # 进搬移窗先决门：设备号不一致即中止（原地未破坏），杜绝 mv 跨 fs 静默 copy 半态
         _assert_storage_same_fs
@@ -1818,14 +1825,10 @@ perform_upgrade() {
         mv "$INSTALL_DIR/backend/vendor" "$PRESERVE_DIR/"
     fi
     # frontend/web 不移动，在清理旧代码时跳过（避免脚本中断导致丢失）
-    # 保留前端用户配置文件（logo、平台配置等）
+    # 只保留前端静态回落资源；platform-config.json 随升级包更新。
     mkdir -p "$PRESERVE_DIR/frontend_config"
-    # admin: logo.svg, platform-config.json
-    for file in logo.svg platform-config.json; do
-        [ -f "$INSTALL_DIR/frontend/admin/$file" ] && cp "$INSTALL_DIR/frontend/admin/$file" "$PRESERVE_DIR/frontend_config/admin_$file"
-    done
-    # user: logo.svg, platform-config.json, qrcode.png
-    for file in logo.svg platform-config.json qrcode.png; do
+    # user: logo.svg, qrcode.png
+    for file in logo.svg qrcode.png; do
         [ -f "$INSTALL_DIR/frontend/user/$file" ] && cp "$INSTALL_DIR/frontend/user/$file" "$PRESERVE_DIR/frontend_config/user_$file"
     done
     # 保留自定义 API 适配器（Order/Api 和 Acme/Api 对称扫描；按 bucket 归档避免重名冲突）
@@ -1957,15 +1960,11 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
 
     # frontend/web 已在原地保留，无需恢复
 
-    # 恢复前端用户配置文件
+    # 恢复前端静态回落资源
     if [ -d "$PRESERVE_DIR/frontend_config" ]; then
-        log_info "恢复前端用户配置..."
-        # admin
-        for file in logo.svg platform-config.json; do
-            [ -f "$PRESERVE_DIR/frontend_config/admin_$file" ] && cp "$PRESERVE_DIR/frontend_config/admin_$file" "$INSTALL_DIR/frontend/admin/$file"
-        done
+        log_info "恢复前端静态资源..."
         # user
-        for file in logo.svg platform-config.json qrcode.png; do
+        for file in logo.svg qrcode.png; do
             [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] && cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file"
         done
     fi
@@ -2110,6 +2109,8 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     log_step "运行数据库迁移..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan migrate --force
+    # 平台设置迁移已消费（或早已消费过）存量 platform-config 暂存，统一清理防残留
+    rm -rf "$INSTALL_DIR/backend/storage/app/legacy-platform-config"
 
     # 11.1 初始化/更新数据
     log_step "更新数据..."

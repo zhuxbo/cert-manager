@@ -3,6 +3,8 @@
 use App\Models\AdminLog;
 use App\Models\ApiLog;
 use App\Models\CallbackLog;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\UserLog;
 use App\Services\Plugin\PluginManager;
 use App\Services\Upgrade\VersionManager;
@@ -12,6 +14,7 @@ uses()->group('database');
 
 beforeEach(function () {
     UpgradeFreezeLock::unfreeze();
+    Setting::clearAllCache();
 });
 
 afterEach(function () {
@@ -40,6 +43,27 @@ function bindFakePluginManager(array $list): void
             }
         };
     });
+}
+
+/** @param array<string, array{type: string, value: mixed, is_multiple?: bool}> $values */
+function setPlatformSettings(string $groupName, array $values): void
+{
+    $group = SettingGroup::firstOrCreate(
+        ['name' => $groupName],
+        ['title' => $groupName, 'weight' => 99],
+    );
+
+    foreach ($values as $key => $attributes) {
+        Setting::updateOrCreate(
+            ['group_id' => $group->id, 'key' => $key],
+            [
+                'type' => $attributes['type'],
+                'is_multiple' => $attributes['is_multiple'] ?? false,
+                'value' => $attributes['value'],
+                'weight' => 1,
+            ],
+        );
+    }
 }
 
 // ==========================================
@@ -190,7 +214,107 @@ test('version 字段来自 config(version.version)', function () {
 });
 
 // ==========================================
-// 7. 不写日志（与 /api/health 同级）
+// 7. 前端平台设置
+// ==========================================
+
+test('user 平台设置复用 site 并读取独立品牌', function () {
+    bindFakePluginManager([]);
+    setPlatformSettings('site', [
+        'name' => ['type' => 'string', 'value' => '证书中心'],
+        'dnsTools' => ['type' => 'array', 'value' => ['cn' => 'https://dns-cn.test', 'us' => 'https://dns-us.test']],
+        'beian' => ['type' => 'string', 'value' => '京ICP备123号'],
+        'logo' => ['type' => 'image', 'value' => '/storage/site/logo-abc.png'],
+        'qrcode' => ['type' => 'image', 'value' => '/storage/site/qrcode-def.png'],
+    ]);
+    setPlatformSettings('brand', [
+        'admin' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert']],
+        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum', 'sectigo' => 'Sectigo']],
+    ]);
+
+    $response = $this->getJson('/api/meta?channel=user');
+
+    $response->assertOk()->assertJsonPath('data.platform', [
+        'Title' => '证书中心',
+        'Brands' => [
+            ['label' => 'Certum', 'value' => 'certum'],
+            ['label' => 'Sectigo', 'value' => 'sectigo'],
+        ],
+        'DnsTools' => ['https://dns-cn.test', 'https://dns-us.test'],
+        'Beian' => '京ICP备123号',
+        'Logo' => '/storage/site/logo-abc.png',
+        'Qrcode' => '/storage/site/qrcode-def.png',
+    ]);
+    expect($response->headers->get('Cache-Control'))->toContain('no-store');
+});
+
+test('admin 平台设置只切换品牌且共享站点设置', function () {
+    bindFakePluginManager([]);
+    setPlatformSettings('site', [
+        'name' => ['type' => 'string', 'value' => '统一标题'],
+    ]);
+    setPlatformSettings('brand', [
+        'admin' => ['type' => 'array', 'value' => ['DIGICERT' => 'DigiCert']],
+        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum']],
+    ]);
+
+    $response = $this->getJson('/api/meta?channel=admin');
+
+    $response->assertOk()
+        ->assertJsonPath('data.platform.Title', '统一标题')
+        ->assertJsonPath('data.platform.Brands', [['label' => 'DigiCert', 'value' => 'digicert']]);
+});
+
+test('品牌数组清洗无效项并按 value 去重', function () {
+    bindFakePluginManager([]);
+    setPlatformSettings('brand', [
+        'admin' => ['type' => 'array', 'value' => [
+            ' Custom ' => ' 自定义品牌 ',
+            'custom' => '重复项',
+            'empty-label' => '',
+            '' => '缺少值',
+        ]],
+    ]);
+
+    $response = $this->getJson('/api/meta?channel=admin');
+
+    $response->assertOk()->assertJsonPath('data.platform.Brands', [
+        ['label' => '自定义品牌', 'value' => 'custom'],
+    ]);
+});
+
+test('旧字符串品牌数组兼容为同名选项', function () {
+    bindFakePluginManager([]);
+    setPlatformSettings('brand', [
+        'user' => ['type' => 'array', 'value' => [' Certum ', 'DIGICERT']],
+    ]);
+
+    $response = $this->getJson('/api/meta?channel=user');
+
+    $response->assertOk()->assertJsonPath('data.platform.Brands', [
+        ['label' => 'Certum', 'value' => 'certum'],
+        ['label' => 'DIGICERT', 'value' => 'digicert'],
+    ]);
+});
+
+test('平台设置缺失时返回与现有静态配置一致的默认值', function () {
+    bindFakePluginManager([]);
+    SettingGroup::whereIn('name', ['site', 'brand'])->each(function (SettingGroup $group) {
+        $group->settings()->delete();
+        Setting::clearGroupCache($group->id);
+    });
+
+    $response = $this->getJson('/api/meta?channel=user');
+
+    $response->assertOk()
+        ->assertJsonPath('data.platform.Title', 'SSL')
+        ->assertJsonPath('data.platform.Logo', '/logo.svg')
+        ->assertJsonPath('data.platform.Qrcode', '/qrcode.png');
+    expect($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()
+        ->and($response->json('data.platform.DnsTools'))->toBeArray()->not->toBeEmpty();
+});
+
+// ==========================================
+// 8. 不写日志（与 /api/health 同级）
 // ==========================================
 
 test('GET /api/meta 不写任何业务日志', function () {
@@ -207,4 +331,18 @@ test('GET /api/meta 不写任何业务日志', function () {
     expect(ApiLog::count())->toBe(0);
     expect(UserLog::count())->toBe(0);
     expect(CallbackLog::count())->toBe(0);
+});
+
+test('channel 参数为数组等非字符串形态时回落 user 端而非报错', function () {
+    bindFakePluginManager([]);
+    setPlatformSettings('brand', [
+        'admin' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert']],
+        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum']],
+    ]);
+
+    $response = $this->getJson('/api/meta?channel[]=admin');
+
+    $response->assertOk()->assertJsonPath('data.platform.Brands', [
+        ['label' => 'Certum', 'value' => 'certum'],
+    ]);
 });

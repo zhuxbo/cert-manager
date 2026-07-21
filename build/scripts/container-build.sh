@@ -161,10 +161,6 @@ if [ "$BUILD_ADMIN" = "true" ] || [ "$BUILD_USER" = "true" ]; then
     # 覆盖 logo.svg（如果 custom 中存在）
     if [ -f "$CUSTOM_DIR/logo.svg" ]; then
         log_info "使用自定义 logo.svg 覆盖..."
-        if [ "$BUILD_ADMIN" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/admin/public" ]; then
-            cp "$CUSTOM_DIR/logo.svg" "$WORKSPACE_DIR/frontend/admin/public/logo.svg"
-            log_success "已覆盖 admin logo.svg"
-        fi
         if [ "$BUILD_USER" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/user/public" ]; then
             cp "$CUSTOM_DIR/logo.svg" "$WORKSPACE_DIR/frontend/user/public/logo.svg"
             log_success "已覆盖 user logo.svg"

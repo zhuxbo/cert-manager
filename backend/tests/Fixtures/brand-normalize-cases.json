@@ -1,0 +1,82 @@
+[
+  {
+    "name": "键值对象：键为品牌值（小写化）、值为显示名",
+    "input": { "ssltrus": "锐安信", "DIGICERT": "DigiCert" },
+    "expected": [
+      { "label": "锐安信", "value": "ssltrus" },
+      { "label": "DigiCert", "value": "digicert" }
+    ]
+  },
+  {
+    "name": "对象列表：trim + 按 value 去重 + 空 label 跳过",
+    "input": [
+      { "label": " 自定义品牌 ", "value": " Custom " },
+      { "label": "重复", "value": "custom" },
+      { "label": "", "value": "invalid" }
+    ],
+    "expected": [{ "label": "自定义品牌", "value": "custom" }]
+  },
+  {
+    "name": "旧字符串品牌数组兼容为同名选项",
+    "input": [" Certum ", "DIGICERT"],
+    "expected": [
+      { "label": "Certum", "value": "certum" },
+      { "label": "DIGICERT", "value": "digicert" }
+    ]
+  },
+  {
+    "name": "完整数字序列键对象按列表处理（PHP json_decode int 键语义）",
+    "input": { "0": " Certum ", "1": "DIGICERT" },
+    "expected": [
+      { "label": "Certum", "value": "certum" },
+      { "label": "DIGICERT", "value": "digicert" }
+    ]
+  },
+  {
+    "name": "零散数字键在键值分支中跳过（PHP int 键非 string）",
+    "input": { "2": "X" },
+    "expected": []
+  },
+  {
+    "name": "乱序数字序列键对象按键升序作列表（对齐 JS 对象数字键排序）",
+    "input": { "1": "DIGICERT", "0": " Certum " },
+    "expected": [
+      { "label": "Certum", "value": "certum" },
+      { "label": "DIGICERT", "value": "digicert" }
+    ]
+  },
+  {
+    "name": "非规范数字字符串键保留为品牌值",
+    "input": { "02": "X" },
+    "expected": [{ "label": "X", "value": "02" }]
+  },
+  {
+    "name": "标量输入返回空",
+    "input": "certum",
+    "expected": []
+  },
+  {
+    "name": "null 输入返回空",
+    "input": null,
+    "expected": []
+  },
+  {
+    "name": "混合列表：非字符串非对象项跳过、对象项取 label/value",
+    "input": [
+      "certum",
+      5,
+      null,
+      { "label": "Geo", "value": "GEOTRUST" },
+      { "value": "noname" }
+    ],
+    "expected": [
+      { "label": "certum", "value": "certum" },
+      { "label": "Geo", "value": "geotrust" }
+    ]
+  },
+  {
+    "name": "非 ASCII 键小写化两端一致（mb_strtolower vs toLowerCase）",
+    "input": { "Ça": "Label" },
+    "expected": [{ "label": "Label", "value": "ça" }]
+  }
+]

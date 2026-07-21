@@ -1,6 +1,4 @@
 {
-  "Version": "6.0.0",
-  "Title": "SSL",
   "StorageNameSpace": "admin-",
   "FixedHeader": true,
   "HiddenSideBar": false,
@@ -25,20 +23,5 @@
   "ResponsiveStorageNameSpace": "admin-responsive-",
   "MenuSearchHistory": 6,
   "BaseUrlApi": "/api/admin",
-  "Brands": [
-    "cnssl",
-    "certum",
-    "gogetssl",
-    "positive",
-    "keeptrust",
-    "rapid",
-    "geotrust",
-    "digicert",
-    "ssltrus"
-  ],
-  "DnsTools": [
-    "https://dns-tools-cn.cnssl.com",
-    "https://dns-tools-us.cnssl.com"
-  ],
   "Acme": true
 }

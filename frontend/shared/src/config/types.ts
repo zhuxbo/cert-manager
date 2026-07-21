@@ -5,7 +5,6 @@ type ECharts = any;
  * 对应 `public/platform-config.json` 文件的类型声明
  */
 export interface PlatformConfigs {
-  Version?: string;
   Title?: string;
   /** 存储命名空间前缀，用于区分不同应用的 storage key */
   StorageNameSpace?: string;
@@ -34,11 +33,18 @@ export interface PlatformConfigs {
   ResponsiveStorageNameSpace?: string;
   MenuSearchHistory?: number;
   BaseUrlApi?: string;
-  Brands?: string[];
+  Brands?: BrandOption[];
   DnsTools?: string[];
   Beian?: string;
+  Logo?: string;
+  Qrcode?: string;
   Acme?: boolean;
   AutoDeploy?: boolean;
+}
+
+export interface BrandOption {
+  label: string;
+  value: string;
 }
 
 /**

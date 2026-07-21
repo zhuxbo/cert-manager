@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-07-19 14:14:21",
+    "generated_at": "2026-07-21 15:23:35",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -164,7 +164,7 @@
                     "nullable": false,
                     "default": "web",
                     "extra": "",
-                    "comment": "提交通道：web/admin/api/deploy/auto"
+                    "comment": "提交通道：web\/admin\/api\/deploy\/auto"
                 },
                 "remark": {
                     "position": 20,
@@ -1111,6 +1111,141 @@
                     "on_update": "NO ACTION"
                 }
             }
+        },
+        "auto_deploy_reports": {
+            "engine": "InnoDB",
+            "collation": "utf8mb4_0900_ai_ci",
+            "comment": "",
+            "auto_increment": null,
+            "columns": {
+                "id": {
+                    "position": 1,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "ID"
+                },
+                "order_id": {
+                    "position": 2,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "订单ID"
+                },
+                "cert_id": {
+                    "position": 3,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "证书ID"
+                },
+                "status": {
+                    "position": 4,
+                    "type": "enum('success','failure')",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报状态"
+                },
+                "deployed_at": {
+                    "position": 5,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "部署时间"
+                },
+                "ip": {
+                    "position": 6,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报IP"
+                },
+                "message": {
+                    "position": 7,
+                    "type": "varchar(500)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报信息"
+                },
+                "created_at": {
+                    "position": 8,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报时间"
+                }
+            },
+            "indexes": {
+                "auto_deploy_reports_cert_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "cert_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_deployed_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "deployed_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_order_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "order_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "status"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "PRIMARY": {
+                    "unique": true,
+                    "type": "BTREE",
+                    "columns": [
+                        "id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                }
+            },
+            "foreign_keys": []
         },
         "ca_logs": {
             "engine": "InnoDB",
@@ -2087,7 +2222,7 @@
                     "nullable": false,
                     "default": "0",
                     "extra": "",
-                    "comment": "连续失败次数(用于熔断/预警)"
+                    "comment": "连续失败次数(用于熔断\/预警)"
                 },
                 "last_error": {
                     "position": 9,
@@ -3343,7 +3478,7 @@
                     "nullable": false,
                     "default": null,
                     "extra": "",
-                    "comment": "文档类型: APPLICANT/ORGANIZATION/AUTHORIZATION/ADDITIONAL"
+                    "comment": "文档类型: APPLICANT\/ORGANIZATION\/AUTHORIZATION\/ADDITIONAL"
                 },
                 "file_name": {
                     "position": 5,
@@ -3383,7 +3518,7 @@
                     "nullable": false,
                     "default": null,
                     "extra": "",
-                    "comment": "上传来源: user/admin/api"
+                    "comment": "上传来源: user\/admin\/api"
                 },
                 "submitted": {
                     "position": 10,
@@ -4797,7 +4932,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 1,
+            "auto_increment": 2,
             "columns": {
                 "id": {
                     "position": 1,
@@ -4894,7 +5029,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 1,
+            "auto_increment": 3,
             "columns": {
                 "id": {
                     "position": 1,
@@ -4922,11 +5057,11 @@
                 },
                 "type": {
                     "position": 4,
-                    "type": "enum('string','integer','float','boolean','select','array','base64')",
+                    "type": "enum('string','integer','float','boolean','select','array','base64','image')",
                     "nullable": false,
                     "default": "string",
                     "extra": "",
-                    "comment": "类型: string=字符串,integer=整数,float=浮点数,boolean=布尔值,select=选择框,array=数组,base64=Base64编码"
+                    "comment": "类型: string=字符串,integer=整数,float=浮点数,boolean=布尔值,select=选择框,array=数组,base64=Base64编码,image=图片"
                 },
                 "options": {
                     "position": 5,
@@ -6061,141 +6196,6 @@
                     "type": "BTREE",
                     "columns": [
                         "username"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                }
-            },
-            "foreign_keys": []
-        },
-        "auto_deploy_reports": {
-            "engine": "InnoDB",
-            "collation": "utf8mb4_0900_ai_ci",
-            "comment": "",
-            "auto_increment": null,
-            "columns": {
-                "id": {
-                    "position": 1,
-                    "type": "bigint unsigned",
-                    "nullable": false,
-                    "default": null,
-                    "extra": "",
-                    "comment": "ID"
-                },
-                "order_id": {
-                    "position": 2,
-                    "type": "bigint unsigned",
-                    "nullable": false,
-                    "default": null,
-                    "extra": "",
-                    "comment": "订单ID"
-                },
-                "cert_id": {
-                    "position": 3,
-                    "type": "bigint unsigned",
-                    "nullable": false,
-                    "default": null,
-                    "extra": "",
-                    "comment": "证书ID"
-                },
-                "status": {
-                    "position": 4,
-                    "type": "enum('success','failure')",
-                    "nullable": false,
-                    "default": null,
-                    "extra": "",
-                    "comment": "上报状态"
-                },
-                "deployed_at": {
-                    "position": 5,
-                    "type": "timestamp",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "部署时间"
-                },
-                "ip": {
-                    "position": 6,
-                    "type": "varchar(100)",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "上报IP"
-                },
-                "message": {
-                    "position": 7,
-                    "type": "varchar(500)",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "上报信息"
-                },
-                "created_at": {
-                    "position": 8,
-                    "type": "timestamp",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "上报时间"
-                }
-            },
-            "indexes": {
-                "auto_deploy_reports_cert_id_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "cert_id"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                },
-                "auto_deploy_reports_created_at_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "created_at"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                },
-                "auto_deploy_reports_deployed_at_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "deployed_at"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                },
-                "auto_deploy_reports_order_id_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "order_id"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                },
-                "auto_deploy_reports_status_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "status"
-                    ],
-                    "sub_parts": [
-                        null
-                    ]
-                },
-                "PRIMARY": {
-                    "unique": true,
-                    "type": "BTREE",
-                    "columns": [
-                        "id"
                     ],
                     "sub_parts": [
                         null

@@ -235,18 +235,17 @@ pnpm typecheck
 
 ```json
 {
-  "BaseUrlApi": "http://localhost:5300",
-  "Brands": ["certum", "gogetssl", "positive", "ssltrus", "trustasia"],
-  "Beian": "豫ICP备123456789号"
+  "BaseUrlApi": "/api",
+  "ResponsiveStorageNameSpace": "responsive-"
 }
 ```
 
 #### 核心配置说明
 
 - **BaseUrlApi**: 用户端API基础地址，对应后端 `routes/api.user.php`
-- **Brands**: 支持的SSL证书CA品牌列表，包含5个主流品牌
 - **ResponsiveStorageNameSpace**: 本地存储命名空间，使用 `user-` 前缀
-- **Beian**: 网站备案号，显示在页面底部
+- 标题、DNS 工具、备案号、Logo、二维码在后台“站点设置”维护
+- 用户端品牌在后台“品牌设置”的 `user` 键值对维护，键为品牌值、值为显示名称
 
 ## 开发规范
 

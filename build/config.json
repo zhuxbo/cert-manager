@@ -74,11 +74,8 @@
         "backend/vendor/",
         "backend/public/install.php",
         "backend/public/install-assets/",
-        "frontend/admin/logo.svg",
-        "frontend/admin/platform-config.json",
         "frontend/easy/",
         "frontend/user/logo.svg",
-        "frontend/user/platform-config.json",
         "frontend/user/qrcode.png",
         "manifest.json"
       ]

@@ -311,6 +311,70 @@ test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态�
     }
 });
 
+test('applyFrontendUpgrade 更新 platform config 且不保留 admin logo', function () {
+    $sourceDir = "$this->testDir/pkg/frontend/admin";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/platform-config.json", '{"source":"new"}');
+
+    $installDir = "$this->testDir/install";
+    $targetDir = "$installDir/frontend/admin";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory($targetDir, 0755, true);
+    File::put("$targetDir/platform-config.json", '{"source":"old"}');
+    File::put("$targetDir/logo.svg", 'OLD-LOGO');
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
+        $method->invoke($this->extractor, $sourceDir, 'admin');
+
+        expect(File::get("$targetDir/platform-config.json"))->toBe('{"source":"new"}')
+            ->and("$targetDir/logo.svg")->not->toBeFile()
+            // 不含迁移键（Title/Beian/Brands）的配置不暂存——新版配置形态，后续升级不再产生暂存
+            ->and(storage_path('app/legacy-platform-config/admin.json'))->not->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+        File::deleteDirectory(storage_path('app/legacy-platform-config'));
+    }
+});
+
+test('applyFrontendUpgrade 暂存旧 platform config 供平台设置迁移导入', function () {
+    $sourceDir = "$this->testDir/pkg/frontend/user";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/platform-config.json", '{"source":"new"}');
+
+    $installDir = "$this->testDir/install";
+    $targetDir = "$installDir/frontend/user";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory($targetDir, 0755, true);
+    File::put("$targetDir/platform-config.json", '{"Beian":"真实备案号","Brands":["certum"]}');
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
+        $method->invoke($this->extractor, $sourceDir, 'user');
+
+        // 旧配置在被新包覆盖前暂存到 storage（storage_path 在测试中被按 worker 隔离钉死，
+        // 与实现同源取值），迁移据此导入历史定制值
+        expect(File::get(storage_path('app/legacy-platform-config/user.json')))
+            ->toBe('{"Beian":"真实备案号","Brands":["certum"]}')
+            ->and(File::get("$targetDir/platform-config.json"))->toBe('{"source":"new"}');
+
+        // 中断重跑：即使当前文件仍含迁移键，已存在的暂存也不得被覆盖（首跑旧值优先）
+        File::put("$targetDir/platform-config.json", '{"Beian":"重跑时的新值"}');
+        $method->invoke($this->extractor, $sourceDir, 'user');
+        expect(File::get(storage_path('app/legacy-platform-config/user.json')))
+            ->toBe('{"Beian":"真实备案号","Brands":["certum"]}');
+    } finally {
+        app()->setBasePath($originalBase);
+        File::deleteDirectory(storage_path('app/legacy-platform-config'));
+    }
+});
+
 // ==================== 升级前可写性预检（base_path 自身 + 子目录 + storage）====================
 
 test('checkWritableBeforeApply 当 base_path 自身不可写时报错（即便所有子目录可写）', function () {

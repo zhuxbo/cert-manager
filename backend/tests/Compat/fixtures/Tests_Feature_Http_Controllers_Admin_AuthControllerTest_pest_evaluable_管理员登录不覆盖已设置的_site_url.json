@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AuthControllerTest::__pest_evaluable_管理员登录不覆盖已设置的_site_url",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/login",
+            "request_keys": [
+                "account",
+                "password"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "access_token": "string",
+                    "expires_in": "string",
+                    "refresh_token": "string",
+                    "username": "string",
+                    "roles": "null",
+                    "permissions": "null"
+                }
+            }
+        }
+    ]
+}

@@ -27,7 +27,7 @@ class StoreRequest extends BaseRequest
                     return $query->where('group_id', $this->input('group_id'));
                 }),
             ],
-            'type' => ['required', 'string', Rule::in(['string', 'integer', 'float', 'boolean', 'array', 'select', 'base64'])],
+            'type' => ['required', 'string', Rule::in(['string', 'integer', 'float', 'boolean', 'array', 'select', 'base64', 'image'])],
             'options' => [
                 'required_if:type,select',
                 'nullable',

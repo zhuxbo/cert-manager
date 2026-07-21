@@ -191,6 +191,8 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     RouteHelper::registerResourceRoutes('setting', SettingController::class);
     RouteHelper::registerResourceRoutes('notification-template', NotificationTemplateController::class);
     Route::prefix('setting')->group(function () {
+        Route::post('site-image/{kind}', [SettingController::class, 'uploadSiteImage'])
+            ->where('kind', 'logo|qrcode');
         Route::get('group/{groupId}', [SettingController::class, 'getByGroup']);
         Route::put('batch-update', [SettingController::class, 'batchUpdate']);
         Route::post('clear-cache', [SettingController::class, 'clearCache']);

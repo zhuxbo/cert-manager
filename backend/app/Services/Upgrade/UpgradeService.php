@@ -9,6 +9,7 @@ use App\Services\Composer\ComposerMirror;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
@@ -211,6 +212,10 @@ class UpgradeService
                 $statusManager->startStep('migrate');
                 Artisan::call('migrate', ['--force' => true]);
                 $statusManager->completeStep('migrate');
+
+                // 平台设置迁移已消费（或早已消费过）存量 platform-config 暂存，统一清理防残留；
+                // auto_migrate 关闭时保留暂存，供后续手工 migrate 消费
+                File::deleteDirectory(storage_path('app/legacy-platform-config'));
             }
 
             // 步骤 11: 数据库结构校验

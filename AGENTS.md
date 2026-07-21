@@ -6,7 +6,6 @@ ssl-manager 是 Laravel 13 + Vue 3 的证书管理 Monorepo，包含后端、adm
 
 ## 不可违反的规则
 
-- 跨仓部署、升级和发布语义以 `deploy-spec.md` 为准；不得在本仓静默增加豁免。
 - `main`、`dev` 不自动提交或推送；只有用户明确授权时才执行对应 Git 操作。不得自动执行真实发布。
 - 测试发现 bug 时修复实现，不修改测试去迎合错误代码；验证范围按改动风险扩展。
 - 资金、订单、ACME、任务和异步队列改动必须遵守对应 skill 中的事务、锁顺序、幂等与队列约束，不得以机械检查通过替代运行路径验证。
@@ -16,7 +15,6 @@ ssl-manager 是 Laravel 13 + Vue 3 的证书管理 Monorepo，包含后端、adm
 
 ## 权威入口
 
-- 跨仓统一行为：`deploy-spec.md`
 - Skill 路由：`skills/SKILL.md`
 - 后端开发：`skills/backend/core.md`
 - 前端开发：`skills/frontend/core.md`、`skills/frontend/ui.md`、`skills/frontend/table.md`
@@ -39,7 +37,7 @@ ssl-manager 是 Laravel 13 + Vue 3 的证书管理 Monorepo，包含后端、adm
 ## 更新原则
 
 - 只记录长期有效、项目级、会影响智能体行为的规则；不写临时决策、调试记录或单一模块实现细节。
-- 新增内容前先判断职责：跨仓公共行为写入 `deploy-spec.md`，领域知识和工作流写入对应叶子资源，本文只保留入口和不可违反的项目约束，不复制正文。
+- 新增内容前先判断职责：领域知识和工作流写入对应叶子资源，本文只保留入口和不可违反的项目约束，不复制正文。
 - 只直接维护 `AGENTS.md`；`CLAUDE.md` 始终保持固定薄入口，不追加项目规则。
 - 新增、删除或重命名 skill 时，同步更新 `skills/SKILL.md` 和受影响的引用入口。
 - 修改后删除失效或重复内容，并检查 `CLAUDE.md` 固定模板、skill 路由、引用路径和确定性防漂移门禁；未经明确需求不得新增全局约束。

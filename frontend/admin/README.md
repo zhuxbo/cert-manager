@@ -216,23 +216,16 @@ pnpm typecheck
 ```json
 {
   "BaseUrlApi": "http://localhost:5300/admin",
-  "Brands": [
-    "certum",
-    "gogetssl",
-    "positive",
-    "geotrust",
-    "digicert",
-    "ssltrus",
-    "trustasia"
-  ]
+  "ResponsiveStorageNameSpace": "admin-responsive-"
 }
 ```
 
 #### 核心配置说明
 
 - **BaseUrlApi**: 管理端API基础地址，对应后端 `routes/api.admin.php`
-- **Brands**: 支持的SSL证书CA品牌列表，包含全部7个品牌
-- **Version**: 系统版本号
+- **ResponsiveStorageNameSpace**: 管理端本地响应式存储命名空间
+- 标题、DNS 工具、备案号、Logo、二维码在后台“站点设置”维护
+- 管理端品牌在后台“品牌设置”的 `admin` 键值对维护，键为品牌值、值为显示名称
 
 ## 开发规范
 

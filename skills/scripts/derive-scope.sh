@@ -180,7 +180,7 @@ ROW_TRIG=(
     "§2.4 必跑；实跑 migrate + db:structure --check、增量迁移回灌建表迁移（反模式 21）"
     "§2.4 必跑"
     "§2.4 必跑"
-    "admin + user 两端构建必验"
+    "admin + user 两端构建必验 + pnpm test:shared 必跑"
     "§4 插件检查必跑"
     "反模式 7/21 + 19（仅其部署脚本外部值条目）重点扫描；必跑 deploy/test/test-*.sh 贴输出"
     "§2.3 测试集 + 反模式 14（flaky 四源）+ 15（伪绿）"

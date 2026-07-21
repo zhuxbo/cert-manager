@@ -155,6 +155,10 @@ Prettier 对 markdown 的处理：
 
 ### Platform Config
 
+`public/platform-config.json` 只保存部署与界面配置。`Title`、`Brands`、`DnsTools`、`Beian`、`Logo`、`Qrcode` 由后台系统设置提供，admin/user 在完整刷新时分别通过 `/api/meta?channel=admin|user` 加载一次，不轮询。
+
+后台配置归属：`site.name` 为两端共用标题，`site.dnsTools` 为两端共用 DNS 工具，`site.beian/logo/qrcode` 为共用站点信息，其中 `logo`、`qrcode` 使用 `image` 类型；`brand.admin` 与 `brand.user` 为两端独立的 `{ "品牌值": "显示名称" }` 键值对象，前端不维护固定品牌字典。
+
 `public/platform-config.json` 核心配置：
 
 **管理端 (admin)**:
@@ -162,15 +166,7 @@ Prettier 对 markdown 的处理：
 ```json
 {
   "BaseUrlApi": "http://localhost:5300/admin",
-  "Brands": [
-    "certum",
-    "gogetssl",
-    "positive",
-    "geotrust",
-    "digicert",
-    "ssltrus",
-    "trustasia"
-  ]
+  "StorageNameSpace": "admin-"
 }
 ```
 
@@ -179,8 +175,7 @@ Prettier 对 markdown 的处理：
 ```json
 {
   "BaseUrlApi": "http://localhost:5300",
-  "Brands": ["certum", "gogetssl", "positive", "ssltrus", "trustasia"],
-  "Beian": "豫ICP备123456789号"
+  "ResponsiveStorageNameSpace": "responsive-"
 }
 ```
 

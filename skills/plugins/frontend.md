@@ -215,7 +215,7 @@ window.__registerPlugin({
 | `funds`                | `views/funds/dictionary`                 | `fundPayMethodOptions`、`fundPayMethodMap`、`fundTypeOptions`、`fundTypeMap`    |
 | `transaction`          | `views/transaction/dictionary`           | `transactionTypeOptions`、`transactionTypeMap`                                  |
 | `order`                | `views/order/dictionary`                 | `channelOptions`、`channel`、`channelType`、`productTypeOptions`、`productType` |
-| `system`               | `views/system/dictionary`                | `brandOptionsAll`、`productTypeOptions`、`productTypeLabels`                    |
+| `system`               | `views/system/dictionary`                | `brandOptions`、`brandLabels`、`productTypeOptions`、`productTypeLabels`        |
 | `task`                 | `views/task/dictionary`                  | `actionLabels`、`actionTypes`、`statusLabels`、`statusTypes`                    |
 | `notificationRecord`   | `views/notification/record/dictionary`   | `statusOptions`、`multilineFields`                                              |
 | `notificationTemplate` | `views/notification/template/dictionary` | `statusOptions`                                                                 |

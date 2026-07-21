@@ -5,6 +5,7 @@
  * - channels：4 类路由通道开关（admin/user/api/deploy）
  * - plugins：已装插件清单（name + version）
  * - version：主系统版本
+ * - platform：当前 admin/user 前端的站点与品牌配置
  *
  * /api/meta 是匿名公开端点，不需要鉴权 / token / cookie；
  * 不走 shared http（避免 setupSharedModules 之前就被调用），
@@ -27,6 +28,7 @@ export interface ManagerMeta {
   channels: ManagerChannels;
   plugins: ManagerPluginInfo[];
   version: string;
+  platform?: import("@shared/config").PlatformConfigs;
 }
 
 let _cache: ManagerMeta | null = null;
@@ -40,17 +42,20 @@ const FETCH_META_TIMEOUT_MS = 5000;
  *
  * 超时保护：5 秒 AbortController 中止；防止后端启动中 / 反代挂起导致前端启动期永久白屏。
  */
-export async function fetchMeta(): Promise<ManagerMeta | null> {
+export async function fetchMeta(
+  channel: "admin" | "user" = "user"
+): Promise<ManagerMeta | null> {
   if (_cache) return _cache;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_META_TIMEOUT_MS);
 
   try {
-    const res = await fetch("/api/meta", {
+    const res = await fetch(`/api/meta?channel=${channel}`, {
       method: "GET",
       headers: { Accept: "application/json" },
       credentials: "same-origin",
+      cache: "no-store",
       signal: controller.signal
     });
     if (!res.ok) return null;

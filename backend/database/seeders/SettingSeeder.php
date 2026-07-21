@@ -24,6 +24,7 @@ class SettingSeeder extends Seeder
             ['name' => 'wechat', 'title' => '微信支付设置', 'description' => null, 'weight' => 7],
             ['name' => 'bankAccount', 'title' => '银行账户设置', 'description' => null, 'weight' => 8],
             ['name' => 'enterprise', 'title' => '工商信息查询', 'description' => null, 'weight' => 9],
+            ['name' => 'brand', 'title' => '品牌设置', 'description' => '分别控制管理端和用户端可见的证书品牌', 'weight' => 10],
         ];
 
         // 创建 setting groups 并保存到数组中，用 name 作为 key
@@ -40,7 +41,10 @@ class SettingSeeder extends Seeder
         $settings = [
             'site' => [
                 ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '用户URL', 'weight' => 1],
-                ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '站点名称', 'weight' => 2],
+                ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => 'SSL', 'description' => '站点名称', 'weight' => 2],
+                ['key' => 'logo', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Logo', 'weight' => 3],
+                ['key' => 'qrcode', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '客服微信二维码', 'weight' => 4],
+                ['key' => 'beian', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '豫ICP备123456789号', 'description' => '网站备案号', 'weight' => 5],
                 ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
                 ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
                 ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
@@ -96,20 +100,26 @@ class SettingSeeder extends Seeder
                 ['key' => 'fieldMap', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['name' => 'result.basic.name', 'registration_number' => 'result.basic.creditno', 'address' => 'result.basic.regaddress', 'state' => 'result.basic.province', 'city' => 'result.basic.city', 'regionname' => 'result.basic.regionname', 'legal_person' => 'result.basic.legalperson'], 'description' => '字段映射', 'weight' => 4],
                 ['key' => 'dailyLimit', 'type' => 'integer', 'options' => null, 'is_multiple' => 0, 'value' => 100, 'description' => '全局每日查询接口上限（0 为无限）', 'weight' => 5],
             ],
+            'brand' => [
+                ['key' => 'admin', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultBrands(), 'description' => '管理端品牌选项', 'weight' => 1],
+                ['key' => 'user', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultBrands(), 'description' => '用户端品牌选项', 'weight' => 2],
+            ],
         ];
 
         // 创建 settings
         foreach ($settings as $groupName => $groupSettings) {
-            if (isset($groups[$groupName])) {
-                foreach ($groupSettings as $setting) {
-                    $setting['group_id'] = $groups[$groupName]->id;
-                    Setting::firstOrCreate(
-                        ['group_id' => $setting['group_id'], 'key' => $setting['key']],
-                        $setting
-                    );
-                }
+            foreach ($groupSettings as $setting) {
+                $setting['group_id'] = $groups[$groupName]->id;
+                Setting::firstOrCreate(
+                    ['group_id' => $setting['group_id'], 'key' => $setting['key']],
+                    $setting
+                );
             }
         }
+
+        Setting::where('group_id', $groups['site']->id)
+            ->whereIn('key', ['logo', 'qrcode'])
+            ->update(['type' => 'image']);
 
         // 迁移 site.callbackToken → callback.default.token
         $oldToken = Setting::where('group_id', $groups['site']->id)
@@ -131,5 +141,21 @@ class SettingSeeder extends Seeder
 
             $oldToken->delete();
         }
+    }
+
+    /** @return array<string, string> */
+    private function defaultBrands(): array
+    {
+        return [
+            'cnssl' => 'Cnssl',
+            'certum' => 'Certum',
+            'gogetssl' => 'GoGetSSL',
+            'positive' => 'Positive',
+            'keeptrust' => '环安信',
+            'ssltrus' => '锐安信',
+            'rapid' => 'Rapid',
+            'geotrust' => 'GeoTrust',
+            'digicert' => 'DigiCert',
+        ];
     }
 }

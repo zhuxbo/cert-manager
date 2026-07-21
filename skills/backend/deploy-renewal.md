@@ -43,7 +43,7 @@ Deploy API 三接口（`GET/POST /api/deploy`、`POST /api/deploy/callback`）�
 
 ## 与客户端行为契约的对应关系
 
-统一边界见根目录 `deploy-spec.md`（跨仓，勿在本仓静默改语义）。关键对应：
+服务端 Deploy API 与续签契约由 `backend/app/Http/Controllers/Deploy/ApiController.php`、`backend/app/Console/Commands/AutoRenewCommand.php` 及对应 Feature 测试锁定；与三个客户端的关键对应：
 
 - 客户端「每次部署成败尽力上报一次、签发失败不上报」↔ 服务端「回调失败逐条入表 + 服务端自写签发失败行」。
 - 客户端触顶（`CAPPED`）后静默不再回调 ↔ 服务端「持续未解决提醒」基于最后一条报告状态判定，不依赖新失败行。

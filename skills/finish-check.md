@@ -29,7 +29,7 @@ bash skills/scripts/derive-scope.sh   # 机器推导范围表，贴实际输出
 | backend/database/migrations                                                    | 是/否      | 检查 enum/索引/外键/DDL → 任一是 → §2.4 必跑；改结构后**实跑 migrate + `db:structure --check` 验证生效**、增量迁移回灌建表迁移（反模式 21）                                                                                                                                                                                                                                                                                                     |
 | 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`）                               | 是/否      | §2.4 必跑                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | AppServiceProvider 连接/时区注入                                               | 是/否      | §2.4 必跑                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| frontend/shared                                                                | 是/否      | admin + user 两端构建必验                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| frontend/shared                                                                | 是/否      | admin + user 两端构建必验 + §3.8 `pnpm test:shared` 必跑                                                                                                                                                                                                                                                                                                                                                                                        |
 | plugins/                                                                       | 是/否      | §4 插件检查必跑；含 backend/ 代码时后端条件层反模式按内容同主系统触发（鉴权/锁/并发/资金）                                                                                                                                                                                                                                                                                                                                                      |
 | deploy/ 升级脚本 / 后台升级目录同步                                            | 是/否      | 反模式 7/21 + 19（仅其"部署脚本外部值"条目）重点扫描（升级同步动态发现、外部值 env 传参防注入）；必跑 `for t in deploy/test/test-*.sh; do bash "$t" \|\| exit 1; done` 贴每个脚本末行输出 + 退出码                                                                                                                                                                                                                                              |
 | build/ 打包脚本 / .github/workflows                                            | 是/否      | 反模式 2/21 重点扫描：改打包清单后实跑 `bash build/build.sh` 打包并对产出 zip `unzip -l <zip> \| grep <新文件>` 贴输出（旗舰案例 php-requirements.json 正是单一形态漏文件）；改 CI 后贴 `git diff .github/workflows/ \| grep -E '^[-+].*(jobs:\|if:\|name:)'` 实际输出，被删/被条件短路的 job 逐个确认为有意变更                                                                                                                                |
@@ -144,31 +144,16 @@ cd backend && php artisan test --parallel
 
 > 本地 MySQL 一般是 8.x（你本地用 8.4），跑过 ≠ 5.7 兼容（项目声明最小版本）。CI 用 mysql:5.7，本地先验避免 PR 红 CI。
 
-**容器搭建**（M 系列 Mac 必须 `--platform linux/amd64`，5.7 没 arm64 manifest）：
+**固定入口**（复用 Compose app 容器，在同一 Docker 网络启动隔离的 MySQL 5.7；固定测试库
+`ssl_manager_test` 与 5.7 兼容 collation，自动等待、迁移、测试和清理）：
 
 ```bash
-cd backend
-docker run --platform linux/amd64 --rm -d --name manager-mysql-test \
-  -e MYSQL_ROOT_PASSWORD=password \
-  -e MYSQL_DATABASE=manager_test \
-  -p 13306:3306 mysql:5.7
-trap 'docker stop manager-mysql-test >/dev/null' EXIT
-for i in $(seq 1 60); do
-  docker exec manager-mysql-test mysqladmin ping -uroot -ppassword --silent 2>/dev/null && break
-  sleep 2
-done
-
-export DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_PORT=13306 \
-       DB_DATABASE=manager_test DB_USERNAME=root DB_PASSWORD=password
-php artisan migrate --force # 部分 Unit 测试无 RefreshDatabase 依赖主库表存在
-php artisan test --parallel
-unset DB_CONNECTION DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD
-
-trap - EXIT && docker stop manager-mysql-test >/dev/null
+make test-mysql57
 ```
 
-> qemu 模拟下首次启动 30~60s，等就绪 loop 给 60×2s 余量。
-> 跑完容器**必须清理**（`docker stop manager-mysql-test`）。
+> M 系列 Mac 使用 `linux/amd64`（MySQL 5.7 无 arm64 manifest）；qemu 模拟下首次启动通常需
+> 30~60 秒，脚本给 120 秒就绪余量。Compose app 未运行时先执行 `make up`。
+> 脚本使用唯一容器名，并通过 EXIT trap 自动清理；迁移或测试失败时保留原退出码。
 
 ### 2.5 Laravel 专项检查
 
@@ -290,6 +275,14 @@ pnpm build
 - [ ] 组件样式使用 `scoped`
 - [ ] 新代码深度选择器使用 `:deep()`，禁用 `/deep/`；存量布局组件的 `::v-deep`（8 处，stylelint 放行）不强制改、渐进迁移
 - [ ] TailwindCSS 类名与自定义 SCSS 无冲突
+
+### 3.8 Shared 单元测试（frontend/shared 改动时必跑）
+
+```bash
+pnpm test:shared
+```
+
+`frontend/shared/tests/` 的 node --test 用例；其中品牌清洗与后端 `PlatformConfigService` 为对称副本，共享夹具 `backend/tests/Fixtures/brand-normalize-cases.json` 锁定双端输出等价（反模式 4 配套），CI `frontend-build` job 同步执行。
 
 ---
 

@@ -22,7 +22,20 @@
                             "version": "string"
                         }
                     },
-                    "version": "string"
+                    "version": "string",
+                    "platform": {
+                        "Title": "string",
+                        "Brands": {
+                            "__list_of__": {
+                                "label": "string",
+                                "value": "string"
+                            }
+                        },
+                        "DnsTools": "array<string>",
+                        "Beian": "string",
+                        "Logo": "string",
+                        "Qrcode": "string"
+                    }
                 }
             }
         }

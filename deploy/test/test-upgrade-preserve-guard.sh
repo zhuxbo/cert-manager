@@ -16,11 +16,12 @@
 #   B 信号注入（子进程 harness）：B1 SIGINT / B2 SIGTERM / B3 SIGHUP 还原（set -m 真投递 + 睡满哨兵，⑫）
 #     + B4 SIGKILL 后重跑拦截
 #   C 回归守卫：PRESERVE_DIR 钉在 $INSTALL_DIR 下 / 生产信号 trap 装配行 / composer vendor 缺失兜底(⑧) /
-#     cleanup 删 preserve 前还原 extras(⑨)
+#     cleanup 删 preserve 前还原 extras(⑨) / platform-config 不再 preserve 且升级包必须携带
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 UPGRADE="$ROOT/deploy/upgrade.sh"
+BUILD_CONFIG="$ROOT/build/config.json"
 PASS=0
 FAIL=0
 
@@ -298,7 +299,7 @@ test_a8() {
     mkdir -p "$PRESERVE_DIR/api_adapters/order" "$PRESERVE_DIR/api_adapters/acme" "$PRESERVE_DIR/frontend_config"
     printf 'ORDER-ADAPTER' >"$PRESERVE_DIR/api_adapters/order/MyOrderApi.php"
     printf 'ACME-ADAPTER' >"$PRESERVE_DIR/api_adapters/acme/MyAcmeApi.php"
-    printf 'LOGO' >"$PRESERVE_DIR/frontend_config/admin_logo.svg"
+    printf 'LOGO' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
     printf 'QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.png"
     local rc
     (_restore_preserved_extras)
@@ -307,7 +308,7 @@ test_a8() {
     [ "$rc" -eq 0 ] || ok=0
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Order/Api/MyOrderApi.php" 2>/dev/null || true)" = "ORDER-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Acme/Api/MyAcmeApi.php" 2>/dev/null || true)" = "ACME-ADAPTER" ] || ok=0
-    [ "$(cat "$INSTALL_DIR/frontend/admin/logo.svg" 2>/dev/null || true)" = "LOGO" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg" 2>/dev/null || true)" = "LOGO" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.png" 2>/dev/null || true)" = "QR" ] || ok=0
     if [ "$ok" -eq 1 ]; then
         pass "A8 extras 还原：api_adapters(order+acme) + frontend_config 还原到位、rc=0"
@@ -585,6 +586,46 @@ if grep -qE '_restore_preserved_extras; then' "$UPGRADE"; then
     pass "C cleanup 删 preserve 前还原 extras 钉死（api_adapters/frontend_config 不静默销毁，⑨）"
 else
     fail "C cleanup 未在删 preserve 前还原 extras（应 if _restore_preserved_extras; then ... rm PRESERVE_DIR）"
+fi
+
+if grep -qE 'for file in .*platform-config\.json|frontend_(config|assets)/(admin|user)_platform-config' "$UPGRADE"; then
+    fail "C upgrade.sh 不应再把 platform-config.json 纳入 preserve/restore 前端回写"
+else
+    pass "C upgrade.sh 不再把 platform-config.json 纳入 preserve/restore 前端回写"
+fi
+
+# 存量导入链：替换前端前必须把旧 platform-config.json 暂存到 storage 供迁移导入，
+# migrate 后必须清理暂存目录（缺任一环 = 存量 Beian/Title/Brands 被默认值静默替换回归）
+if grep -qE 'legacy-platform-config/\$side\.json' "$UPGRADE" && grep -qE 'rm -rf .*legacy-platform-config' "$UPGRADE"; then
+    pass "C upgrade.sh 存量 platform-config 暂存 + migrate 后清理链完整"
+else
+    fail "C upgrade.sh 缺少存量 platform-config 暂存或 migrate 后清理（迁移导入链断裂）"
+fi
+
+# 中断重跑守卫：暂存必须"已存在不覆盖"（重跑时前端已是新包配置，无守卫 cp 会冲掉旧值暂存）
+if grep -qE '\[ -f "\$INSTALL_DIR/backend/storage/app/legacy-platform-config/\$side\.json" \] && continue' "$UPGRADE"; then
+    pass "C upgrade.sh 暂存带已存在不覆盖守卫（中断重跑安全）"
+else
+    fail "C upgrade.sh 暂存缺少已存在不覆盖守卫（中断重跑会用新包配置冲掉旧值）"
+fi
+
+# 按键判定：仅含迁移键（Title/Beian/Brands）的旧配置才暂存，新版配置不再逐次产生暂存
+if grep -qE 'grep -qE .+(Title\|Beian\|Brands).+platform-config\.json" \|\| continue' "$UPGRADE"; then
+    pass "C upgrade.sh 暂存按迁移键判定（新版配置不再暂存）"
+else
+    fail "C upgrade.sh 暂存缺少迁移键判定（每次升级都会产生无用暂存）"
+fi
+
+if grep -qF 'platform-config.json' "$BUILD_CONFIG"; then
+    fail "C upgrade 包不应再排除 platform-config.json"
+else
+    pass "C upgrade 包携带新版 platform-config.json"
+fi
+
+if grep -qE 'frontend_config/admin_logo|frontend/admin/logo\.svg' "$UPGRADE" "$BUILD_CONFIG"; then
+    fail "C admin logo 不应再进入升级保护或排除清单"
+else
+    pass "C admin logo 不再进入升级保护或排除清单"
 fi
 
 echo ""

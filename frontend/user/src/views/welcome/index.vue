@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRouter } from "vue-router";
+import { getConfig } from "@/config";
 import { getProfile } from "@/api/auth";
 import {
   getAssetsData,
@@ -353,7 +354,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
           <div class="flex-shrink-0 m-2">
             <img
-              src="/qrcode.png"
+              :src="getConfig('Qrcode') || '/qrcode.png'"
               alt="二维码"
               class="w-24 h-24 rounded-sm block cursor-pointer hover:opacity-80! transition-opacity! duration-200!"
               title="点击放大"
@@ -579,7 +580,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
         </div>
         <div class="flex justify-center">
           <img
-            src="/qrcode.png"
+            :src="getConfig('Qrcode') || '/qrcode.png'"
             alt="二维码"
             class="w-64 h-64 rounded-lg"
             @click.stop

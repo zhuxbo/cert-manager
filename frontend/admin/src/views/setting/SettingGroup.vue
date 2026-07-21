@@ -15,6 +15,7 @@ import { PlusDrawerForm } from "plus-pro-components";
 import { getGroupSettings, destroy, batchUpdateSettings } from "@/api/setting";
 import { useSettingFormStore } from "./settingFormStore";
 import ArrayInput from "./ArrayInput.vue";
+import SiteImageUpload from "./SiteImageUpload.vue";
 import { message } from "@shared/utils";
 import { useDrawerSize } from "@/views/system/drawer";
 
@@ -125,7 +126,8 @@ const typeMap = {
   boolean: "布尔值",
   array: "数组",
   select: "选择",
-  base64: "文本"
+  base64: "文本",
+  image: "图片"
 };
 
 // 确保值是数组
@@ -196,6 +198,18 @@ const handleValueChange = (row, value) => {
   if (index > -1) {
     editableSettings.value[index].value = value;
   }
+};
+
+const isSiteImage = row =>
+  row.type === "image" &&
+  props.group.name === "site" &&
+  ["logo", "qrcode"].includes(row.key);
+
+const handleSiteImageChange = (row, value: string) => {
+  row.value = value;
+  const setting = settings.value.find(item => item.id === row.id);
+  if (setting) setting.value = value;
+  handleValueChange(row, value);
 };
 
 // 格式化布尔值显示
@@ -274,7 +288,13 @@ onMounted(() => {
           </el-table-column>
           <el-table-column prop="value" label="值" min-width="300">
             <template #default="{ row }">
-              <template v-if="row.type === 'boolean'">
+              <SiteImageUpload
+                v-if="isSiteImage(row)"
+                :model-value="row.value"
+                :kind="row.key"
+                @update:model-value="val => handleSiteImageChange(row, val)"
+              />
+              <template v-else-if="row.type === 'boolean'">
                 {{ formatBoolean(row.value) }}
               </template>
               <template v-else-if="row.type === 'array'">
@@ -318,7 +338,15 @@ onMounted(() => {
           </el-table-column>
           <el-table-column prop="value" label="值" min-width="200">
             <template #default="{ row }">
-              <template v-if="row.type === 'string' || row.type === 'base64'">
+              <SiteImageUpload
+                v-if="isSiteImage(row)"
+                :model-value="row.value"
+                :kind="row.key"
+                @update:model-value="val => handleSiteImageChange(row, val)"
+              />
+              <template
+                v-else-if="row.type === 'string' || row.type === 'base64'"
+              >
                 <el-input
                   :model-value="row.value"
                   :type="row.type === 'base64' ? 'textarea' : 'text'"
