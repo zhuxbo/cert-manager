@@ -9,6 +9,7 @@ import { message } from "@shared/utils";
 const typeLabels: Record<string, string> = {
   cert_issued: "证书签发通知",
   cert_expire: "证书到期提醒",
+  acme_expire: "ACME 到期提醒",
   security: "安全提醒"
 };
 
