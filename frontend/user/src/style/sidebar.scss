@@ -430,6 +430,11 @@
         height: 32px;
       }
 
+      .horizontal-expanded-logo {
+        max-width: 180px;
+        object-fit: contain;
+      }
+
       span {
         display: inline-block;
         height: 32px;
@@ -704,11 +709,19 @@
   }
 
   .double-logo {
+    box-sizing: border-box;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    height: 48px;
+    height: 55px;
+    padding-top: 10px;
     cursor: pointer;
+
+    img {
+      width: 45px;
+      height: 45px;
+      object-fit: contain;
+    }
   }
 
   .double-left {
@@ -761,7 +774,7 @@
 
     &.has-logo {
       .el-scrollbar {
-        height: calc(100% - 48px);
+        height: calc(100% - 55px);
       }
     }
 

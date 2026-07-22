@@ -12,7 +12,7 @@
   "BaseUrlApi": "/api/admin",
   "StorageNameSpace": "admin-",
   "ResponsiveStorageNameSpace": "admin-responsive-",
-  "Layout": "double",
+  "Layout": "vertical",
   "Theme": "light",
   "Acme": true
 }
@@ -27,7 +27,9 @@
 - `name`：系统标题。
 - `dnsTools`：DNS 检测服务地址的普通数组，按数组顺序优先尝试。
 - `beian`：备案号。
-- `logo`：侧边栏 Logo，上传时可裁剪（自由比例，输出不超过 200×200、200KB；SVG 直传不裁剪）。
+- `copyStart`：可选版权起始年份；不由 Seeder 创建，缺失或无效时回落 `2017`。
+- `logo`：折叠态 Logo，上传时按 1:1 裁剪（输出不超过 200×200、200KB；SVG 需为正方形）；未上传时回落现有默认 Logo。
+- `logoExpanded`：可选的展开版 Logo，配置后在展开侧栏中代替 `logo + name`；留空时保持原有 `logo + name` 显示。
 - `qrcode`：用户首页客服二维码，上传时按 1:1 裁剪（输出不超过 800×800、1MB）；未上传时回落到用户端公开目录的 `qrcode.png`，该文件在升级时保留。
 
 “品牌设置”中的 `admin` 和 `user` 是两个独立的品牌键值对象，格式为 `{ "品牌值": "显示名称" }`，直接使用数组组件已有的“键值对模式”维护。管理端由 `admin` 配置生成品牌选项和标签，不保留固定品牌字典。
@@ -45,7 +47,9 @@ import { getConfig } from "@/config";
 
 const title = getConfig("Title");
 const brands = getConfig("Brands");
+const copyStart = getConfig("CopyStart");
 const logo = getConfig("Logo");
+const logoExpanded = getConfig("LogoExpanded");
 ```
 
 敏感信息不得写入静态配置或公开的站点配置。

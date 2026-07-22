@@ -196,17 +196,20 @@ class SettingController extends BaseController
     }
 
     /**
-     * 上传站点 Logo 或客服二维码。
+     * 上传站点 Logo、展开版 Logo 或客服二维码。
      */
     public function uploadSiteImage(UploadSiteImageRequest $request, string $kind): void
     {
+        $settingKey = $kind === 'logo-expanded' ? 'logoExpanded' : $kind;
+        $isLogo = $kind !== 'qrcode';
+
         /** @var UploadedFile $file */
         $file = $request->file('file');
         $extension = match ($file->getMimeType()) {
             'image/jpeg' => 'jpg',
             'image/png' => 'png',
             'image/webp' => 'webp',
-            'image/svg+xml' => $kind === 'logo' ? 'svg' : null,
+            'image/svg+xml' => $isLogo ? 'svg' : null,
             default => null,
         };
         if ($extension === null) {
@@ -225,7 +228,7 @@ class SettingController extends BaseController
         }
 
         $setting = Setting::where('group_id', $group->id)
-            ->where('key', $kind)
+            ->where('key', $settingKey)
             ->where('type', 'image')
             ->first();
         if (! $setting) {
@@ -265,7 +268,10 @@ class SettingController extends BaseController
 
         $path = 'site/'.substr($url, strlen('/api/meta/site-image/'));
 
-        return preg_match('/^site\/(?:logo-[a-f0-9]{64}\.(?:jpg|png|webp|svg)|qrcode-[a-f0-9]{64}\.(?:jpg|png|webp))$/', $path) === 1
+        $kindPattern = preg_quote($kind, '/');
+        $extensions = $kind === 'qrcode' ? 'jpg|png|webp' : 'jpg|png|webp|svg';
+
+        return preg_match("/^site\/$kindPattern-[a-f0-9]{64}\.($extensions)$/", $path) === 1
             ? $path
             : null;
     }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import Motion from "./utils/motion";
 import { useRouter, useRoute } from "vue-router";
-import { message } from "@shared/utils";
+import { message, resolveCopyrightStart } from "@shared/utils";
 import { loginRules } from "./utils/rule";
 import { debounce } from "@pureadmin/utils";
 import { useNav } from "@/layout/hooks/useNav";
@@ -43,6 +43,8 @@ initStorage();
 const { dataTheme, overallStyle, dataThemeChange } = useDataThemeChange();
 dataThemeChange(overallStyle.value);
 const { title } = useNav();
+const currentYear = new Date().getFullYear();
+const copyStart = resolveCopyrightStart(getConfig("CopyStart"), currentYear);
 
 const ruleForm = reactive({
   account: "",
@@ -308,7 +310,7 @@ onMounted(() => {
     <div
       class="w-full flex-c absolute bottom-3 text-sm text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
     >
-      Copyright © 2017-{{ new Date().getFullYear() }}
+      Copyright © {{ copyStart }}-{{ currentYear }}
       <a class="hover:text-primary" href="/" target="_blank">
         &nbsp;{{ title }}
       </a>

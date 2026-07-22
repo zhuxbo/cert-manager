@@ -594,12 +594,16 @@ else
     pass "C upgrade.sh 不再把 platform-config.json 纳入 preserve/restore 前端回写"
 fi
 
-# 存量导入链：替换前端前必须把旧 platform-config.json 暂存到 storage 供迁移导入，
-# migrate 后必须清理暂存目录（缺任一环 = 存量 Beian/Title/Brands 被默认值静默替换回归）
-if grep -qE 'legacy-platform-config/\$side\.json' "$UPGRADE" && grep -qE 'rm -rf .*legacy-platform-config' "$UPGRADE"; then
-    pass "C upgrade.sh 存量 platform-config 暂存 + migrate 后清理链完整"
+# 存量导入链：替换前端前必须把旧 platform-config.json 暂存到 storage 供 Seeder 导入，
+# seed 成功后才清理暂存，失败必须中止并保留数据供重跑。
+seed_line=$(grep -nF 'artisan db:seed --force' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+cleanup_line=$(grep -nE 'rm -rf .*legacy-platform-config' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+if grep -qE 'legacy-platform-config/\$side\.json' "$UPGRADE" &&
+    [ -n "$seed_line" ] && [ -n "$cleanup_line" ] && [ "$seed_line" -lt "$cleanup_line" ] &&
+    ! grep -qE 'artisan db:seed --force[[:space:]]*\|\|[[:space:]]*true' "$UPGRADE"; then
+    pass "C upgrade.sh 存量 platform-config 暂存 + seed 成功后清理链完整"
 else
-    fail "C upgrade.sh 缺少存量 platform-config 暂存或 migrate 后清理（迁移导入链断裂）"
+    fail "C upgrade.sh 缺少存量 platform-config 暂存或 seed 成功后清理（Seeder 导入链断裂）"
 fi
 
 # 中断重跑守卫：暂存必须"已存在不覆盖"（重跑时前端已是新包配置，无守卫 cp 会冲掉旧值暂存）

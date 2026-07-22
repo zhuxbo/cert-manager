@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { getConfig } from "@/config";
+import { resolveCopyrightStart } from "@shared/utils";
 
 const year = new Date().getFullYear();
+const copyStart = resolveCopyrightStart(getConfig("CopyStart"), year);
 const TITLE = getConfig("Title");
 </script>
 
@@ -9,7 +11,7 @@ const TITLE = getConfig("Title");
   <footer
     class="layout-footer text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
   >
-    Copyright © 2017-{{ year }}
+    Copyright © {{ copyStart }}-{{ year }}
     <a class="hover:text-primary" href="/" target="_blank">
       &nbsp;{{ TITLE }}
     </a>

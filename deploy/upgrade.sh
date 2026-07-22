@@ -1710,7 +1710,7 @@ perform_upgrade() {
     # 注意：freeze 锁文件（storage/framework/upgrade.lock）随此 mv 一并移走 → 至下方恢复前
     # isFrozen()=false、HTTP-503 暂失效；此[切代码窗]靠 storage 缺失致 app 500 兜底挡写。
     # 存量 platform-config.json 一次性暂存到 storage（随下方 storage mv/恢复走），
-    # 供平台设置迁移导入历史定制值（Beian/Title/Brands）；migrate 后统一清理，不还原到前端。
+    # 供 SettingSeeder 导入历史定制值（Beian/Title/Brands）；seed 成功后统一清理，不还原到前端。
     # 仅当源文件含迁移键时才暂存（新版配置已不含这些键，后续升级自然不再暂存）；
     # 已存在的暂存不覆盖：升级中断重跑时前端已是新包配置，覆盖会把首跑幸存的旧值冲掉
     for side in admin user; do
@@ -2019,13 +2019,14 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     log_step "运行数据库迁移..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan migrate --force
-    # 平台设置迁移已消费（或早已消费过）存量 platform-config 暂存，统一清理防残留
-    rm -rf "$INSTALL_DIR/backend/storage/app/legacy-platform-config"
 
     # 11.1 初始化/更新数据
     log_step "更新数据..."
     cd "$INSTALL_DIR/backend"
-    "$PHP_CMD" artisan db:seed --force || true
+    "$PHP_CMD" artisan db:seed --force
+    # Seeder 已补齐平台设置并消费存量 platform-config；仅在 seed 成功后清理，
+    # 失败时由 set -e 中止升级并保留暂存，供修复后幂等重跑。
+    rm -rf "$INSTALL_DIR/backend/storage/app/legacy-platform-config"
 
     # 11.2 数据库结构校验
     log_step "数据库结构校验..."

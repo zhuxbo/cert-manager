@@ -117,6 +117,12 @@ export function useNav() {
     return resolveSiteLogo(getConfig("Logo"), defaultLogo);
   }
 
+  /** 可选展开版 Logo；空值表示保持原有 Logo + 站点名称。 */
+  function getExpandedLogo() {
+    const logo = getConfig("LogoExpanded");
+    return typeof logo === "string" ? logo.trim() : "";
+  }
+
   return {
     route,
     title,
@@ -138,6 +144,7 @@ export function useNav() {
     handleResize,
     resolvePath,
     getLogo,
+    getExpandedLogo,
     isCollapse,
     pureApp,
     username,

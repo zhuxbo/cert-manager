@@ -344,7 +344,7 @@ test('applyFrontendUpgrade 更新 platform config 且不保留 admin logo', func
     }
 });
 
-test('applyFrontendUpgrade 暂存旧 platform config 供平台设置迁移导入', function () {
+test('applyFrontendUpgrade 暂存旧 platform config 供 SettingSeeder 导入', function () {
     $sourceDir = "$this->testDir/pkg/frontend/user";
     File::makeDirectory($sourceDir, 0755, true);
     File::put("$sourceDir/platform-config.json", '{"source":"new"}');

@@ -8,7 +8,7 @@ import defaultLogo from "@/assets/logo.svg?url";
 
 const props = defineProps<{
   modelValue?: string;
-  kind: "logo" | "qrcode";
+  kind: "logo" | "logo-expanded" | "qrcode";
 }>();
 
 const emit = defineEmits<{
@@ -16,17 +16,23 @@ const emit = defineEmits<{
 }>();
 
 const logoFallbackActive = ref(false);
-// Logo 自由比例（侧栏按高度 32px 等比展示，允许宽 Logo）；二维码锁定 1:1
+const isLogo = computed(() => props.kind !== "qrcode");
+const isExpandedLogo = computed(() => props.kind === "logo-expanded");
+const imageLabel = computed(() => {
+  if (isExpandedLogo.value) return "展开版 Logo";
+  return isLogo.value ? "Logo" : "二维码";
+});
+// 普通 Logo 和二维码锁定 1:1；展开版 Logo 允许横向自由比例。
 const cropConfig = computed(() =>
-  props.kind === "logo"
+  isLogo.value
     ? {
         accept: "image/jpeg,image/png,image/webp,image/svg+xml",
         allowSvg: true,
-        aspectRatio: 0,
+        aspectRatio: isExpandedLogo.value ? 0 : 1,
         maxWidth: 200,
         maxHeight: 200,
         maxFileSize: 200 * 1024,
-        title: "裁剪站点 Logo"
+        title: `裁剪${imageLabel.value}`
       }
     : {
         accept: "image/jpeg,image/png,image/webp",
@@ -40,8 +46,7 @@ const cropConfig = computed(() =>
 );
 
 const hasUploadedImage = computed(() => {
-  const extension =
-    props.kind === "logo" ? "(?:jpg|png|webp|svg)" : "(?:jpg|png|webp)";
+  const extension = isLogo.value ? "(?:jpg|png|webp|svg)" : "(?:jpg|png|webp)";
   return new RegExp(
     `^/api/meta/site-image/${props.kind}-[a-f0-9]{64}\\.${extension}$`
   ).test(props.modelValue || "");
@@ -71,7 +76,7 @@ const handlePreviewError = () => {
 const handleUpload = async (file: File) => {
   const { data } = await uploadSiteImage(props.kind, file);
   emit("update:modelValue", data.url);
-  message(props.kind === "logo" ? "Logo 上传成功" : "二维码上传成功", {
+  message(`${imageLabel.value}上传成功`, {
     type: "success"
   });
 };
@@ -86,13 +91,13 @@ const handleUpload = async (file: File) => {
           v-if="hasUploadedImage && previewUrl"
           class="image-slot"
           :class="{ 'is-uploading': uploading }"
-          :title="kind === 'logo' ? '点击替换 Logo' : '点击替换二维码'"
+          :title="`点击替换${imageLabel}`"
           @click="select"
         >
           <img
             :src="previewUrl"
-            :alt="kind === 'logo' ? '站点 Logo' : '客服二维码'"
-            :class="kind === 'logo' ? 'logo-preview' : 'qrcode-preview'"
+            :alt="imageLabel"
+            :class="isLogo ? 'logo-preview' : 'qrcode-preview'"
             @error="handlePreviewError"
           />
           <div class="edit-overlay">
@@ -113,10 +118,12 @@ const handleUpload = async (file: File) => {
       </template>
     </ImageCropUpload>
     <span class="upload-tip">
-      {{ kind === "logo" ? "JPG、PNG、WebP 或 SVG" : "JPG、PNG 或 WebP" }}，{{
-        kind === "logo"
-          ? "可裁剪，输出不超过 200×200、200KB（SVG 直传）"
-          : "1:1 裁剪，输出不超过 800×800、1MB"
+      {{ isLogo ? "JPG、PNG、WebP 或 SVG" : "JPG、PNG 或 WebP" }}，{{
+        isExpandedLogo
+          ? "自由比例裁剪，输出不超过 200×200、200KB（SVG 直传）"
+          : kind === "logo"
+            ? "1:1 裁剪，输出不超过 200×200、200KB（SVG 需为正方形）"
+            : "1:1 裁剪，输出不超过 800×800、1MB"
       }}
     </span>
   </div>

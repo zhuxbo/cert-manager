@@ -110,7 +110,9 @@ declare global {
     Brands?: Array<{ label: string; value: string }>;
     DnsTools?: string[];
     Beian?: string;
+    CopyStart?: string | number;
     Logo?: string;
+    LogoExpanded?: string;
     Qrcode?: string;
   }
 

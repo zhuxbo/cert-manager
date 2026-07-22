@@ -97,6 +97,12 @@
 
 升级后自动校验数据库结构与标准 `structure.json` 是否一致。
 
+#### 平台设置升级顺序
+
+- migration 只负责表结构（如扩展 `settings.type` 枚举）；设置项补齐、类型整理和旧 `platform-config.json` 导入统一由 `SettingSeeder` 幂等处理。
+- 两条自动升级路径均按 `migrate --force` → `db:seed --force` 执行；Seeder 失败必须中止升级，不得吞错。
+- `storage/app/legacy-platform-config` 只能在 Seeder 成功后删除；关闭 `auto_seed` 或 Seeder 失败时保留，供修复后重跑。
+
 **配置项** (`config/upgrade.php`):
 
 | 配置                   | 说明                                   |

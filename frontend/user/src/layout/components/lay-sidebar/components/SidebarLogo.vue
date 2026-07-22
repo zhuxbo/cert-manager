@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import { getTopMenu } from "@/router/utils";
 import { useNav } from "@/layout/hooks/useNav";
 
@@ -6,7 +7,9 @@ defineProps({
   collapse: Boolean
 });
 
-const { title, getLogo } = useNav();
+const { title, getLogo, getExpandedLogo } = useNav();
+const expandedLogo = computed(() => getExpandedLogo());
+const expandedLogoFailed = ref(false);
 </script>
 
 <template>
@@ -20,7 +23,6 @@ const { title, getLogo } = useNav();
         :to="getTopMenu()?.path ?? '/'"
       >
         <img :src="getLogo()" alt="logo" />
-        <span class="sidebar-title">{{ title }}</span>
       </router-link>
       <router-link
         v-else
@@ -29,8 +31,17 @@ const { title, getLogo } = useNav();
         class="sidebar-logo-link"
         :to="getTopMenu()?.path ?? '/'"
       >
-        <img :src="getLogo()" alt="logo" />
-        <span class="sidebar-title">{{ title }}</span>
+        <img
+          v-if="expandedLogo && !expandedLogoFailed"
+          class="sidebar-expanded-logo"
+          :src="expandedLogo"
+          :alt="title"
+          @error="expandedLogoFailed = true"
+        />
+        <template v-else>
+          <img :src="getLogo()" alt="logo" />
+          <span class="sidebar-title">{{ title }}</span>
+        </template>
       </router-link>
     </transition>
   </div>
@@ -53,6 +64,11 @@ const { title, getLogo } = useNav();
     img {
       display: inline-block;
       height: 32px;
+    }
+
+    .sidebar-expanded-logo {
+      max-width: calc(100% - 20px);
+      object-fit: contain;
     }
 
     .sidebar-title {

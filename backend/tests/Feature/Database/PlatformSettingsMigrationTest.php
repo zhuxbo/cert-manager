@@ -1,17 +1,16 @@
 <?php
 
+use Database\Seeders\SettingSeeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 
 /**
- * 平台设置迁移的存量导入路径：升级链路把旧 platform-config.json 暂存到
- * storage/app/legacy-platform-config/ 后，迁移应导入 Beian/Title/Brands 而非落默认值。
- * 迁移 enum DDL 带幂等守卫（已含 image 时跳过），因此可在事务内安全重跑 up()。
+ * 平台设置的存量导入路径：升级链路把旧 platform-config.json 暂存到
+ * storage/app/legacy-platform-config/ 后，SettingSeeder 先导入 Beian/Title/Brands，再补齐其余默认项。
  */
-function rerunPlatformSettingsMigration(): void
+function rerunPlatformSettingSeeder(): void
 {
-    $migration = require database_path('migrations/2026_07_20_000001_add_platform_settings.php');
-    $migration->up();
+    (new SettingSeeder)->run();
 }
 
 function platformSettingsSiteGroupId(): int
@@ -29,7 +28,7 @@ function platformSettingsSiteGroupId(): int
 
 function resetPlatformSettingsRows(int $siteId): void
 {
-    DB::table('settings')->where('group_id', $siteId)->whereIn('key', ['beian', 'logo', 'qrcode'])->delete();
+    DB::table('settings')->where('group_id', $siteId)->whereIn('key', ['beian', 'logo', 'logoExpanded', 'qrcode'])->delete();
     DB::table('settings')->updateOrInsert(
         ['group_id' => $siteId, 'key' => 'name'],
         ['type' => 'string', 'value' => null, 'weight' => 2, 'created_at' => now(), 'updated_at' => now()],
@@ -43,7 +42,7 @@ function resetPlatformSettingsRows(int $siteId): void
 beforeEach(fn () => File::deleteDirectory(storage_path('app/legacy-platform-config')));
 afterEach(fn () => File::deleteDirectory(storage_path('app/legacy-platform-config')));
 
-test('存量暂存存在时迁移导入 Beian/Title/Brands', function () {
+test('存量暂存存在时 Seeder 导入 Beian/Title/Brands', function () {
     $siteId = platformSettingsSiteGroupId();
     resetPlatformSettingsRows($siteId);
 
@@ -57,7 +56,7 @@ test('存量暂存存在时迁移导入 Beian/Title/Brands', function () {
         'Brands' => ['digicert'],
     ]));
 
-    rerunPlatformSettingsMigration();
+    rerunPlatformSettingSeeder();
 
     $siteRows = DB::table('settings')->where('group_id', $siteId)->pluck('value', 'key');
     expect($siteRows['beian'])->toBe('粤ICP备2020123456号')
@@ -72,15 +71,16 @@ test('存量暂存存在时迁移导入 Beian/Title/Brands', function () {
     ])->and(json_decode($brandRows['admin'], true))->toBe(['digicert' => 'DigiCert']);
 });
 
-test('无暂存时迁移落安全默认：beian 空串而非占位备案号', function () {
+test('无暂存时 Seeder 落安全默认：beian 空串而非占位备案号', function () {
     $siteId = platformSettingsSiteGroupId();
     resetPlatformSettingsRows($siteId);
 
-    rerunPlatformSettingsMigration();
+    rerunPlatformSettingSeeder();
 
     $siteRows = DB::table('settings')->where('group_id', $siteId)->pluck('value', 'key');
     expect($siteRows['beian'])->toBe('')
-        ->and($siteRows['name'])->toBe('SSL');
+        ->and($siteRows['name'])->toBe('SSL')
+        ->and($siteRows['logoExpanded'])->toBe('');
 
     $brandId = DB::table('setting_groups')->where('name', 'brand')->value('id');
     $userBrands = json_decode(DB::table('settings')->where('group_id', $brandId)->where('key', 'user')->value('value'), true);
@@ -88,17 +88,51 @@ test('无暂存时迁移落安全默认：beian 空串而非占位备案号', fu
         ->and($userBrands)->toHaveCount(9);
 });
 
-test('已有设置值不被迁移重跑覆盖（幂等）', function () {
+test('旧 Seeder 默认站点名允许存量 Title 接管', function () {
     $siteId = platformSettingsSiteGroupId();
     resetPlatformSettingsRows($siteId);
-    rerunPlatformSettingsMigration();
+    DB::table('settings')->where('group_id', $siteId)->where('key', 'name')->update(['value' => 'SSL']);
+
+    File::ensureDirectoryExists(storage_path('app/legacy-platform-config'));
+    File::put(storage_path('app/legacy-platform-config/user.json'), json_encode([
+        'Title' => '存量自定义站点名',
+    ], JSON_UNESCAPED_UNICODE));
+
+    rerunPlatformSettingSeeder();
+
+    expect(DB::table('settings')->where('group_id', $siteId)->where('key', 'name')->value('value'))
+        ->toBe('存量自定义站点名');
+});
+
+test('已有设置值不被 Seeder 重跑覆盖（幂等）', function () {
+    $siteId = platformSettingsSiteGroupId();
+    resetPlatformSettingsRows($siteId);
+    rerunPlatformSettingSeeder();
 
     DB::table('settings')->where('group_id', $siteId)->where('key', 'beian')->update(['value' => '运营商已改']);
+    DB::table('settings')->where('group_id', $siteId)->where('key', 'name')->update(['value' => '后台自定义站点名']);
     File::ensureDirectoryExists(storage_path('app/legacy-platform-config'));
-    File::put(storage_path('app/legacy-platform-config/user.json'), json_encode(['Beian' => '旧值不应覆盖']));
+    File::put(storage_path('app/legacy-platform-config/user.json'), json_encode([
+        'Beian' => '旧值不应覆盖',
+        'Title' => '旧站点名不应覆盖',
+    ], JSON_UNESCAPED_UNICODE));
 
-    rerunPlatformSettingsMigration();
+    rerunPlatformSettingSeeder();
 
     expect(DB::table('settings')->where('group_id', $siteId)->where('key', 'beian')->value('value'))
-        ->toBe('运营商已改');
+        ->toBe('运营商已改')
+        ->and(DB::table('settings')->where('group_id', $siteId)->where('key', 'name')->value('value'))
+        ->toBe('后台自定义站点名');
+});
+
+test('平台设置迁移不创建或整理设置数据', function () {
+    $siteId = platformSettingsSiteGroupId();
+    resetPlatformSettingsRows($siteId);
+
+    $migration = require database_path('migrations/2026_07_20_000001_add_platform_settings.php');
+    $migration->up();
+
+    expect(DB::table('settings')->where('group_id', $siteId)->where('key', 'beian')->exists())->toBeFalse()
+        ->and(DB::table('settings')->where('group_id', $siteId)->where('key', 'logoExpanded')->exists())->toBeFalse()
+        ->and(DB::table('settings')->where('group_id', $siteId)->where('key', 'name')->value('value'))->toBeNull();
 });

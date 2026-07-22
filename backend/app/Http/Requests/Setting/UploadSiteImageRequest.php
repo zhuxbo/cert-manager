@@ -10,7 +10,9 @@ class UploadSiteImageRequest extends BaseRequest
 {
     public function rules(): array
     {
-        $isLogo = $this->route('kind') === 'logo';
+        $kind = $this->route('kind');
+        $isLogo = in_array($kind, ['logo', 'logo-expanded'], true);
+        $requiresSquare = in_array($kind, ['logo', 'qrcode'], true);
         $maxDimension = $isLogo ? 200 : 800;
 
         return [
@@ -21,16 +23,21 @@ class UploadSiteImageRequest extends BaseRequest
                 $isLogo ? 'image:allow_svg' : 'image',
                 $isLogo ? 'mimes:jpg,jpeg,png,webp,svg' : 'mimes:jpg,jpeg,png,webp',
                 $isLogo ? 'max:200' : 'max:1024',
-                function (string $attribute, mixed $value, Closure $fail) use ($isLogo, $maxDimension): void {
+                function (string $attribute, mixed $value, Closure $fail) use ($isLogo, $kind, $maxDimension, $requiresSquare): void {
                     if (! $value instanceof UploadedFile) {
                         return;
                     }
 
-                    // SVG 为矢量图，无固定像素尺寸；仅做安全校验（拒 DOCTYPE 防实体注入），
-                    // 尺寸上限对矢量无意义，体积已由 max 规则限制
+                    // SVG 为矢量图，尺寸上限对矢量无意义，体积已由 max 规则限制；
+                    // 普通 Logo 仍按 viewBox 或 width/height 校验为正方形。
                     if ($value->getMimeType() === 'image/svg+xml') {
                         if (! $this->isSafeSvg($value)) {
                             $fail('SVG 文件格式不合法');
+
+                            return;
+                        }
+                        if ($requiresSquare && ! $this->isSquareSvg($value)) {
+                            $fail('普通 Logo 必须为正方形');
                         }
 
                         return;
@@ -48,6 +55,11 @@ class UploadSiteImageRequest extends BaseRequest
                         $fail($isLogo
                             ? 'Logo 尺寸不能超过 200×200 像素'
                             : '二维码尺寸不能超过 800×800 像素');
+
+                        return;
+                    }
+                    if ($requiresSquare && $width !== $height) {
+                        $fail($kind === 'logo' ? '普通 Logo 必须为正方形' : '二维码必须为正方形');
                     }
                 },
             ],
@@ -56,13 +68,15 @@ class UploadSiteImageRequest extends BaseRequest
 
     public function messages(): array
     {
+        $isLogo = in_array($this->route('kind'), ['logo', 'logo-expanded'], true);
+
         return [
             'file.required' => '请选择图片',
             'file.image' => '上传文件必须是图片',
-            'file.mimes' => $this->route('kind') === 'logo'
+            'file.mimes' => $isLogo
                 ? 'Logo 仅支持 JPG、PNG、WebP、SVG 格式'
                 : '二维码仅支持 JPG、PNG、WebP 格式',
-            'file.max' => $this->route('kind') === 'logo'
+            'file.max' => $isLogo
                 ? 'Logo 大小不能超过 200KB'
                 : '二维码大小不能超过 1MB',
         ];
@@ -80,6 +94,56 @@ class UploadSiteImageRequest extends BaseRequest
         }
 
         return preg_match('/^(?:\xEF\xBB\xBF)?\s*(?:<\?xml[^>]*>\s*)?(?:<!--.*?-->\s*)*<svg\b[^>]*>/is', $contents) === 1;
+    }
+
+    private function isSquareSvg(UploadedFile $file): bool
+    {
+        $contents = file_get_contents($file->getRealPath());
+        if ($contents === false || preg_match('/<svg\b([^>]*)>/is', $contents, $root) !== 1) {
+            return false;
+        }
+
+        $hasWidth = $this->hasSvgLengthAttribute($root[1], 'width');
+        $hasHeight = $this->hasSvgLengthAttribute($root[1], 'height');
+        if ($hasWidth || $hasHeight) {
+            $width = $this->svgLength($root[1], 'width');
+            $height = $this->svgLength($root[1], 'height');
+
+            return $width !== null
+                && $height !== null
+                && $width['value'] > 0
+                && $width === $height;
+        }
+
+        if (preg_match('/\bviewBox\s*=\s*(["\'])(.*?)\1/is', $root[1], $viewBox) === 1) {
+            $values = preg_split('/[\s,]+/', trim($viewBox[2]));
+            if (is_array($values) && count($values) === 4 && is_numeric($values[2]) && is_numeric($values[3])) {
+                return (float) $values[2] > 0 && (float) $values[2] === (float) $values[3];
+            }
+        }
+
+        return false;
+    }
+
+    private function hasSvgLengthAttribute(string $attributes, string $name): bool
+    {
+        $pattern = sprintf('/(?:^|\s)%s\s*=/i', preg_quote($name, '/'));
+
+        return preg_match($pattern, $attributes) === 1;
+    }
+
+    /** @return array{value: float, unit: string}|null */
+    private function svgLength(string $attributes, string $name): ?array
+    {
+        $pattern = sprintf('/(?:^|\s)%s\s*=\s*(["\'])\s*([0-9]+(?:\.[0-9]+)?)\s*([a-z%%]*)\s*\1/i', preg_quote($name, '/'));
+        if (preg_match($pattern, $attributes, $match) !== 1) {
+            return null;
+        }
+
+        return [
+            'value' => (float) $match[2],
+            'unit' => strtolower($match[3]),
+        ];
     }
 
     /** @return array{float, float}|null */

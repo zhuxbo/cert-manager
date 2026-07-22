@@ -12,6 +12,7 @@ use App\Services\Upgrade\VersionManager;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -80,6 +81,7 @@ beforeEach(function () {
     Config::set('upgrade.behavior.clear_cache', false);
     UpgradeFreezeLock::unfreeze();
     (new UpgradeStatusManager)->clear();
+    File::deleteDirectory(storage_path('app/legacy-platform-config'));
     h2FakeBinary();
 });
 
@@ -87,6 +89,7 @@ afterEach(function () {
     Mockery::close();
     UpgradeFreezeLock::unfreeze();
     (new UpgradeStatusManager)->clear();
+    File::deleteDirectory(storage_path('app/legacy-platform-config'));
 });
 
 test('H2-A 成功升级：apply 期间 freeze 生效，unfreeze 严格先于 up，结束已解冻', function () {
@@ -150,6 +153,55 @@ test('H2-B / H1 apply 抛 TypeError：catch(\Throwable) 接住，失败路径 un
         ->and($sm->get()['status'])->toBe('failed')
         ->and(UpgradeFreezeLock::isFrozen())->toBeFalse()  // 失败不滞留冻结
         ->and($upCalled)->toBeTrue();                       // 维护模式已退出
+});
+
+test('平台旧配置在 seed 成功后才清理', function () {
+    Config::set('upgrade.behavior.auto_migrate', true);
+    Config::set('upgrade.behavior.auto_seed', true);
+    File::ensureDirectoryExists(storage_path('app/legacy-platform-config'));
+    File::put(storage_path('app/legacy-platform-config/user.json'), '{"Title":"legacy"}');
+
+    $callLog = [];
+    Artisan::shouldReceive('call')->andReturnUsing(function ($command) use (&$callLog) {
+        $callLog[] = $command;
+        if ($command === 'db:seed') {
+            expect(storage_path('app/legacy-platform-config/user.json'))->toBeFile();
+        }
+
+        return 0;
+    });
+
+    $service = h2MakeService(fn () => true);
+    $sm = new UpgradeStatusManager;
+    $sm->start('v1.0.0');
+    $result = $service->performUpgradeWithStatus('latest', $sm);
+
+    expect($result['success'])->toBeTrue()
+        ->and(storage_path('app/legacy-platform-config'))->not->toBeDirectory()
+        ->and(array_search('migrate', $callLog, true))->toBeLessThan(array_search('db:seed', $callLog, true));
+});
+
+test('seed 失败时中止升级并保留平台旧配置', function () {
+    Config::set('upgrade.behavior.auto_migrate', true);
+    Config::set('upgrade.behavior.auto_seed', true);
+    File::ensureDirectoryExists(storage_path('app/legacy-platform-config'));
+    File::put(storage_path('app/legacy-platform-config/user.json'), '{"Title":"legacy"}');
+
+    Artisan::shouldReceive('call')->andReturnUsing(function ($command) {
+        if ($command === 'db:seed') {
+            throw new RuntimeException('seed failed');
+        }
+
+        return 0;
+    });
+
+    $service = h2MakeService(fn () => true);
+    $sm = new UpgradeStatusManager;
+    $sm->start('v1.0.0');
+    $result = $service->performUpgradeWithStatus('latest', $sm);
+
+    expect($result['success'])->toBeFalse()
+        ->and(storage_path('app/legacy-platform-config/user.json'))->toBeFile();
 });
 
 test('H2-C rollback 清除滞留 freeze（防御性清理，rollback 自身不 freeze）', function () {

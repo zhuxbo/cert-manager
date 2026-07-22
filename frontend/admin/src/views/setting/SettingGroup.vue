@@ -203,7 +203,12 @@ const handleValueChange = (row, value) => {
 const isSiteImage = row =>
   row.type === "image" &&
   props.group.name === "site" &&
-  ["logo", "qrcode"].includes(row.key);
+  ["logo", "logoExpanded", "qrcode"].includes(row.key);
+
+const siteImageKind = (key: string): "logo" | "logo-expanded" | "qrcode" => {
+  if (key === "logoExpanded") return "logo-expanded";
+  return key === "qrcode" ? "qrcode" : "logo";
+};
 
 const handleSiteImageChange = (row, value: string) => {
   row.value = value;
@@ -291,7 +296,7 @@ onMounted(() => {
               <SiteImageUpload
                 v-if="isSiteImage(row)"
                 :model-value="row.value"
-                :kind="row.key"
+                :kind="siteImageKind(row.key)"
                 @update:model-value="val => handleSiteImageChange(row, val)"
               />
               <template v-else-if="row.type === 'boolean'">
@@ -341,7 +346,7 @@ onMounted(() => {
               <SiteImageUpload
                 v-if="isSiteImage(row)"
                 :model-value="row.value"
-                :kind="row.key"
+                :kind="siteImageKind(row.key)"
                 @update:model-value="val => handleSiteImageChange(row, val)"
               />
               <template

@@ -28,7 +28,9 @@
                         },
                         "DnsTools": "array<string>",
                         "Beian": "string",
+                        "CopyStart": "string",
                         "Logo": "string",
+                        "LogoExpanded": "string",
                         "Qrcode": "string"
                     }
                 }

@@ -268,8 +268,8 @@ class PackageExtractor
             File::makeDirectory($targetDir, 0755, true);
         }
 
-        // 存量 platform-config.json 一次性暂存到 storage，供平台设置迁移导入历史定制值
-        // （Beian/Title/Brands）；migrate 后由 UpgradeService 统一清理，不还原到前端。
+        // 存量 platform-config.json 一次性暂存到 storage，供 SettingSeeder 导入历史定制值
+        // （Beian/Title/Brands）；seed 成功后由 UpgradeService 统一清理，不还原到前端。
         // 仅当源文件含迁移键时才暂存（新版配置已不含，后续升级自然不再暂存）；
         // 已存在的暂存不覆盖：升级中断重试时前端已是新包配置，覆盖会冲掉首跑幸存的旧值
         $legacyConfig = "$targetDir/platform-config.json";

@@ -36,7 +36,9 @@ export interface PlatformConfigs {
   Brands?: BrandOption[];
   DnsTools?: string[];
   Beian?: string;
+  CopyStart?: string | number;
   Logo?: string;
+  LogoExpanded?: string;
   Qrcode?: string;
   Acme?: boolean;
   AutoDeploy?: boolean;

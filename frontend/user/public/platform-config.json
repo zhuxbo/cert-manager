@@ -4,7 +4,7 @@
   "HiddenSideBar": false,
   "MultiTagsCache": true,
   "KeepAlive": true,
-  "Layout": "double",
+  "Layout": "vertical",
   "Theme": "light",
   "DarkMode": false,
   "OverallStyle": "light",

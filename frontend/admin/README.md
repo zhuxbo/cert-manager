@@ -224,7 +224,7 @@ pnpm typecheck
 
 - **BaseUrlApi**: 管理端API基础地址，对应后端 `routes/api.admin.php`
 - **ResponsiveStorageNameSpace**: 管理端本地响应式存储命名空间
-- 标题、DNS 工具、备案号、Logo、二维码在后台“站点设置”维护
+- 标题、DNS 工具、备案号、Logo、可选展开版 Logo、二维码在后台“站点设置”维护
 - 管理端品牌在后台“品牌设置”的 `admin` 键值对维护，键为品牌值、值为显示名称
 
 ## 开发规范

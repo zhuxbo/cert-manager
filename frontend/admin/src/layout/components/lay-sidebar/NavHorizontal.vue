@@ -18,8 +18,18 @@ const showLogo = ref(
   )?.showLogo ?? true
 );
 
-const { route, title, logout, onPanel, getLogo, username, backTopMenu } =
-  useNav();
+const {
+  route,
+  title,
+  logout,
+  onPanel,
+  getLogo,
+  getExpandedLogo,
+  username,
+  backTopMenu
+} = useNav();
+const expandedLogo = computed(() => getExpandedLogo());
+const expandedLogoFailed = ref(false);
 
 const defaultActive = computed(() =>
   !isAllEmpty(route.meta?.activePath) ? route.meta.activePath : route.path
@@ -42,8 +52,17 @@ onMounted(() => {
     class="horizontal-header"
   >
     <div v-if="showLogo" class="horizontal-header-left" @click="backTopMenu">
-      <img :src="getLogo()" alt="logo" />
-      <span>{{ title }}</span>
+      <img
+        v-if="expandedLogo && !expandedLogoFailed"
+        class="horizontal-expanded-logo"
+        :src="expandedLogo"
+        :alt="title"
+        @error="expandedLogoFailed = true"
+      />
+      <template v-else>
+        <img :src="getLogo()" alt="logo" />
+        <span>{{ title }}</span>
+      </template>
     </div>
     <el-menu
       ref="menuRef"

@@ -7,7 +7,7 @@ use App\Models\Setting;
 class PlatformConfigService
 {
     /**
-     * @return array{Title: string, Brands: list<array{label: string, value: string}>, DnsTools: list<string>, Beian: string, Logo: string, Qrcode: string}
+     * @return array{Title: string, Brands: list<array{label: string, value: string}>, DnsTools: list<string>, Beian: string, CopyStart: string, Logo: string, LogoExpanded: string, Qrcode: string}
      */
     public function get(string $channel): array
     {
@@ -20,7 +20,9 @@ class PlatformConfigService
             'Brands' => $this->brandOptions($brands[$channel] ?? null),
             'DnsTools' => $this->stringList($site['dnsTools'] ?? null, []),
             'Beian' => $this->stringValue($site['beian'] ?? null, ''),
+            'CopyStart' => $this->stringValue($site['copyStart'] ?? null, '2017'),
             'Logo' => $this->stringValue($site['logo'] ?? null, '/logo.svg'),
+            'LogoExpanded' => $this->stringValue($site['logoExpanded'] ?? null, ''),
             'Qrcode' => $this->stringValue($site['qrcode'] ?? null, '/qrcode.png'),
         ];
     }

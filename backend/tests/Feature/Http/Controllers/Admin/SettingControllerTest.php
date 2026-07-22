@@ -177,6 +177,10 @@ test('管理员可以上传 SVG Logo 但二维码不接受 SVG', function () {
         ['type' => 'image', 'value' => ''],
     );
     Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'logoExpanded'],
+        ['type' => 'image', 'value' => ''],
+    );
+    Setting::updateOrCreate(
         ['group_id' => $group->id, 'key' => 'qrcode'],
         ['type' => 'image', 'value' => ''],
     );
@@ -196,6 +200,18 @@ test('管理员可以上传 SVG Logo 但二维码不接受 SVG', function () {
         ->assertOk()
         ->assertHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
         ->assertHeader('X-Content-Type-Options', 'nosniff');
+
+    $expandedLogo = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo-expanded', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'brand-expanded.svg',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><path d="M0 0h20v10H0z"/></svg>',
+        ),
+    ]);
+    $expandedLogo->assertOk()->assertJson(['code' => 1]);
+    expect($expandedLogo->json('data.url'))
+        ->toMatch('#^/api/meta/site-image/logo-expanded-[a-f0-9]{64}\.svg$#')
+        ->and(Setting::where('group_id', $group->id)->where('key', 'logoExpanded')->value('value'))
+        ->toBe($expandedLogo->json('data.url'));
 
     $qrcode = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/qrcode', [
         'file' => UploadedFile::fake()->createWithContent('wechat.svg', $svg->getContent()),
@@ -220,6 +236,45 @@ test('管理员可以上传 SVG Logo 但二维码不接受 SVG', function () {
     ]);
     $withComment->assertOk()->assertJson(['code' => 1]);
 
+    $rectangularLogo = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'rectangular.svg',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 24"><path d="M0 0h48v24H0z"/></svg>',
+        ),
+    ]);
+    $rectangularLogo->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('errors.file.0', '普通 Logo 必须为正方形');
+
+    $conflictingDimensions = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'conflicting-dimensions.svg',
+            '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100"><path d="M0 0h100v100H0z"/></svg>',
+        ),
+    ]);
+    $conflictingDimensions->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('errors.file.0', '普通 Logo 必须为正方形');
+
+    $matchingDimensions = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'matching-dimensions.svg',
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100px" height="100px" viewBox="0 0 100 100"></svg>',
+        ),
+    ]);
+    $matchingDimensions->assertOk()->assertJson(['code' => 1]);
+
+    foreach ([
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100px" height="100cm" viewBox="0 0 100 100"></svg>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="50%" viewBox="0 0 100 100"></svg>',
+    ] as $svgWithConflictingUnits) {
+        $this->actingAsAdmin($this->admin)
+            ->post('/api/admin/setting/site-image/logo', [
+                'file' => UploadedFile::fake()->createWithContent('conflicting-units.svg', $svgWithConflictingUnits),
+            ])
+            ->assertOk()
+            ->assertJson(['code' => 0])
+            ->assertJsonPath('errors.file.0', '普通 Logo 必须为正方形');
+    }
+
     // 带 DOCTYPE 的 SVG（实体注入面）仍被安全校验拒绝
     $unsafe = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
         'file' => UploadedFile::fake()->createWithContent(
@@ -237,7 +292,7 @@ test('站点图片上传限制尺寸和文件大小', function () {
         ['name' => 'site'],
         ['title' => '站点设置', 'weight' => 1],
     );
-    foreach (['logo', 'qrcode'] as $key) {
+    foreach (['logo', 'logoExpanded', 'qrcode'] as $key) {
         Setting::updateOrCreate(
             ['group_id' => $group->id, 'key' => $key],
             ['type' => 'image', 'value' => ''],
@@ -248,6 +303,17 @@ test('站点图片上传限制尺寸和文件大小', function () {
         'file' => UploadedFile::fake()->image('logo.png', 200, 200)->size(200),
     ]);
     $validLogo->assertOk()->assertJson(['code' => 1]);
+
+    $validExpandedLogo = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo-expanded', [
+        'file' => UploadedFile::fake()->image('logo-expanded.png', 200, 80)->size(200),
+    ]);
+    $validExpandedLogo->assertOk()->assertJson(['code' => 1]);
+
+    $rectangularLogo = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/logo', [
+        'file' => UploadedFile::fake()->image('rectangular-logo.png', 200, 100)->size(200),
+    ]);
+    $rectangularLogo->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('errors.file.0', '普通 Logo 必须为正方形');
 
     foreach ([
         UploadedFile::fake()->image('wide-logo.png', 201, 200)->size(200),
@@ -263,6 +329,12 @@ test('站点图片上传限制尺寸和文件大小', function () {
         'file' => UploadedFile::fake()->image('qrcode.png', 800, 800)->size(1024),
     ]);
     $validQrcode->assertOk()->assertJson(['code' => 1]);
+
+    $rectangularQrcode = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/qrcode', [
+        'file' => UploadedFile::fake()->image('rectangular-qrcode.png', 800, 400)->size(1024),
+    ]);
+    $rectangularQrcode->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('errors.file.0', '二维码必须为正方形');
 
     foreach ([
         UploadedFile::fake()->image('wide-qrcode.png', 801, 800)->size(1024),

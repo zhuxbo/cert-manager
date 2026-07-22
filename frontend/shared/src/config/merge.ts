@@ -5,7 +5,9 @@ const backendManagedKeys: (keyof PlatformConfigs)[] = [
   "Brands",
   "DnsTools",
   "Beian",
+  "CopyStart",
   "Logo",
+  "LogoExpanded",
   "Qrcode"
 ];
 

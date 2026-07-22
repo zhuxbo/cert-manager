@@ -98,6 +98,9 @@ dataset('core_seeders', [
                 'https://dns-tools-cn.cnssl.com',
                 'https://dns-tools-us.cnssl.com',
             ]);
+            $expandedLogo = Setting::where('group_id', $siteGroup->id)->where('key', 'logoExpanded')->first();
+            expect($expandedLogo?->type)->toBe('image')
+                ->and($expandedLogo?->value)->toBe('');
 
             $brandGroup = SettingGroup::where('name', 'brand')->first();
             expect($brandGroup?->description)->toBeNull();

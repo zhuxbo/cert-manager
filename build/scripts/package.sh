@@ -492,8 +492,9 @@ cat >"$UPGRADE_DIR/UPGRADE.md" <<EOF
 2. 解压升级包覆盖文件
 3. 安装 PHP 依赖: composer install --no-dev
 4. 运行数据库迁移: php artisan migrate --force
-5. 清理缓存: php artisan optimize:clear
-6. 重启服务
+5. 补齐和整理基础数据: php artisan db:seed --force
+6. 清理缓存: php artisan optimize:clear
+7. 重启服务
 
 ## 注意事项
 
