@@ -23,7 +23,7 @@
                     "platform": {
                         "Title": "string",
                         "Brands": "array<unknown>",
-                        "DnsTools": "array<string>",
+                        "DnsTools": "array<unknown>",
                         "Beian": "string",
                         "Logo": "string",
                         "Qrcode": "string"

@@ -190,7 +190,7 @@ test('管理员登录成功时回填空的 site.url 为当前访问域名', func
     $this->postJson('/api/admin/login', ['account' => 'urladmin', 'password' => 'password123'])
         ->assertOk()->assertJson(['code' => 1]);
 
-    expect(Setting::getByGroupName('site')['url'])->toBe('http://localhost');
+    expect(Setting::getByGroupName('site')['url'])->toBe('https://localhost');
 });
 
 test('管理员登录不覆盖已设置的 site.url', function () {

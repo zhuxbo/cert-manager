@@ -50,7 +50,7 @@ return new class extends Migration
             $brandId = DB::table('setting_groups')->insertGetId([
                 'name' => 'brand',
                 'title' => '品牌设置',
-                'description' => '分别控制管理端和用户端可见的证书品牌',
+                'description' => null,
                 'weight' => 10,
                 'created_at' => $now,
                 'updated_at' => $now,

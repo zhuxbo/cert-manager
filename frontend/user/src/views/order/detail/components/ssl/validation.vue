@@ -838,10 +838,7 @@ async function verifyCname(
   host: string,
   expectedTarget: string
 ) {
-  const dnsToolsHosts = getConfig()?.DnsTools || [
-    "https://dns-tools-cn.cnssl.com",
-    "https://dns-tools-us.cnssl.com"
-  ];
+  const dnsToolsHosts = getConfig()?.DnsTools || [];
 
   let lastMsg = "";
   for (const baseUrl of dnsToolsHosts) {
@@ -883,10 +880,7 @@ async function verifyCname(
 
 // 委托验证 TXT 记录检测函数（使用 /api/dns/query 原始查询）
 async function verifyDelegationTxt(targetFqdn: string, expectedValue: string) {
-  const dnsToolsHosts = getConfig()?.DnsTools || [
-    "https://dns-tools-cn.cnssl.com",
-    "https://dns-tools-us.cnssl.com"
-  ];
+  const dnsToolsHosts = getConfig()?.DnsTools || [];
 
   const expectedLower = expectedValue.toLowerCase().trim();
   for (const baseUrl of dnsToolsHosts) {
@@ -976,10 +970,7 @@ async function batchVerifyValidation(validation: any[], ca?: string) {
       const cnameHost = `${delegationPrefix.value}.${zone}`;
       let txtConflict = "";
       try {
-        const dnsToolsHosts = getConfig()?.DnsTools || [
-          "https://dns-tools-cn.cnssl.com",
-          "https://dns-tools-us.cnssl.com"
-        ];
+        const dnsToolsHosts = getConfig()?.DnsTools || [];
         for (const baseUrl of dnsToolsHosts) {
           try {
             const res = await axios.post(
@@ -1047,10 +1038,7 @@ async function batchVerifyValidation(validation: any[], ca?: string) {
   });
 
   // 从配置文件获取 DNS Tools 基础地址，并拼接 API 路径
-  const dnsToolsHosts = getConfig()?.DnsTools || [
-    "https://dns-tools-cn.cnssl.com",
-    "https://dns-tools-us.cnssl.com"
-  ];
+  const dnsToolsHosts = getConfig()?.DnsTools || [];
   const endpoints = dnsToolsHosts.map(host => `${host}/api/dcv/verify`);
 
   let response: AxiosResponse<any, any>;

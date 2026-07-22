@@ -93,6 +93,20 @@ dataset('core_seeders', [
                 'secretId' => '',
                 'secretKey' => '',
             ]);
+            $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
+            expect($dnsTools?->value)->toBe([
+                'https://dns-tools-cn.cnssl.com',
+                'https://dns-tools-us.cnssl.com',
+            ]);
+
+            $brandGroup = SettingGroup::where('name', 'brand')->first();
+            expect($brandGroup?->description)->toBeNull();
+            expect($brandGroup?->settings()->where('key', 'admin')->value('description'))->toBe('管理端品牌选项');
+            expect($brandGroup?->settings()->where('key', 'user')->value('description'))->toBe('用户端品牌选项');
+
+            $callbackGroup = SettingGroup::where('name', 'callback')->first();
+            $defaultCallback = $callbackGroup?->settings()->where('key', 'default')->first();
+            expect($defaultCallback?->value)->toMatchArray(['sources' => 'default']);
         },
         function (): void {
             $siteGroup = SettingGroup::firstOrCreate(
@@ -110,6 +124,32 @@ dataset('core_seeders', [
                 'description' => '自定义委托',
                 'weight' => 99,
             ]);
+            Setting::create([
+                'group_id' => $siteGroup->id,
+                'key' => 'dnsTools',
+                'type' => 'array',
+                'value' => ['custom' => 'https://dns.example.com'],
+                'description' => '自定义 DNS 工具',
+                'weight' => 6,
+            ]);
+
+            $callbackGroup = SettingGroup::firstOrCreate(
+                ['name' => 'callback'],
+                ['title' => '回调设置', 'description' => null, 'weight' => 3]
+            );
+            Setting::create([
+                'group_id' => $callbackGroup->id,
+                'key' => 'default',
+                'type' => 'array',
+                'value' => [
+                    'sources' => '',
+                    'token' => '',
+                    'id_field' => 'id',
+                    'allowed_ips' => '',
+                ],
+                'description' => '自定义默认回调',
+                'weight' => 1,
+            ]);
         },
         function (): void {
             $siteGroup = SettingGroup::where('name', 'site')->first();
@@ -124,6 +164,17 @@ dataset('core_seeders', [
             expect($delegation->value)->toBe(['proxyZone' => 'custom.zone', 'secretId' => 'id123', 'secretKey' => 'key456']);
             expect((string) $delegation->description)->toBe('自定义委托');
             expect((int) $delegation->weight)->toBe(99);
+            $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
+            expect($dnsTools?->value)->toBe(['custom' => 'https://dns.example.com']);
+
+            $callbackGroup = SettingGroup::where('name', 'callback')->first();
+            $defaultCallback = $callbackGroup?->settings()->where('key', 'default')->first();
+            expect($defaultCallback?->value)->toBe([
+                'sources' => '',
+                'token' => '',
+                'id_field' => 'id',
+                'allowed_ips' => '',
+            ]);
         },
         function (): array {
             $siteGroup = SettingGroup::where('name', 'site')->first();

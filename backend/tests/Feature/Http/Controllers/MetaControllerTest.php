@@ -15,6 +15,12 @@ uses()->group('database');
 beforeEach(function () {
     UpgradeFreezeLock::unfreeze();
     Setting::clearAllCache();
+    setPlatformSettings('site', [
+        'dnsTools' => ['type' => 'array', 'value' => [
+            'https://dns-tools-cn.cnssl.com',
+            'https://dns-tools-us.cnssl.com',
+        ]],
+    ]);
 });
 
 afterEach(function () {
@@ -297,6 +303,8 @@ test('旧字符串品牌数组兼容为同名选项', function () {
 });
 
 test('平台设置缺失时返回与现有静态配置一致的默认值', function () {
+    expectsBreakingChange('platform-config-2026-07: site.dnsTools 缺失时移除程序硬编码回落并返回空数组');
+
     bindFakePluginManager([]);
     SettingGroup::whereIn('name', ['site', 'brand'])->each(function (SettingGroup $group) {
         $group->settings()->delete();
@@ -310,7 +318,7 @@ test('平台设置缺失时返回与现有静态配置一致的默认值', funct
         ->assertJsonPath('data.platform.Logo', '/logo.svg')
         ->assertJsonPath('data.platform.Qrcode', '/qrcode.png');
     expect($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()
-        ->and($response->json('data.platform.DnsTools'))->toBeArray()->not->toBeEmpty();
+        ->and($response->json('data.platform.DnsTools'))->toBeArray()->toBeEmpty();
 });
 
 // ==========================================

@@ -157,7 +157,7 @@ Prettier 对 markdown 的处理：
 
 `public/platform-config.json` 只保存部署与界面配置。`Title`、`Brands`、`DnsTools`、`Beian`、`Logo`、`Qrcode` 由后台系统设置提供，admin/user 在完整刷新时分别通过 `/api/meta?channel=admin|user` 加载一次，不轮询。
 
-后台配置归属：`site.name` 为两端共用标题，`site.dnsTools` 为两端共用 DNS 工具，`site.beian/logo/qrcode` 为共用站点信息，其中 `logo`、`qrcode` 使用 `image` 类型；`brand.admin` 与 `brand.user` 为两端独立的 `{ "品牌值": "显示名称" }` 键值对象，前端不维护固定品牌字典。
+后台配置归属：`site.name` 为两端共用标题，`site.dnsTools` 为两端共用 DNS 工具普通数组，按数组顺序优先尝试，`site.beian/logo/qrcode` 为共用站点信息，其中 `logo`、`qrcode` 使用 `image` 类型；`brand.admin` 与 `brand.user` 为两端独立的 `{ "品牌值": "显示名称" }` 键值对象，前端不维护固定品牌字典。
 
 `public/platform-config.json` 核心配置：
 

@@ -137,6 +137,12 @@ $sourceApi = app(Api\Api::class)->getSourceApi($source);
 
 如需独立配置（API 地址、Token），在 `system_settings` 表 `ca` 组添加对应键。
 
+### 回调入口与 ID 字段约定
+
+- `callback` 设置组的每个键名就是一个接入商回调入口：`/callback/{endpoint}` 读取 `callback.{endpoint}`；非 `default` 入口未配置时才回落 `callback.default`。
+- 一个键名对应一家接入商，该接入商回调的订单 ID 参数名是统一契约，故保持单值 `id_field`；不扩展为逗号分隔的 `id_fields` 多字段尝试。
+- 若另一家接入商使用不同 ID 参数名，应新增独立回调键名并配置其 `id_field`，不在同一入口内猜测多个字段。
+
 ### 5. 测试
 
 ```php

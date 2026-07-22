@@ -24,7 +24,7 @@ class SettingSeeder extends Seeder
             ['name' => 'wechat', 'title' => '微信支付设置', 'description' => null, 'weight' => 7],
             ['name' => 'bankAccount', 'title' => '银行账户设置', 'description' => null, 'weight' => 8],
             ['name' => 'enterprise', 'title' => '工商信息查询', 'description' => null, 'weight' => 9],
-            ['name' => 'brand', 'title' => '品牌设置', 'description' => '分别控制管理端和用户端可见的证书品牌', 'weight' => 10],
+            ['name' => 'brand', 'title' => '品牌设置', 'description' => null, 'weight' => 10],
         ];
 
         // 创建 setting groups 并保存到数组中，用 name 作为 key
@@ -45,7 +45,7 @@ class SettingSeeder extends Seeder
                 ['key' => 'logo', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Logo', 'weight' => 3],
                 ['key' => 'qrcode', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '客服微信二维码', 'weight' => 4],
                 ['key' => 'beian', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '豫ICP备123456789号', 'description' => '网站备案号', 'weight' => 5],
-                ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
+                ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['https://dns-tools-cn.cnssl.com', 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
                 ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
                 ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
             ],
@@ -91,7 +91,7 @@ class SettingSeeder extends Seeder
                 ['key' => 'bank', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '开户行', 'weight' => 0],
             ],
             'callback' => [
-                ['key' => 'default', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['sources' => '', 'token' => '', 'id_field' => 'id', 'allowed_ips' => ''], 'description' => '默认回调配置', 'weight' => 1],
+                ['key' => 'default', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['sources' => 'default', 'token' => '', 'id_field' => 'id', 'allowed_ips' => ''], 'description' => '默认回调配置', 'weight' => 1],
             ],
             'enterprise' => [
                 ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '接口URL', 'weight' => 1],
@@ -120,6 +120,8 @@ class SettingSeeder extends Seeder
         Setting::where('group_id', $groups['site']->id)
             ->whereIn('key', ['logo', 'qrcode'])
             ->update(['type' => 'image']);
+
+        $groups['brand']->update(['description' => null]);
 
         // 迁移 site.callbackToken → callback.default.token
         $oldToken = Setting::where('group_id', $groups['site']->id)

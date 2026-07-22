@@ -56,6 +56,18 @@ test('混合 SAN 的签发预检只发送 DNS 域名', function () {
     );
 });
 
+test('site.dnsTools 缺失时签发预检不请求远程节点', function () {
+    $siteGroup = SettingGroup::where('name', 'site')->firstOrFail();
+    Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->delete();
+    Setting::clearGroupCache($siteGroup->id);
+    $order = makeIssueVerifyOrder('example.com');
+    Http::fake();
+
+    VerifyUtil::issueVerify([$order->id]);
+
+    Http::assertNothingSent();
+});
+
 test('纯 IP SAN 的签发预检不请求 CAA 服务', function () {
     $order = makeIssueVerifyOrder('202.155.152.20,2602:f864:218:10::a');
     Http::fake();

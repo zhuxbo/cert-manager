@@ -6,11 +6,6 @@ use App\Models\Setting;
 
 class PlatformConfigService
 {
-    private const array DEFAULT_DNS_TOOLS = [
-        'https://dns-tools-cn.cnssl.com',
-        'https://dns-tools-us.cnssl.com',
-    ];
-
     /**
      * @return array{Title: string, Brands: list<array{label: string, value: string}>, DnsTools: list<string>, Beian: string, Logo: string, Qrcode: string}
      */
@@ -23,7 +18,7 @@ class PlatformConfigService
         return [
             'Title' => $this->stringValue($site['name'] ?? null, 'SSL'),
             'Brands' => $this->brandOptions($brands[$channel] ?? null),
-            'DnsTools' => $this->stringList($site['dnsTools'] ?? null, self::DEFAULT_DNS_TOOLS),
+            'DnsTools' => $this->stringList($site['dnsTools'] ?? null, []),
             'Beian' => $this->stringValue($site['beian'] ?? null, ''),
             'Logo' => $this->stringValue($site['logo'] ?? null, '/logo.svg'),
             'Qrcode' => $this->stringValue($site['qrcode'] ?? null, '/qrcode.png'),

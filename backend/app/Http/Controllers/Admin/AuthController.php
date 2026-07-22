@@ -108,7 +108,7 @@ class AuthController extends BaseController
     }
 
     /**
-     * site.url 为空时，用管理员登录成功时的访问域名回填（单域名部署 admin 与 user 同域）。
+     * site.url 为空时，用管理员登录成功时的访问域名按 HTTPS 回填（单域名部署 admin 与 user 同域）。
      * 已认证上下文 + 真实管理员从真实域名访问，Host 可信；仅空值写一次，之后以后台设置为准。
      */
     private function backfillSiteUrl(LoginRequest $request): void
@@ -121,7 +121,7 @@ class AuthController extends BaseController
             return;
         }
 
-        $setting->value = $request->getSchemeAndHttpHost();
+        $setting->value = 'https://'.$request->getHttpHost();
         $setting->save();
     }
 
