@@ -3,8 +3,7 @@ import { computed, ref, watch } from "vue";
 import Camera from "~icons/ep/camera";
 import ImageCropUpload from "@/components/ImageCropUpload/index.vue";
 import { uploadSiteImage } from "@/api/setting";
-import { message, resolveSiteLogo } from "@shared/utils";
-import defaultLogo from "@/assets/logo.svg?url";
+import { defaultLogoPath, message, resolveSiteLogo } from "@shared/utils";
 
 const props = defineProps<{
   modelValue?: string;
@@ -52,12 +51,12 @@ const hasUploadedImage = computed(() => {
   ).test(props.modelValue || "");
 });
 
-const fallbackLogo = defaultLogo;
+const fallbackLogo = defaultLogoPath("/user/");
 const previewUrl = computed(() => {
   if (props.kind !== "logo") return props.modelValue;
   return logoFallbackActive.value
     ? fallbackLogo
-    : resolveSiteLogo(props.modelValue, defaultLogo);
+    : resolveSiteLogo(props.modelValue, fallbackLogo);
 });
 
 watch(

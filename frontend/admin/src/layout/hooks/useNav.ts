@@ -1,7 +1,6 @@
 import { storeToRefs } from "pinia";
 import { getConfig } from "@/config";
-import { emitter, resolveSiteLogo } from "@shared/utils";
-import defaultLogo from "@/assets/logo.svg?url";
+import { defaultLogoPath, emitter, resolveSiteLogo } from "@shared/utils";
 import { getTopMenu } from "@/router/utils";
 import { useFullscreen } from "@vueuse/core";
 import type { routeMetaType } from "../types";
@@ -112,9 +111,9 @@ export function useNav() {
     return remainingPaths.includes(path);
   }
 
-  /** 获取`logo`：后台未配置时回落打包内置资源（dev/分域部署下 /user/ 路径不可达） */
+  /** 获取`logo`：后台未配置时回落升级保留的 user/logo.svg */
   function getLogo() {
-    return resolveSiteLogo(getConfig("Logo"), defaultLogo);
+    return resolveSiteLogo(getConfig("Logo"), defaultLogoPath("/user/"));
   }
 
   /** 可选展开版 Logo；空值表示保持原有 Logo + 站点名称。 */
