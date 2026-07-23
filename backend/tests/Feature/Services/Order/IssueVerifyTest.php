@@ -129,12 +129,40 @@ test('签发预检首节点连接失败时故障转移到下一节点', function
     );
 });
 
+test('签发预检首节点返回非 JSON 时故障转移到下一节点', function () {
+    setIssueVerifyDnsTools(['http://dnstool1.test', 'http://dnstool2.test']);
+    $order = makeIssueVerifyOrder('example.com');
+    Http::fake([
+        'dnstool1.test/*' => Http::response('not-json'),
+        'dnstool2.test/*' => Http::response(['code' => 1, 'data' => null]),
+    ]);
+
+    VerifyUtil::issueVerify([$order->id]);
+
+    Http::assertSentCount(2);
+    Http::assertSent(fn (Request $request) => $request->url() === 'http://dnstool2.test/api/domain/issue-verify'
+    );
+});
+
 test('签发预检所有节点 HTTP 失败时保持 fail-open', function () {
     setIssueVerifyDnsTools(['http://dnstool1.test', 'http://dnstool2.test']);
     $order = makeIssueVerifyOrder('example.com');
     Http::fake([
         'dnstool1.test/*' => Http::response(['code' => 0], 500),
         'dnstool2.test/*' => Http::response(['code' => 0], 503),
+    ]);
+
+    VerifyUtil::issueVerify([$order->id]);
+
+    Http::assertSentCount(2);
+});
+
+test('签发预检所有节点返回非 JSON 时保持 fail-open', function () {
+    setIssueVerifyDnsTools(['http://dnstool1.test', 'http://dnstool2.test']);
+    $order = makeIssueVerifyOrder('example.com');
+    Http::fake([
+        'dnstool1.test/*' => Http::response('not-json'),
+        'dnstool2.test/*' => Http::response('null'),
     ]);
 
     VerifyUtil::issueVerify([$order->id]);
