@@ -50,10 +50,10 @@ test('存量暂存存在时 Seeder 导入 Beian/Title/Brands', function () {
     File::put(storage_path('app/legacy-platform-config/user.json'), json_encode([
         'Title' => '某某证书平台',
         'Beian' => '粤ICP备2020123456号',
-        'Brands' => ['certum', 'SSLTRUS', 'unknownbrand'],
+        'Brands' => ['SSLTRUS', 'certum', 'unknownbrand'],
     ], JSON_UNESCAPED_UNICODE));
     File::put(storage_path('app/legacy-platform-config/admin.json'), json_encode([
-        'Brands' => ['digicert'],
+        'Brands' => ['DIGICERT', 'certum', 'digicert'],
     ]));
 
     rerunPlatformSettingSeeder();
@@ -64,11 +64,11 @@ test('存量暂存存在时 Seeder 导入 Beian/Title/Brands', function () {
 
     $brandId = DB::table('setting_groups')->where('name', 'brand')->value('id');
     $brandRows = DB::table('settings')->where('group_id', $brandId)->pluck('value', 'key');
-    expect(json_decode($brandRows['user'], true))->toBe([
+    expect(json_decode($brandRows['all'], true))->toBe([
+        'digicert' => 'DigiCert',
         'certum' => 'Certum',
-        'ssltrus' => '锐安信',
-        'unknownbrand' => 'unknownbrand',
-    ])->and(json_decode($brandRows['admin'], true))->toBe(['digicert' => 'DigiCert']);
+    ])->and(json_decode($brandRows['admin'], true))->toBe(['digicert', 'certum'])
+        ->and(json_decode($brandRows['user'], true))->toBe(['ssltrus', 'certum', 'unknownbrand']);
 });
 
 test('无暂存时 Seeder 落安全默认：beian 空串而非占位备案号', function () {
@@ -83,8 +83,11 @@ test('无暂存时 Seeder 落安全默认：beian 空串而非占位备案号', 
         ->and($siteRows['logoExpanded'])->toBe('');
 
     $brandId = DB::table('setting_groups')->where('name', 'brand')->value('id');
+    $allBrands = json_decode(DB::table('settings')->where('group_id', $brandId)->where('key', 'all')->value('value'), true);
+    $adminBrands = json_decode(DB::table('settings')->where('group_id', $brandId)->where('key', 'admin')->value('value'), true);
     $userBrands = json_decode(DB::table('settings')->where('group_id', $brandId)->where('key', 'user')->value('value'), true);
-    expect(array_keys($userBrands))->toContain('certum', 'digicert')
+    expect(array_keys($allBrands))->toBe($adminBrands)
+        ->and($adminBrands)->toHaveCount(9)
         ->and($userBrands)->toHaveCount(9);
 });
 

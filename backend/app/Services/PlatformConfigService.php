@@ -7,17 +7,19 @@ use App\Models\Setting;
 class PlatformConfigService
 {
     /**
-     * @return array{Title: string, Brands: list<array{label: string, value: string}>, DnsTools: list<string>, Beian: string, CopyStart: string, Logo: string, LogoExpanded: string, Qrcode: string}
+     * @return array{Title: string, AllBrands: list<array{label: string, value: string}>, Brands: list<array{label: string, value: string}>, DnsTools: list<string>, Beian: string, CopyStart: string, Logo: string, LogoExpanded: string, Qrcode: string}
      */
     public function get(string $channel): array
     {
         $site = Setting::getByGroupName('site');
         $brands = Setting::getByGroupName('brand');
         $channel = $channel === 'admin' ? 'admin' : 'user';
+        $allBrands = $this->brandOptions($brands['all'] ?? null);
 
         return [
             'Title' => $this->stringValue($site['name'] ?? null, 'SSL'),
-            'Brands' => $this->brandOptions($brands[$channel] ?? null),
+            'AllBrands' => $allBrands,
+            'Brands' => $this->activeBrandOptions($brands[$channel] ?? null, $allBrands),
             'DnsTools' => $this->stringList($site['dnsTools'] ?? null, []),
             'Beian' => $this->stringValue($site['beian'] ?? null, ''),
             'CopyStart' => $this->stringValue($site['copyStart'] ?? null, '2017'),
@@ -99,6 +101,40 @@ class PlatformConfigService
 
             $seen[$brandValue] = true;
             $result[] = ['label' => $label, 'value' => $brandValue];
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  list<array{label: string, value: string}>  $allBrands
+     * @return list<array{label: string, value: string}>
+     */
+    private function activeBrandOptions(mixed $value, array $allBrands): array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return [];
+        }
+
+        $allByValue = [];
+        foreach ($allBrands as $option) {
+            $allByValue[$option['value']] = $option;
+        }
+
+        $result = [];
+        $seen = [];
+        foreach ($value as $item) {
+            if (! is_string($item)) {
+                continue;
+            }
+
+            $brandValue = mb_strtolower(trim($item));
+            if ($brandValue === '' || isset($seen[$brandValue]) || ! isset($allByValue[$brandValue])) {
+                continue;
+            }
+
+            $seen[$brandValue] = true;
+            $result[] = $allByValue[$brandValue];
         }
 
         return $result;

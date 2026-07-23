@@ -8,6 +8,7 @@ test("后台品牌设置存在时不再处理旧 platform-config 站点与品牌
       BaseUrlApi: "/api",
       StorageNameSpace: "user-",
       Title: "旧标题",
+      AllBrands: [{ label: "旧品牌", value: "legacy" }],
       Brands: [{ label: "旧品牌", value: "legacy" }],
       Beian: "旧备案",
       CopyStart: 2010,
@@ -17,6 +18,10 @@ test("后台品牌设置存在时不再处理旧 platform-config 站点与品牌
     },
     {
       Title: "后台标题",
+      AllBrands: [
+        { label: "Certum", value: "certum" },
+        { label: "DigiCert", value: "digicert" }
+      ],
       Brands: [{ label: "Certum", value: "certum" }],
       DnsTools: ["https://dns.example.test"],
       Beian: "后台备案",
@@ -31,6 +36,10 @@ test("后台品牌设置存在时不再处理旧 platform-config 站点与品牌
     BaseUrlApi: "/api",
     StorageNameSpace: "user-",
     Title: "后台标题",
+    AllBrands: [
+      { label: "Certum", value: "certum" },
+      { label: "DigiCert", value: "digicert" }
+    ],
     Brands: [{ label: "Certum", value: "certum" }],
     DnsTools: ["https://dns.example.test"],
     Beian: "后台备案",
@@ -41,24 +50,26 @@ test("后台品牌设置存在时不再处理旧 platform-config 站点与品牌
   });
 });
 
-test("旧后台未提供品牌设置时保留完整 platform-config 兼容行为", () => {
+test("后台平台配置缺失时保留静态部署配置", () => {
   const staticConfig = {
     BaseUrlApi: "/api",
-    Title: "旧标题",
-    Brands: [{ label: "旧品牌", value: "legacy" }]
+    StorageNameSpace: "user-"
   };
 
-  assert.deepEqual(
-    mergePlatformConfigSources(staticConfig, { Title: "不完整后台配置" }),
-    staticConfig
-  );
+  assert.deepEqual(mergePlatformConfigSources(staticConfig), staticConfig);
 });
 
-test("后台品牌设置为空数组时仍视为已存在", () => {
+test("AllBrands 存在时由后台完整接管品牌和站点字段", () => {
   const merged = mergePlatformConfigSources(
-    { Brands: [{ label: "旧品牌", value: "legacy" }] },
-    { Brands: [] }
+    {
+      Title: "旧标题",
+      AllBrands: [{ label: "旧品牌", value: "legacy" }],
+      Brands: [{ label: "旧品牌", value: "legacy" }]
+    },
+    { AllBrands: [], Brands: [] }
   );
 
+  assert.deepEqual(merged.AllBrands, []);
   assert.deepEqual(merged.Brands, []);
+  assert.equal(merged.Title, undefined);
 });

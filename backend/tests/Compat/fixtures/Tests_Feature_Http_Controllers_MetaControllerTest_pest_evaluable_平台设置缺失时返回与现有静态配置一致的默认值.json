@@ -22,6 +22,7 @@
                     "version": "string",
                     "platform": {
                         "Title": "string",
+                        "AllBrands": "array<unknown>",
                         "Brands": "array<unknown>",
                         "DnsTools": "array<unknown>",
                         "Beian": "string",

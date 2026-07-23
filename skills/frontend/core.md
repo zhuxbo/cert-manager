@@ -155,9 +155,9 @@ Prettier 对 markdown 的处理：
 
 ### Platform Config
 
-`public/platform-config.json` 只保存部署与界面配置。`Title`、`Brands`、`DnsTools`、`Beian`、`CopyStart`、`Logo`、`LogoExpanded`、`Qrcode` 由后台系统设置提供，admin/user 在完整刷新时分别通过 `/api/meta?channel=admin|user` 加载一次，不轮询。
+`public/platform-config.json` 只保存部署与界面配置。`Title`、`AllBrands`、`Brands`、`DnsTools`、`Beian`、`CopyStart`、`Logo`、`LogoExpanded`、`Qrcode` 由后台系统设置提供，admin/user 在完整刷新时分别通过 `/api/meta?channel=admin|user` 加载一次，不轮询。
 
-后台配置归属：`site.name` 为两端共用标题，`site.dnsTools` 为两端共用 DNS 工具普通数组，按数组顺序优先尝试，`site.beian/copyStart/logo/logoExpanded/qrcode` 为共用站点信息，其中 `copyStart` 不由 Seeder 创建，缺失或无效时版权起始年份回落 `2017`；`logo`、`logoExpanded`、`qrcode` 使用 `image` 类型，普通 `logo` 与二维码锁定 1:1，`logoExpanded` 保持自由比例，留空时展开侧栏保持 `logo + site.name`。`brand.admin` 与 `brand.user` 为两端独立的 `{ "品牌值": "显示名称" }` 键值对象，前端不维护固定品牌字典。
+后台配置归属：`site.name` 为两端共用标题，`site.dnsTools` 为两端共用 DNS 工具普通数组，按数组顺序优先尝试，`site.beian/copyStart/logo/logoExpanded/qrcode` 为共用站点信息，其中 `copyStart` 不由 Seeder 创建，缺失或无效时版权起始年份回落 `2017`；`logo`、`logoExpanded`、`qrcode` 使用 `image` 类型，普通 `logo` 与二维码锁定 1:1，`logoExpanded` 保持自由比例，留空时展开侧栏保持 `logo + site.name`。`brand.all` 是品牌值到显示名称的唯一词典，供产品维护和品牌展示；`brand.admin`、`brand.user` 是两端独立的活动品牌值普通数组，产品筛选严格保持对应数组顺序。
 
 `public/platform-config.json` 核心配置：
 

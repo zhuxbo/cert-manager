@@ -104,8 +104,31 @@ dataset('core_seeders', [
 
             $brandGroup = SettingGroup::where('name', 'brand')->first();
             expect($brandGroup?->description)->toBeNull();
+            expect(Setting::getValue('brand', 'all'))->toBe([
+                'cnssl' => 'Cnssl',
+                'certum' => 'Certum',
+                'gogetssl' => 'GoGetSSL',
+                'positive' => 'Positive',
+                'keeptrust' => '环安信',
+                'rapid' => 'Rapid',
+                'geotrust' => 'GeoTrust',
+                'digicert' => 'DigiCert',
+                'ssltrus' => '锐安信',
+            ]);
+            expect(Setting::getValue('brand', 'admin'))->toBe([
+                'cnssl', 'certum', 'gogetssl', 'positive', 'keeptrust',
+                'rapid', 'geotrust', 'digicert', 'ssltrus',
+            ]);
+            expect(Setting::getValue('brand', 'user'))->toBe([
+                'cnssl', 'certum', 'gogetssl', 'positive', 'keeptrust',
+                'ssltrus', 'rapid', 'geotrust', 'digicert',
+            ]);
+            expect($brandGroup?->settings()->where('key', 'all')->value('description'))->toBe('全部品牌');
             expect($brandGroup?->settings()->where('key', 'admin')->value('description'))->toBe('管理端品牌选项');
             expect($brandGroup?->settings()->where('key', 'user')->value('description'))->toBe('用户端品牌选项');
+            expect((int) $brandGroup?->settings()->where('key', 'admin')->value('weight'))->toBe(1);
+            expect((int) $brandGroup?->settings()->where('key', 'user')->value('weight'))->toBe(2);
+            expect((int) $brandGroup?->settings()->where('key', 'all')->value('weight'))->toBe(3);
 
             $callbackGroup = SettingGroup::where('name', 'callback')->first();
             $defaultCallback = $callbackGroup?->settings()->where('key', 'default')->first();

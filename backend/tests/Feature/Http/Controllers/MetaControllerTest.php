@@ -22,8 +22,9 @@ beforeEach(function () {
         ]],
     ]);
     setPlatformSettings('brand', [
-        'admin' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert']],
-        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum']],
+        'all' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert', 'certum' => 'Certum']],
+        'admin' => ['type' => 'array', 'value' => ['digicert']],
+        'user' => ['type' => 'array', 'value' => ['certum']],
     ]);
 });
 
@@ -239,17 +240,27 @@ test('user 平台设置复用 site 并读取独立品牌', function () {
         'qrcode' => ['type' => 'image', 'value' => '/storage/site/qrcode-def.png'],
     ]);
     setPlatformSettings('brand', [
-        'admin' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert']],
-        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum', 'sectigo' => 'Sectigo']],
+        'all' => ['type' => 'array', 'value' => [
+            'certum' => 'Certum',
+            'digicert' => 'DigiCert',
+            'sectigo' => 'Sectigo',
+        ]],
+        'admin' => ['type' => 'array', 'value' => ['digicert']],
+        'user' => ['type' => 'array', 'value' => ['sectigo', 'certum']],
     ]);
 
     $response = $this->getJson('/api/meta?channel=user');
 
     $response->assertOk()->assertJsonPath('data.platform', [
         'Title' => '证书中心',
-        'Brands' => [
+        'AllBrands' => [
             ['label' => 'Certum', 'value' => 'certum'],
+            ['label' => 'DigiCert', 'value' => 'digicert'],
             ['label' => 'Sectigo', 'value' => 'sectigo'],
+        ],
+        'Brands' => [
+            ['label' => 'Sectigo', 'value' => 'sectigo'],
+            ['label' => 'Certum', 'value' => 'certum'],
         ],
         'DnsTools' => ['https://dns-cn.test', 'https://dns-us.test'],
         'Beian' => '京ICP备123号',
@@ -267,8 +278,9 @@ test('admin 平台设置只切换品牌且共享站点设置', function () {
         'name' => ['type' => 'string', 'value' => '统一标题'],
     ]);
     setPlatformSettings('brand', [
-        'admin' => ['type' => 'array', 'value' => ['DIGICERT' => 'DigiCert']],
-        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum']],
+        'all' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert', 'certum' => 'Certum']],
+        'admin' => ['type' => 'array', 'value' => ['DIGICERT']],
+        'user' => ['type' => 'array', 'value' => ['certum']],
     ]);
 
     $response = $this->getJson('/api/meta?channel=admin');
@@ -278,35 +290,38 @@ test('admin 平台设置只切换品牌且共享站点设置', function () {
         ->assertJsonPath('data.platform.Brands', [['label' => 'DigiCert', 'value' => 'digicert']]);
 });
 
-test('品牌数组清洗无效项并按 value 去重', function () {
+test('活动品牌按渠道设置排序并过滤重复和词典外品牌', function () {
     bindFakePluginManager([]);
     setPlatformSettings('brand', [
-        'admin' => ['type' => 'array', 'value' => [
-            ' Custom ' => ' 自定义品牌 ',
-            'custom' => '重复项',
-            'empty-label' => '',
-            '' => '缺少值',
+        'all' => ['type' => 'array', 'value' => [
+            'certum' => 'Certum',
+            'digicert' => 'DigiCert',
+            'ssltrus' => '锐安信',
         ]],
+        'admin' => ['type' => 'array', 'value' => [' ssltrus ', 'CERTUM', 'ssltrus', 'unknown']],
     ]);
 
     $response = $this->getJson('/api/meta?channel=admin');
 
     $response->assertOk()->assertJsonPath('data.platform.Brands', [
-        ['label' => '自定义品牌', 'value' => 'custom'],
+        ['label' => '锐安信', 'value' => 'ssltrus'],
+        ['label' => 'Certum', 'value' => 'certum'],
     ]);
 });
 
-test('旧字符串品牌数组兼容为同名选项', function () {
+test('user 活动品牌顺序独立于全部品牌和 admin', function () {
     bindFakePluginManager([]);
     setPlatformSettings('brand', [
-        'user' => ['type' => 'array', 'value' => [' Certum ', 'DIGICERT']],
+        'all' => ['type' => 'array', 'value' => ['certum' => 'Certum', 'digicert' => 'DigiCert']],
+        'admin' => ['type' => 'array', 'value' => ['certum', 'digicert']],
+        'user' => ['type' => 'array', 'value' => ['digicert', 'certum']],
     ]);
 
     $response = $this->getJson('/api/meta?channel=user');
 
     $response->assertOk()->assertJsonPath('data.platform.Brands', [
+        ['label' => 'DigiCert', 'value' => 'digicert'],
         ['label' => 'Certum', 'value' => 'certum'],
-        ['label' => 'DIGICERT', 'value' => 'digicert'],
     ]);
 });
 
@@ -327,7 +342,8 @@ test('平台设置缺失时返回与现有静态配置一致的默认值', funct
         ->assertJsonPath('data.platform.Logo', '/logo.svg')
         ->assertJsonPath('data.platform.LogoExpanded', '')
         ->assertJsonPath('data.platform.Qrcode', '/qrcode.png');
-    expect($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()
+    expect($response->json('data.platform.AllBrands'))->toBeArray()->toBeEmpty()
+        ->and($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()
         ->and($response->json('data.platform.DnsTools'))->toBeArray()->toBeEmpty();
 });
 
@@ -354,8 +370,9 @@ test('GET /api/meta 不写任何业务日志', function () {
 test('channel 参数为数组等非字符串形态时回落 user 端而非报错', function () {
     bindFakePluginManager([]);
     setPlatformSettings('brand', [
-        'admin' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert']],
-        'user' => ['type' => 'array', 'value' => ['certum' => 'Certum']],
+        'all' => ['type' => 'array', 'value' => ['digicert' => 'DigiCert', 'certum' => 'Certum']],
+        'admin' => ['type' => 'array', 'value' => ['digicert']],
+        'user' => ['type' => 'array', 'value' => ['certum']],
     ]);
 
     $response = $this->getJson('/api/meta?channel[]=admin');

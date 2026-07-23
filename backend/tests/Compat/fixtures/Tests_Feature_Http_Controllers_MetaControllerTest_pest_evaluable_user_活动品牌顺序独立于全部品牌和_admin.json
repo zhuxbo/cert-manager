@@ -1,11 +1,13 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\MetaControllerTest::__pest_evaluable_freeze_期间__api_meta_仍_200_不被拦截",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\MetaControllerTest::__pest_evaluable_user_活动品牌顺序独立于全部品牌和_admin",
     "version": "1.0.0",
     "calls": [
         {
             "method": "GET",
             "uri_pattern": "/api/meta",
-            "request_keys": null,
+            "request_keys": [
+                "channel"
+            ],
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",

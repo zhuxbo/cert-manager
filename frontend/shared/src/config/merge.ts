@@ -2,6 +2,7 @@ import type { PlatformConfigs } from "./types";
 
 const backendManagedKeys: (keyof PlatformConfigs)[] = [
   "Title",
+  "AllBrands",
   "Brands",
   "DnsTools",
   "Beian",
@@ -12,8 +13,7 @@ const backendManagedKeys: (keyof PlatformConfigs)[] = [
 ];
 
 /**
- * 新后端已提供 Brands 时，站点与品牌配置完全以后端为准；旧 JSON 只保留部署配置。
- * 老后端没有 platform.Brands 时继续读取完整静态配置，保证跨版本升级兼容。
+ * 后端已提供 AllBrands 时，站点与品牌配置完全以后端为准；静态 JSON 只保留部署配置。
  */
 export const mergePlatformConfigSources = (
   staticConfig: PlatformConfigs,
@@ -22,7 +22,7 @@ export const mergePlatformConfigSources = (
   const merged = { ...staticConfig };
   const hasBackendBrands = Object.prototype.hasOwnProperty.call(
     backendConfig ?? {},
-    "Brands"
+    "AllBrands"
   );
 
   if (!hasBackendBrands) return merged;

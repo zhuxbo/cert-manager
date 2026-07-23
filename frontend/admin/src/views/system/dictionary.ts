@@ -5,12 +5,13 @@ import { normalizeBrandOptions } from "@shared/utils";
  * 系统相关字典数据
  */
 
-// 品牌选项完全由后台 brand.admin 配置提供
+// 全部品牌负责产品维护和统一显示，活动品牌负责管理端筛选
+export const brandOptionsAll = normalizeBrandOptions(getConfig("AllBrands"));
 export const brandOptions = normalizeBrandOptions(getConfig("Brands"));
 
 // 品牌标签映射（小写 → 显示名）
 export const brandLabels: { [key: string]: string } = Object.fromEntries(
-  brandOptions.map(brand => [brand.value, brand.label])
+  brandOptionsAll.map(brand => [brand.value, brand.label])
 );
 
 // CA 选项

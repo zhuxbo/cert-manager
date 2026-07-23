@@ -107,8 +107,9 @@ class SettingSeeder extends Seeder
                 ['key' => 'dailyLimit', 'type' => 'integer', 'options' => null, 'is_multiple' => 0, 'value' => 100, 'description' => '全局每日查询接口上限（0 为无限）', 'weight' => 5],
             ],
             'brand' => [
-                ['key' => 'admin', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultBrands(), 'description' => '管理端品牌选项', 'weight' => 1],
-                ['key' => 'user', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultBrands(), 'description' => '用户端品牌选项', 'weight' => 2],
+                ['key' => 'admin', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultAdminBrands(), 'description' => '管理端品牌选项', 'weight' => 1],
+                ['key' => 'user', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultUserBrands(), 'description' => '用户端品牌选项', 'weight' => 2],
+                ['key' => 'all', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->brandLabels($this->defaultAdminBrands()), 'description' => '全部品牌', 'weight' => 3],
             ],
         ];
 
@@ -193,9 +194,23 @@ class SettingSeeder extends Seeder
         }
 
         foreach (['admin', 'user'] as $side) {
-            $brands = $this->legacyBrands($legacy[$side] ?? null);
+            $brands = $this->legacyBrandValues($legacy[$side] ?? null);
             if ($brands === null) {
                 continue;
+            }
+
+            if ($side === 'admin') {
+                Setting::firstOrCreate(
+                    ['group_id' => $brandGroup->id, 'key' => 'all'],
+                    [
+                        'type' => 'array',
+                        'options' => null,
+                        'is_multiple' => false,
+                        'value' => $this->brandLabels($brands),
+                        'description' => '全部品牌',
+                        'weight' => 3,
+                    ],
+                );
             }
 
             Setting::firstOrCreate(
@@ -247,10 +262,36 @@ class SettingSeeder extends Seeder
         return '';
     }
 
-    /** @return array<string, string>|null */
-    private function legacyBrands(?array $config): ?array
+    /** @return list<string>|null */
+    private function legacyBrandValues(?array $config): ?array
     {
-        $legacyLabels = [
+        if (! is_array($config) || ! array_key_exists('Brands', $config) || ! is_array($config['Brands'])) {
+            return null;
+        }
+
+        $result = [];
+        $seen = [];
+        foreach ($config['Brands'] as $brand) {
+            if (! is_string($brand)) {
+                continue;
+            }
+
+            $value = mb_strtolower(trim($brand));
+            if ($value === '' || isset($seen[$value])) {
+                continue;
+            }
+
+            $seen[$value] = true;
+            $result[] = $value;
+        }
+
+        return $result;
+    }
+
+    /** @return array<string, string> */
+    private function brandDictionary(): array
+    {
+        return [
             'cnssl' => 'Cnssl',
             'certum' => 'Certum',
             'gogetssl' => 'GoGetSSL',
@@ -268,38 +309,57 @@ class SettingSeeder extends Seeder
             'sheca' => '上海CA',
             'cfca' => 'CFCA',
         ];
+    }
 
-        $brands = $config['Brands'] ?? null;
-        if (! is_array($brands)) {
-            return null;
-        }
-
+    /**
+     * @param  list<string>  $brands
+     * @return array<string, string>
+     */
+    private function brandLabels(array $brands): array
+    {
+        $dictionary = $this->brandDictionary();
         $result = [];
         foreach ($brands as $brand) {
-            if (! is_string($brand) || trim($brand) === '') {
+            $value = mb_strtolower(trim($brand));
+            if ($value === '' || isset($result[$value]) || ! isset($dictionary[$value])) {
                 continue;
             }
 
-            $value = mb_strtolower(trim($brand));
-            $result[$value] = $legacyLabels[$value] ?? trim($brand);
+            $result[$value] = $dictionary[$value];
         }
 
-        return $result === [] ? null : $result;
+        return $result;
     }
 
-    /** @return array<string, string> */
-    private function defaultBrands(): array
+    /** @return list<string> */
+    private function defaultAdminBrands(): array
     {
         return [
-            'cnssl' => 'Cnssl',
-            'certum' => 'Certum',
-            'gogetssl' => 'GoGetSSL',
-            'positive' => 'Positive',
-            'keeptrust' => '环安信',
-            'ssltrus' => '锐安信',
-            'rapid' => 'Rapid',
-            'geotrust' => 'GeoTrust',
-            'digicert' => 'DigiCert',
+            'cnssl',
+            'certum',
+            'gogetssl',
+            'positive',
+            'keeptrust',
+            'rapid',
+            'geotrust',
+            'digicert',
+            'ssltrus',
+        ];
+    }
+
+    /** @return list<string> */
+    private function defaultUserBrands(): array
+    {
+        return [
+            'cnssl',
+            'certum',
+            'gogetssl',
+            'positive',
+            'keeptrust',
+            'ssltrus',
+            'rapid',
+            'geotrust',
+            'digicert',
         ];
     }
 }

@@ -69,6 +69,7 @@ declare global {
     ResponsiveStorageNameSpace?: string;
     MenuSearchHistory?: number;
     BaseUrlApi?: string;
+    AllBrands?: Array<{ label: string; value: string }>;
     Brands?: Array<{ label: string; value: string }>;
     DnsTools?: string[];
     Beian?: string;

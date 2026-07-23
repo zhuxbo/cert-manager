@@ -33,6 +33,7 @@ export interface PlatformConfigs {
   ResponsiveStorageNameSpace?: string;
   MenuSearchHistory?: number;
   BaseUrlApi?: string;
+  AllBrands?: BrandOption[];
   Brands?: BrandOption[];
   DnsTools?: string[];
   Beian?: string;
