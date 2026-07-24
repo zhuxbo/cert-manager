@@ -90,6 +90,20 @@ interface OrderSourceApiInterface
 
 8 个核心方法通过接口约束，`getOrders` 等可选方法仍用 `checkMethodExists()` 运行时检查。
 
+## Certum 续费的 SAN 继承边界
+
+传统订单的 `renew` 在 Manager 内仍是**新订单**：创建新 `orders`/`certs` 记录，主价格、基础 SAN 配额及超额 SAN 全部按新购口径计费；源证书只用于续费资格、接替关系和状态翻转。这一点不能与上游接口的域名能力混为一谈。
+
+Certum 是需要保留续费 SAN 限制的特殊来源。Certum `renewCertificate` 接口只提交 `customer`、续费产品码、CSR、原证书序列号及验证方式等字段，**不提交域名列表或 `SANEntries`**；续费域名等订阅者数据从原证书继承。`SANEntries` 只用于 `reissueCertificate` 的新增域名。因此：
+
+- `add_san=0` 时，续费不得提交超过原证书标准/通配符数量的本地 SAN 集合；否则 Manager 会记录上游不会兑现的新增域名。
+- `replace_san=0` 时，续费必须保留并合并原证书 SAN；否则 Manager 会记录上游不会兑现的删除或替换。
+- 合并仅发生在 `replace_san=0`；合并、去重后必须对最终完整域名集合重新计算 SAN 数量，并应用 `gift_root_domain`，避免赠送根域名跨新旧集合时重复计数。
+- 这两个限制表达的是**产品/上游操作能力**，不是“续费复用原订单”或“续费按重签增量计费”。不得仅因续费创建新订单，就从 `ActionTrait::getCert()` 删除 `renew` 的 `add_san` / `replace_san` 约束。
+- 非 Certum 来源若续费接口支持完整替换 SAN，应通过准确的产品能力值表达；不要在 Manager 中按 CA 名称硬编码分支。
+
+相关测试应同时固定两条轴：续费金额与新增同口径；`add_san=0` / `replace_san=0` 时，本地续费证书的最终 SAN 集合与上游继承能力一致。
+
 ## 返回值约定
 
 - 成功：`['code' => 1, 'data' => [...]]`
