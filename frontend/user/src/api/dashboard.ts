@@ -3,6 +3,7 @@ import type {
   AssetsData,
   OrdersData,
   TrendDataPoint,
+  TrendPeriod,
   MonthlyComparisonData
 } from "@/types/dashboard";
 
@@ -18,10 +19,10 @@ export function getOrdersData(): Promise<BaseResponse<OrdersData>> {
 
 // 获取趋势数据
 export function getTrendData(
-  days = 30
+  period: TrendPeriod = "month"
 ): Promise<BaseResponse<TrendDataPoint[]>> {
   return http.get<BaseResponse<TrendDataPoint[]>, null>(
-    `/dashboard/trend?days=${days}`
+    `/dashboard/trend?period=${period}`
   );
 }
 

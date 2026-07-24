@@ -261,7 +261,12 @@ GitHub Release 仅用于代码存档，实际部署使用自建 release 服务�
 
 - `build.env` - 覆盖默认构建变量
 - `config.json` - 覆盖默认配置
-- `logo.png` - 自定义 Logo
+- `logo.svg` - 自定义默认 Logo
+- `qrcode.svg` - 自定义默认二维码占位图
+
+打包资产边界：`backend/storage/app` 是运行数据，构建工作区、产物汇总和完整包都必须排除并清空旧缓存；Web 根入口不携带默认 `favicon.ico`，站点图标只由后台 `site.favicon` 配置提供。前端 `src/assets` 中无引用的图片应删除，`public` 目录则只保留仍在使用的运行时回落资源。
+
+二维码占位资产分包边界：完整包携带新版 `frontend/user/qrcode.svg`；升级包同时排除 `qrcode.svg` 和旧版 `qrcode.png`，由升级流程保留安装目录原有文件。这样旧安装继续使用 PNG，新安装继续使用 SVG，前端仅在后台未上传二维码时按 SVG → PNG 顺序回落。
 
 ---
 

@@ -38,6 +38,7 @@ export interface PlatformConfigs {
   DnsTools?: string[];
   Beian?: string;
   CopyStart?: string | number;
+  Favicon?: string;
   Logo?: string;
   LogoExpanded?: string;
   Qrcode?: string;

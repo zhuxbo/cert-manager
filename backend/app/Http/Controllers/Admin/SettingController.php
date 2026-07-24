@@ -196,12 +196,12 @@ class SettingController extends BaseController
     }
 
     /**
-     * 上传站点 Logo、展开版 Logo 或客服二维码。
+     * 上传站点 Favicon、Logo、展开版 Logo 或客服二维码。
      */
     public function uploadSiteImage(UploadSiteImageRequest $request, string $kind): void
     {
         $settingKey = $kind === 'logo-expanded' ? 'logoExpanded' : $kind;
-        $isLogo = $kind !== 'qrcode';
+        $isLogo = in_array($kind, ['logo', 'logo-expanded'], true);
 
         /** @var UploadedFile $file */
         $file = $request->file('file');
@@ -212,6 +212,9 @@ class SettingController extends BaseController
             'image/svg+xml' => $isLogo ? 'svg' : null,
             default => null,
         };
+        if ($kind === 'favicon') {
+            $extension = 'ico';
+        }
         if ($extension === null) {
             $this->error('不支持的图片格式');
         }
@@ -269,7 +272,11 @@ class SettingController extends BaseController
         $path = 'site/'.substr($url, strlen('/api/meta/site-image/'));
 
         $kindPattern = preg_quote($kind, '/');
-        $extensions = $kind === 'qrcode' ? 'jpg|png|webp' : 'jpg|png|webp|svg';
+        $extensions = match ($kind) {
+            'favicon' => 'ico',
+            'qrcode' => 'jpg|png|webp',
+            default => 'jpg|png|webp|svg',
+        };
 
         return preg_match("/^site\/$kindPattern-[a-f0-9]{64}\.($extensions)$/", $path) === 1
             ? $path

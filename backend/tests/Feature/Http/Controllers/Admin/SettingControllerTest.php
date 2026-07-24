@@ -166,6 +166,79 @@ test('管理员上传站点 Logo 后更新设置并清理旧托管文件', funct
         ->toContain('immutable');
 });
 
+test('管理员只能上传内容合法的 ICO Favicon', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    $setting = Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'favicon'],
+        ['type' => 'image', 'value' => ''],
+    );
+    $png = base64_decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        true,
+    );
+    expect($png)->toBeString();
+    $ico = pack('vvv', 0, 1, 1)
+        .chr(1).chr(1).chr(0).chr(0)
+        .pack('vvVV', 1, 32, strlen($png), 22)
+        .$png;
+
+    $response = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/favicon', [
+        'file' => UploadedFile::fake()->createWithContent('favicon.ico', $ico),
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    $url = $response->json('data.url');
+    expect($url)->toMatch('#^/api/meta/site-image/favicon-[a-f0-9]{64}\.ico$#')
+        ->and($setting->fresh()->value)->toBe($url);
+    Storage::disk('public')->assertExists('site/'.basename($url));
+    $this->get($url)
+        ->assertOk()
+        ->assertHeader('X-Content-Type-Options', 'nosniff');
+
+    $dib = pack('V3v2V6', 40, 1, 2, 1, 32, 0, 4, 0, 0, 0, 0)
+        .pack('C4', 0, 0, 0, 255)
+        .pack('V', 0);
+    $dibIco = pack('vvv', 0, 1, 1)
+        .chr(1).chr(1).chr(0).chr(0)
+        .pack('vvVV', 1, 32, strlen($dib), 22)
+        .$dib;
+    $this->actingAsAdmin($this->admin)
+        ->post('/api/admin/setting/site-image/favicon', [
+            'file' => UploadedFile::fake()->createWithContent('favicon.ico', $dibIco),
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    foreach ([
+        UploadedFile::fake()->createWithContent('fake.ico', 'not-an-icon'),
+        UploadedFile::fake()->createWithContent(
+            'broken-payload.ico',
+            pack('vvv', 0, 1, 1)
+                .chr(1).chr(1).chr(0).chr(0)
+                .pack('vvVV', 1, 32, 4, 22)
+                .'ICON',
+        ),
+        UploadedFile::fake()->createWithContent(
+            'broken-png.ico',
+            pack('vvv', 0, 1, 1)
+                .chr(1).chr(1).chr(0).chr(0)
+                .pack('vvVV', 1, 32, 14, 22)
+                ."\x89PNG\r\n\x1a\nBROKEN",
+        ),
+        UploadedFile::fake()->createWithContent('favicon.png', $ico),
+    ] as $invalidFile) {
+        $this->actingAsAdmin($this->admin)
+            ->post('/api/admin/setting/site-image/favicon', ['file' => $invalidFile])
+            ->assertOk()
+            ->assertJson(['code' => 0])
+            ->assertJsonPath('errors.file.0', 'Favicon 仅支持 ICO 格式');
+    }
+});
+
 test('管理员可以上传 SVG Logo 但二维码不接受 SVG', function () {
     Storage::fake('public');
     $group = SettingGroup::firstOrCreate(

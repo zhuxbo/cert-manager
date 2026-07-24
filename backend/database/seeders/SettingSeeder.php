@@ -47,13 +47,14 @@ class SettingSeeder extends Seeder
             'site' => [
                 ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '用户URL', 'weight' => 1],
                 ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => 'SSL', 'description' => '站点名称', 'weight' => 2],
-                ['key' => 'logo', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Logo', 'weight' => 3],
-                ['key' => 'logoExpanded', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '展开版 Logo', 'weight' => 4],
-                ['key' => 'qrcode', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '客服微信二维码', 'weight' => 5],
-                ['key' => 'beian', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '网站备案号', 'weight' => 6],
-                ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['https://dns-tools-cn.cnssl.com', 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 7],
-                ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 8],
-                ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 9],
+                ['key' => 'favicon', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Favicon', 'weight' => 3],
+                ['key' => 'logo', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Logo', 'weight' => 4],
+                ['key' => 'logoExpanded', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '展开版 Logo', 'weight' => 5],
+                ['key' => 'qrcode', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '客服微信二维码', 'weight' => 6],
+                ['key' => 'beian', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '网站备案号', 'weight' => 7],
+                ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['https://dns-tools-cn.cnssl.com', 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 8],
+                ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 9],
+                ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 10],
             ],
             'ca' => [
                 ['key' => 'sources', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['default' => 'Default'], 'description' => '来源', 'weight' => 1],
@@ -125,8 +126,24 @@ class SettingSeeder extends Seeder
         }
 
         Setting::where('group_id', $groups['site']->id)
-            ->whereIn('key', ['logo', 'logoExpanded', 'qrcode'])
+            ->whereIn('key', ['favicon', 'logo', 'logoExpanded', 'qrcode'])
             ->update(['type' => 'image']);
+
+        // 只迁移旧默认排序，管理员自定义过的 weight 保持不变。
+        foreach ([
+            'logo' => [3, 4],
+            'logoExpanded' => [4, 5],
+            'qrcode' => [5, 6],
+            'beian' => [6, 7],
+            'dnsTools' => [7, 8],
+            'delegation' => [8, 9],
+            'autoRefundOnSync' => [9, 10],
+        ] as $key => [$oldWeight, $newWeight]) {
+            Setting::where('group_id', $groups['site']->id)
+                ->where('key', $key)
+                ->where('weight', $oldWeight)
+                ->update(['weight' => $newWeight]);
+        }
 
         Setting::where('group_id', $groups['site']->id)
             ->where('key', 'name')

@@ -1,0 +1,26 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_趋势数据未知范围回退到月",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/trend",
+            "request_keys": [
+                "period"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "date": "string",
+                        "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "consumption": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

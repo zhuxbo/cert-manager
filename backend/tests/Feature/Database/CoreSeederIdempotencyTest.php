@@ -101,6 +101,10 @@ dataset('core_seeders', [
             $expandedLogo = Setting::where('group_id', $siteGroup->id)->where('key', 'logoExpanded')->first();
             expect($expandedLogo?->type)->toBe('image')
                 ->and($expandedLogo?->value)->toBe('');
+            $favicon = Setting::where('group_id', $siteGroup->id)->where('key', 'favicon')->first();
+            expect($favicon?->type)->toBe('image')
+                ->and($favicon?->value)->toBe('')
+                ->and($favicon?->weight)->toBe(3);
 
             $brandGroup = SettingGroup::where('name', 'brand')->first();
             expect($brandGroup?->description)->toBeNull();

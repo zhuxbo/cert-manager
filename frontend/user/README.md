@@ -244,7 +244,7 @@ pnpm typecheck
 
 - **BaseUrlApi**: 用户端API基础地址，对应后端 `routes/api.user.php`
 - **ResponsiveStorageNameSpace**: 本地存储命名空间，使用 `user-` 前缀
-- 标题、DNS 工具、备案号、Logo、可选展开版 Logo、二维码在后台“站点设置”维护
+- 标题、DNS 工具、备案号、Favicon、Logo、可选展开版 Logo、二维码在后台“站点设置”维护
 - 品牌显示名称在后台“品牌设置”的 `all` 键值对维护；用户端 `user` 普通数组只控制产品筛选范围和顺序
 
 ## 开发规范

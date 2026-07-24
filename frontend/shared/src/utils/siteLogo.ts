@@ -5,10 +5,17 @@ export const defaultLogoPath = (baseUrl: string): string => {
 };
 
 /** 由公开资源目录推导默认客服二维码地址。 */
-export const defaultQrcodePath = (baseUrl: string): string => {
+export const defaultQrcodePath = (
+  baseUrl: string,
+  extension: "svg" | "png" = "svg"
+): string => {
   const base = baseUrl || "/";
-  return `${base.endsWith("/") ? base : `${base}/`}qrcode.png`;
+  return `${base.endsWith("/") ? base : `${base}/`}qrcode.${extension}`;
 };
+
+const isDefaultQrcodeValue = (
+  qrcode: string | null | undefined
+): boolean => !qrcode || ["/qrcode.png", "/qrcode.svg"].includes(qrcode);
 
 /**
  * 后台未配置（空值或默认哨兵 "/logo.svg"）时回落到调用方提供的默认资源；
@@ -21,10 +28,21 @@ export const resolveSiteLogo = (
   return logo && logo !== "/logo.svg" ? logo : fallbackUrl;
 };
 
-/** 后台未配置时回落到 user 端随升级保留的静态二维码。 */
+/** 后台未配置或返回默认哨兵时，优先使用新版 SVG 占位图。 */
 export const resolveSiteQrcode = (
   qrcode: string | null | undefined,
   fallbackUrl: string
 ): string => {
-  return qrcode && qrcode !== "/qrcode.png" ? qrcode : fallbackUrl;
+  return isDefaultQrcodeValue(qrcode) ? fallbackUrl : qrcode;
+};
+
+/** 默认 SVG 不存在时回落旧版 PNG；后台上传的自定义地址加载失败时不替换。 */
+export const resolveSiteQrcodeAfterError = (
+  qrcode: string | null | undefined,
+  currentUrl: string,
+  legacyFallbackUrl: string
+): string => {
+  return isDefaultQrcodeValue(qrcode) && currentUrl !== legacyFallbackUrl
+    ? legacyFallbackUrl
+    : currentUrl;
 };

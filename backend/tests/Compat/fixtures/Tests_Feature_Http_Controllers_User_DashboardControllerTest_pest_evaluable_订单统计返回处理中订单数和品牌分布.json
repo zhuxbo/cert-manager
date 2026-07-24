@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_获取订单统计",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_订单统计返回处理中订单数和品牌分布",
     "version": "1.0.0",
     "calls": [
         {
@@ -19,10 +19,15 @@
                     "cancelled_orders": "integer",
                     "net_orders": "integer",
                     "status_distribution": {
+                        "unpaid": "integer",
+                        "pending": "integer",
+                        "processing": "integer",
+                        "approving": "integer",
                         "active": "integer"
                     },
                     "brand_distribution": {
-                        "test brand": "integer"
+                        "sectigo": "integer",
+                        "digicert": "integer"
                     },
                     "monthly_orders": "integer",
                     "monthly_cancelled_orders": "integer",

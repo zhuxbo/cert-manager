@@ -27,6 +27,7 @@
                         "DnsTools": "array<unknown>",
                         "Beian": "string",
                         "CopyStart": "string",
+                        "Favicon": "string",
                         "Logo": "string",
                         "LogoExpanded": "string",
                         "Qrcode": "string"

@@ -22,6 +22,8 @@ set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 UPGRADE="$ROOT/deploy/upgrade.sh"
 BUILD_CONFIG="$ROOT/build/config.json"
+CONTAINER_BUILD="$ROOT/build/scripts/container-build.sh"
+COLLECT_ARTIFACTS="$ROOT/build/scripts/collect-artifacts.sh"
 PASS=0
 FAIL=0
 
@@ -300,7 +302,8 @@ test_a8() {
     printf 'ORDER-ADAPTER' >"$PRESERVE_DIR/api_adapters/order/MyOrderApi.php"
     printf 'ACME-ADAPTER' >"$PRESERVE_DIR/api_adapters/acme/MyAcmeApi.php"
     printf 'LOGO' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
-    printf 'QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.png"
+    printf 'SVG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.svg"
+    printf 'PNG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.png"
     local rc
     (_restore_preserved_extras)
     rc=$?
@@ -309,7 +312,8 @@ test_a8() {
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Order/Api/MyOrderApi.php" 2>/dev/null || true)" = "ORDER-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Acme/Api/MyAcmeApi.php" 2>/dev/null || true)" = "ACME-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg" 2>/dev/null || true)" = "LOGO" ] || ok=0
-    [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.png" 2>/dev/null || true)" = "QR" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.svg" 2>/dev/null || true)" = "SVG-QR" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.png" 2>/dev/null || true)" = "PNG-QR" ] || ok=0
     if [ "$ok" -eq 1 ]; then
         pass "A8 extras 还原：api_adapters(order+acme) + frontend_config 还原到位、rc=0"
     else
@@ -630,6 +634,34 @@ if grep -qE 'frontend_config/admin_logo|frontend/admin/logo\.svg' "$UPGRADE" "$B
     fail "C admin logo 不应再进入升级保护或排除清单"
 else
     pass "C admin logo 不再进入升级保护或排除清单"
+fi
+
+if [ -e "$ROOT/build/web/public/favicon.ico" ] ||
+    grep -qF 'favicon.ico' "$COLLECT_ARTIFACTS"; then
+    fail "C 系统默认 favicon 不应进入 Web 静态产物"
+else
+    pass "C Web 静态产物不再携带系统默认 favicon"
+fi
+
+if grep -qF "storage/app/***" "$CONTAINER_BUILD" "$COLLECT_ARTIFACTS" &&
+    grep -qF '"backend/storage/app/***"' "$BUILD_CONFIG" &&
+    grep -qF 'rm -rf "$WORKSPACE_DIR/backend/storage/app"' "$CONTAINER_BUILD" &&
+    grep -qF 'rm -rf "$PRODUCTION_DIR/backend/storage/app"' "$COLLECT_ARTIFACTS"; then
+    pass "C 构建复制、产物汇总和完整包均排除 storage/app 运行数据"
+else
+    fail "C storage/app 运行数据缺少三层打包排除"
+fi
+
+QRCODE_SVG="$ROOT/frontend/user/public/qrcode.svg"
+if [ -f "$ROOT/frontend/user/public/logo.svg" ] &&
+    [ -f "$QRCODE_SVG" ] &&
+    [ ! -e "$ROOT/frontend/user/public/qrcode.png" ] &&
+    [ "$(wc -c <"$QRCODE_SVG")" -le 2048 ] &&
+    grep -qF '"frontend/user/qrcode.svg"' "$BUILD_CONFIG" &&
+    grep -qF '"frontend/user/qrcode.png"' "$BUILD_CONFIG"; then
+    pass "C 完整包使用轻量 SVG，升级包不交付二维码并保留安装目录的新旧回落资源"
+else
+    fail "C 默认 SVG 缺失/过大、仍携带默认 PNG，或升级包未排除新旧二维码"
 fi
 
 echo ""

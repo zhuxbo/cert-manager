@@ -1,32 +1,29 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
-import { useRouter } from "vue-router";
 import { getConfig } from "@/config";
 import { getProfile } from "@/api/auth";
-import {
-  getAssetsData,
-  getOrdersData,
-  getTrendData,
-  getMonthlyComparison
-} from "@/api/dashboard";
+import { getAssetsData, getOrdersData, getTrendData } from "@/api/dashboard";
 import PieChart from "@shared/components/Charts/PieChart.vue";
 import LineChart from "@shared/components/Charts/LineChart.vue";
-import BarChart from "@shared/components/Charts/BarChart.vue";
 import { getPluginWidgets } from "@shared/utils/plugin-loader";
-import { defaultQrcodePath, resolveSiteQrcode } from "@shared/utils";
+import {
+  defaultQrcodePath,
+  resolveSiteQrcode,
+  resolveSiteQrcodeAfterError
+} from "@shared/utils";
 import { useLazyVisible } from "@shared/hooks";
+import { brandLabels } from "@/views/system/dictionary";
+import { topUpDialogStore } from "@/store/modules/topUp";
 import type {
   AssetsData,
   OrdersData,
   TrendDataPoint,
-  MonthlyComparisonData
+  TrendPeriod
 } from "@/types/dashboard";
 
 defineOptions({
   name: "Dashboard"
 });
-
-const router = useRouter();
 
 // 插件 widget
 const dashboardTopWidgets = getPluginWidgets("user-dashboard-top");
@@ -40,7 +37,7 @@ const loading = ref(true);
 const assetsData = ref<AssetsData>();
 const ordersData = ref<OrdersData>();
 const trendData = ref<TrendDataPoint[]>([]);
-const monthlyComparison = ref<MonthlyComparisonData>();
+const trendPeriod = ref<TrendPeriod>("month");
 
 // 次批（图表）加载状态：与首批卡片解耦，进入视口后才触发
 const chartsLoading = ref(true);
@@ -50,12 +47,20 @@ const chartsSentinel = ref<HTMLElement>();
 
 // 二维码放大模态框
 const showQRModal = ref(false);
-const qrcodeUrl = computed(() =>
+const configuredQrcode = getConfig("Qrcode");
+const qrcodeUrl = ref(
   resolveSiteQrcode(
-    getConfig("Qrcode"),
+    configuredQrcode,
     defaultQrcodePath(import.meta.env.BASE_URL)
   )
 );
+const handleQrcodeLoadError = () => {
+  qrcodeUrl.value = resolveSiteQrcodeAfterError(
+    configuredQrcode,
+    qrcodeUrl.value,
+    defaultQrcodePath(import.meta.env.BASE_URL, "png")
+  );
+};
 
 // 格式化金额
 const formatCurrency = (amount: number): string => {
@@ -64,68 +69,6 @@ const formatCurrency = (amount: number): string => {
     currency: "CNY",
     minimumFractionDigits: 2
   }).format(amount);
-};
-
-// 格式化增长率
-const formatGrowthRate = (rate: number): string => {
-  const prefix = rate > 0 ? "+" : "";
-  return `${prefix}${rate.toFixed(1)}%`;
-};
-
-// 格式化本地日期为YYYY-MM-DD格式（考虑时区）
-const formatLocalDate = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-// 跳转到订单列表页面的功能
-const goToOrderList = (filter: {
-  status?: string;
-  statusSet?: string;
-  expires_at?: [string, string];
-  created_at?: [string, string];
-}) => {
-  router.push({
-    path: "/order",
-    query: filter
-  });
-};
-
-// 处理点击7天内过期
-const handleClickExpiring7Days = () => {
-  const now = new Date();
-  const sixDaysLater = new Date(now.getTime() + 6 * 24 * 60 * 60 * 1000);
-  goToOrderList({
-    expires_at: [formatLocalDate(now), formatLocalDate(sixDaysLater)]
-  });
-};
-
-// 处理点击30天内过期
-const handleClickExpiring30Days = () => {
-  const now = new Date();
-  const twentyNineDaysLater = new Date(
-    now.getTime() + 29 * 24 * 60 * 60 * 1000
-  );
-  goToOrderList({
-    expires_at: [formatLocalDate(now), formatLocalDate(twentyNineDaysLater)]
-  });
-};
-
-// 处理点击待验证订单
-const handleClickProcessingOrders = () => {
-  goToOrderList({ status: "processing" });
-};
-
-// 处理点击有效订单
-const handleClickActiveOrders = () => {
-  goToOrderList({ status: "active" });
-};
-
-// 处理点击总订单
-const handleClickTotalOrders = () => {
-  goToOrderList({ statusSet: "all" });
 };
 
 // 打开二维码放大模态框
@@ -203,6 +146,44 @@ const ordersPieData = computed(() => {
     .filter(item => item.value > 0);
 });
 
+// 订单品牌排行数据：少量订单也能直接看清数量与占比
+const brandDistributionData = computed(() => {
+  const entries = Object.entries(ordersData.value?.brand_distribution || {})
+    .filter(([, count]) => count > 0)
+    .sort(([, countA], [, countB]) => countB - countA);
+  const visibleEntries = entries.slice(0, 7);
+  if (entries.length > 7) {
+    visibleEntries.push([
+      "other",
+      entries.slice(7).reduce((sum, [, count]) => sum + count, 0)
+    ]);
+  }
+  const total = visibleEntries.reduce((sum, [, count]) => sum + count, 0);
+  const colors = [
+    "#3B82F6",
+    "#10B981",
+    "#F59E0B",
+    "#8B5CF6",
+    "#06B6D4",
+    "#EC4899",
+    "#84CC16",
+    "#94A3B8"
+  ];
+
+  return visibleEntries.map(([brand, count], index) => ({
+    name: brand === "other" ? "其他" : brandLabels[brand] || brand,
+    count,
+    percentage: total > 0 ? (count / total) * 100 : 0,
+    color: colors[index % colors.length]
+  }));
+});
+
+const trendPeriodOptions: Array<{ label: string; value: TrendPeriod }> = [
+  { label: "月", value: "month" },
+  { label: "季", value: "quarter" },
+  { label: "年", value: "year" }
+];
+
 // 趋势图数据
 const trendChartData = computed(() => {
   if (!trendData.value.length)
@@ -210,71 +191,30 @@ const trendChartData = computed(() => {
 
   return {
     xAxisData: trendData.value.map(item => {
-      const date = new Date(item.date);
-      return `${date.getMonth() + 1}/${date.getDate()}`;
+      const [year, month, day] = item.date.split("-");
+      return trendPeriod.value === "year"
+        ? `${year.slice(2)}-${Number(month)}`
+        : `${Number(month)}/${Number(day)}`;
     }),
     series: [
       {
-        name: "订单交易",
-        data: trendData.value.map(item => item.orders),
-        color: "#3B82F6",
-        yAxisIndex: 0
-      },
-      {
-        name: "取消交易",
-        data: trendData.value.map(item => item.cancelled_orders),
-        color: "#F97316",
-        yAxisIndex: 0
-      },
-      {
-        name: "净增订单",
+        name: "订单",
         data: trendData.value.map(item => item.net_orders),
-        color: "#8B5CF6",
+        color: "#3B82F6",
+        lineWidth: 3,
         yAxisIndex: 0
       },
       {
-        name: "消费金额",
+        name: "消费",
         data: trendData.value.map(item => item.consumption),
         color: "#10B981",
+        lineWidth: 3,
         yAxisIndex: 1
       }
     ],
     yAxisConfig: [
       { name: "订单数量", position: "left" as const },
       { name: "消费金额", position: "right" as const }
-    ]
-  };
-});
-
-// 月度对比图数据
-const monthlyComparisonChartData = computed(() => {
-  if (!monthlyComparison.value) return { xAxisData: [], series: [] };
-
-  const data = monthlyComparison.value;
-
-  return {
-    xAxisData: ["订单", "取消", "净增", "消费金额"],
-    series: [
-      {
-        name: "上月",
-        data: [
-          data.last_month.orders,
-          data.last_month.cancelled_orders,
-          data.last_month.net_orders,
-          data.last_month.consumption
-        ],
-        color: "#9CA3AF"
-      },
-      {
-        name: "本月",
-        data: [
-          data.current_month.orders,
-          data.current_month.cancelled_orders,
-          data.current_month.net_orders,
-          data.current_month.consumption
-        ],
-        color: "#3B82F6"
-      }
     ]
   };
 });
@@ -309,30 +249,34 @@ const fetchOverviewData = async () => {
   }
 };
 
-// 次批：图表（趋势 / 月度对比），二屏内容延后加载
-// 注：订单状态分布饼图复用首批 ordersData，无需在此重复请求
+// 次批：趋势图，二屏内容延后加载
+// 注：状态/品牌分布复用首批 ordersData，无需重复请求
+let latestTrendRequestId = 0;
+
 const fetchChartsData = async () => {
+  const requestId = ++latestTrendRequestId;
+  const period = trendPeriod.value;
+
   try {
     chartsLoading.value = true;
-
-    const [trendRes, comparisonRes] = await Promise.allSettled([
-      getTrendData(30),
-      getMonthlyComparison()
-    ]);
-
-    if (trendRes.status === "fulfilled") {
-      trendData.value = trendRes.value.data;
-    } else {
-      console.error("获取趋势数据失败:", trendRes.reason);
-    }
-    if (comparisonRes.status === "fulfilled") {
-      monthlyComparison.value = comparisonRes.value.data;
-    } else {
-      console.error("获取月度对比数据失败:", comparisonRes.reason);
-    }
+    const res = await getTrendData(period);
+    if (requestId !== latestTrendRequestId) return;
+    trendData.value = res.data;
+  } catch (error) {
+    if (requestId !== latestTrendRequestId) return;
+    trendData.value = [];
+    console.error("获取趋势数据失败:", error);
   } finally {
-    chartsLoading.value = false;
+    if (requestId === latestTrendRequestId) {
+      chartsLoading.value = false;
+    }
   }
+};
+
+const handleTrendPeriodChange = async (period: TrendPeriod) => {
+  if (period === trendPeriod.value) return;
+  trendPeriod.value = period;
+  await fetchChartsData();
 };
 
 onMounted(async () => {
@@ -346,6 +290,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  latestTrendRequestId++;
   // 移除键盘事件监听
   document.removeEventListener("keydown", handleKeydown);
 });
@@ -355,7 +300,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
 </script>
 
 <template>
-  <div class="min-h-screen">
+  <div>
     <!-- 加载状态 -->
     <div v-if="loading" class="flex items-center justify-center h-64">
       <div class="text-gray-500 dark:text-gray-400">数据加载中...</div>
@@ -387,6 +332,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               alt="二维码"
               class="w-24 h-24 rounded-sm block cursor-pointer hover:opacity-80! transition-opacity! duration-200!"
               title="点击放大"
+              @error="handleQrcodeLoadError"
               @click="openQRModal"
             />
           </div>
@@ -395,6 +341,44 @@ useLazyVisible(chartsSentinel, fetchChartsData);
 
       <!-- 资产概览卡片 -->
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <!-- 账户余额 -->
+        <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
+          <div class="flex items-center justify-between">
+            <div class="flex flex-col justify-center">
+              <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
+                账户余额
+              </p>
+              <p
+                class="text-2xl font-bold cursor-pointer transition-colors"
+                :class="
+                  (assetsData?.balance || 0) < 0
+                    ? 'text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300'
+                    : 'text-gray-900 hover:text-blue-600 dark:text-white dark:hover:text-blue-400'
+                "
+                title="点击充值"
+                @click="topUpDialogStore().showDialog"
+              >
+                {{ formatCurrency(assetsData?.balance || 0) }}
+              </p>
+            </div>
+            <div class="p-3 bg-indigo-100 dark:bg-indigo-900 rounded-full">
+              <svg
+                class="w-6 h-6 text-indigo-600 dark:text-indigo-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-2m0-6h2a2 2 0 012 2v2a2 2 0 01-2 2h-2V9zm0 0h2"
+                />
+              </svg>
+            </div>
+          </div>
+        </div>
+
         <!-- 7/30天到期数 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between">
@@ -403,21 +387,9 @@ useLazyVisible(chartsSentinel, fetchChartsData);
                 7/30天到期数
               </p>
               <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                <span
-                  class="hover:text-yellow-600 cursor-pointer transition-colors duration-200"
-                  title="点击查看7天内到期的订单"
-                  @click="handleClickExpiring7Days"
-                >
-                  {{ ordersData?.expiring_7_days || 0 }}
-                </span>
+                <span>{{ ordersData?.expiring_7_days || 0 }}</span>
                 /
-                <span
-                  class="hover:text-yellow-600 cursor-pointer transition-colors duration-200"
-                  title="点击查看30天内到期的订单"
-                  @click="handleClickExpiring30Days"
-                >
-                  {{ ordersData?.expiring_30_days || 0 }}
-                </span>
+                <span>{{ ordersData?.expiring_30_days || 0 }}</span>
               </p>
             </div>
             <div class="p-3 bg-yellow-100 dark:bg-yellow-900 rounded-full">
@@ -438,19 +410,18 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
         </div>
 
-        <!-- 待验证订单数 -->
+        <!-- 处理中订单数 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between">
             <div class="flex flex-col justify-center">
               <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                待验证订单数
+                处理中订单数
               </p>
-              <p
-                class="text-2xl font-bold text-gray-900 dark:text-white hover:text-blue-600 cursor-pointer transition-colors duration-200"
-                title="点击查看待验证的订单"
-                @click="handleClickProcessingOrders"
-              >
-                {{ ordersData?.status_distribution?.processing || 0 }}
+              <p class="text-2xl font-bold text-gray-900 dark:text-white">
+                {{ ordersData?.processing_orders || 0 }}
+              </p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                待支付 · 待提交 · 待验证 · 审核中
               </p>
             </div>
             <div class="p-3 bg-blue-100 dark:bg-blue-900 rounded-full">
@@ -471,19 +442,17 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
         </div>
 
-        <!-- 有效订单数 -->
+        <!-- 有效/总订单数 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between">
             <div class="flex flex-col justify-center">
               <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                有效订单数
+                有效/总订单数
               </p>
-              <p
-                class="text-2xl font-bold text-gray-900 dark:text-white hover:text-green-600 cursor-pointer transition-colors duration-200"
-                title="点击查看有效的订单"
-                @click="handleClickActiveOrders"
-              >
-                {{ ordersData?.active_orders || 0 }}
+              <p class="text-2xl font-bold text-gray-900 dark:text-white">
+                <span>{{ ordersData?.active_orders || 0 }}</span>
+                /
+                <span>{{ ordersData?.order_count || 0 }}</span>
               </p>
             </div>
             <div class="p-3 bg-green-100 dark:bg-green-900 rounded-full">
@@ -503,48 +472,9 @@ useLazyVisible(chartsSentinel, fetchChartsData);
             </div>
           </div>
         </div>
-
-        <!-- 交易流水订单统计 -->
-        <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
-          <div class="flex items-center justify-between">
-            <div class="flex flex-col justify-center">
-              <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-                净增/总订单数
-              </p>
-              <p
-                class="text-2xl font-bold text-gray-900 dark:text-white hover:text-orange-600 cursor-pointer transition-colors duration-200"
-                title="点击查看所有订单"
-                @click="handleClickTotalOrders"
-              >
-                {{ ordersData?.net_orders || 0 }} /
-                {{ ordersData?.total_orders || 0 }}
-              </p>
-              <p class="text-xs text-gray-500 dark:text-gray-400">
-                订单 +{{ ordersData?.total_orders || 0 }} · 取消 -{{
-                  ordersData?.cancelled_orders || 0
-                }}
-              </p>
-            </div>
-            <div class="p-3 bg-orange-100 dark:bg-orange-900 rounded-full">
-              <svg
-                class="w-6 h-6 text-orange-600 dark:text-orange-400"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"
-                />
-              </svg>
-            </div>
-          </div>
-        </div>
       </div>
 
-      <!-- 图表区域（chartsSentinel 标记次批触发点，进入视口即加载图表） -->
+      <!-- 分布图 -->
       <div ref="chartsSentinel" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- 订单状态分布 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
@@ -555,47 +485,105 @@ useLazyVisible(chartsSentinel, fetchChartsData);
           </div>
           <div class="h-80">
             <PieChart
+              v-if="ordersPieData.length"
               :data="ordersPieData"
-              :loading="chartsLoading"
               title="订单状态"
             />
+            <div
+              v-else
+              class="flex items-center justify-center h-full text-gray-500 dark:text-gray-400"
+            >
+              暂无订单状态数据
+            </div>
           </div>
         </div>
 
-        <!-- 最近趋势 -->
+        <!-- 订单品牌分布 -->
         <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
-              最近30天趋势
+              订单品牌分布
             </h3>
           </div>
           <div class="h-80">
-            <LineChart
-              :x-axis-data="trendChartData.xAxisData"
-              :series="trendChartData.series"
-              :y-axis-config="trendChartData.yAxisConfig"
-              :loading="chartsLoading"
-              height="320px"
-              title="订单和消费趋势"
-            />
+            <div
+              v-if="brandDistributionData.length"
+              class="h-full flex flex-col justify-center gap-4 px-2"
+            >
+              <div
+                v-for="brand in brandDistributionData"
+                :key="brand.name"
+                class="space-y-1.5"
+              >
+                <div
+                  class="flex items-center justify-between text-sm text-gray-600 dark:text-gray-300"
+                >
+                  <span class="truncate pr-4">{{ brand.name }}</span>
+                  <span class="shrink-0">
+                    {{ brand.count }} 单 · {{ brand.percentage.toFixed(1) }}%
+                  </span>
+                </div>
+                <div
+                  class="h-3 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden"
+                >
+                  <div
+                    class="h-full rounded-full transition-all duration-300"
+                    :style="{
+                      width: `${brand.percentage}%`,
+                      backgroundColor: brand.color
+                    }"
+                  />
+                </div>
+              </div>
+            </div>
+            <div
+              v-else
+              class="flex items-center justify-center h-full text-gray-500 dark:text-gray-400"
+            >
+              暂无订单品牌数据
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- 月度对比 -->
+      <!-- 订单和消费趋势 -->
       <div class="bg-white dark:bg-[#141414] rounded-lg p-6">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
-            月度对比
-          </h3>
+          <div class="flex items-center gap-2">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+              订单和消费趋势
+            </h3>
+            <div class="flex gap-1">
+              <span
+                v-for="option in trendPeriodOptions"
+                :key="option.value"
+                class="text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                :class="
+                  trendPeriod === option.value
+                    ? 'bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-400'
+                    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                "
+                @click="handleTrendPeriodChange(option.value)"
+              >
+                {{ option.label }}
+              </span>
+            </div>
+          </div>
         </div>
         <div class="h-80">
-          <BarChart
-            :x-axis-data="monthlyComparisonChartData.xAxisData"
-            :series="monthlyComparisonChartData.series"
-            :loading="chartsLoading"
+          <div
+            v-if="chartsLoading"
+            class="flex items-center justify-center h-full text-gray-500 dark:text-gray-400"
+          >
+            图表加载中...
+          </div>
+          <LineChart
+            v-else
+            :x-axis-data="trendChartData.xAxisData"
+            :series="trendChartData.series"
+            :y-axis-config="trendChartData.yAxisConfig"
             height="320px"
-            title="本月与上月对比"
+            title="订单和消费"
           />
         </div>
       </div>
@@ -618,6 +606,7 @@ useLazyVisible(chartsSentinel, fetchChartsData);
             :src="qrcodeUrl"
             alt="二维码"
             class="w-64 h-64 rounded-lg"
+            @error="handleQrcodeLoadError"
             @click.stop
           />
         </div>

@@ -8,12 +8,15 @@ export interface AssetsData {
 // 订单统计数据（包含订单状态分布）
 export interface OrdersData {
   total_orders: number;
+  order_count: number;
   active_orders: number;
+  processing_orders: number;
   expiring_7_days: number;
   expiring_30_days: number;
   cancelled_orders: number;
   net_orders: number;
   status_distribution: Record<string, number>;
+  brand_distribution: Record<string, number>;
   monthly_orders: number;
   monthly_cancelled_orders: number;
   monthly_net_orders: number;
@@ -28,6 +31,8 @@ export interface TrendDataPoint {
   net_orders: number;
   consumption: number;
 }
+
+export type TrendPeriod = "month" | "quarter" | "year";
 
 // 月度对比数据
 export interface MonthlyComparisonData {

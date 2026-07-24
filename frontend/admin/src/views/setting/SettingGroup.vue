@@ -203,9 +203,12 @@ const handleValueChange = (row, value) => {
 const isSiteImage = row =>
   row.type === "image" &&
   props.group.name === "site" &&
-  ["logo", "logoExpanded", "qrcode"].includes(row.key);
+  ["favicon", "logo", "logoExpanded", "qrcode"].includes(row.key);
 
-const siteImageKind = (key: string): "logo" | "logo-expanded" | "qrcode" => {
+const siteImageKind = (
+  key: string
+): "favicon" | "logo" | "logo-expanded" | "qrcode" => {
+  if (key === "favicon") return "favicon";
   if (key === "logoExpanded") return "logo-expanded";
   return key === "qrcode" ? "qrcode" : "logo";
 };

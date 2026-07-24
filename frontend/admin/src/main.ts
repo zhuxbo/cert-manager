@@ -8,6 +8,7 @@ import { useElementPlus } from "@/plugins/elementPlus";
 import {
   injectResponsiveStorage,
   fetchMeta,
+  applyFavicon,
   renderChannelDisabled
 } from "@shared/utils";
 import { routerArrays } from "@/layout/types";
@@ -73,6 +74,7 @@ app.use(VueTippy);
 const bootstrap = async () => {
   const meta = await fetchMeta("admin");
   const config = await getPlatformConfig(app, meta?.platform);
+  applyFavicon(config.Favicon);
   // 启动期检测 channels（前端编排）
   // 后端 channels.admin=false 时跳过主应用初始化，渲染降级页
   // 注意：app.unmount() 释放 createApp(App) 已经创建的实例，避免持有 router/store 等模块的孤儿引用

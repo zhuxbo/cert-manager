@@ -235,6 +235,7 @@ test('user 平台设置复用 site 并读取独立品牌', function () {
         'dnsTools' => ['type' => 'array', 'value' => ['cn' => 'https://dns-cn.test', 'us' => 'https://dns-us.test']],
         'beian' => ['type' => 'string', 'value' => '京ICP备123号'],
         'copyStart' => ['type' => 'integer', 'value' => 2020],
+        'favicon' => ['type' => 'image', 'value' => '/api/meta/site-image/favicon-abc.ico'],
         'logo' => ['type' => 'image', 'value' => '/storage/site/logo-abc.png'],
         'logoExpanded' => ['type' => 'image', 'value' => '/storage/site/logo-expanded-abc.png'],
         'qrcode' => ['type' => 'image', 'value' => '/storage/site/qrcode-def.png'],
@@ -265,6 +266,7 @@ test('user 平台设置复用 site 并读取独立品牌', function () {
         'DnsTools' => ['https://dns-cn.test', 'https://dns-us.test'],
         'Beian' => '京ICP备123号',
         'CopyStart' => '2020',
+        'Favicon' => '/api/meta/site-image/favicon-abc.ico',
         'Logo' => '/storage/site/logo-abc.png',
         'LogoExpanded' => '/storage/site/logo-expanded-abc.png',
         'Qrcode' => '/storage/site/qrcode-def.png',
@@ -339,9 +341,10 @@ test('平台设置缺失时返回与现有静态配置一致的默认值', funct
     $response->assertOk()
         ->assertJsonPath('data.platform.Title', 'SSL')
         ->assertJsonPath('data.platform.CopyStart', '2017')
+        ->assertJsonPath('data.platform.Favicon', '')
         ->assertJsonPath('data.platform.Logo', '/logo.svg')
         ->assertJsonPath('data.platform.LogoExpanded', '')
-        ->assertJsonPath('data.platform.Qrcode', '/qrcode.png');
+        ->assertJsonPath('data.platform.Qrcode', '/qrcode.svg');
     expect($response->json('data.platform.AllBrands'))->toBeArray()->toBeEmpty()
         ->and($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()
         ->and($response->json('data.platform.DnsTools'))->toBeArray()->toBeEmpty();

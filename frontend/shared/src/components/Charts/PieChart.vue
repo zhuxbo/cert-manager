@@ -171,10 +171,13 @@ watch(
 
 <template>
   <div :style="{ height: height, width: '100%' }" class="relative">
-    <div v-if="loading" class="flex items-center justify-center h-full">
+    <div ref="chartRef" :style="{ height: height, width: '100%' }" />
+    <div
+      v-if="loading"
+      class="absolute inset-0 flex items-center justify-center bg-white/80 dark:bg-[#141414]/80"
+    >
       <div class="text-gray-500 dark:text-gray-400">图表加载中...</div>
     </div>
-    <div v-else ref="chartRef" :style="{ height: height, width: '100%' }" />
   </div>
 </template>
 

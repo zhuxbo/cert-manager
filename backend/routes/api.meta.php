@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Route;
 Route::get('meta', [MetaController::class, 'index'])
     ->middleware('cache.headers:no_store;private');
 Route::get('meta/site-image/{filename}', [MetaController::class, 'siteImage'])
-    ->where('filename', '(?:logo(?:-expanded)?-[a-f0-9]{64}\.(?:jpg|png|webp|svg)|qrcode-[a-f0-9]{64}\.(?:jpg|png|webp))');
+    ->where('filename', '(?:favicon-[a-f0-9]{64}\.ico|logo(?:-expanded)?-[a-f0-9]{64}\.(?:jpg|png|webp|svg)|qrcode-[a-f0-9]{64}\.(?:jpg|png|webp))');
 
 // 对外 API 接口文档（OpenAPI 3.1 YAML），供 curl / Scalar 渲染读取；公开无鉴权
 Route::get('meta/api-doc', [MetaController::class, 'apiDoc']);

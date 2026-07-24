@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Traits\ApiResponse;
 use Cache;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 
 class DashboardController extends Controller
 {
@@ -88,43 +89,75 @@ class DashboardController extends Controller
     public function trend(Request $request): void
     {
         $userId = auth('user')->id();
-        $days = min(max($request->input('days', 30), 7), 90);
+        $period = $request->string('period')->toString();
+        $period = in_array($period, ['month', 'quarter', 'year'], true) ? $period : 'month';
 
-        $cacheKey = "dashboard:user:$userId:trend:$days";
+        $cacheKey = "dashboard:user:$userId:trend:$period";
         $cacheMinutes = $this->getCacheMinutes();
 
-        $trends = Cache::remember($cacheKey, $cacheMinutes * 60, function () use ($userId, $days) {
-            $startDate = now()->subDays($days - 1)->startOfDay();
+        $trends = Cache::remember($cacheKey, $cacheMinutes * 60, function () use ($userId, $period) {
+            $now = now();
+            $startDate = match ($period) {
+                'quarter' => $now->copy()->subWeeks(12)->startOfWeek(),
+                'year' => $now->copy()->subMonths(11)->startOfMonth(),
+                default => $now->copy()->subDays(29)->startOfDay(),
+            };
 
             $dateExpr = 'DATE(created_at)';
-            $orderRows = Transaction::where('user_id', $userId)
+            $dailyRows = Transaction::where('user_id', $userId)
                 ->where('created_at', '>=', $startDate)
                 ->selectRaw("$dateExpr as date")
                 ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as orders', Transaction::ORDER_TYPES)
                 ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as cancelled_orders', Transaction::CANCEL_TYPES)
+                ->selectRaw(
+                    'COALESCE(SUM(CASE WHEN type IN (?, ?, ?, ?, ?, ?) THEN -amount ELSE 0 END), 0) as consumption',
+                    ['order', 'cancel', 'deduct', 'reverse', Transaction::TYPE_ACME_ORDER, Transaction::TYPE_ACME_CANCEL]
+                )
                 ->groupByRaw($dateExpr)
-                ->get()
-                ->keyBy('date');
+                ->get();
 
-            $consumptionRows = Order::where('user_id', $userId)
-                ->where('created_at', '>=', $startDate)
-                ->selectRaw("$dateExpr as date, COALESCE(SUM(amount), 0) as consumption")
-                ->groupByRaw($dateExpr)
-                ->pluck('consumption', 'date');
+            $trendMap = [];
+            foreach ($dailyRows as $row) {
+                /** @var object $row */
+                $date = Carbon::parse($row->date);
+                $bucket = match ($period) {
+                    'quarter' => $date->startOfWeek()->format('Y-m-d'),
+                    'year' => $date->startOfMonth()->format('Y-m-d'),
+                    default => $date->format('Y-m-d'),
+                };
+                $trendMap[$bucket] ??= [
+                    'orders' => 0,
+                    'cancelled_orders' => 0,
+                    'net_orders' => 0,
+                    'consumption' => 0.0,
+                ];
+                $orders = (int) $row->orders;
+                $cancelledOrders = (int) $row->cancelled_orders;
+                $trendMap[$bucket]['orders'] += $orders;
+                $trendMap[$bucket]['cancelled_orders'] += $cancelledOrders;
+                $trendMap[$bucket]['net_orders'] += $orders - $cancelledOrders;
+                $trendMap[$bucket]['consumption'] += (float) $row->consumption;
+            }
 
             $trends = [];
-            for ($i = $days - 1; $i >= 0; $i--) {
-                $dateStr = now()->subDays($i)->format('Y-m-d');
-                /** @var object|null $row */
-                $row = $orderRows[$dateStr] ?? null;
-                $orders = $row ? (int) $row->orders : 0;
-                $cancelledOrders = $row ? (int) $row->cancelled_orders : 0;
+            $points = match ($period) {
+                'quarter' => 13,
+                'year' => 12,
+                default => 30,
+            };
+            for ($i = 0; $i < $points; $i++) {
+                $dateStr = match ($period) {
+                    'quarter' => $startDate->copy()->addWeeks($i)->format('Y-m-d'),
+                    'year' => $startDate->copy()->addMonths($i)->format('Y-m-d'),
+                    default => $startDate->copy()->addDays($i)->format('Y-m-d'),
+                };
+                $bucket = $trendMap[$dateStr] ?? [];
                 $trends[] = [
                     'date' => $dateStr,
-                    'orders' => $orders,
-                    'cancelled_orders' => $cancelledOrders,
-                    'net_orders' => $orders - $cancelledOrders,
-                    'consumption' => (float) ($consumptionRows[$dateStr] ?? 0),
+                    'orders' => (int) ($bucket['orders'] ?? 0),
+                    'cancelled_orders' => (int) ($bucket['cancelled_orders'] ?? 0),
+                    'net_orders' => (int) ($bucket['net_orders'] ?? 0),
+                    'consumption' => round((float) ($bucket['consumption'] ?? 0), 2),
                 ];
             }
 
@@ -234,13 +267,19 @@ class DashboardController extends Controller
             ->get();
 
         $statusDistribution = [];
+        $orderCount = 0;
         $activeOrders = 0;
+        $processingOrders = 0;
         $expiring7Days = 0;
         $expiring30Days = 0;
 
         foreach ($certStats as $row) {
             /** @var object $row */
             $statusDistribution[$row->status] = (int) $row->count;
+            $orderCount += (int) $row->count;
+            if (in_array($row->status, ['unpaid', 'pending', 'processing', 'approving'], true)) {
+                $processingOrders += (int) $row->count;
+            }
             if ($row->status === 'active') {
                 $activeOrders = (int) $row->count;
                 $expiring7Days = (int) $row->expiring_7;
@@ -264,14 +303,27 @@ class DashboardController extends Controller
             ->where('created_at', '>=', $monthStart)
             ->sum('amount');
 
+        $brandDistribution = Order::where('user_id', $userId)
+            ->whereNotNull('brand')
+            ->where('brand', '!=', '')
+            ->selectRaw('LOWER(brand) as brand, COUNT(*) as count')
+            ->groupByRaw('LOWER(brand)')
+            ->orderByDesc('count')
+            ->pluck('count', 'brand')
+            ->map(fn ($count) => (int) $count)
+            ->all();
+
         return [
             'total_orders' => $totalOrders,
+            'order_count' => $orderCount,
             'active_orders' => $activeOrders,
+            'processing_orders' => $processingOrders,
             'expiring_7_days' => $expiring7Days,
             'expiring_30_days' => $expiring30Days,
             'cancelled_orders' => $cancelledOrders,
             'net_orders' => $totalOrders - $cancelledOrders,
             'status_distribution' => $statusDistribution,
+            'brand_distribution' => $brandDistribution,
             'monthly_orders' => $monthlyOrders,
             'monthly_cancelled_orders' => $monthlyCancelledOrders,
             'monthly_net_orders' => $monthlyOrders - $monthlyCancelledOrders,

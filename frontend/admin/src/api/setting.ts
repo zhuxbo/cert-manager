@@ -123,7 +123,7 @@ export function clearAllCache(): Promise<BaseResponse> {
 }
 
 export function uploadSiteImage(
-  kind: "logo" | "logo-expanded" | "qrcode",
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode",
   file: File
 ): Promise<BaseResponse<{ url: string }>> {
   const formData = new FormData();

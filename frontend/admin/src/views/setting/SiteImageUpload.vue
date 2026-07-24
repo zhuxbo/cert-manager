@@ -7,7 +7,7 @@ import { defaultLogoPath, message, resolveSiteLogo } from "@shared/utils";
 
 const props = defineProps<{
   modelValue?: string;
-  kind: "logo" | "logo-expanded" | "qrcode";
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode";
 }>();
 
 const emit = defineEmits<{
@@ -15,9 +15,13 @@ const emit = defineEmits<{
 }>();
 
 const logoFallbackActive = ref(false);
-const isLogo = computed(() => props.kind !== "qrcode");
+const faviconInputRef = ref<HTMLInputElement>();
+const faviconUploading = ref(false);
+const isFavicon = computed(() => props.kind === "favicon");
+const isLogo = computed(() => ["logo", "logo-expanded"].includes(props.kind));
 const isExpandedLogo = computed(() => props.kind === "logo-expanded");
 const imageLabel = computed(() => {
+  if (isFavicon.value) return "Favicon";
   if (isExpandedLogo.value) return "展开版 Logo";
   return isLogo.value ? "Logo" : "二维码";
 });
@@ -45,7 +49,11 @@ const cropConfig = computed(() =>
 );
 
 const hasUploadedImage = computed(() => {
-  const extension = isLogo.value ? "(?:jpg|png|webp|svg)" : "(?:jpg|png|webp)";
+  const extension = isFavicon.value
+    ? "ico"
+    : isLogo.value
+      ? "(?:jpg|png|webp|svg)"
+      : "(?:jpg|png|webp)";
   return new RegExp(
     `^/api/meta/site-image/${props.kind}-[a-f0-9]{64}\\.${extension}$`
   ).test(props.modelValue || "");
@@ -79,11 +87,66 @@ const handleUpload = async (file: File) => {
     type: "success"
   });
 };
+
+const selectFavicon = () => {
+  if (!faviconUploading.value) faviconInputRef.value?.click();
+};
+
+const handleFaviconChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+
+  if (!file.name.toLowerCase().endsWith(".ico")) {
+    message("Favicon 仅支持 ICO 格式", { type: "warning" });
+    return;
+  }
+
+  faviconUploading.value = true;
+  try {
+    await handleUpload(file);
+  } finally {
+    faviconUploading.value = false;
+  }
+};
 </script>
 
 <template>
   <div class="site-image-upload">
-    <ImageCropUpload v-bind="cropConfig" :upload="handleUpload">
+    <template v-if="isFavicon">
+      <input
+        ref="faviconInputRef"
+        type="file"
+        class="hidden-input"
+        accept=".ico,image/x-icon,image/vnd.microsoft.icon"
+        @change="handleFaviconChange"
+      />
+      <div
+        v-if="hasUploadedImage && previewUrl"
+        class="image-slot"
+        :class="{ 'is-uploading': faviconUploading }"
+        title="点击替换 Favicon"
+        @click="selectFavicon"
+      >
+        <img :src="previewUrl" alt="Favicon" class="favicon-preview" />
+        <div class="edit-overlay">
+          <Camera />
+          <span>更换</span>
+        </div>
+      </div>
+      <el-button
+        v-else
+        size="small"
+        type="primary"
+        plain
+        :loading="faviconUploading"
+        @click="selectFavicon"
+      >
+        上传图标
+      </el-button>
+    </template>
+    <ImageCropUpload v-else v-bind="cropConfig" :upload="handleUpload">
       <template #default="{ select, uploading }">
         <!-- 已上传：悬停图片显示遮罩替换；未上传：显示上传按钮 -->
         <div
@@ -117,12 +180,16 @@ const handleUpload = async (file: File) => {
       </template>
     </ImageCropUpload>
     <span class="upload-tip">
-      {{ isLogo ? "JPG、PNG、WebP 或 SVG" : "JPG、PNG 或 WebP" }}，{{
-        isExpandedLogo
-          ? "自由比例裁剪，输出不超过 200×200、200KB（SVG 直传）"
-          : kind === "logo"
-            ? "1:1 裁剪，输出不超过 200×200、200KB（SVG 需为正方形）"
-            : "1:1 裁剪，输出不超过 800×800、1MB"
+      {{
+        isFavicon
+          ? "仅支持 ICO，文件不超过 200KB"
+          : `${isLogo ? "JPG、PNG、WebP 或 SVG" : "JPG、PNG 或 WebP"}，${
+              isExpandedLogo
+                ? "自由比例裁剪，输出不超过 200×200、200KB（SVG 直传）"
+                : kind === "logo"
+                  ? "1:1 裁剪，输出不超过 200×200、200KB（SVG 需为正方形）"
+                  : "1:1 裁剪，输出不超过 800×800、1MB"
+            }`
       }}
     </span>
   </div>
@@ -133,6 +200,10 @@ const handleUpload = async (file: File) => {
   display: flex;
   gap: 12px;
   align-items: center;
+
+  .hidden-input {
+    display: none;
+  }
 
   .image-slot {
     position: relative;
@@ -165,6 +236,11 @@ const handleUpload = async (file: File) => {
     .logo-preview {
       width: auto;
       height: 40px;
+    }
+
+    .favicon-preview {
+      width: 32px;
+      height: 32px;
     }
 
     .qrcode-preview {

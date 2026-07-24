@@ -11,6 +11,26 @@ class UploadSiteImageRequest extends BaseRequest
     public function rules(): array
     {
         $kind = $this->route('kind');
+        if ($kind === 'favicon') {
+            return [
+                'file' => [
+                    'bail',
+                    'required',
+                    'file',
+                    'max:200',
+                    function (string $attribute, mixed $value, Closure $fail): void {
+                        if (! $value instanceof UploadedFile) {
+                            return;
+                        }
+
+                        if (strtolower($value->getClientOriginalExtension()) !== 'ico' || ! $this->isValidIco($value)) {
+                            $fail('Favicon 仅支持 ICO 格式');
+                        }
+                    },
+                ],
+            ];
+        }
+
         $isLogo = in_array($kind, ['logo', 'logo-expanded'], true);
         $requiresSquare = in_array($kind, ['logo', 'qrcode'], true);
         $maxDimension = $isLogo ? 200 : 800;
@@ -68,6 +88,13 @@ class UploadSiteImageRequest extends BaseRequest
 
     public function messages(): array
     {
+        if ($this->route('kind') === 'favicon') {
+            return [
+                'file.required' => '请选择 Favicon',
+                'file.max' => 'Favicon 大小不能超过 200KB',
+            ];
+        }
+
         $isLogo = in_array($this->route('kind'), ['logo', 'logo-expanded'], true);
 
         return [
@@ -80,6 +107,103 @@ class UploadSiteImageRequest extends BaseRequest
                 ? 'Logo 大小不能超过 200KB'
                 : '二维码大小不能超过 1MB',
         ];
+    }
+
+    private function isValidIco(UploadedFile $file): bool
+    {
+        $contents = file_get_contents($file->getRealPath());
+        if ($contents === false || strlen($contents) < 22) {
+            return false;
+        }
+
+        $header = unpack('vreserved/vtype/vcount', substr($contents, 0, 6));
+        $count = is_array($header) ? (int) ($header['count'] ?? 0) : 0;
+        $directoryLength = 6 + ($count * 16);
+        if (($header['reserved'] ?? -1) !== 0
+            || ($header['type'] ?? -1) !== 1
+            || $count < 1
+            || $count > 256
+            || strlen($contents) < $directoryLength) {
+            return false;
+        }
+
+        for ($index = 0; $index < $count; $index++) {
+            $directoryEntry = substr($contents, 6 + ($index * 16), 16);
+            $entry = unpack(
+                'Vsize/Voffset',
+                substr($directoryEntry, 8, 8),
+            );
+            $size = is_array($entry) ? (int) ($entry['size'] ?? 0) : 0;
+            $offset = is_array($entry) ? (int) ($entry['offset'] ?? 0) : 0;
+            if ($size < 1 || $offset < $directoryLength || $offset + $size > strlen($contents)) {
+                return false;
+            }
+
+            $payload = substr($contents, $offset, $size);
+            if (! $this->isValidIcoPng($payload) && ! $this->isValidIcoDib($payload)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isValidIcoPng(string $payload): bool
+    {
+        if (! str_starts_with($payload, "\x89PNG\r\n\x1a\n")) {
+            return false;
+        }
+
+        $dimensions = @getimagesizefromstring($payload);
+
+        return is_array($dimensions)
+            && $dimensions['mime'] === 'image/png'
+            && $dimensions[0] > 0
+            && $dimensions[1] > 0;
+    }
+
+    private function isValidIcoDib(string $payload): bool
+    {
+        if (strlen($payload) < 40) {
+            return false;
+        }
+
+        $header = unpack(
+            'Vsize/Vwidth/Vheight/vplanes/vbitCount/Vcompression/VimageSize/VxPelsPerMeter/VyPelsPerMeter/VcolorsUsed/VcolorsImportant',
+            substr($payload, 0, 40),
+        );
+        if (! is_array($header)) {
+            return false;
+        }
+
+        $headerSize = (int) ($header['size'] ?? 0);
+        $width = (int) ($header['width'] ?? 0);
+        $combinedHeight = (int) ($header['height'] ?? 0);
+        $planes = (int) ($header['planes'] ?? 0);
+        $bitCount = (int) ($header['bitCount'] ?? 0);
+        $compression = (int) ($header['compression'] ?? -1);
+        if (! in_array($headerSize, [40, 52, 56, 108, 124], true)
+            || strlen($payload) < $headerSize
+            || $width < 1
+            || $combinedHeight < 2
+            || $combinedHeight % 2 !== 0
+            || $planes !== 1
+            || ! in_array($bitCount, [1, 4, 8, 16, 24, 32], true)
+            || ! in_array($compression, [0, 3, 6], true)) {
+            return false;
+        }
+
+        $height = intdiv($combinedHeight, 2);
+        $colorsUsed = (int) ($header['colorsUsed'] ?? 0);
+        $paletteEntries = $bitCount <= 8 ? ($colorsUsed ?: 1 << $bitCount) : 0;
+        $externalMasksLength = $headerSize === 40 && in_array($compression, [3, 6], true)
+            ? ($compression === 6 ? 16 : 12)
+            : 0;
+        $pixelOffset = $headerSize + $externalMasksLength + ($paletteEntries * 4);
+        $xorBytes = intdiv(($width * $bitCount) + 31, 32) * 4 * $height;
+        $andBytes = intdiv($width + 31, 32) * 4 * $height;
+
+        return strlen($payload) >= $pixelOffset + $xorBytes + $andBytes;
     }
 
     /**

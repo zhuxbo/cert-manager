@@ -80,6 +80,7 @@ if [ "${BUILD_BACKEND:-false}" = "true" ]; then
     if [ -d "$BACKEND_SOURCE" ]; then
         log_info "复制后端文件（rsync，含排除与 --delete）..."
         mkdir -p "$PRODUCTION_DIR/backend"
+        rm -rf "$PRODUCTION_DIR/backend/storage/app"
 
         # 生成排除列表文件
         EXCLUDE_FILE="$(mktemp)"
@@ -111,6 +112,7 @@ nginx/
 web/
 storage/backups/
 storage/upgrades/
+storage/app/***
 storage/logs/*.log
 storage/framework/testing/
 vendor/**/tests/
@@ -126,6 +128,7 @@ EOF
 
         # 直接执行 rsync（rsync 本身已优化，只复制有变化的文件）
         run_rsync_with_stats "后端" -a --delete --exclude-from="$EXCLUDE_FILE" "$BACKEND_SOURCE/" "$PRODUCTION_DIR/backend/"
+        mkdir -p "$PRODUCTION_DIR/backend/storage/app/public" "$PRODUCTION_DIR/backend/storage/app/private"
         log_success "后端复制完成"
         rm -f "$EXCLUDE_FILE"
     else
@@ -173,13 +176,6 @@ if [ "${BUILD_WEB:-false}" = "true" ]; then
     log_info "复制 web 静态文件..."
     mkdir -p frontend/web
     run_rsync_with_stats "web" -a --delete /build/web/ "$PRODUCTION_DIR/frontend/web/"
-
-    # 覆盖 favicon.ico（如果 custom 中存在）
-    CUSTOM_DIR="/build/custom"
-    if [ -f "$CUSTOM_DIR/favicon.ico" ]; then
-        cp "$CUSTOM_DIR/favicon.ico" "$PRODUCTION_DIR/frontend/web/public/favicon.ico"
-        log_success "已覆盖 web favicon.ico"
-    fi
 
     WEB_FILES=$(find "$PRODUCTION_DIR/frontend/web" -type f | wc -l)
     log_success "web 静态文件复制完成（$WEB_FILES 个文件）"

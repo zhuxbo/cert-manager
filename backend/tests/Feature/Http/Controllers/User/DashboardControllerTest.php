@@ -58,6 +58,33 @@ test('获取订单统计', function () {
         ->assertJsonStructure(['data' => ['total_orders', 'active_orders']]);
 });
 
+test('订单统计返回处理中订单数和品牌分布', function () {
+    $user = User::factory()->create();
+    $statuses = ['unpaid', 'pending', 'processing', 'approving', 'active'];
+    $brands = ['digicert', 'digicert', 'sectigo', 'sectigo', 'sectigo'];
+
+    foreach ($statuses as $index => $status) {
+        $order = Order::factory()->create([
+            'user_id' => $user->id,
+            'brand' => $brands[$index],
+        ]);
+        $cert = Cert::factory()->create([
+            'order_id' => $order->id,
+            'status' => $status,
+        ]);
+        $order->update(['latest_cert_id' => $cert->id]);
+    }
+
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.processing_orders', 4)
+        ->assertJsonPath('data.order_count', 5)
+        ->assertJsonPath('data.active_orders', 1)
+        ->assertJsonPath('data.brand_distribution.digicert', 2)
+        ->assertJsonPath('data.brand_distribution.sectigo', 3);
+});
+
 function seedUserDashboardTransaction(User $user, string $type, float $amount, int $transactionId): void
 {
     DB::transaction(fn () => Transaction::create([
@@ -95,12 +122,13 @@ test('用户首页订单取消净增按本人交易流水及交易时间统计',
         ->assertJsonPath('data.monthly_cancelled_orders', 2)
         ->assertJsonPath('data.monthly_net_orders', 1);
 
-    $trend = $this->actingAsUser($user)->getJson('/api/dashboard/trend?days=7');
+    $trend = $this->actingAsUser($user)->getJson('/api/dashboard/trend?period=month');
     $today = collect($trend->json('data'))->firstWhere('date', now()->format('Y-m-d'));
     expect($today)->toMatchArray([
         'orders' => 3,
         'cancelled_orders' => 2,
         'net_orders' => 1,
+        'consumption' => 95,
     ]);
 
     $comparison = $this->actingAsUser($user)->getJson('/api/dashboard/monthly-comparison');
@@ -109,22 +137,26 @@ test('用户首页订单取消净增按本人交易流水及交易时间统计',
         ->assertJsonPath('data.current_month.net_orders', 1);
 });
 
-test('获取趋势数据', function () {
+test('趋势数据支持月季年范围', function () {
     $user = User::factory()->create();
 
-    $this->actingAsUser($user)
-        ->getJson('/api/dashboard/trend?days=30')
-        ->assertOk()
-        ->assertJson(['code' => 1]);
+    foreach (['month' => 30, 'quarter' => 13, 'year' => 12] as $period => $points) {
+        $this->actingAsUser($user)
+            ->getJson("/api/dashboard/trend?period=$period")
+            ->assertOk()
+            ->assertJson(['code' => 1])
+            ->assertJsonCount($points, 'data');
+    }
 });
 
-test('获取趋势数据-天数限制最小7天', function () {
+test('趋势数据未知范围回退到月', function () {
     $user = User::factory()->create();
 
     $this->actingAsUser($user)
-        ->getJson('/api/dashboard/trend?days=3')
+        ->getJson('/api/dashboard/trend?period=unknown')
         ->assertOk()
-        ->assertJson(['code' => 1]);
+        ->assertJson(['code' => 1])
+        ->assertJsonCount(30, 'data');
 });
 
 test('获取月度统计对比', function () {
