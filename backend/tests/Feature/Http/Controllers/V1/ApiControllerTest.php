@@ -107,6 +107,21 @@ test('V1 获取订单-不存在', function () {
         ->assertJson(['code' => 0]);
 });
 
+test('V1 旧式八位字符 OID 提示改用数字订单号', function () {
+    $user = User::factory()->create();
+    $headers = createV1AuthHeaders($user);
+
+    foreach (['/api/V1/get', '/api/V1/reissue'] as $uri) {
+        $this->withHeaders($headers)
+            ->postJson($uri, ['oid' => 'AB12CD34'])
+            ->assertOk()
+            ->assertJson([
+                'code' => 0,
+                'msg' => '请使用数字订单号',
+            ]);
+    }
+});
+
 test('V1 通过 refer_id 获取订单ID', function () {
     $user = User::factory()->create();
     $headers = createV1AuthHeaders($user);

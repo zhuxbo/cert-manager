@@ -1,0 +1,30 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\V1\\ApiControllerTest::__pest_evaluable_V1_旧式八位字符_OID_提示改用数字订单号",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/get",
+            "request_keys": [
+                "oid"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/V1/reissue",
+            "request_keys": [
+                "oid"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}
