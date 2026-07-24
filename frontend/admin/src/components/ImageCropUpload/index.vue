@@ -8,6 +8,7 @@ import { message } from "@shared/utils";
 /**
  * 通用图片裁剪上传组件：选图 → 弹窗裁剪（可锁定比例）→ 输出压到最大尺寸内 → 交给 upload 回调。
  * SVG（矢量，无像素裁剪意义）在 allowSvg 时跳过裁剪直接上传。
+ * directUpload 时位图也跳过裁剪，保留原始构图，仅超限时等比缩小。
  */
 const props = withDefaults(
   defineProps<{
@@ -15,6 +16,8 @@ const props = withDefaults(
     accept: string;
     /** 允许 SVG 直传（不裁剪） */
     allowSvg?: boolean;
+    /** 位图免裁剪直传（仍按 maxWidth/maxHeight 等比缩小、校验体积上限） */
+    directUpload?: boolean;
     /** 裁剪比例（宽/高），0 表示自由比例 */
     aspectRatio?: number;
     /** 输出最大宽/高（超出等比缩小） */
@@ -31,6 +34,7 @@ const props = withDefaults(
   }>(),
   {
     allowSvg: false,
+    directUpload: false,
     aspectRatio: 0,
     title: "裁剪图片",
     buttonText: "上传图片"
@@ -78,6 +82,35 @@ const handleFileChange = async (event: Event) => {
         ? "webp"
         : "jpeg";
   outputName.value = `crop.${outputType.value === "jpeg" ? "jpg" : outputType.value}`;
+
+  if (props.directUpload) {
+    uploading.value = true;
+    try {
+      const blob = await fitToMaxSize(file);
+      if (blob.size > props.maxFileSize) {
+        message(
+          `图片超过 ${Math.round(props.maxFileSize / 1024)}KB，请压缩后重试`,
+          { type: "warning" }
+        );
+        return;
+      }
+      await doUpload(
+        blob === file
+          ? file
+          : new File([blob], outputName.value, {
+              type: `image/${outputType.value}`
+            })
+      );
+    } catch (error) {
+      message(error instanceof Error ? error.message : "图片处理失败，请重试", {
+        type: "error"
+      });
+    } finally {
+      uploading.value = false;
+    }
+    return;
+  }
+
   cropSource.value = await readAsDataUrl(file);
   cropVisible.value = true;
   await nextTick();

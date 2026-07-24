@@ -344,7 +344,7 @@ test('applyFrontendUpgrade 更新 platform config 且不保留 admin logo', func
     }
 });
 
-test('applyFrontendUpgrade 保留 user 的 Logo 和新旧二维码回落资源', function () {
+test('applyFrontendUpgrade 保留 user 的 Logo、新旧二维码和登录配图回落资源', function () {
     $sourceDir = "$this->testDir/pkg/frontend/user";
     File::makeDirectory($sourceDir, 0755, true);
     File::put("$sourceDir/app.js", 'NEW-APP');
@@ -356,6 +356,7 @@ test('applyFrontendUpgrade 保留 user 的 Logo 和新旧二维码回落资源',
     File::put("$targetDir/logo.svg", 'OLD-LOGO');
     File::put("$targetDir/qrcode.svg", 'SVG-QRCODE');
     File::put("$targetDir/qrcode.png", 'PNG-QRCODE');
+    File::put("$targetDir/login.svg", 'OLD-LOGIN');
 
     $originalBase = base_path();
     app()->setBasePath("$installDir/backend");
@@ -367,6 +368,7 @@ test('applyFrontendUpgrade 保留 user 的 Logo 和新旧二维码回落资源',
         expect(File::get("$targetDir/logo.svg"))->toBe('OLD-LOGO')
             ->and(File::get("$targetDir/qrcode.svg"))->toBe('SVG-QRCODE')
             ->and(File::get("$targetDir/qrcode.png"))->toBe('PNG-QRCODE')
+            ->and(File::get("$targetDir/login.svg"))->toBe('OLD-LOGIN')
             ->and(File::get("$targetDir/app.js"))->toBe('NEW-APP');
     } finally {
         app()->setBasePath($originalBase);

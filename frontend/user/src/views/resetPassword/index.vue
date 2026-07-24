@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, toRaw, reactive } from "vue";
+import { ref, reactive } from "vue";
 import Motion from "../login/utils/motion";
+import LoginAside from "../login/components/LoginAside.vue";
 import { message } from "@shared/utils";
 import { updateRules } from "../login/utils/rule";
 import type { FormInstance } from "element-plus";
@@ -12,7 +13,6 @@ import { resetPassword } from "@/api/auth";
 import { useDataThemeChange } from "@/layout/hooks/useDataThemeChange";
 import { useLayout } from "@/layout/hooks/useLayout";
 import { useNav } from "@/layout/hooks/useNav";
-import { bg, illustration } from "../login/utils/static";
 import dayIcon from "@/assets/svg/day.svg?component";
 import darkIcon from "@/assets/svg/dark.svg?component";
 import Lock from "~icons/ri/lock-fill";
@@ -116,26 +116,23 @@ function goToLogin() {
 </script>
 
 <template>
-  <div class="select-none">
-    <img :src="bg" class="wave" />
-    <div class="flex-c absolute right-5 top-3">
-      <!-- 主题 -->
-      <el-switch
-        v-model="dataTheme"
-        inline-prompt
-        :active-icon="dayIcon"
-        :inactive-icon="darkIcon"
-        @change="dataThemeChange"
-      />
-    </div>
-    <div class="login-container">
-      <div class="img">
-        <component :is="toRaw(illustration)" />
+  <div class="select-none login-page">
+    <LoginAside />
+    <div class="login-main">
+      <div class="flex-c absolute right-5 top-3">
+        <!-- 主题 -->
+        <el-switch
+          v-model="dataTheme"
+          inline-prompt
+          :active-icon="dayIcon"
+          :inactive-icon="darkIcon"
+          @change="dataThemeChange"
+        />
       </div>
       <div class="login-box">
         <div class="login-form">
           <Motion :delay="300">
-            <h2 class="outline-none">{{ title }} - 找回密码</h2>
+            <h2 class="login-title outline-none">{{ title }} - 找回密码</h2>
           </Motion>
 
           <el-form
@@ -223,14 +220,14 @@ function goToLogin() {
           </el-form>
         </div>
       </div>
-    </div>
-    <div
-      class="w-full flex-c absolute bottom-3 text-sm text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
-    >
-      Copyright © 2020-present
-      <a class="hover:text-primary" href="/" target="_blank">
-        &nbsp;{{ title }}
-      </a>
+      <div
+        class="w-full flex-c absolute bottom-3 text-sm text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
+      >
+        Copyright © 2020-present
+        <a class="hover:text-primary" href="/" target="_blank">
+          &nbsp;{{ title }}
+        </a>
+      </div>
     </div>
   </div>
 </template>

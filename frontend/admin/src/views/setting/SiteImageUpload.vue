@@ -2,12 +2,12 @@
 import { computed, ref, watch } from "vue";
 import Camera from "~icons/ep/camera";
 import ImageCropUpload from "@/components/ImageCropUpload/index.vue";
-import { uploadSiteImage } from "@/api/setting";
+import { deleteSiteImage, uploadSiteImage } from "@/api/setting";
 import { defaultLogoPath, message, resolveSiteLogo } from "@shared/utils";
 
 const props = defineProps<{
   modelValue?: string;
-  kind: "favicon" | "logo" | "logo-expanded" | "qrcode";
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode" | "login-image";
 }>();
 
 const emit = defineEmits<{
@@ -20,33 +20,60 @@ const faviconUploading = ref(false);
 const isFavicon = computed(() => props.kind === "favicon");
 const isLogo = computed(() => ["logo", "logo-expanded"].includes(props.kind));
 const isExpandedLogo = computed(() => props.kind === "logo-expanded");
+const isLoginImage = computed(() => props.kind === "login-image");
 const imageLabel = computed(() => {
   if (isFavicon.value) return "Favicon";
   if (isExpandedLogo.value) return "展开版 Logo";
+  if (isLoginImage.value) return "登录配图";
   return isLogo.value ? "Logo" : "二维码";
 });
-// 普通 Logo 和二维码锁定 1:1；展开版 Logo 允许横向自由比例。
-const cropConfig = computed(() =>
-  isLogo.value
-    ? {
-        accept: "image/jpeg,image/png,image/webp,image/svg+xml",
-        allowSvg: true,
-        aspectRatio: isExpandedLogo.value ? 0 : 1,
-        maxWidth: 200,
-        maxHeight: 200,
-        maxFileSize: 200 * 1024,
-        title: `裁剪${imageLabel.value}`
-      }
-    : {
-        accept: "image/jpeg,image/png,image/webp",
-        allowSvg: false,
-        aspectRatio: 1,
-        maxWidth: 800,
-        maxHeight: 800,
-        maxFileSize: 1024 * 1024,
-        title: "裁剪客服二维码"
-      }
-);
+// 普通 Logo 和二维码锁定 1:1；展开版 Logo 和登录配图允许自由比例。
+const cropConfig = computed(() => {
+  if (isLogo.value) {
+    return {
+      accept: "image/jpeg,image/png,image/webp,image/svg+xml",
+      allowSvg: true,
+      aspectRatio: isExpandedLogo.value ? 0 : 1,
+      maxWidth: 200,
+      maxHeight: 200,
+      maxFileSize: 200 * 1024,
+      title: `裁剪${imageLabel.value}`
+    };
+  }
+  if (isLoginImage.value) {
+    // 登录配图免裁剪直传：保留运营商原始构图，超限时仅等比缩小
+    return {
+      accept: "image/jpeg,image/png,image/webp",
+      allowSvg: false,
+      directUpload: true,
+      aspectRatio: 0,
+      maxWidth: 2048,
+      maxHeight: 2048,
+      maxFileSize: 2 * 1024 * 1024,
+      title: "裁剪登录配图"
+    };
+  }
+  return {
+    accept: "image/jpeg,image/png,image/webp",
+    allowSvg: false,
+    aspectRatio: 1,
+    maxWidth: 800,
+    maxHeight: 800,
+    maxFileSize: 1024 * 1024,
+    title: "裁剪客服二维码"
+  };
+});
+
+const uploadTip = computed(() => {
+  if (isFavicon.value) return "仅支持 ICO，文件不超过 200KB";
+  if (isExpandedLogo.value)
+    return "JPG、PNG、WebP 或 SVG，自由比例裁剪，输出不超过 200×200、200KB（SVG 直传）";
+  if (props.kind === "logo")
+    return "JPG、PNG、WebP 或 SVG，1:1 裁剪，输出不超过 200×200、200KB（SVG 需为正方形）";
+  if (isLoginImage.value)
+    return "JPG、PNG 或 WebP，原图直传不裁剪（超出 2048×2048 自动等比缩小），不超过 2MB；留空时用户端登录页使用默认配图";
+  return "JPG、PNG 或 WebP，1:1 裁剪，输出不超过 800×800、1MB";
+});
 
 const hasUploadedImage = computed(() => {
   const extension = isFavicon.value
@@ -86,6 +113,18 @@ const handleUpload = async (file: File) => {
   message(`${imageLabel.value}上传成功`, {
     type: "success"
   });
+};
+
+const clearing = ref(false);
+const handleClear = async () => {
+  clearing.value = true;
+  try {
+    await deleteSiteImage(props.kind);
+    emit("update:modelValue", "");
+    message(`${imageLabel.value}已清除，恢复默认`, { type: "success" });
+  } finally {
+    clearing.value = false;
+  }
 };
 
 const selectFavicon = () => {
@@ -159,7 +198,13 @@ const handleFaviconChange = async (event: Event) => {
           <img
             :src="previewUrl"
             :alt="imageLabel"
-            :class="isLogo ? 'logo-preview' : 'qrcode-preview'"
+            :class="
+              isLogo
+                ? 'logo-preview'
+                : isLoginImage
+                  ? 'login-preview'
+                  : 'qrcode-preview'
+            "
             @error="handlePreviewError"
           />
           <div class="edit-overlay">
@@ -179,19 +224,19 @@ const handleFaviconChange = async (event: Event) => {
         </el-button>
       </template>
     </ImageCropUpload>
-    <span class="upload-tip">
-      {{
-        isFavicon
-          ? "仅支持 ICO，文件不超过 200KB"
-          : `${isLogo ? "JPG、PNG、WebP 或 SVG" : "JPG、PNG 或 WebP"}，${
-              isExpandedLogo
-                ? "自由比例裁剪，输出不超过 200×200、200KB（SVG 直传）"
-                : kind === "logo"
-                  ? "1:1 裁剪，输出不超过 200×200、200KB（SVG 需为正方形）"
-                  : "1:1 裁剪，输出不超过 800×800、1MB"
-            }`
-      }}
-    </span>
+    <el-popconfirm
+      v-if="isLoginImage && hasUploadedImage"
+      title="清除登录配图并恢复默认？"
+      width="220"
+      @confirm="handleClear"
+    >
+      <template #reference>
+        <el-button size="small" type="danger" link :loading="clearing">
+          清除
+        </el-button>
+      </template>
+    </el-popconfirm>
+    <span class="upload-tip">{{ uploadTip }}</span>
   </div>
 </template>
 
@@ -245,6 +290,11 @@ const handleFaviconChange = async (event: Event) => {
 
     .qrcode-preview {
       width: 72px;
+      height: 72px;
+    }
+
+    .login-preview {
+      width: auto;
       height: 72px;
     }
 

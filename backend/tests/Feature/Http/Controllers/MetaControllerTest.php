@@ -239,6 +239,7 @@ test('user 平台设置复用 site 并读取独立品牌', function () {
         'logo' => ['type' => 'image', 'value' => '/storage/site/logo-abc.png'],
         'logoExpanded' => ['type' => 'image', 'value' => '/storage/site/logo-expanded-abc.png'],
         'qrcode' => ['type' => 'image', 'value' => '/storage/site/qrcode-def.png'],
+        'loginImage' => ['type' => 'image', 'value' => '/api/meta/site-image/login-image-abc.png'],
     ]);
     setPlatformSettings('brand', [
         'all' => ['type' => 'array', 'value' => [
@@ -270,6 +271,7 @@ test('user 平台设置复用 site 并读取独立品牌', function () {
         'Logo' => '/storage/site/logo-abc.png',
         'LogoExpanded' => '/storage/site/logo-expanded-abc.png',
         'Qrcode' => '/storage/site/qrcode-def.png',
+        'LoginImage' => '/api/meta/site-image/login-image-abc.png',
     ]);
     expect($response->headers->get('Cache-Control'))->toContain('no-store');
 });
@@ -344,7 +346,8 @@ test('平台设置缺失时返回与现有静态配置一致的默认值', funct
         ->assertJsonPath('data.platform.Favicon', '')
         ->assertJsonPath('data.platform.Logo', '/logo.svg')
         ->assertJsonPath('data.platform.LogoExpanded', '')
-        ->assertJsonPath('data.platform.Qrcode', '/qrcode.svg');
+        ->assertJsonPath('data.platform.Qrcode', '/qrcode.svg')
+        ->assertJsonPath('data.platform.LoginImage', '');
     expect($response->json('data.platform.AllBrands'))->toBeArray()->toBeEmpty()
         ->and($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()
         ->and($response->json('data.platform.DnsTools'))->toBeArray()->toBeEmpty();

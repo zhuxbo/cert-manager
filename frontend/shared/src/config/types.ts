@@ -42,6 +42,7 @@ export interface PlatformConfigs {
   Logo?: string;
   LogoExpanded?: string;
   Qrcode?: string;
+  LoginImage?: string;
   Acme?: boolean;
   AutoDeploy?: boolean;
 }

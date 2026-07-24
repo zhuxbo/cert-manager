@@ -443,6 +443,84 @@ test('管理员可以上传二维码且非图片文件会被拒绝', function ()
     expect($valid->json('data.url'))->toMatch('#^/api/meta/site-image/qrcode-[a-f0-9]{64}\.jpg$#');
 });
 
+test('管理员可以上传自由比例的登录配图且限制尺寸', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'loginImage'],
+        ['type' => 'image', 'value' => ''],
+    );
+
+    // 自由比例（竖版）位图可上传，不要求正方形
+    $valid = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/login-image', [
+        'file' => UploadedFile::fake()->image('login.png', 1200, 1800)->size(2048),
+    ]);
+    $valid->assertOk()->assertJson(['code' => 1]);
+    $url = $valid->json('data.url');
+    expect($url)->toMatch('#^/api/meta/site-image/login-image-[a-f0-9]{64}\.png$#')
+        ->and(Setting::where('group_id', $group->id)->where('key', 'loginImage')->value('value'))
+        ->toBe($url);
+
+    // 消费端路由必须放行 login-image 文件名（漏配会导致上传成功但页面 404 不显示）
+    $this->get($url)->assertOk();
+
+    // 登录配图不接受 SVG
+    $svg = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/login-image', [
+        'file' => UploadedFile::fake()->createWithContent(
+            'login.svg',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>',
+        ),
+    ]);
+    $svg->assertOk()->assertJson(['code' => 0]);
+
+    // 超出 2560×2560 或 2MB 拒绝
+    foreach ([
+        UploadedFile::fake()->image('wide-login.png', 2561, 1440)->size(1024),
+        UploadedFile::fake()->image('large-login.png', 1200, 1800)->size(2049),
+    ] as $file) {
+        $this->actingAsAdmin($this->admin)
+            ->post('/api/admin/setting/site-image/login-image', ['file' => $file])
+            ->assertOk()
+            ->assertJson(['code' => 0]);
+    }
+});
+
+test('管理员可以清除登录配图并删除托管文件', function () {
+    Storage::fake('public');
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'loginImage'],
+        ['type' => 'image', 'value' => ''],
+    );
+
+    $upload = $this->actingAsAdmin($this->admin)->post('/api/admin/setting/site-image/login-image', [
+        'file' => UploadedFile::fake()->image('login.png', 1200, 800)->size(512),
+    ]);
+    $upload->assertOk()->assertJson(['code' => 1]);
+    $path = 'site/'.basename($upload->json('data.url'));
+    expect(Storage::disk('public')->exists($path))->toBeTrue();
+
+    $this->actingAsAdmin($this->admin)
+        ->delete('/api/admin/setting/site-image/login-image')
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect(Setting::where('group_id', $group->id)->where('key', 'loginImage')->value('value'))->toBe('')
+        ->and(Storage::disk('public')->exists($path))->toBeFalse();
+
+    // 未上传状态重复清除幂等
+    $this->actingAsAdmin($this->admin)
+        ->delete('/api/admin/setting/site-image/login-image')
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+});
+
 test('站点图片上传只接受 logo 和 qrcode 类型', function () {
     Storage::fake('public');
 

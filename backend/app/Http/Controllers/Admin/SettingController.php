@@ -196,11 +196,15 @@ class SettingController extends BaseController
     }
 
     /**
-     * 上传站点 Favicon、Logo、展开版 Logo 或客服二维码。
+     * 上传站点 Favicon、Logo、展开版 Logo、客服二维码或用户端登录配图。
      */
     public function uploadSiteImage(UploadSiteImageRequest $request, string $kind): void
     {
-        $settingKey = $kind === 'logo-expanded' ? 'logoExpanded' : $kind;
+        $settingKey = match ($kind) {
+            'logo-expanded' => 'logoExpanded',
+            'login-image' => 'loginImage',
+            default => $kind,
+        };
         $isLogo = in_array($kind, ['logo', 'logo-expanded'], true);
 
         /** @var UploadedFile $file */
@@ -262,6 +266,44 @@ class SettingController extends BaseController
         $this->success(['url' => $url]);
     }
 
+    /**
+     * 清除站点图片设置并删除托管文件（恢复默认回落资源）。
+     */
+    public function deleteSiteImage(string $kind): void
+    {
+        $settingKey = match ($kind) {
+            'logo-expanded' => 'logoExpanded',
+            'login-image' => 'loginImage',
+            default => $kind,
+        };
+
+        $group = SettingGroup::where('name', 'site')->first();
+        if (! $group) {
+            $this->error('站点设置不存在');
+        }
+
+        $setting = Setting::where('group_id', $group->id)
+            ->where('key', $settingKey)
+            ->where('type', 'image')
+            ->first();
+        if (! $setting) {
+            $this->error('站点图片设置不存在');
+        }
+
+        $oldUrl = is_string($setting->value) ? $setting->value : '';
+        $oldPath = $this->managedSiteImagePath($oldUrl, $kind);
+
+        $setting->value = '';
+        $setting->save();
+
+        // 仅删除本系统托管的文件；外部 URL 只清配置不动文件
+        if ($oldPath !== null) {
+            Storage::disk('public')->delete($oldPath);
+        }
+
+        $this->success();
+    }
+
     private function managedSiteImagePath(string $url, string $kind): ?string
     {
         $prefix = "/api/meta/site-image/$kind-";
@@ -274,7 +316,7 @@ class SettingController extends BaseController
         $kindPattern = preg_quote($kind, '/');
         $extensions = match ($kind) {
             'favicon' => 'ico',
-            'qrcode' => 'jpg|png|webp',
+            'qrcode', 'login-image' => 'jpg|png|webp',
             default => 'jpg|png|webp|svg',
         };
 

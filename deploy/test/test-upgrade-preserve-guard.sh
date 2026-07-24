@@ -304,6 +304,7 @@ test_a8() {
     printf 'LOGO' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
     printf 'SVG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.svg"
     printf 'PNG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.png"
+    printf 'LOGIN' >"$PRESERVE_DIR/frontend_config/user_login.svg"
     local rc
     (_restore_preserved_extras)
     rc=$?
@@ -314,6 +315,7 @@ test_a8() {
     [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg" 2>/dev/null || true)" = "LOGO" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.svg" 2>/dev/null || true)" = "SVG-QR" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.png" 2>/dev/null || true)" = "PNG-QR" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/frontend/user/login.svg" 2>/dev/null || true)" = "LOGIN" ] || ok=0
     if [ "$ok" -eq 1 ]; then
         pass "A8 extras 还原：api_adapters(order+acme) + frontend_config 还原到位、rc=0"
     else
@@ -662,6 +664,16 @@ if [ -f "$ROOT/frontend/user/public/logo.svg" ] &&
     pass "C 完整包使用轻量 SVG，升级包不交付二维码并保留安装目录的新旧回落资源"
 else
     fail "C 默认 SVG 缺失/过大、仍携带默认 PNG，或升级包未排除新旧二维码"
+fi
+
+LOGIN_SVG="$ROOT/frontend/user/public/login.svg"
+if [ -f "$LOGIN_SVG" ] &&
+    [ "$(wc -c <"$LOGIN_SVG")" -le 2048 ] &&
+    ! grep -qF '"frontend/user/login.svg"' "$BUILD_CONFIG" &&
+    grep -qF 'login.svg' "$ROOT/deploy/upgrade.sh"; then
+    pass "C 登录配图随完整包与升级包交付，升级流程保留安装目录已有 login.svg"
+else
+    fail "C 默认 login.svg 缺失/过大、被升级包错误排除，或 upgrade.sh 未保留 login.svg"
 fi
 
 echo ""

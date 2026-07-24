@@ -178,6 +178,15 @@ if [ "$BUILD_ADMIN" = "true" ] || [ "$BUILD_USER" = "true" ]; then
             log_success "已覆盖 user qrcode.svg"
         fi
     fi
+
+    # 覆盖 login.svg（如果 custom 中存在，仅 user）
+    if [ -f "$CUSTOM_DIR/login.svg" ]; then
+        if [ "$BUILD_USER" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/user/public" ]; then
+            log_info "使用自定义 login.svg 覆盖..."
+            cp "$CUSTOM_DIR/login.svg" "$WORKSPACE_DIR/frontend/user/public/login.svg"
+            log_success "已覆盖 user login.svg"
+        fi
+    fi
 fi
 
 echo ""

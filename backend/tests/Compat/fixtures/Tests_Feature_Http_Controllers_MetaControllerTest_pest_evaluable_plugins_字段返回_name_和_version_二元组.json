@@ -43,7 +43,8 @@
                         "Favicon": "string",
                         "Logo": "string",
                         "LogoExpanded": "string",
-                        "Qrcode": "string"
+                        "Qrcode": "string",
+                        "LoginImage": "string"
                     }
                 }
             }

@@ -123,7 +123,7 @@ export function clearAllCache(): Promise<BaseResponse> {
 }
 
 export function uploadSiteImage(
-  kind: "favicon" | "logo" | "logo-expanded" | "qrcode",
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode" | "login-image",
   file: File
 ): Promise<BaseResponse<{ url: string }>> {
   const formData = new FormData();
@@ -134,4 +134,11 @@ export function uploadSiteImage(
     `/setting/site-image/${kind}`,
     { data: formData }
   );
+}
+
+// 清除站点图片并删除托管文件（恢复默认回落资源）
+export function deleteSiteImage(
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode" | "login-image"
+): Promise<BaseResponse> {
+  return http.request<BaseResponse>("delete", `/setting/site-image/${kind}`);
 }

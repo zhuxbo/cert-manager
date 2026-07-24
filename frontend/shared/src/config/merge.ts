@@ -10,7 +10,8 @@ const backendManagedKeys: (keyof PlatformConfigs)[] = [
   "Favicon",
   "Logo",
   "LogoExpanded",
-  "Qrcode"
+  "Qrcode",
+  "LoginImage"
 ];
 
 /**

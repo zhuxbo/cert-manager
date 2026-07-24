@@ -268,6 +268,8 @@ GitHub Release 仅用于代码存档，实际部署使用自建 release 服务�
 
 二维码占位资产分包边界：完整包携带新版 `frontend/user/qrcode.svg`；升级包同时排除 `qrcode.svg` 和旧版 `qrcode.png`，由升级流程保留安装目录原有文件。这样旧安装继续使用 PNG，新安装继续使用 SVG，前端仅在后台未上传二维码时按 SVG → PNG 顺序回落。
 
+登录配图 `frontend/user/login.svg` 的边界不同：完整包与升级包都携带（无历史兼容包袱，存量部署升级后即可获得默认配图），升级保护由两条路径的保留逻辑负责——PackageExtractor `protectedFrontendAssets` 与 `deploy/upgrade.sh` 的 `frontend_config` 清单在目标机已存在 `login.svg`（含运营商定制版）时原样保留，包内默认图仅在目标机缺失时落地。
+
 ---
 
 ## 快速发布指令

@@ -1,0 +1,29 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingControllerTest::__pest_evaluable_管理员可以清除登录配图并删除托管文件",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/admin/setting/site-image/{kind}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/setting/site-image/{kind}",
+            "request_keys": [
+                "file"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "url": "string"
+                }
+            }
+        }
+    ]
+}

@@ -13,9 +13,22 @@ export const defaultQrcodePath = (
   return `${base.endsWith("/") ? base : `${base}/`}qrcode.${extension}`;
 };
 
-const isDefaultQrcodeValue = (
-  qrcode: string | null | undefined
-): boolean => !qrcode || ["/qrcode.png", "/qrcode.svg"].includes(qrcode);
+/** 由公开资源目录推导默认登录配图地址（user 端 public/login.svg，可被升级保留）。 */
+export const defaultLoginImagePath = (baseUrl: string): string => {
+  const base = baseUrl || "/";
+  return `${base.endsWith("/") ? base : `${base}/`}login.svg`;
+};
+
+/** 后台未配置登录配图时回落默认 login.svg；默认资源加载失败由调用方降级纯色面板。 */
+export const resolveSiteLoginImage = (
+  loginImage: string | null | undefined,
+  fallbackUrl: string
+): string => {
+  return loginImage || fallbackUrl;
+};
+
+const isDefaultQrcodeValue = (qrcode: string | null | undefined): boolean =>
+  !qrcode || ["/qrcode.png", "/qrcode.svg"].includes(qrcode);
 
 /**
  * 后台未配置（空值或默认哨兵 "/logo.svg"）时回落到调用方提供的默认资源；

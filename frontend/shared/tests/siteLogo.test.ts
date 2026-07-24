@@ -4,8 +4,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
+  defaultLoginImagePath,
   defaultLogoPath,
   defaultQrcodePath,
+  resolveSiteLoginImage,
   resolveSiteLogo,
   resolveSiteQrcode,
   resolveSiteQrcodeAfterError
@@ -58,6 +60,24 @@ test("二维码默认哨兵值按用户端公开资源目录回落", () => {
       "/user/qrcode.svg"
     ),
     "/api/meta/site-image/qrcode-custom.png"
+  );
+});
+
+test("登录配图未配置时回落默认 login.svg，已配置时保持上传地址", () => {
+  assert.equal(defaultLoginImagePath("/user/"), "/user/login.svg");
+  assert.equal(defaultLoginImagePath("/user"), "/user/login.svg");
+  assert.equal(defaultLoginImagePath(""), "/login.svg");
+  assert.equal(resolveSiteLoginImage("", "/user/login.svg"), "/user/login.svg");
+  assert.equal(
+    resolveSiteLoginImage(null, "/user/login.svg"),
+    "/user/login.svg"
+  );
+  assert.equal(
+    resolveSiteLoginImage(
+      "/api/meta/site-image/login-image-custom.png",
+      "/user/login.svg"
+    ),
+    "/api/meta/site-image/login-image-custom.png"
   );
 });
 

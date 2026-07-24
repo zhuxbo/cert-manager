@@ -225,7 +225,7 @@ class PackageExtractor
      * 这些文件在升级时会被保留，不会被覆盖
      */
     protected array $protectedFrontendAssets = [
-        'user' => ['logo.svg', 'qrcode.svg', 'qrcode.png'],
+        'user' => ['logo.svg', 'qrcode.svg', 'qrcode.png', 'login.svg'],
     ];
 
     /**

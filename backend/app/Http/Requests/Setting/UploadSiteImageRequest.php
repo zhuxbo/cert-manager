@@ -32,8 +32,10 @@ class UploadSiteImageRequest extends BaseRequest
         }
 
         $isLogo = in_array($kind, ['logo', 'logo-expanded'], true);
+        $isLoginImage = $kind === 'login-image';
         $requiresSquare = in_array($kind, ['logo', 'qrcode'], true);
-        $maxDimension = $isLogo ? 200 : 800;
+        $maxDimension = $isLogo ? 200 : ($isLoginImage ? 2560 : 800);
+        $kindLabel = $isLogo ? 'Logo' : ($isLoginImage ? '登录配图' : '二维码');
 
         return [
             'file' => [
@@ -42,8 +44,8 @@ class UploadSiteImageRequest extends BaseRequest
                 'file',
                 $isLogo ? 'image:allow_svg' : 'image',
                 $isLogo ? 'mimes:jpg,jpeg,png,webp,svg' : 'mimes:jpg,jpeg,png,webp',
-                $isLogo ? 'max:200' : 'max:1024',
-                function (string $attribute, mixed $value, Closure $fail) use ($isLogo, $kind, $maxDimension, $requiresSquare): void {
+                $isLogo ? 'max:200' : ($isLoginImage ? 'max:2048' : 'max:1024'),
+                function (string $attribute, mixed $value, Closure $fail) use ($isLogo, $kind, $kindLabel, $maxDimension, $requiresSquare): void {
                     if (! $value instanceof UploadedFile) {
                         return;
                     }
@@ -65,7 +67,9 @@ class UploadSiteImageRequest extends BaseRequest
 
                     $dimensions = $this->imageDimensions($value);
                     if ($dimensions === null) {
-                        $fail($isLogo ? '无法读取 Logo 尺寸' : '无法读取二维码尺寸');
+                        $fail($isLogo
+                            ? '无法读取 Logo 尺寸'
+                            : "无法读取{$kindLabel}尺寸");
 
                         return;
                     }
@@ -74,7 +78,7 @@ class UploadSiteImageRequest extends BaseRequest
                     if ($width > $maxDimension || $height > $maxDimension) {
                         $fail($isLogo
                             ? 'Logo 尺寸不能超过 200×200 像素'
-                            : '二维码尺寸不能超过 800×800 像素');
+                            : "{$kindLabel}尺寸不能超过 {$maxDimension}×{$maxDimension} 像素");
 
                         return;
                     }
@@ -96,16 +100,17 @@ class UploadSiteImageRequest extends BaseRequest
         }
 
         $isLogo = in_array($this->route('kind'), ['logo', 'logo-expanded'], true);
+        $isLoginImage = $this->route('kind') === 'login-image';
 
         return [
             'file.required' => '请选择图片',
             'file.image' => '上传文件必须是图片',
             'file.mimes' => $isLogo
                 ? 'Logo 仅支持 JPG、PNG、WebP、SVG 格式'
-                : '二维码仅支持 JPG、PNG、WebP 格式',
+                : ($isLoginImage ? '登录配图仅支持 JPG、PNG、WebP 格式' : '二维码仅支持 JPG、PNG、WebP 格式'),
             'file.max' => $isLogo
                 ? 'Logo 大小不能超过 200KB'
-                : '二维码大小不能超过 1MB',
+                : ($isLoginImage ? '登录配图大小不能超过 2MB' : '二维码大小不能超过 1MB'),
         ];
     }
 
