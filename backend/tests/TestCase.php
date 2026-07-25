@@ -6,6 +6,7 @@ use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Illuminate\Support\Facades\Storage;
 use Tests\Compat\Helpers;
 use Tests\Compat\SnapshotListener;
+use Tests\Support\PublicSuffixListFixture;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -67,6 +68,10 @@ abstract class TestCase extends BaseTestCase
      * → 每跑实网重抓公共后缀表，断网时 DomainUtilTest 直接红、上游改一条后缀就自发飘红。
      * 固定 token 让单进程与 paratest worker 一样"首跑落缓存、后续复用"。
      *
+     * 但首跑仍是空目录（全新克隆 / 干净 CI / 新增 worker），故建好目录后直接把仓内 PSL 快照
+     * 灌进该缓存位（见 PublicSuffixListFixture）：测试彻底离线且不随上游改表飘红，
+     * 生产代码 DomainUtil 一行不改、线上照旧抓最新表。
+     *
      * storage_path() 与 Storage 门面（local/public disk）同步隔离，保持二者路径一致
      * （生产同为默认路径，对称）。framework 的 cache/log/session 用 bootstrap 时 config
      * 已解析的默认路径，不受影响。
@@ -81,6 +86,7 @@ abstract class TestCase extends BaseTestCase
         $workerStorage = storage_path('framework/testing/worker-'.$token);
         @mkdir($workerStorage.'/framework', 0755, true);
         @mkdir($workerStorage.'/app/public', 0755, true);
+        PublicSuffixListFixture::seed($workerStorage);
 
         $this->app->useStoragePath($workerStorage);
         config([
