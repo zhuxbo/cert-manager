@@ -13,6 +13,8 @@ namespace Tests\Compat;
  */
 final class Helpers
 {
+    private const MAX_FIXTURE_FILE_NAME_BYTES = 255;
+
     /**
      * 把测试名规范化为 fixture 文件名。
      *
@@ -43,7 +45,21 @@ final class Helpers
         // 多个连续下划线压成一个
         $name = preg_replace('/_+/', '_', $name) ?? $name;
 
-        return trim($name, '_').'.json';
+        $name = trim($name, '_');
+        $fileName = $name.'.json';
+        if (strlen($fileName) <= self::MAX_FIXTURE_FILE_NAME_BYTES) {
+            return $fileName;
+        }
+
+        $suffix = '_'.substr(hash('sha256', $name), 0, 16).'.json';
+        $prefix = mb_strcut(
+            $name,
+            0,
+            self::MAX_FIXTURE_FILE_NAME_BYTES - strlen($suffix),
+            'UTF-8'
+        );
+
+        return rtrim($prefix, '_').$suffix;
     }
 
     /**

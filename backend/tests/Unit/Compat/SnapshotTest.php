@@ -70,3 +70,31 @@ test('Compat Helpers 工作模式判定正常', function () {
     expect(Helpers::isCaptureMode())->toBeBool();
     expect(Helpers::isCompareMode())->toBeBool();
 });
+
+test('Compat fixture 短文件名保持现有格式', function () {
+    $testName = 'P\Tests\Feature\Http\Controllers\Admin\AcmeControllerTest::__pest_evaluable_index_返回列表';
+
+    expect(Helpers::fixtureFileName($testName))
+        ->toBe('Tests_Feature_Http_Controllers_Admin_AcmeControllerTest_pest_evaluable_index_返回列表.json');
+});
+
+test('Compat fixture 超长文件名按字节截断并附加稳定哈希', function () {
+    $testName = 'P\Tests\Feature\Http\Controllers\User\OrderControllerTest::__pest_evaluable_'
+        .str_repeat('超长测试名称', 30);
+    $otherTestName = $testName.'不同';
+
+    $fileName = Helpers::fixtureFileName($testName);
+    $sameFileName = Helpers::fixtureFileName($testName);
+    $otherFileName = Helpers::fixtureFileName($otherTestName);
+
+    expect(strlen($fileName))
+        ->toBeLessThanOrEqual(255)
+        ->and(preg_match('//u', $fileName))
+        ->toBe(1)
+        ->and($fileName)
+        ->toMatch('/_[a-f0-9]{16}\.json$/')
+        ->and($sameFileName)
+        ->toBe($fileName)
+        ->and($otherFileName)
+        ->not->toBe($fileName);
+});
