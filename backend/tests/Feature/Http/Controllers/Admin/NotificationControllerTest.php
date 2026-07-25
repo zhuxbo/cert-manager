@@ -106,13 +106,13 @@ test('管理员可以重发通知', function () {
     $mockCenter->shouldReceive('dispatch')->once();
     $this->app->instance(NotificationCenter::class, $mockCenter);
 
-    $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/notification/$notification->id/resend");
+    $response = $this->actingAsAdmin($this->admin)->postJson("/api/admin/notification/resend/$notification->id");
 
     $response->assertOk()->assertJson(['code' => 1]);
 });
 
 test('重发不存在的通知返回错误', function () {
-    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/notification/99999/resend');
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/notification/resend/99999');
 
     $response->assertOk()->assertJson(['code' => 0]);
 });

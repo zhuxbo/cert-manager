@@ -74,6 +74,7 @@ php artisan test tests/Unit/Compat/
 - URI 优先用 Laravel route pattern（`/api/admin/order/show/{id}`），fallback 把数字段抽象为 `{id}`、长 token 段抽象为 `{token}`
 - 同一测试同一 endpoint 多次调用仅记录首次（避免 token 一次性消费等场景导致 fixture 不稳定）
 - 自动剥离仅 `APP_DEBUG=true` 时输出的调试字段（`errors.exception_type` / `errors.exception_trace`），保证本地与 CI 采集结果一致
+- 比对项 = `response_schema` + `response_status` + `request_keys`（入参顶层 key 增删也算 break；旧格式 fixture 缺 `request_keys` 键时跳过该项）
 
 ## 预期破坏性变更：豁免
 
@@ -115,6 +116,8 @@ test('admin can update user', function () {
 2. JsonResponse 与普通 Response 的 content 处理略有不同；空 body 或非 JSON body 的响应 schema 记为 `null`，diff 时 null↔null 兼容
 3. fixture 文件名包含中文，不在路径里跨系统迁移会有问题（git 默认 UTF-8 OK）
 4. `Mockery` mock 的 controller action 不返回完整响应时，fixture schema 可能为 `null`（属正常）
+5. `request_keys` 取的是 query+body **合并后**的顶层 key，故同名参数在 query 与 body 之间搬家（如 `email` 从 `?email=` 改为请求体）不会产生 diff；此类改动只能靠定向测试守（先例：`order/send-active` GET→POST 同时迁移 `email`）
+6. 覆盖面只到 `tests/Feature/Http/Controllers/`（capture / compare 的目标目录），此目录外的测试即使打 `/api/*` 也没有基线，跑 compare 会报 `fixture_missing`，属预期
 
 ## 故障排查
 

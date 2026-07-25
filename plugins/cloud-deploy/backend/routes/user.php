@@ -27,7 +27,7 @@ Route::prefix('api')->middleware(['global', 'api.user'])->group(function () {
         Route::get('providers', [ProviderController::class, 'index']);
 
         Route::get('order-options', [OrderOptionController::class, 'index']);
-        Route::get('order-options/{order}', [OrderOptionController::class, 'show'])->where('order', '[0-9]+');
+        Route::get('order-options/{id}', [OrderOptionController::class, 'show'])->where('id', '[0-9]+');
 
         Route::post('deploy', [DeployController::class, 'deploy']);
     });

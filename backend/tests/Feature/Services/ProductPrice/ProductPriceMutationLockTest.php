@@ -274,7 +274,7 @@ test('五个产品价格写入口共用同一命名锁并返回 503 专用文案
         fn () => $this->actingAsAdmin($this->admin)->deleteJson('/api/admin/product-price/batch', [
             'ids' => [$price->id],
         ]),
-        fn () => $this->actingAsAdmin($this->admin)->putJson('/api/admin/product-price/set', [
+        fn () => $this->actingAsAdmin($this->admin)->patchJson('/api/admin/product-price/prices', [
             'product_id' => $product->id,
             'product_price' => [
                 $level->code => ['price' => [12 => '300.00']],

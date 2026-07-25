@@ -12,7 +12,12 @@ import {
   ElOption
 } from "element-plus";
 import { PlusDrawerForm } from "plus-pro-components";
-import { getGroupSettings, destroy, batchUpdateSettings } from "@/api/setting";
+import {
+  getGroupSettings,
+  destroy,
+  batchUpdateSettings,
+  clearPayCache
+} from "@/api/setting";
 import { useSettingFormStore } from "./settingFormStore";
 import ArrayInput from "./ArrayInput.vue";
 import SiteImageUpload from "./SiteImageUpload.vue";
@@ -103,6 +108,18 @@ const handleDeleteGroup = () => {
 // 添加设置项
 const handleAddSetting = () => {
   openStoreForm(0, props.group.id);
+};
+
+// 支付设置组（alipay/wechat）才提供支付缓存清理
+const isPayGroup = computed(() =>
+  ["alipay", "wechat"].includes(props.group.name)
+);
+
+// 清理本支付类型的配置缓存与落盘证书（下次支付按当前设置重新落盘）
+const handleClearPayCache = () => {
+  clearPayCache(props.group.name).then(() => {
+    message("支付缓存已清理", { type: "success" });
+  });
 };
 
 // 编辑设置项
@@ -277,6 +294,16 @@ onMounted(() => {
           >
             批量编辑
           </el-button>
+          <el-popconfirm
+            v-if="isPayGroup"
+            title="确定要清理支付缓存吗？将删除已落盘的支付证书，下次支付按当前设置重新生成。"
+            width="320"
+            @confirm="handleClearPayCache"
+          >
+            <template #reference>
+              <el-button type="warning" plain>清理支付缓存</el-button>
+            </template>
+          </el-popconfirm>
         </template>
         <template v-else>
           <el-button type="success" @click="saveBatchEdit">保存</el-button>

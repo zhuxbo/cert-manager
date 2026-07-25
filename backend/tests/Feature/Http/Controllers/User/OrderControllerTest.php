@@ -10,6 +10,7 @@ use App\Models\ProductPrice;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Api\Api;
 use Illuminate\Support\Carbon;
 use Tests\Traits\ActsAsUser;
@@ -1052,4 +1053,55 @@ test('标记已续费-不能标记其他用户的订单（UserScope 越权拒绝
 
     // 越权未生效：他人订单仍 active
     expect($otherCert->fresh()->status)->toBe('active');
+});
+
+// sendActive() 测试：路由由 GET 收紧为 POST，email 随之从 query 移到 body
+test('用户发送激活邮件-email 从请求体读取', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$order] = createUserActiveOrder($user, $product);
+
+    $captured = null;
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldReceive('dispatch')->once()
+        ->andReturnUsing(function ($intent) use (&$captured) {
+            $captured = $intent;
+        });
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/send-active/$order->id", ['email' => 'mine@example.com'])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($captured)->not->toBeNull()
+        ->and($captured->notifiableId)->toBe($user->id)
+        ->and($captured->context['order_id'])->toBe($order->id)
+        ->and($captured->context['email'])->toBe('mine@example.com');
+});
+
+test('用户发送激活邮件-他人订单被 UserScope 隔离且不发通知', function () {
+    $user = $this->createTestUser();
+    $otherUser = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$otherOrder] = createUserActiveOrder($otherUser, $product);
+
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/send-active/$otherOrder->id", ['email' => 'mine@example.com'])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
+test('用户发送激活邮件-旧 GET 入口已下线（副作用端点不挂 GET）', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$order] = createUserActiveOrder($user, $product);
+
+    $this->actingAsUser($user)
+        ->getJson("/api/order/send-active/$order->id")
+        ->assertStatus(405);
 });

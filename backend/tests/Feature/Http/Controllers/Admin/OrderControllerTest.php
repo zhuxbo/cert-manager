@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -716,4 +717,66 @@ test('未认证用户无法访问订单管理', function () {
     $response = $this->getJson('/api/admin/order');
 
     $response->assertUnauthorized();
+});
+
+// sendActive() 测试：路由由 GET 收紧为 POST，email 随之从 query 移到 body
+test('管理员发送激活邮件：email 从请求体读取', function () {
+    [$order] = createOrderWithCert('active');
+
+    $captured = null;
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldReceive('dispatch')->once()
+        ->andReturnUsing(function ($intent) use (&$captured) {
+            $captured = $intent;
+        });
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/order/send-active/$order->id", ['email' => 'custom@example.com'])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($captured)->not->toBeNull()
+        ->and($captured->code)->toBe('cert_issued')
+        ->and($captured->notifiableId)->toBe($this->user->id)
+        ->and($captured->context['order_id'])->toBe($order->id)
+        ->and($captured->context['email'])->toBe('custom@example.com');
+});
+
+test('管理员发送激活邮件：不传 email 回落订单用户邮箱', function () {
+    [$order] = createOrderWithCert('active');
+
+    $captured = null;
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldReceive('dispatch')->once()
+        ->andReturnUsing(function ($intent) use (&$captured) {
+            $captured = $intent;
+        });
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/order/send-active/$order->id")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($captured->context['email'])->toBe($this->user->email);
+});
+
+test('管理员发送激活邮件：订单不存在返回错误且不发通知', function () {
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/order/send-active/99999')
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
+test('管理员发送激活邮件：旧 GET 入口已下线（副作用端点不挂 GET）', function () {
+    [$order] = createOrderWithCert('active');
+
+    $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/order/send-active/$order->id")
+        ->assertStatus(405);
 });

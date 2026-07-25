@@ -103,7 +103,7 @@ test('管理员可以批量更新设置', function () {
         return ['id' => $setting->id, 'value' => 'batch_updated'];
     })->toArray();
 
-    $response = $this->actingAsAdmin($this->admin)->putJson('/api/admin/setting/batch-update', [
+    $response = $this->actingAsAdmin($this->admin)->patchJson('/api/admin/setting/batch-update', [
         'settings' => $updateData,
     ]);
 

@@ -19,7 +19,7 @@ Route::prefix('api/admin')->middleware(['global', 'api.admin'])->group(function 
         Route::get('log', [CloudDeployController::class, 'logs']);
         Route::get('providers', [CloudDeployController::class, 'providers']);
         Route::get('order-options', [OrderOptionController::class, 'index']);
-        Route::get('order-options/{order}', [OrderOptionController::class, 'show'])->where('order', '[0-9]+');
+        Route::get('order-options/{id}', [OrderOptionController::class, 'show'])->where('id', '[0-9]+');
         Route::post('deploy', [CloudDeployController::class, 'deploy']);
     });
 });

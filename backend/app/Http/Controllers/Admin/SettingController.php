@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Http\Requests\Setting\ClearPayCacheRequest;
 use App\Http\Requests\Setting\GetIdsRequest;
 use App\Http\Requests\Setting\StoreRequest;
 use App\Http\Requests\Setting\UpdateRequest;
 use App\Http\Requests\Setting\UploadSiteImageRequest;
 use App\Models\Setting;
 use App\Models\SettingGroup;
+use App\Services\Payment\PayConfigCache;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
@@ -179,6 +181,23 @@ class SettingController extends BaseController
     public function clearCache(): void
     {
         Setting::clearAllCache();
+        $this->success();
+    }
+
+    /**
+     * 清除支付配置缓存并删除已落盘的支付证书（下次调用支付时按当前设置重新落盘）。
+     *
+     * 不传 type 清全部支付类型；支付设置组保存后由 Setting::clearGroupCache 自动清理，
+     * 本端点用于设置未变但磁盘证书需强制重建的场景。
+     */
+    public function clearPayCache(ClearPayCacheRequest $request): void
+    {
+        $type = $request->validated('type');
+        if (is_string($type) && $type !== '') {
+            PayConfigCache::forget($type);
+        } else {
+            PayConfigCache::forgetAll();
+        }
         $this->success();
     }
 

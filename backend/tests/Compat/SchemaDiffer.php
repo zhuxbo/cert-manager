@@ -204,4 +204,30 @@ final class SchemaDiffer
             'actual' => gettype($actual),
         ]];
     }
+
+    /**
+     * 对比请求入参的顶层 key 列表（fixture 的 request_keys）。
+     *
+     * 入参契约的增删同样是破坏性变更：少一个 key 可能是前端漏传，多一个 key 可能是
+     * 后端悄悄开始要求新参数。key 列表由 extractRequestKeys 排序后写入，故可直接比较。
+     * 注意：`request_keys` 取自 query+body 合并后的顶层 key，**同名参数在 query 与 body
+     * 之间搬家不会被这里发现**（见 tests/Compat/README.md 已知限制），那类改动靠定向测试兜。
+     *
+     * @param  list<string>|null  $expected
+     * @param  list<string>|null  $actual
+     * @return array<int, array<string, mixed>>
+     */
+    public static function diffRequestKeys(?array $expected, ?array $actual, string $path = '$.request_keys'): array
+    {
+        if ($expected === $actual) {
+            return [];
+        }
+
+        return [[
+            'path' => $path,
+            'kind' => 'request_keys_changed',
+            'expected' => $expected,
+            'actual' => $actual,
+        ]];
+    }
 }

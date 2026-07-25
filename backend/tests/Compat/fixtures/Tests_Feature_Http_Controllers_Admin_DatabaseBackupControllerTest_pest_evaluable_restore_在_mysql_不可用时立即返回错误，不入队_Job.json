@@ -4,7 +4,7 @@
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/admin/database/backups/{id}/restore",
+            "uri_pattern": "/api/admin/database/backups/{backupId}/restore",
             "request_keys": [
                 "mode"
             ],

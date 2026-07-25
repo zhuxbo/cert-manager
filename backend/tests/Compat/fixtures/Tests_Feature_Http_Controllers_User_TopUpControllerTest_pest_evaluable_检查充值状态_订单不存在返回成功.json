@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "calls": [
         {
-            "method": "GET",
+            "method": "POST",
             "uri_pattern": "/api/top-up/check/{id}",
             "request_keys": null,
             "response_status": "2xx",

@@ -57,14 +57,14 @@ function taskFourInitializationPayload(UserLevel $level, array $overrides = []):
 }
 
 test('未认证管理员不能调用价格初始化接口', function () {
-    $this->postJson('/api/admin/product-price/initialization', [])->assertUnauthorized();
+    $this->postJson('/api/admin/product-price/initialize', [])->assertUnauthorized();
 });
 
 test('预览成功返回令牌且即使开启强制和倍率同步也绝不写库', function () {
     [$admin, $level] = taskFourInitializationFixture();
 
     $response = $this->actingAsAdmin($admin)->postJson(
-        '/api/admin/product-price/initialization',
+        '/api/admin/product-price/initialize',
         taskFourInitializationPayload($level, [
             'force' => true,
             'sync_cost_rates' => true,
@@ -101,7 +101,7 @@ test('成本告警仍以 code 一的结构化成功响应返回', function () {
     ]);
 
     $response = $this->actingAsAdmin($admin)->postJson(
-        '/api/admin/product-price/initialization',
+        '/api/admin/product-price/initialize',
         taskFourInitializationPayload($level),
     );
 
@@ -122,7 +122,7 @@ test('代表性参数失败返回结构化校验错误', function () {
     [$admin, $level] = taskFourInitializationFixture();
 
     $this->actingAsAdmin($admin)->postJson(
-        '/api/admin/product-price/initialization',
+        '/api/admin/product-price/initialize',
         taskFourInitializationPayload($level, ['precision' => 3]),
     )->assertOk()
         ->assertJsonPath('code', 0)
@@ -144,7 +144,7 @@ test('正式执行只信任服务端数据且响应统计与数据库一致', fu
     $preview = app(ProductPriceInitializationService::class)->preview($serviceParams, $admin->id);
 
     $response = $this->actingAsAdmin($admin)->postJson(
-        '/api/admin/product-price/initialization',
+        '/api/admin/product-price/initialize',
         [...$params, 'preview' => false, 'preview_token' => $preview['preview_token']],
     );
 
@@ -184,7 +184,7 @@ test('状态变化后执行返回结构化 stale 且零写', function () {
     $product->save();
 
     $this->actingAsAdmin($admin)->postJson(
-        '/api/admin/product-price/initialization',
+        '/api/admin/product-price/initialize',
         [...$params, 'preview' => false, 'preview_token' => $preview['preview_token']],
     )->assertOk()
         ->assertJsonPath('code', 1)

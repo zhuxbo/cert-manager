@@ -126,7 +126,7 @@ export function get(
   return http.get<
     BaseResponse<null>,
     { product_id: number; level_codes: string[] }
-  >(`/product-price/get`, {
+  >(`/product-price/prices`, {
     params: { product_id, level_codes }
   });
 }
@@ -136,10 +136,7 @@ export function set(
   product_id: number,
   product_price: object
 ): Promise<BaseResponse> {
-  return http.put<
-    BaseResponse<null>,
-    { product_id: number; product_price: object }
-  >(`/product-price/set`, {
+  return http.request<BaseResponse<null>>("patch", `/product-price/prices`, {
     data: { product_id, product_price }
   });
 }
@@ -149,12 +146,7 @@ export function initialize(
   data: InitializationRequest
 ): Promise<BaseResponse<InitializationResult>> {
   return http.post<BaseResponse<InitializationResult>, InitializationRequest>(
-    "/product-price/initialization",
+    "/product-price/initialize",
     { data }
   );
-}
-
-/** 导出产品价格 */
-export function exportTable(): Promise<BaseResponse<null>> {
-  return http.get<BaseResponse<null>, null>("/product-price/export");
 }

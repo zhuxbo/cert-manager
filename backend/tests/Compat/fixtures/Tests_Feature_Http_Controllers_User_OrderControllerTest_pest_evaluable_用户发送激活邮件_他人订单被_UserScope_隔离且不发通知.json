@@ -1,12 +1,12 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_恢复不存在的备份返回错误",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderControllerTest::__pest_evaluable_用户发送激活邮件_他人订单被_UserScope_隔离且不发通知",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/admin/database/backups/{backupId}/restore",
+            "uri_pattern": "/api/order/send-active/{id}",
             "request_keys": [
-                "mode"
+                "email"
             ],
             "response_status": "2xx",
             "response_schema": {

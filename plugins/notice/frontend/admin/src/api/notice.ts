@@ -17,5 +17,5 @@ export function remove(id: number) {
 }
 
 export function toggle(id: number) {
-  return http.request("patch", `/notice/${id}/toggle`);
+  return http.request("patch", `/notice/toggle/${id}`);
 }

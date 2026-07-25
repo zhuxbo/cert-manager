@@ -4,7 +4,7 @@
     "calls": [
         {
             "method": "GET",
-            "uri_pattern": "/api/admin/database/backups/{id}/schema-diff",
+            "uri_pattern": "/api/admin/database/backups/{backupId}/schema-diff",
             "request_keys": null,
             "response_status": "2xx",
             "response_schema": {
