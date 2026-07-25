@@ -144,6 +144,59 @@ test('管理员可以批量删除产品', function () {
     expect(Product::whereIn('id', $ids)->count())->toBe(0);
 });
 
+test('管理员可以为支持TXT解析认证的产品批量开启委托', function () {
+    $products = Product::factory()->count(2)->sequence(
+        ['validation_methods' => ['txt', 'http']],
+        ['validation_methods' => ['txt', 'delegation']]
+    )->create();
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/product/batch-delegation', [
+        'ids' => $products->pluck('id')->all(),
+        'enabled' => true,
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    $products->each(function (Product $product) {
+        expect($product->refresh()->validation_methods)
+            ->toContain('txt')
+            ->toContain('delegation');
+    });
+});
+
+test('批量开启委托时任一产品不支持TXT则整批拒绝', function () {
+    $supported = Product::factory()->create(['validation_methods' => ['txt', 'http']]);
+    $unsupported = Product::factory()->create(['validation_methods' => ['http']]);
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/product/batch-delegation', [
+        'ids' => [$supported->id, $unsupported->id],
+        'enabled' => true,
+    ]);
+
+    $response->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('msg', '所选产品中有不支持 TXT 解析认证的产品，无法开启委托');
+    expect($supported->refresh()->validation_methods)->not->toContain('delegation');
+    expect($unsupported->refresh()->validation_methods)->not->toContain('delegation');
+});
+
+test('管理员可以批量关闭产品委托且保留其他验证方法', function () {
+    $products = Product::factory()->count(2)->sequence(
+        ['validation_methods' => ['txt', 'delegation', 'http']],
+        ['validation_methods' => ['http']]
+    )->create();
+
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/product/batch-delegation', [
+        'ids' => $products->pluck('id')->all(),
+        'enabled' => false,
+    ]);
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($products[0]->refresh()->validation_methods)
+        ->toBe(['txt', 'http'])
+        ->not->toContain('delegation');
+    expect($products[1]->refresh()->validation_methods)->toBe(['http']);
+});
+
 test('管理员可以导入产品', function () {
     $mockAction = Mockery::mock(Action::class);
     $mockAction->shouldReceive('importProduct')->once();

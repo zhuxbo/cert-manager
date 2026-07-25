@@ -112,6 +112,19 @@ export function batchDestroy(ids: number[]): Promise<BaseResponse> {
   });
 }
 
+/** 批量开启或关闭产品委托验证 */
+export function batchSetDelegation(
+  ids: number[],
+  enabled: boolean
+): Promise<BaseResponse> {
+  return http.post<BaseResponse<null>, { ids: number[]; enabled: boolean }>(
+    "/product/batch-delegation",
+    {
+      data: { ids, enabled }
+    }
+  );
+}
+
 /** 导入产品 */
 export function importProduct(data: {
   source?: string;

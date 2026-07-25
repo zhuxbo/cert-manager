@@ -45,7 +45,8 @@ const {
   handleCurrentChange,
   onSearch,
   handleDestroy,
-  handleBatchDestroy
+  handleBatchDestroy,
+  handleBatchDelegation
 } = useProduct(tableRef);
 
 // 创建搜索列配置
@@ -170,6 +171,24 @@ onMounted(() => {
               已选 {{ selectedIds.length }} 项
             </span>
           </div>
+          <el-popconfirm
+            title="确定为所选产品开启委托验证吗？"
+            width="220px"
+            @confirm="handleBatchDelegation(selectedIds, true)"
+          >
+            <template #reference>
+              <el-button type="success" size="small">开启委托</el-button>
+            </template>
+          </el-popconfirm>
+          <el-popconfirm
+            title="确定为所选产品关闭委托验证吗？"
+            width="220px"
+            @confirm="handleBatchDelegation(selectedIds, false)"
+          >
+            <template #reference>
+              <el-button type="warning" size="small">关闭委托</el-button>
+            </template>
+          </el-popconfirm>
           <el-popconfirm
             title="确定要删除吗？"
             width="160px"

@@ -63,6 +63,21 @@ export function useProduct(tableRef) {
     });
   };
 
+  const handleBatchDelegation = (ids: number[], enabled: boolean) => {
+    loading.value = true;
+    productApi
+      .batchSetDelegation(ids, enabled)
+      .then(() => {
+        message(enabled ? "委托开启成功" : "委托关闭成功", {
+          type: "success"
+        });
+        onSearch();
+      })
+      .finally(() => {
+        loading.value = false;
+      });
+  };
+
   function onSearch() {
     loading.value = true;
     const params = {
@@ -101,6 +116,7 @@ export function useProduct(tableRef) {
     updateId,
     handleStore,
     handleDestroy,
-    handleBatchDestroy
+    handleBatchDestroy,
+    handleBatchDelegation
   };
 }

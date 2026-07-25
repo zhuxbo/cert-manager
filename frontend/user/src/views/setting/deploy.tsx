@@ -7,13 +7,9 @@ import { ElButton } from "element-plus";
 import { uuid } from "@pureadmin/utils";
 import { IconifyIconOffline } from "@shared/components/ReIcon";
 import IpArrayInput from "./IpArrayInput";
+import { buildEndpointUrl } from "./endpointUrl";
 
-const deployUrl = () => {
-  // 获取当前页面url
-  const url = window.location.href;
-  // 替换为 deploy/v1 地址
-  return url.replace("/user/setting", "/api/deploy");
-};
+const deployUrl = () => buildEndpointUrl("/api/deploy");
 
 export const useDeploy = () => {
   const deployValues = ref<{

@@ -96,6 +96,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     RouteHelper::registerResourceRoutes('deploy-token', DeployTokenController::class);
     RouteHelper::registerResourceRoutes('product', ProductController::class);
     Route::prefix('product')->group(function () {
+        Route::post('batch-delegation', [ProductController::class, 'batchDelegation']);
         Route::post('import', [ProductController::class, 'import']);
         Route::get('cost/{id}', [ProductController::class, 'getCost'])->where('id', '[0-9]+');
         Route::patch('cost/{id}', [ProductController::class, 'updateCost'])->where('id', '[0-9]+');

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Http\Requests\Product\BatchDelegationRequest;
 use App\Http\Requests\Product\CostRequest;
 use App\Http\Requests\Product\ExportRequest;
 use App\Http\Requests\Product\GetIdsRequest;
@@ -16,6 +17,7 @@ use App\Services\Order\Action;
 use App\Services\Product\ProductCostNormalizer;
 use App\Traits\ExcelHelperTrait;
 use Exception;
+use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -186,6 +188,49 @@ class ProductController extends BaseController
         }
 
         Product::destroy($ids);
+        $this->success();
+    }
+
+    /**
+     * 批量开启或关闭产品委托验证
+     */
+    public function batchDelegation(BatchDelegationRequest $request): void
+    {
+        $validated = $request->validated();
+        $enabled = (bool) $validated['enabled'];
+
+        DB::transaction(function () use ($validated, $enabled) {
+            $products = Product::whereIn('id', $validated['ids'])
+                ->lockForUpdate()
+                ->get();
+
+            if ($enabled) {
+                $hasUnsupportedProduct = $products->contains(
+                    fn (Product $product) => ! in_array('txt', $product->validation_methods ?? [], true)
+                );
+                if ($hasUnsupportedProduct) {
+                    $this->error('所选产品中有不支持 TXT 解析认证的产品，无法开启委托');
+                }
+            }
+
+            foreach ($products as $product) {
+                $methods = $product->validation_methods ?? [];
+                if ($enabled) {
+                    if (! in_array('delegation', $methods, true)) {
+                        $methods[] = 'delegation';
+                    }
+                } else {
+                    $methods = array_values(array_filter(
+                        $methods,
+                        fn ($method) => $method !== 'delegation'
+                    ));
+                }
+
+                $product->validation_methods = $methods;
+                $product->save();
+            }
+        });
+
         $this->success();
     }
 
