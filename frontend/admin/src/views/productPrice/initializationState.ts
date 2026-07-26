@@ -6,8 +6,10 @@ import type {
 import type { UserLevelDto } from "../../api/userLevel.ts";
 
 export interface InitializationLevelDetails extends InitializationLevel {
+  id: number;
   name: string;
   custom: number;
+  weight: number;
 }
 
 export type InitializationLevelProfile = UserLevelDto;
@@ -37,6 +39,12 @@ export interface PreviewRequestKey {
 
 const compareCodes = (left: { code: string }, right: { code: string }) =>
   left.code < right.code ? -1 : left.code > right.code ? 1 : 0;
+
+const compareLevelOrder = (
+  left: Pick<InitializationLevelDetails, "weight" | "id" | "code">,
+  right: Pick<InitializationLevelDetails, "weight" | "id" | "code">
+) =>
+  left.weight - right.weight || left.id - right.id || compareCodes(left, right);
 
 const normalizeCostRate = (value: string | number): string => {
   if (typeof value === "number") {
@@ -74,14 +82,16 @@ export function mergeSelectedLevels(
     if (!code) continue;
 
     merged.set(code, {
+      id: level.id,
       code,
       name: level.name,
       custom: level.custom,
+      weight: level.weight,
       cost_rate: normalizeCostRate(level.cost_rate)
     });
   }
 
-  return [...merged.values()].sort(compareCodes);
+  return [...merged.values()].sort(compareLevelOrder);
 }
 
 export function mapSelectedLevelDetails(
@@ -106,9 +116,11 @@ export function mapSelectedLevelDetails(
 
       return [
         {
+          id: profile.id,
           code: profile.code,
           name: profile.name,
           custom: profile.custom,
+          weight: profile.weight,
           cost_rate: normalizeCostRate(
             costRateOverrides.get(profile.code) ?? profile.cost_rate
           )
