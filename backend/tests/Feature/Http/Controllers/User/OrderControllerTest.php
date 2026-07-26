@@ -98,6 +98,47 @@ test('获取订单列表-按状态筛选', function () {
         ->toBe('active');
 });
 
+test('获取订单列表-忽略状态集并按证书到期区间升序排列', function () {
+    $user = User::factory()->create();
+    $product = Product::factory()->create();
+    $certs = [
+        [3, 'cancelled'],
+        [6, 'active'],
+        [10, 'failed'],
+    ];
+    $orders = collect($certs)->map(function (array $certData) use ($user, $product) {
+        [$days, $status] = $certData;
+        $order = Order::factory()->create([
+            'user_id' => $user->id,
+            'product_id' => $product->id,
+        ]);
+        $cert = Cert::factory()->create([
+            'order_id' => $order->id,
+            'status' => $status,
+            'expires_at' => now()->addDays($days),
+        ]);
+        $order->update(['latest_cert_id' => $cert->id]);
+
+        return $order;
+    });
+    $query = http_build_query([
+        'expires_at' => [
+            now()->startOfDay()->format('Y-m-d\TH:i:s.v\Z'),
+            now()->addDays(6)->endOfDay()->format('Y-m-d\TH:i:s.v\Z'),
+        ],
+        'sort_prop' => 'expires_at',
+        'sort_order' => 'asc',
+    ]);
+
+    $response = $this->actingAsUser($user)
+        ->getJson("/api/order?$query")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect(collect($response->json('data.items'))->pluck('id')->all())
+        ->toBe([$orders[0]->id, $orders[1]->id]);
+});
+
 test('获取订单详情', function () {
     $user = User::factory()->create();
     $product = Product::factory()->create();

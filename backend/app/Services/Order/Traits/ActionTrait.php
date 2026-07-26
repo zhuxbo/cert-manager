@@ -1089,6 +1089,8 @@ trait ActionTrait
             }
 
             $cert = $order->latestCert;
+            // 订单可能先于证书删除，保留关联供 CertObserver 解析用户并清理首页缓存。
+            $cert->setRelation('order', $order);
             $cert->status === 'unpaid' || $this->error('只有待支付状态的证书可以删除');
 
             if ($cert->last_cert_id) {

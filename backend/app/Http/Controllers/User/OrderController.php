@@ -46,7 +46,10 @@ class OrderController extends BaseController
 
         $query = Order::query();
 
-        $statusSet = $validated['statusSet'] ?? 'activating';
+        $statusSet = $validated['statusSet'] ?? null;
+        if ($statusSet === null && empty($validated['expires_at'])) {
+            $statusSet = 'activating';
+        }
         // 活动中的状态（含证书到期但订单未到期）
         if ($statusSet === 'activating') {
             $activeCertIds = Cert::whereIn('status', ['unpaid', 'pending', 'processing', 'active', 'approving', 'cancelling'])->select('id');

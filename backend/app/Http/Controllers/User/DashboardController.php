@@ -252,8 +252,9 @@ class DashboardController extends Controller
     private function getOrdersData($userId): array
     {
         $now = now();
-        $in7Days = $now->copy()->addDays(7);
-        $in30Days = $now->copy()->addDays(30);
+        $expiryRangeStart = $now->copy()->startOfDay();
+        $in7Days = $now->copy()->addDays(6)->endOfDay();
+        $in30Days = $now->copy()->addDays(29)->endOfDay();
         $monthStart = $now->copy()->startOfMonth();
 
         // 单次 JOIN 查询：状态分布 + active/到期统计（条件聚合）
@@ -262,7 +263,7 @@ class DashboardController extends Controller
             ->selectRaw("certs.status, COUNT(*) as count,
                 SUM(CASE WHEN certs.status = 'active' AND certs.expires_at BETWEEN ? AND ? THEN 1 ELSE 0 END) as expiring_7,
                 SUM(CASE WHEN certs.status = 'active' AND certs.expires_at BETWEEN ? AND ? THEN 1 ELSE 0 END) as expiring_30",
-                [$now, $in7Days, $now, $in30Days])
+                [$expiryRangeStart, $in7Days, $expiryRangeStart, $in30Days])
             ->groupBy('certs.status')
             ->get();
 

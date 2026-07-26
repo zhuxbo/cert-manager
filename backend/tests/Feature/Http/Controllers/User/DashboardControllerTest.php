@@ -5,6 +5,8 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Order\Action;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Tests\Traits\ActsAsUser;
@@ -83,6 +85,105 @@ test('订单统计返回处理中订单数和品牌分布', function () {
         ->assertJsonPath('data.active_orders', 1)
         ->assertJsonPath('data.brand_distribution.digicert', 2)
         ->assertJsonPath('data.brand_distribution.sectigo', 3);
+});
+
+test('新增待支付订单后立即刷新订单统计缓存', function () {
+    $user = User::factory()->create();
+
+    $createUnpaidOrder = function () use ($user): Cert {
+        $order = Order::factory()->create(['user_id' => $user->id]);
+        $cert = Cert::factory()->create([
+            'order_id' => $order->id,
+            'status' => 'unpaid',
+        ]);
+        $order->update(['latest_cert_id' => $cert->id]);
+
+        return $cert;
+    };
+
+    $firstCert = $createUnpaidOrder();
+
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.processing_orders', 1)
+        ->assertJsonPath('data.status_distribution.unpaid', 1);
+
+    $cacheKey = "dashboard:user:{$user->id}:orders";
+    expect(Cache::has($cacheKey))->toBeTrue();
+
+    $firstCert->update([
+        'domain_verify_status' => $firstCert->domain_verify_status === 1 ? 0 : 1,
+    ]);
+    expect(Cache::has($cacheKey))->toBeTrue();
+
+    $createUnpaidOrder();
+
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.processing_orders', 2)
+        ->assertJsonPath('data.status_distribution.unpaid', 2);
+});
+
+test('删除待支付订单后立即刷新订单统计缓存', function () {
+    $user = User::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'unpaid',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.processing_orders', 1);
+
+    $cacheKey = "dashboard:user:{$user->id}:orders";
+    expect(Cache::has($cacheKey))->toBeTrue();
+
+    (new Action)->delete($order->id);
+
+    expect(Cache::has($cacheKey))->toBeFalse();
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.processing_orders', 0);
+});
+
+test('到期统计按自然日区间计算', function () {
+    Carbon::setTestNow(Carbon::parse('2026-07-26 12:00:00'));
+
+    try {
+        $user = User::factory()->create();
+        $expiresAtByStatus = [
+            ['active', '2026-07-26 08:00:00'],
+            ['active', '2026-08-01 23:59:59'],
+            ['active', '2026-08-02 00:00:00'],
+            ['active', '2026-08-24 23:59:59'],
+            ['active', '2026-08-25 00:00:00'],
+            ['processing', '2026-07-27 00:00:00'],
+        ];
+
+        foreach ($expiresAtByStatus as [$status, $expiresAt]) {
+            $order = Order::factory()->create(['user_id' => $user->id]);
+            $cert = Cert::factory()->create([
+                'order_id' => $order->id,
+                'status' => $status,
+                'expires_at' => $expiresAt,
+            ]);
+            $order->update(['latest_cert_id' => $cert->id]);
+        }
+
+        $this->actingAsUser($user)
+            ->getJson('/api/dashboard/orders')
+            ->assertOk()
+            ->assertJsonPath('data.expiring_7_days', 2)
+            ->assertJsonPath('data.expiring_30_days', 4);
+    } finally {
+        Carbon::setTestNow();
+    }
 });
 
 function seedUserDashboardTransaction(User $user, string $type, float $amount, int $transactionId): void

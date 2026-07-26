@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
+import { useRouter } from "vue-router";
 import { getConfig } from "@/config";
 import { getProfile } from "@/api/auth";
 import { getAssetsData, getOrdersData, getTrendData } from "@/api/dashboard";
@@ -14,6 +15,12 @@ import {
 import { useLazyVisible } from "@shared/hooks";
 import { brandLabels } from "@/views/system/dictionary";
 import { topUpDialogStore } from "@/store/modules/topUp";
+import {
+  buildExpiringOrderQuery,
+  buildProcessingOrderQuery,
+  processingStatusOptions,
+  type ProcessingStatus
+} from "./orderNavigation";
 import type {
   AssetsData,
   OrdersData,
@@ -38,6 +45,7 @@ const assetsData = ref<AssetsData>();
 const ordersData = ref<OrdersData>();
 const trendData = ref<TrendDataPoint[]>([]);
 const trendPeriod = ref<TrendPeriod>("month");
+const router = useRouter();
 
 // 次批（图表）加载状态：与首批卡片解耦，进入视口后才触发
 const chartsLoading = ref(true);
@@ -86,6 +94,29 @@ const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === "Escape" && showQRModal.value) {
     closeQRModal();
   }
+};
+
+const processingStatusItems = computed(() => {
+  return processingStatusOptions.map(item => ({
+    ...item,
+    count: ordersData.value?.status_distribution[item.status] || 0
+  }));
+});
+
+const openExpiringOrders = (days: 7 | 30) => {
+  router.push({
+    name: "Order",
+    query: buildExpiringOrderQuery(days)
+  });
+};
+
+const openProcessingOrders = (status: ProcessingStatus, count: number) => {
+  if (count <= 0) return;
+
+  router.push({
+    name: "Order",
+    query: buildProcessingOrderQuery(status)
+  });
 };
 
 // 订单状态饼图数据
@@ -387,9 +418,23 @@ useLazyVisible(chartsSentinel, fetchChartsData);
                 7/30天到期数
               </p>
               <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                <span>{{ ordersData?.expiring_7_days || 0 }}</span>
+                <button
+                  type="button"
+                  class="p-0 border-0 bg-transparent text-blue-600 hover:text-blue-700 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                  title="查看未来 7 天到期的订单"
+                  @click="openExpiringOrders(7)"
+                >
+                  {{ ordersData?.expiring_7_days || 0 }}
+                </button>
                 /
-                <span>{{ ordersData?.expiring_30_days || 0 }}</span>
+                <button
+                  type="button"
+                  class="p-0 border-0 bg-transparent text-blue-600 hover:text-blue-700 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                  title="查看未来 30 天到期的订单"
+                  @click="openExpiringOrders(30)"
+                >
+                  {{ ordersData?.expiring_30_days || 0 }}
+                </button>
               </p>
             </div>
             <div class="p-3 bg-yellow-100 dark:bg-yellow-900 rounded-full">
@@ -420,9 +465,25 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               <p class="text-2xl font-bold text-gray-900 dark:text-white">
                 {{ ordersData?.processing_orders || 0 }}
               </p>
-              <p class="text-xs text-gray-500 dark:text-gray-400">
-                待支付 · 待提交 · 待验证 · 审核中
-              </p>
+              <div
+                class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400"
+              >
+                <template
+                  v-for="item in processingStatusItems"
+                  :key="item.status"
+                >
+                  <button
+                    v-if="item.count > 0"
+                    type="button"
+                    class="p-0 border-0 bg-transparent text-blue-600 hover:text-blue-700 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                    :title="`查看${item.label}订单`"
+                    @click="openProcessingOrders(item.status, item.count)"
+                  >
+                    {{ item.label }} {{ item.count }}
+                  </button>
+                  <span v-else>{{ item.label }} 0</span>
+                </template>
+              </div>
             </div>
             <div class="p-3 bg-blue-100 dark:bg-blue-900 rounded-full">
               <svg

@@ -39,6 +39,7 @@ const {
   handleSizeChange,
   handleCurrentChange,
   handleSortChange,
+  setSort,
   onSearch,
   onReset,
   onCollapse
@@ -80,6 +81,12 @@ onMounted(() => {
   }
   if (query.action) {
     search.value.action = query.action as string;
+  }
+  if (
+    (query.sort_prop === "period_till" || query.sort_prop === "expires_at") &&
+    (query.sort_order === "asc" || query.sort_order === "desc")
+  ) {
+    setSort(query.sort_prop, query.sort_order);
   }
 
   // 处理日期范围参数
