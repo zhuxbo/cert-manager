@@ -182,11 +182,13 @@ const brandDistributionData = computed(() => {
   const entries = Object.entries(ordersData.value?.brand_distribution || {})
     .filter(([, count]) => count > 0)
     .sort(([, countA], [, countB]) => countB - countA);
-  const visibleEntries = entries.slice(0, 7);
-  if (entries.length > 7) {
+  const maxRows = 5;
+  const hasOverflow = entries.length > maxRows;
+  const visibleEntries = entries.slice(0, hasOverflow ? maxRows - 1 : maxRows);
+  if (hasOverflow) {
     visibleEntries.push([
       "other",
-      entries.slice(7).reduce((sum, [, count]) => sum + count, 0)
+      entries.slice(maxRows - 1).reduce((sum, [, count]) => sum + count, 0)
     ]);
   }
   const total = visibleEntries.reduce((sum, [, count]) => sum + count, 0);
