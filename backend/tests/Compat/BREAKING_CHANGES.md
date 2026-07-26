@@ -106,3 +106,7 @@
 - [2026-07-25T20:44:33+08:00] 1.0.0
     - test: P\Tests\Feature\Http\Controllers\User\TopUpControllerTest::\_*pest_evaluable*检查充值状态*微信查单参数带\_Wechatpay_Serial*公钥序列号
     - reason: 路由风格统一:/top-up/check/{id} 由 GET 改为 POST(查单成功会补记充值,副作用不应挂 GET)
+
+- [2026-07-26T16:00:29+08:00] 1.0.0
+    - test: P\Tests\Feature\Http\Controllers\Deploy\OrderControllerTest::**pest*evaluable_query*响应不含\_total_page_page**size\_字段
+    - reason: deploy-boundary-2026-07: GET /api/deploy 响应移除 total / page / page_size 三个分页字段（同时取消空参数列全量与域名查询，order 仅接受订单 ID）；本条覆盖该端点全部用例的同一处 schema 变更

@@ -20,34 +20,25 @@ paths:
     get:
       summary: 查询订单 / 拉取 PEM
       description: |
-        `order` 为纯数字=ID、字符串=域名、含逗号=批量（≤100）；不传返回最近 100 条 active。
-        `field=certificate|private_key` 时 `order` 须为单个 ID 或域名，**直接返回纯 PEM 文本**
+        `order` **必填**。不带 `field` 时只接受订单 ID：单个，或英文逗号分隔的多个（上限 100）；
+        其他形态（域名、空值）返回 `code=0` + `errors.error_code=invalid_order`。
+        批量只返回命中的订单，部分不存在不报错；响应**不分页**（条数恒 ≤100）。
+        `field=certificate|private_key` 时 `order` 须为单个 ID 或单个域名（按 `common_name` 精确匹配
+        取最新 active 证书），**直接返回纯 PEM 文本**
         （certificate 含中间证书；重签后 ID 不变，续费返回新 ID）。
       parameters:
         - {
             name: order,
             in: query,
-            required: false,
+            required: true,
             schema: { type: string },
-            description: 订单 ID / 域名 / 逗号分隔批量
+            description: 订单 ID 或逗号分隔批量（≤100）；带 field 时亦可为单个域名
           }
         - name: field
           in: query
           required: false
           schema: { type: string, enum: [certificate, private_key] }
           description: 指定则返回纯 PEM 文本
-        - {
-            name: page,
-            in: query,
-            required: false,
-            schema: { type: integer, minimum: 1 }
-          }
-        - {
-            name: page_size,
-            in: query,
-            required: false,
-            schema: { type: integer, minimum: 1, maximum: 100 }
-          }
       responses:
         "200":
           description: 不带 field 返回 JSON 订单列表；带 field 返回纯 PEM 文本
@@ -60,9 +51,6 @@ paths:
                       data:
                         type: object
                         properties:
-                          total: { type: integer }
-                          page: { type: integer }
-                          page_size: { type: integer }
                           renew_before_days: { type: integer }
                           data:
                             type: array
@@ -245,6 +233,48 @@ components:
         code: { type: integer, enum: [0, 1] }
         msg: { type: string }
         data: {}
+        errors:
+          type: object
+          description: |
+            仅失败（`code=0`）时出现，**有三种形态**：
+
+            1. `{error_code, retry_after?}` —— 机器可读的失败分类（下表枚举）。
+            2. `{字段名: [消息, ...]}` —— 参数校验失败袋，例
+               `{"order":["The order field must be a string."]}`，**不含** `error_code`。
+            3. 不出现 —— 订单服务层透传的业务错误（例 `msg="产品配置错误"`），服务端目前不分类。
+
+            失败一律 HTTP 200，故 `error_code` 是区分「确定性失败」与网络错误的唯一依据：
+            带 `error_code` 的失败不应重试，需换 token / 放开 IP / 改参数 / 充值；形态 2、3
+            按未分类处理，沿用既有重试策略。**判定必须看 `errors.error_code` 是否非空，
+            不能看「有没有 errors 键」**——形态 2 有键却不是分类标识。
+            `error_code` 取值一旦发布不再改动，只会新增。
+          properties:
+            error_code:
+              type: string
+              enum:
+                [
+                  rate_limited,
+                  token_missing,
+                  token_invalid,
+                  token_disabled,
+                  account_disabled,
+                  ip_not_allowed,
+                  invalid_order,
+                  order_not_found,
+                  cert_not_found,
+                  order_in_progress,
+                  validation_method_unsupported,
+                  auto_renew_disabled,
+                  insufficient_balance
+                ]
+            retry_after:
+              type: integer
+              description: |
+                仅 `rate_limited` 时出现，**睡满即可重试的保守秒数**（HTTP `Retry-After` 语义）。
+                因限流用滑动窗口加权判定，该值会跨过下一个整窗口（`2×窗口 - 已过秒数`），
+                只睡到下一窗口起点是不够的。前提是这段时间内不再发请求：期间继续打会重新累积计数。
+                客户端也可以直接本轮停止、等下个调度周期，不必真的 sleep。
+          additionalProperties: true
 
     DeployOrder:
       type: object

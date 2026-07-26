@@ -12,11 +12,13 @@ use App\Services\Order\AutoDeployReportService;
 use App\Services\Order\AutoRenewService;
 use App\Services\Order\OrderCommitResilience;
 use App\Services\Order\Utils\OrderUtil;
+use App\Support\ApiErrorCode;
 use App\Support\MutexLock;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class ApiController extends Controller
@@ -24,19 +26,38 @@ class ApiController extends Controller
     use MutexLock;
 
     /**
-     * 查询订单列表
-     * 统一使用 order 参数：纯数字为 ID，字符串为域名，含逗号为批量查询
-     * 不传时返回最新 100 条 active 订单
-     * field=certificate|private_key：order 为单个数字 ID 或域名时返回纯 PEM 文本（适配 certimate URL 拉取）
-     * 域名模式按 common_name 精确匹配取最新已签发证书，续费后 URL 无需变更
+     * 批量查询单次可传的最大订单 ID 数
+     *
+     * 每个 ID 至多对应一个订单，故它同时就是返回条数上限——响应无需分页。
+     */
+    private const MAX_BATCH_ITEMS = 100;
+
+    /**
+     * 续费链追踪的硬上限跳数
+     *
+     * 链长等于该证书的历史续费次数，一年一次意味着 60 年，正常数据远够用；
+     * 触顶只可能是脏数据（异常长链 / visited 判环兜不住的形态）。
+     */
+    private const RENEW_CHAIN_MAX_HOPS = 60;
+
+    /**
+     * 查询订单
+     *
+     * order 必填：单个订单 ID，或英文逗号分隔的多个订单 ID（上限 MAX_BATCH_ITEMS）。
+     * 自动部署链路的发起方（客户端 daemon、管理端「部署命令」复制）永远持有准确订单号，
+     * 故不再支持域名查询与空参数列全量——两者都只有手工场景、前端从未展示，且域名走的是
+     * `alternative_names LIKE %domain%` 子串匹配，会把 notexample.com 这类跨域证书混进结果。
+     *
+     * field=certificate|private_key：返回纯 PEM 文本（适配 certimate 等 URL 拉取），此模式下
+     * order 可以是单个订单 ID **或单个域名**（精确匹配 common_name 取最新 active 证书）。
+     * 域名形态只服务 URL 拉取：certimate 配置里 URL 是填死的，而订单号会变（到期后重新下单
+     * 不产生 last_cert_id 关联，resolveRenewedOrder 追不回来），域名 URL 则始终有效。
      */
     public function query(Request $request): mixed
     {
         $request->validate([
             'order' => ['nullable', 'string'],
             'field' => ['nullable', 'in:certificate,private_key'],
-            'page' => ['nullable', 'integer', 'min:1'],
-            'page_size' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
         $order = trim((string) $request->input('order'));
@@ -91,55 +112,31 @@ class ApiController extends Controller
             return response($pem, 200, ['Content-Type' => 'text/plain; charset=utf-8']);
         }
 
-        if ($order !== '') {
-            // 含逗号：批量查询（支持 ID 和域名混合）
-            if (str_contains($order, ',')) {
-                $this->success($this->paginateResult($this->batchQuery($order), $request));
-            }
-
-            // 纯数字：按 ID 精确查询
-            if (ctype_digit($order)) {
-                $found = Order::with('latestCert')
-                    ->whereHas('latestCert')
-                    ->where('id', $order)
-                    ->first();
-
-                if (! $found) {
-                    $this->error('未找到匹配的订单');
-                }
-
-                $found = $this->resolveRenewedOrder($found);
-
-                $this->success($this->paginateResult(collect([$found])));
-            }
-
-            // 字符串：按域名查询
-            $orders = $this->findOrdersByDomain(strtolower($order));
-
-            if ($orders->isEmpty()) {
-                $this->error('未找到匹配的订单');
-            }
-
-            $this->success($this->paginateResult($orders));
+        // 不带 field 的 JSON 查询：order 必填且只接受订单 ID（单个或英文逗号分隔）。
+        // 空串同样落这里报错——空参数列全量已取消。
+        if (! preg_match('/^\d+(,\d+)*$/', $order)) {
+            $this->error(
+                'order 参数必填，仅支持订单 ID，多个用英文逗号分隔',
+                ['error_code' => ApiErrorCode::INVALID_ORDER]
+            );
         }
 
-        // 空参数：返回最新 active 订单（数据库级分页）
-        $page = (int) ($request->input('page') ?? 1);
-        $page_size = (int) ($request->input('page_size', 100) ?? 100);
+        // 含逗号：批量查询
+        if (str_contains($order, ',')) {
+            $this->success($this->queryResult($this->batchQuery($order)));
+        }
 
-        $query = Order::with('latestCert')
-            ->whereHas('latestCert', fn ($q) => $q->where('status', 'active'))
-            ->orderByDesc('created_at');
+        // 单个 ID
+        $found = Order::with('latestCert')
+            ->whereHas('latestCert')
+            ->where('id', $order)
+            ->first();
 
-        $total = $query->count();
-        $data = $query->offset(($page - 1) * $page_size)
-            ->limit($page_size)
-            ->get()
-            ->map(fn ($o) => $this->getOrderData($o))
-            ->toArray();
+        if (! $found) {
+            $this->error('未找到匹配的订单', ['error_code' => ApiErrorCode::ORDER_NOT_FOUND]);
+        }
 
-        $renew_before_days = (int) get_system_setting('site', 'renewBeforeDays', 14);
-        $this->success(compact('total', 'page', 'page_size', 'data', 'renew_before_days'));
+        $this->success($this->queryResult(collect([$this->resolveRenewedOrder($found)])));
     }
 
     /**
@@ -163,7 +160,7 @@ class ApiController extends Controller
             ->first();
 
         if (! $order) {
-            $this->error('订单不存在');
+            $this->error('订单不存在', ['error_code' => ApiErrorCode::ORDER_NOT_FOUND]);
         }
 
         $cert = $order->latestCert;
@@ -175,7 +172,10 @@ class ApiController extends Controller
         // 仅传 order_id 的推进（pay/commit 自愈）不带 csr/domains，不触发此守卫。
         if (in_array($cert->status, ['unpaid', 'pending'], true)
             && (! empty($params['csr']) || ! empty($params['domains']))) {
-            $this->error("订单处于{$cert->status}状态（签发进行中），无法变更 CSR 或域名；请等待当前签发完成后再重签，或联系管理员处理卡单");
+            $this->error(
+                "订单处于{$cert->status}状态（签发进行中），无法变更 CSR 或域名；请等待当前签发完成后再重签，或联系管理员处理卡单",
+                ['error_code' => ApiErrorCode::ORDER_IN_PROGRESS]
+            );
         }
 
         $action = new Action;
@@ -217,7 +217,10 @@ class ApiController extends Controller
 
             if ($validationMethod === 'delegation') {
                 if (! in_array('delegation', $productMethods)) {
-                    $this->error('该产品不支持委托验证');
+                    $this->error(
+                        '该产品不支持委托验证',
+                        ['error_code' => ApiErrorCode::VALIDATION_METHOD_UNSUPPORTED]
+                    );
                 }
                 $updateParams['validation_method'] = 'delegation';
             } else {
@@ -230,7 +233,10 @@ class ApiController extends Controller
                     }
                 }
                 if (! $resolved) {
-                    $this->error('该产品不支持文件验证');
+                    $this->error(
+                        '该产品不支持文件验证',
+                        ['error_code' => ApiErrorCode::VALIDATION_METHOD_UNSUPPORTED]
+                    );
                 }
                 $updateParams['validation_method'] = $resolved;
             }
@@ -242,7 +248,10 @@ class ApiController extends Controller
                 // 续费需要检查 auto_renew 设置
                 $autoRenewEnabled = app(AutoRenewService::class)->isAutoRenewEnabled($order, $order->user);
                 if (! $autoRenewEnabled) {
-                    $this->error('该订单未开启自动续费');
+                    $this->error(
+                        '该订单未开启自动续费',
+                        ['error_code' => ApiErrorCode::AUTO_RENEW_DISABLED]
+                    );
                 }
 
                 // O3-D：续费余额预检（fail-fast + 友好文案；孤儿主防线是下方 atomicity，非预检——预检通过后
@@ -256,7 +265,10 @@ class ApiController extends Controller
                     $order->product->toArray()
                 );
                 $availableBalance = $payer->availableBalance();
-                bccomp($availableBalance, $estimatedAmount, 2) < 0 && $this->error('余额不足，请充值后再续费');
+                bccomp($availableBalance, $estimatedAmount, 2) < 0 && $this->error(
+                    '余额不足，请充值后再续费',
+                    ['error_code' => ApiErrorCode::INSUFFICIENT_BALANCE]
+                );
 
                 $updateParams['action'] = 'renew';
                 $updateParams['period'] = $order->period;
@@ -327,7 +339,7 @@ class ApiController extends Controller
             $order = Order::with('latestCert')->whereHas('latestCert')->where('id', $orderId)->first();
 
             if (! $order) {
-                $this->error('订单不存在');
+                $this->error('订单不存在', ['error_code' => ApiErrorCode::ORDER_NOT_FOUND]);
             }
         }
 
@@ -350,7 +362,7 @@ class ApiController extends Controller
         $order = Order::find($params['order_id']);
 
         if (! $order) {
-            $this->error('订单不存在');
+            $this->error('订单不存在', ['error_code' => ApiErrorCode::ORDER_NOT_FOUND]);
         }
 
         $order->auto_reissue = $params['auto_reissue'];
@@ -382,12 +394,12 @@ class ApiController extends Controller
             ->first();
 
         if (! $order) {
-            $this->error('订单不存在');
+            $this->error('订单不存在', ['error_code' => ApiErrorCode::ORDER_NOT_FOUND]);
         }
 
         $cert = $order->latestCert;
         if (! $cert) {
-            $this->error('证书不存在');
+            $this->error('证书不存在', ['error_code' => ApiErrorCode::CERT_NOT_FOUND]);
         }
 
         $deployTime = null;
@@ -444,89 +456,44 @@ class ApiController extends Controller
     }
 
     /**
-     * 统一分页返回格式
+     * 统一返回格式
+     *
+     * 不分页：单 ID 恒 1 条，批量受 MAX_BATCH_ITEMS 约束且每个 ID 至多一个订单，
+     * 故返回条数恒 ≤ MAX_BATCH_ITEMS，total / page / page_size 三个字段没有信息量，已移除。
      */
-    private function paginateResult(Collection $orders, ?Request $request = null): array
+    private function queryResult(Collection $orders): array
     {
-        $page = $request ? (int) $request->input('page', 1) : 1;
-        $page_size = $request ? (int) ($request->input('page_size', 100) ?? 100) : 100;
-        $total = $orders->count();
-
-        $data = $orders->slice(($page - 1) * $page_size, $page_size)->values()
-            ->map(fn ($o) => $this->getOrderData($o))->toArray();
-
-        $renew_before_days = (int) get_system_setting('site', 'renewBeforeDays', 14);
-
-        return compact('total', 'page', 'page_size', 'data', 'renew_before_days');
+        return [
+            'data' => $orders->map(fn ($o) => $this->getOrderData($o))->toArray(),
+            'renew_before_days' => (int) get_system_setting('site', 'renewBeforeDays', 14),
+        ];
     }
 
     /**
-     * 批量查询：支持 id 和 domain 混合，英文逗号分割
+     * 批量查询：英文逗号分隔的订单 ID
+     *
+     * 调用前 query() 已用 /^\d+(,\d+)*$/ 校验过形态，此处只做条数上限与查库。
      */
     private function batchQuery(string $queryStr): Collection
     {
-        $items = array_filter(array_map('trim', explode(',', $queryStr)));
+        $ids = explode(',', $queryStr);
 
-        if (empty($items)) {
-            $this->error('查询参数不能为空');
+        if (count($ids) > self::MAX_BATCH_ITEMS) {
+            // 与形态非法同归 invalid_order：都是"order 参数本身不合法"，且同样是确定性失败
+            $this->error(
+                '单次最多查询 '.self::MAX_BATCH_ITEMS.' 条',
+                ['error_code' => ApiErrorCode::INVALID_ORDER]
+            );
         }
 
-        if (count($items) > 100) {
-            $this->error('单次最多查询 100 条');
-        }
-
-        $ids = [];
-        $domains = [];
-
-        foreach ($items as $item) {
-            if (ctype_digit($item)) {
-                $ids[] = (int) $item;
-            } else {
-                $domains[] = strtolower($item);
-            }
-        }
-
-        $orders = collect();
-
-        if ($ids) {
-            $orders = Order::with('latestCert')
-                ->whereHas('latestCert')
-                ->whereIn('id', $ids)
-                ->get()
-                ->map(fn ($o) => $this->resolveRenewedOrder($o))
-                ->unique('id')
-                ->values();
-        }
-
-        // 按域名逐个查询并合并（去重）
-        $existingIds = $orders->pluck('id')->all();
-        foreach ($domains as $domain) {
-            $found = $this->findOrdersByDomain($domain);
-            /** @var Order $order */
-            foreach ($found as $order) {
-                if (! in_array($order->id, $existingIds)) {
-                    $orders->push($order);
-                    $existingIds[] = $order->id;
-                }
-            }
-        }
-
-        return $orders->sortByDesc('created_at')->values();
-    }
-
-    /**
-     * 按域名精确查找订单
-     * Order 已被 UserScope 限制
-     */
-    private function findOrdersByDomain(string $domain): \Illuminate\Database\Eloquent\Collection
-    {
         return Order::with('latestCert')
-            ->whereHas('latestCert', function ($query) use ($domain) {
-                $query->where('alternative_names', 'like', "%$domain%")
-                    ->where('status', 'active');
-            })
-            ->orderByDesc('created_at')
-            ->get();
+            ->whereHas('latestCert')
+            ->whereIn('id', $ids)
+            ->get()
+            ->map(fn ($o) => $this->resolveRenewedOrder($o))
+            ->unique('id')
+            ->sortByDesc('created_at')
+            ->values();
     }
 
     /**
@@ -548,12 +515,35 @@ class ApiController extends Controller
     /**
      * 已续费订单追踪到新订单
      * 通过 cert 的 last_cert_id 链找到续费后的新订单
+     *
+     * 边界（本方法跑在 HTTP 请求线程里，每跳一次 DB 查询；Linux 下 max_execution_time 不计 I/O
+     * 等待，无界循环会长时间占住 PHP-FPM 进程）：
+     *  1) visited 精确判环——每跳的下一站完全由「当前 order → latestCert」决定，故 order id 重复
+     *     即必然死循环，第一次重复就退出（原先只比对 `$nextCert->order_id === $order->id`，仅能防
+     *     直接自环，A→B→C→A 这类三跳以上的环每步都不相等，永远退不出）；
+     *  2) MAX_HOPS 硬上限兜底链虽不成环但异常长的脏数据。
+     *
+     * 触顶/判环都**返回当前 order（status 仍是 renewed）而不报错**：客户端收到 renewed 走终态分支
+     * 停止并等人工，正是数据成环这类事故需要的语义；若改返 code=0，客户端会当网络错误每天重试，
+     * 反把需人工介入的数据事故降级成静默重试。
      */
     private function resolveRenewedOrder(Order $order): Order
     {
         $cert = $order->latestCert;
+        $chain = [$order->id];
+        $visited = [$order->id => true];
 
         while ($cert->status === 'renewed') {
+            if (count($chain) > self::RENEW_CHAIN_MAX_HOPS) {
+                Log::error('[deploy.renew_chain] 续费链超过硬上限，停止追踪', [
+                    'entry_order_id' => $chain[0],
+                    'stopped_at_order_id' => $order->id,
+                    'max_hops' => self::RENEW_CHAIN_MAX_HOPS,
+                    'chain' => $chain,
+                ]);
+                break;
+            }
+
             $nextCert = Cert::where('last_cert_id', $cert->id)->first();
 
             if (! $nextCert || $nextCert->order_id === $order->id) {
@@ -569,6 +559,18 @@ class ApiController extends Controller
                 break;
             }
 
+            if (isset($visited[$newOrder->id])) {
+                Log::error('[deploy.renew_chain] 续费链成环，停止追踪', [
+                    'entry_order_id' => $chain[0],
+                    'stopped_at_order_id' => $order->id,
+                    'repeated_order_id' => $newOrder->id,
+                    'chain' => $chain,
+                ]);
+                break;
+            }
+
+            $visited[$newOrder->id] = true;
+            $chain[] = $newOrder->id;
             $order = $newOrder;
             $cert = $order->latestCert;
         }

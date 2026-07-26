@@ -11,9 +11,11 @@ use App\Models\ProductPrice;
 use App\Models\User;
 use App\Services\Notification\SystemAlert;
 use App\Services\Order\Api\Api;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
 
@@ -80,88 +82,73 @@ function deployPost(DeployToken $token, string $uri, array $data = []): TestResp
 }
 
 // ========================================
-// query() — 空参数
+// query() — order 形态守卫
 // ========================================
+//
+// 不带 field 的 JSON 查询只接受订单 ID（单个或英文逗号分隔）：
+// 空参数列全量、按域名查询都已取消——自动部署链路的发起方永远持有准确订单号，
+// 这两种形态只有手工场景、前端从未展示，且域名走 LIKE %domain% 会混入跨域证书。
 
-test('query 空参数返回最新活跃订单', function () {
+test('query order 缺失返回 invalid_order', function () {
     [$user, $token] = createDeployAuth();
-    [$order, $cert] = createDeployOrder($user, 'active');
+    createDeployOrder($user, 'active');
 
-    $response = deployGet($token)
+    deployGet($token)
         ->assertOk()
-        ->assertJson(['code' => 1]);
-
-    expect($response->json('data.data'))->toHaveCount(1);
-    $response->assertJsonPath('data.data.0.order_id', $order->id);
-    $response->assertJsonPath('data.data.0.status', 'active');
-    $response->assertJsonPath('data.data.0.domains', $cert->alternative_names);
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
-test('query 空参数仅返回 active 状态', function () {
+test('query order 为空白串返回 invalid_order', function () {
     [$user, $token] = createDeployAuth();
-    createDeployOrder($user, 'active');
-    createDeployOrder($user, 'pending');
-    createDeployOrder($user, 'processing');
 
-    $response = deployGet($token)->assertOk()->assertJson(['code' => 1]);
-
-    expect($response->json('data.data'))->toHaveCount(1);
-    expect($response->json('data.total'))->toBe(1);
+    deployGet($token, 'order=%20')
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
-test('query 空参数分页', function () {
+// 域名形态在不带 field 时不再受理（带 field 的 URL 拉取仍支持，见 field 域名模式用例）
+test('query order 为域名返回 invalid_order', function () {
     [$user, $token] = createDeployAuth();
-    for ($i = 0; $i < 5; $i++) {
-        createDeployOrder($user, 'active');
-    }
+    createDeployOrder($user, 'active', [
+        'common_name' => 'deploy.example.com',
+        'alternative_names' => 'deploy.example.com',
+    ]);
 
-    $response = deployGet($token, 'page_size=2&page=1')
-        ->assertOk()->assertJson(['code' => 1]);
-
-    expect($response->json('data.data'))->toHaveCount(2);
-    expect($response->json('data.total'))->toBe(5);
-    expect($response->json('data.page_size'))->toBe(2);
-    expect($response->json('data.page'))->toBe(1);
-
-    $response2 = deployGet($token, 'page_size=2&page=3')
-        ->assertOk()->assertJson(['code' => 1]);
-
-    expect($response2->json('data.data'))->toHaveCount(1);
+    deployGet($token, 'order=deploy.example.com')
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
-// query() 用 (int) $request->input('page', 1) 兜底默认值：客户端显式传 JSON null 时
-// input() 返回 null（key 存在），(int) null = 0 → offset((0-1)*page_size) 负偏移，
-// 响应体 page 字段也回显 0（错误）。正确写法应为 (int) ($request->input('page') ?? 1)。
-test('query page 显式 null 回落默认值（非负 offset，page 回显 1）', function () {
+test('query order 为 ID 与域名混合返回 invalid_order', function () {
     [$user, $token] = createDeployAuth();
-    for ($i = 0; $i < 3; $i++) {
-        createDeployOrder($user, 'active');
-    }
+    [$order] = createDeployOrder($user, 'active');
 
-    $response = test()->withHeaders(['Authorization' => "Bearer $token->token"])
-        ->json('GET', '/api/deploy/', ['page' => null])
-        ->assertOk()->assertJson(['code' => 1]);
-
-    expect($response->json('data.page'))->toBe(1);
-    expect($response->json('data.data'))->toHaveCount(3);
+    deployGet($token, "order=$order->id,example.com")
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
-test('query 空参数 UserScope 隔离', function () {
+// 响应不再含分页字段：单 ID 恒 1 条、批量受上限约束，total/page/page_size 已无信息量
+test('query 响应不含 total page page_size 字段', function () {
     [$user, $token] = createDeployAuth();
-    $otherUser = User::factory()->create();
-    createDeployOrder($user, 'active');
-    createDeployOrder($otherUser, 'active');
+    [$order] = createDeployOrder($user, 'active');
 
-    $response = deployGet($token)->assertOk()->assertJson(['code' => 1]);
+    $data = deployGet($token, "order=$order->id")
+        ->assertOk()->assertJson(['code' => 1])
+        ->json('data');
 
-    expect($response->json('data.data'))->toHaveCount(1);
+    expect(array_keys($data))->toEqualCanonicalizing(['data', 'renew_before_days']);
 });
 
 // ========================================
 // query() — 按 ID 查询
 // ========================================
 
-test('query 按 ID 查询返回分页格式', function () {
+test('query 按 ID 查询返回单条', function () {
     [$user, $token] = createDeployAuth();
     [$order, $cert] = createDeployOrder($user, 'active');
 
@@ -169,10 +156,10 @@ test('query 按 ID 查询返回分页格式', function () {
         ->assertOk()
         ->assertJson(['code' => 1]);
 
-    expect($response->json('data.total'))->toBe(1);
     expect($response->json('data.data'))->toHaveCount(1);
     $response->assertJsonPath('data.data.0.order_id', $order->id);
     $response->assertJsonPath('data.data.0.status', 'active');
+    $response->assertJsonPath('data.data.0.domains', $cert->alternative_names);
 });
 
 test('query 按 ID 查询支持非 active 状态', function () {
@@ -261,72 +248,81 @@ test('query 多级续费链追踪到最新订单', function () {
     $response->assertJsonPath('data.data.0.order_id', $order3->id);
 });
 
-// ========================================
-// query() — 按域名查询
-// ========================================
+// last_cert_id 链成三跳环（A→B→C→A）：每跳的 $nextCert->order_id 都不等于当前 $order->id，
+// 旧的直接自环判据兜不住，循环永远退不出并把 PHP-FPM 进程占死（每轮一次 DB 查询，
+// Linux 下 max_execution_time 不计 I/O 等待）。visited 集合须第一次重复即退出。
+test('query 续费链成环时停止追踪并返回当前订单', function () {
+    Log::spy();
 
-test('query 按域名查询返回分页格式', function () {
     [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active', [
-        'common_name' => 'deploy.example.com',
-        'alternative_names' => 'deploy.example.com',
-    ]);
 
-    $response = deployGet($token, 'order=deploy.example.com')
+    [$order1, $cert1] = createDeployOrder($user, 'renewed');
+    [$order2, $cert2] = createDeployOrder($user, 'renewed');
+    [$order3, $cert3] = createDeployOrder($user, 'renewed');
+
+    $cert2->update(['last_cert_id' => $cert1->id]);
+    $cert3->update(['last_cert_id' => $cert2->id]);
+    $cert1->update(['last_cert_id' => $cert3->id]); // 成环
+
+    $response = deployGet($token, "order=$order1->id")
         ->assertOk()
         ->assertJson(['code' => 1]);
 
-    expect($response->json('data.total'))->toBe(1);
-    $response->assertJsonPath('data.data.0.order_id', $order->id);
-    $response->assertJsonPath('data.data.0.domains', 'deploy.example.com');
+    // 停在环上最后一个新访问到的订单；状态仍是 renewed（终态），客户端据此停止等人工，
+    // 而不是收到 code=0 当网络错误每天重试
+    $response->assertJsonPath('data.data.0.order_id', $order3->id);
+    $response->assertJsonPath('data.data.0.status', 'renewed');
+
+    // 日志须能定位脏数据：入口订单 + 停止位置 + 重复的那个 + 完整链路
+    Log::shouldHaveReceived('error')
+        ->withArgs(fn ($message, $context) => str_contains((string) $message, '续费链成环')
+            && $context['entry_order_id'] === $order1->id
+            && $context['stopped_at_order_id'] === $order3->id
+            && $context['repeated_order_id'] === $order1->id
+            && $context['chain'] === [$order1->id, $order2->id, $order3->id])
+        ->once();
 });
 
-test('query 按域名查询通配符域名', function () {
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active', [
-        'common_name' => '*.example.com',
-        'alternative_names' => '*.example.com',
-    ]);
+// 链不成环但异常长：硬上限 60 跳兜底
+test('query 续费链超长时触顶停止追踪', function () {
+    Log::spy();
 
-    // 直接查 *.example.com
-    $response = deployGet($token, 'order=*.example.com')
+    [$user, $token] = createDeployAuth();
+    $product = Product::factory()->create();
+
+    /** @var array<int, Order> $orders */
+    $orders = [];
+    $prevCertId = null;
+
+    // 62 个全 renewed 的订单串成一条链，超过 60 跳硬上限
+    for ($i = 0; $i < 62; $i++) {
+        $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+        $cert = Cert::factory()->create([
+            'order_id' => $order->id,
+            'status' => 'renewed',
+            'last_cert_id' => $prevCertId,
+        ]);
+        $order->update(['latest_cert_id' => $cert->id]);
+
+        $orders[] = $order;
+        $prevCertId = $cert->id;
+    }
+
+    $response = deployGet($token, "order={$orders[0]->id}")
         ->assertOk()
         ->assertJson(['code' => 1]);
 
-    $response->assertJsonPath('data.data.0.order_id', $order->id);
-});
+    // 起点 + 60 跳 = 链上第 61 个订单（下标 60）
+    $response->assertJsonPath('data.data.0.order_id', $orders[60]->id);
+    $response->assertJsonPath('data.data.0.status', 'renewed');
 
-test('query 按域名查询仅匹配 active 证书', function () {
-    [$user, $token] = createDeployAuth();
-    createDeployOrder($user, 'pending', [
-        'common_name' => 'pending.example.com',
-        'alternative_names' => 'pending.example.com',
-    ]);
-
-    deployGet($token, 'order=pending.example.com')
-        ->assertOk()
-        ->assertJson(['code' => 0]);
-});
-
-test('query 按域名查询不存在', function () {
-    [$user, $token] = createDeployAuth();
-
-    deployGet($token, 'order=nonexistent.example.com')
-        ->assertOk()
-        ->assertJson(['code' => 0]);
-});
-
-test('query 按域名查询 UserScope 隔离', function () {
-    [$user, $token] = createDeployAuth();
-    $otherUser = User::factory()->create();
-    createDeployOrder($otherUser, 'active', [
-        'common_name' => 'other.example.com',
-        'alternative_names' => 'other.example.com',
-    ]);
-
-    deployGet($token, 'order=other.example.com')
-        ->assertOk()
-        ->assertJson(['code' => 0]);
+    Log::shouldHaveReceived('error')
+        ->withArgs(fn ($message, $context) => str_contains((string) $message, '续费链超过硬上限')
+            && $context['entry_order_id'] === $orders[0]->id
+            && $context['stopped_at_order_id'] === $orders[60]->id
+            && $context['max_hops'] === 60
+            && count($context['chain']) === 61)  // 起点 + 60 跳
+        ->once();
 });
 
 // ========================================
@@ -347,67 +343,42 @@ test('query 批量查询按 ID', function () {
     expect($ids)->toContain($order1->id)->toContain($order2->id);
 });
 
-test('query 批量查询按域名', function () {
+test('query 批量查询重复 ID 去重', function () {
     [$user, $token] = createDeployAuth();
-    createDeployOrder($user, 'active', [
-        'common_name' => 'a.example.com',
-        'alternative_names' => 'a.example.com',
-    ]);
-    createDeployOrder($user, 'active', [
-        'common_name' => 'b.example.com',
-        'alternative_names' => 'b.example.com',
-    ]);
+    [$order] = createDeployOrder($user, 'active');
 
-    $response = deployGet($token, 'order=a.example.com,b.example.com')
-        ->assertOk()
-        ->assertJson(['code' => 1]);
-
-    expect($response->json('data.data'))->toHaveCount(2);
-});
-
-test('query 批量查询混合 ID 和域名', function () {
-    [$user, $token] = createDeployAuth();
-    [$order1] = createDeployOrder($user, 'active');
-    createDeployOrder($user, 'active', [
-        'common_name' => 'mix.example.com',
-        'alternative_names' => 'mix.example.com',
-    ]);
-
-    $response = deployGet($token, "order=$order1->id,mix.example.com")
-        ->assertOk()
-        ->assertJson(['code' => 1]);
-
-    expect($response->json('data.data'))->toHaveCount(2);
-});
-
-test('query 批量查询去重', function () {
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active', [
-        'common_name' => 'dup.example.com',
-        'alternative_names' => 'dup.example.com',
-    ]);
-
-    // 同时用 ID 和域名查同一条
-    $response = deployGet($token, "order=$order->id,dup.example.com")
+    $response = deployGet($token, "order=$order->id,$order->id")
         ->assertOk()
         ->assertJson(['code' => 1]);
 
     expect($response->json('data.data'))->toHaveCount(1);
 });
 
-test('query 批量查询分页', function () {
+// 批量上限即返回条数上限（每个 ID 至多一个订单），故响应无需分页
+test('query 批量查询超过 100 个 ID 报错', function () {
     [$user, $token] = createDeployAuth();
-    for ($i = 0; $i < 5; $i++) {
-        createDeployOrder($user, 'active');
-    }
 
-    $allIds = Order::withoutGlobalScopes()->pluck('id')->implode(',');
+    $ids = implode(',', range(1, 101));
 
-    $response = deployGet($token, "order=$allIds&page_size=2&page=1")
-        ->assertOk()->assertJson(['code' => 1]);
+    deployGet($token, "order=$ids")
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('msg', '单次最多查询 100 条')
+        ->assertJsonPath('errors.error_code', 'invalid_order');
+});
 
-    expect($response->json('data.data'))->toHaveCount(2);
-    expect($response->json('data.total'))->toBe(5);
+test('query 批量查询 100 个 ID 不报错', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active');
+
+    // 99 个不存在的 ID + 1 个真实 ID = 恰好 100，边界不越线
+    $ids = implode(',', array_merge(range(1, 99), [$order->id]));
+
+    $response = deployGet($token, "order=$ids")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($response->json('data.data'))->toHaveCount(1);
 });
 
 test('query 批量查询 UserScope 隔离', function () {
@@ -912,7 +883,8 @@ test('update active 产品不支持委托验证', function () {
     deployPost($token, '/api/deploy/', [
         'order_id' => $order->id,
         'validation_method' => 'delegation',
-    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证']);
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证'])
+        ->assertJsonPath('errors.error_code', 'validation_method_unsupported');
 });
 
 test('update 本地 CSR 前置校验失败不写签发失败记录', function () {
@@ -973,7 +945,8 @@ test('update active 产品不支持文件验证', function () {
     deployPost($token, '/api/deploy/', [
         'order_id' => $order->id,
         'validation_method' => 'file',
-    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持文件验证']);
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持文件验证'])
+        ->assertJsonPath('errors.error_code', 'validation_method_unsupported');
 });
 
 test('update active 续费未开启自动续费', function () {
@@ -994,7 +967,38 @@ test('update active 续费未开启自动续费', function () {
 
     deployPost($token, '/api/deploy/', [
         'order_id' => $order->id,
-    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该订单未开启自动续费']);
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '该订单未开启自动续费'])
+        ->assertJsonPath('errors.error_code', 'auto_renew_disabled');
+});
+
+// 续费余额预检（永久性失败：不充值每天必然重现）——锁 error_code，
+// 否则下游按未分类沿用重试策略，把"需人工充值"降级成静默每日重试。
+test('update active 续费余额不足返回 insufficient_balance', function () {
+    [$user, $token] = createDeployAuth(
+        User::factory()->create([
+            'balance' => '0.00',
+            'credit_limit' => '0.00',
+            'auto_settings' => ['auto_renew' => true, 'auto_reissue' => false],
+        ])
+    );
+
+    // period_till 在 15 天内 → 走续费分支；订单金额远超余额 → 预检不过
+    [$order] = createDeployOrder($user, 'active', [
+        'common_name' => 'poor.example.com',
+        'alternative_names' => 'poor.example.com',
+    ], [
+        'period_till' => now()->addDays(5),
+        'auto_renew' => null,
+        'amount' => '999.00',
+    ], [
+        'source' => 'default',
+        'validation_methods' => ['delegation', 'txt', 'http'],
+    ]);
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+    ])->assertOk()->assertJson(['code' => 0, 'msg' => '余额不足，请充值后再续费'])
+        ->assertJsonPath('errors.error_code', 'insufficient_balance');
 });
 
 // ========================================
@@ -1009,7 +1013,8 @@ test('update unpaid 携带新 csr 显式报错（在途订单 CSR 已定型）',
         'order_id' => $order->id,
         'csr' => "-----BEGIN CERTIFICATE REQUEST-----\nNEW\n-----END CERTIFICATE REQUEST-----",
     ])->assertOk()->assertJson(['code' => 0])
-        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'));
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'))
+        ->assertJsonPath('errors.error_code', 'order_in_progress');
 });
 
 test('update pending 携带新 domains 显式报错（在途订单域名已定型）', function () {
@@ -1020,7 +1025,8 @@ test('update pending 携带新 domains 显式报错（在途订单域名已定�
         'order_id' => $order->id,
         'domains' => 'a.example.com,b.example.com',
     ])->assertOk()->assertJson(['code' => 0])
-        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'));
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'))
+        ->assertJsonPath('errors.error_code', 'order_in_progress');
 });
 
 test('update unpaid 仅传 order_id 不触发守卫（推进自愈路径不被破坏）', function () {
@@ -1237,6 +1243,157 @@ test('无效 token 拒绝访问', function () {
         ->getJson('/api/deploy/')
         ->assertOk()
         ->assertJson(['code' => 0]);
+});
+
+// ========================================
+// errors.error_code —— 机器可读失败分类
+// ========================================
+//
+// 错误响应固定 HTTP 200 + code=0（全站统一契约），客户端无法靠状态码区分"确定性失败"
+// 与网络错误，只能一律当网络错误无限每日重试。errors.error_code 是唯一的分类依据，
+// 取值一旦发布不得改动（下游按字符串判定），故逐个钉死。
+
+test('认证 token 缺失返回 token_missing', function () {
+    test()->getJson('/api/deploy/')
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'token_missing');
+});
+
+test('认证 token 无效返回 token_invalid', function () {
+    test()->withHeaders(['Authorization' => 'Bearer invalid-token'])
+        ->getJson('/api/deploy/')
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'token_invalid');
+});
+
+test('认证 token 被禁用返回 token_disabled', function () {
+    $user = User::factory()->create();
+    $token = DeployToken::factory()->disabled()->create(['user_id' => $user->id]);
+
+    deployGet($token)
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'token_disabled');
+});
+
+test('认证账号被禁用返回 account_disabled', function () {
+    $user = User::factory()->create(['status' => 0]);
+    $token = DeployToken::factory()->create(['user_id' => $user->id]);
+
+    deployGet($token)
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'account_disabled');
+});
+
+test('认证 IP 不在白名单返回 ip_not_allowed', function () {
+    $user = User::factory()->create();
+    $token = DeployToken::factory()->withAllowedIps(['10.0.0.1'])->create(['user_id' => $user->id]);
+
+    test()->withHeaders(['Authorization' => "Bearer $token->token"])
+        ->withServerVariables(['REMOTE_ADDR' => '192.168.9.9'])
+        ->getJson('/api/deploy/')
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'ip_not_allowed');
+});
+
+test('query 订单不存在返回 order_not_found', function () {
+    [$user, $token] = createDeployAuth();
+
+    deployGet($token, 'order=99999')
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'order_not_found');
+});
+
+test('query 批量查询全部不存在返回空列表', function () {
+    [$user, $token] = createDeployAuth();
+
+    // 批量路径不报 order_not_found（部分命中是正常形态），只返回命中的那些
+    $response = deployGet($token, 'order=99998,99999')
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($response->json('data.data'))->toBe([]);
+});
+
+test('update 订单不存在返回 order_not_found', function () {
+    [$user, $token] = createDeployAuth();
+
+    deployPost($token, '/api/deploy', ['order_id' => 99999])
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'order_not_found');
+});
+
+test('callback 订单不存在返回 order_not_found', function () {
+    [$user, $token] = createDeployAuth();
+
+    deployPost($token, '/api/deploy/callback', ['order_id' => 99999, 'status' => 'success'])
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'order_not_found');
+});
+
+test('callback 证书不存在返回 cert_not_found', function () {
+    [$user, $token] = createDeployAuth();
+    $product = Product::factory()->create();
+    // 建一个没有 latestCert 的订单：callback 用 Order 直查（不带 whereHas），会走到证书判空分支
+    $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+
+    deployPost($token, '/api/deploy/callback', ['order_id' => $order->id, 'status' => 'success'])
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'cert_not_found');
+});
+
+// 限流是最需要区分的一类：客户端认出 rate_limited 才知道"这次别重试"。
+// 刻意不改 HTTP 429 —— 客户端把 429 当可重试，1s→2s→4s 退避全落在同一 60s 窗口内注定失败，
+// 且 RateLimiter 的 Cache::increment 在阈值判断之前，重试反而把恢复时间往后拖。
+test('限流返回 rate_limited 与 retry_after', function () {
+    [$user, $token] = createDeployAuth();
+
+    // 冻结在 60s 窗口内第 20 秒：既让 retry_after 可确定断言（跨过下一个整窗口 → 120-20=100），
+    // 也避免请求恰好跨窗口边界时计数器落到新窗口而不触发限流（RateLimiter 用 now()->timestamp 正是为此）
+    Carbon::setTestNow(Carbon::createFromTimestamp(1800000020));
+
+    // 直接把 deploy token 的当前窗口计数器顶到限额之上
+    $key = 'rate_limit_deploy:deploy_token_'.$token->id.':'.((int) floor(now()->timestamp / 60));
+    Cache::put($key, $token->getEffectiveRateLimit(60) + 1, 120);
+
+    deployGet($token)
+        ->assertOk()
+        ->assertJsonPath('code', 0)
+        ->assertJsonPath('errors.error_code', 'rate_limited')
+        ->assertJsonPath('errors.retry_after', 100);
+});
+
+// retry_after 的语义守卫：睡满它之后必须真的能过。
+// 不能只断言常量——那与实现同源自洽，改错公式照样绿（反模式 15）。这里走两步实证：
+// 先证「只睡到下一窗口起点」不够（滑动窗口把刚超限的计数按权重 1 全额计入，必再被拒），
+// 再证「睡满 retry_after」够用。前者正是本字段改成 $window*2-$elapsed 之前的取值。
+test('限流 retry_after 睡满后确实放行，睡到下一窗口起点则仍被拒', function () {
+    [$user, $token] = createDeployAuth();
+
+    Carbon::setTestNow(Carbon::createFromTimestamp(1800000020));
+    $key = 'rate_limit_deploy:deploy_token_'.$token->id.':'.((int) floor(now()->timestamp / 60));
+    Cache::put($key, $token->getEffectiveRateLimit(60) + 1, 120);
+
+    // 刻意不在这里断言 retry_after 的具体值（上一个用例已锁 100）：常量断言放这儿会抢在
+    // 两步实证之前红，让下面真正的语义守卫永远拿不到执行机会（等于白写）
+    $retryAfter = deployGet($token)->json('errors.retry_after');
+
+    // ① 只睡到下一窗口起点（旧取值 60-20=40）→ prevWeight=1，刚超限的计数全额计入 → 仍被拒
+    Carbon::setTestNow(Carbon::createFromTimestamp(1800000020 + 40));
+    deployGet($token)->assertJsonPath('errors.error_code', 'rate_limited');
+
+    // ② 睡满 retry_after → prev 指向中间那个窗口（只剩 ① 那次徒劳重试的 1 次）→ 放行。
+    //    放行的标志是被业务层参数校验拦下（invalid_order）而非 rate_limited
+    Carbon::setTestNow(Carbon::createFromTimestamp(1800000020 + $retryAfter));
+    deployGet($token)->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
 // ========================================

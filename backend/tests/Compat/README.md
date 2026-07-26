@@ -103,12 +103,32 @@ test('admin can update user', function () {
 
 ## 何时刷新 fixture？
 
-| 场景                            | 处理                                                |
-| ------------------------------- | --------------------------------------------------- |
-| API 加新字段（向后兼容）        | capture 重新跑 → commit fixture 改动                |
-| API 删字段 / 改类型             | 在用例加 `expectsBreakingChange` + capture + commit |
-| 新增测试用例                    | capture + commit                                    |
-| 仅改控制器内部不影响响应 schema | 无需操作（schema 不变 fixture 无 diff）             |
+| 场景                            | 处理                                                            |
+| ------------------------------- | --------------------------------------------------------------- |
+| API 加新字段（向后兼容）        | capture 重新跑 → commit fixture 改动                            |
+| API 删字段 / 改类型             | 在用例加 `expectsBreakingChange` + capture + commit             |
+| 新增测试用例                    | capture + commit                                                |
+| **重命名/删除测试用例**         | capture 生成新名 fixture 后**手工删掉旧名的**（见下方孤儿检测） |
+| 仅改控制器内部不影响响应 schema | 无需操作（schema 不变 fixture 无 diff）                         |
+
+## 孤儿 fixture 检测
+
+compare 只查「测试有没有 fixture」，**不查反向**：测试被删除或改名后，旧 fixture 仍留在目录里，
+既不报错也不参与比对，是纯死文件。capture 也不会删它（只写不删）。所以改测试名时忘了清理，
+就会一直沉积（2026-07 一次性清出 11 个，最早追到 `cc7c9d60`）。
+
+```bash
+bash skills/scripts/check-orphan-fixtures.sh
+```
+
+挂在 finish-check §6，硬零断言（有孤儿即退出 1）。实现是 `detect-orphans.php` 的静态反查：
+读 fixture 的 `test` 字段 → 反推测试文件 → 用 Pest 的 `Str::evaluable()` 比对该文件所有
+`test()`/`it()` 名，零匹配即孤儿。纯静态、无副作用，且覆盖 fixtures 全集（不像 capture+mtime
+差集那样受限于 capture 的目标目录）。
+
+修改 `detect-orphans.php` 时注意：`Str::evaluable()` 的返回值**自带** `__pest_evaluable_` 前缀；
+`it('foo')` 的方法名是 `it foo` 的 evaluable 而非 `foo`。这两点任一处理错都会让全部（或全部
+`it()`）fixture 被误判成孤儿，改完务必用伪造探针做正向验证。
 
 ## 已知限制
 

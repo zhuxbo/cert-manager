@@ -13,7 +13,10 @@
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string"
+                "msg": "string",
+                "errors": {
+                    "error_code": "string"
+                }
             }
         }
     ]

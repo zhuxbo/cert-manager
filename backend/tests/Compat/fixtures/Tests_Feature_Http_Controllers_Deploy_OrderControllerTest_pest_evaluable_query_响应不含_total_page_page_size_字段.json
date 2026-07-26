@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_按域名查询通配符域名",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_响应不含_total_page_page__size_字段",
     "version": "1.0.0",
     "calls": [
         {
@@ -12,9 +12,6 @@
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "total": "integer",
-                    "page": "integer",
-                    "page_size": "integer",
                     "data": {
                         "__list_of__": {
                             "order_id": "integer",

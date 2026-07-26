@@ -165,9 +165,9 @@ sslctl deploy --cert order-12345
 
 ```http
 GET /api/deploy?order=123 # 按订单 ID 查询
-GET /api/deploy?order=example.com # 按域名查询
-GET /api/deploy?order=1,2,a.com # 批量混合查询
-GET /api/deploy # 列出所有 active 订单
+GET /api/deploy?order=1,2,3 # 批量查询（逗号分隔，上限 100）
+GET /api/deploy?order=123&field=certificate # 拉取 PEM 全链证书（order 也可用域名）
+GET /api/deploy?order=123&field=private_key # 拉取私钥
 POST /api/deploy # 更新/续费证书
 POST /api/deploy/callback # 部署结果回调
 ```

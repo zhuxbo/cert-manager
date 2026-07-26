@@ -1,13 +1,12 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_订单不存在",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_订单不存在返回_order__not__found",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/deploy/callback",
+            "uri_pattern": "/api/deploy",
             "request_keys": [
-                "order_id",
-                "status"
+                "order_id"
             ],
             "response_status": "2xx",
             "response_schema": {

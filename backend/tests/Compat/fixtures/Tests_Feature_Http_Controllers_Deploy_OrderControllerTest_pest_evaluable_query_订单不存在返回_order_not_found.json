@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_按域名查询仅匹配_active_证书",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_订单不存在返回_order__not__found",
     "version": "1.0.0",
     "calls": [
         {
@@ -11,7 +11,10 @@
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string"
+                "msg": "string",
+                "errors": {
+                    "error_code": "string"
+                }
             }
         }
     ]

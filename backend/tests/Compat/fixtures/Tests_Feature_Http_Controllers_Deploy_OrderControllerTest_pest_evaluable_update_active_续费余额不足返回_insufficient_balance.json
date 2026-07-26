@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_续费锁内再读非_active_命中守卫返回__code_0_",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_active_续费余额不足返回_insufficient__balance",
     "version": "1.0.0",
     "calls": [
         {
@@ -11,7 +11,10 @@
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string"
+                "msg": "string",
+                "errors": {
+                    "error_code": "string"
+                }
             }
         }
     ]

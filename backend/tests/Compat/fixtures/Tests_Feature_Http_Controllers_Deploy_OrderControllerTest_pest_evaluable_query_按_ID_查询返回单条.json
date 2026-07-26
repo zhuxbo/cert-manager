@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_按_ID_查询返回分页格式",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_query_按_ID_查询返回单条",
     "version": "1.0.0",
     "calls": [
         {
@@ -12,9 +12,6 @@
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "total": "integer",
-                    "page": "integer",
-                    "page_size": "integer",
                     "data": {
                         "__list_of__": {
                             "order_id": "integer",
