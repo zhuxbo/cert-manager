@@ -17,6 +17,7 @@
                             "order_id": "integer",
                             "domains": "string",
                             "status": "string",
+                            "csr": "string",
                             "file": {
                                 "path": "string",
                                 "content": "string"

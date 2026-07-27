@@ -18,6 +18,7 @@
                             "order_id": "integer",
                             "domains": "string",
                             "status": "string",
+                            "csr": "string",
                             "certificate": "null",
                             "private_key": "null",
                             "ca_certificate": "null",

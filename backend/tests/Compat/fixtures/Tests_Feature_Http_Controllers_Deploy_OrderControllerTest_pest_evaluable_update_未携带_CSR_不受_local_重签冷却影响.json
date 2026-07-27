@@ -1,12 +1,13 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\UpdateAtomicityTest::__pest_evaluable_O3_C_commit_抢锁忙被吞：MutationBusyException_不外抛_503、返回_pending、扣费保留",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_未携带_CSR_不受_local_重签冷却影响",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
             "uri_pattern": "/api/deploy",
             "request_keys": [
-                "order_id"
+                "order_id",
+                "validation_method"
             ],
             "response_status": "2xx",
             "response_schema": {

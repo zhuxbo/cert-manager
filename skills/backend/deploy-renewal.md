@@ -43,7 +43,7 @@
 
 ## Deploy API 边界契约
 
-跨仓权威副本是 sslctl 仓库的 `deploy-spec.md`（本仓不留副本）；改这三条必须同步该文件。共同前提：**所有拉取与回调都必须有边界**——下游是无人值守长驻进程，任何"由服务端自报数据决定何时停"的循环都是无界循环。
+跨仓权威副本是 sslctl 仓库的 `deploy-spec.md`（本仓不留副本）；改下列各条必须同步该文件。共同前提：**所有拉取与回调都必须有边界**——下游是无人值守长驻进程，任何"由服务端自报数据决定何时停"的循环都是无界循环。
 
 ### query 只按订单 ID，不分页（`ApiController::query`）
 
@@ -63,6 +63,30 @@
 2. **`RENEW_CHAIN_MAX_HOPS`（60）硬上限**兜底链虽不成环但异常长的脏数据（链长 = 历史续费次数，一年一次即 60 年）。
 
 触顶/判环都**返回当前 order（status 仍是 renewed）并记 `Log::error('[deploy.renew_chain] ...')`（带 order_id + 走过的链路），不返回 error**：客户端收到 renewed 走终态分支停止等人工，正是数据成环这类事故需要的语义；若返 `code=0`，客户端会当网络错误每天重试，把需人工介入的数据事故降级成静默重试。
+
+### local 重签冷却（`ApiController::update` active 分支）
+
+携 CSR 的 local **重签**受同订单 15 天冷却约束（`LOCAL_REISSUE_COOLDOWN_DAYS`）：当前 active 证书 `private_key` 为空且 `issued_at` 未满 15 天时直接 `error()`，错误文本给出可再次提交的时间。判定在互斥锁之前、`$isRenew` 判定之后，与产品校验 / auto_renew 校验同纪律——早失败不进临界区。
+
+**只约束重签，不拦续费**：判定放在 `$isRenew` 之后。临期证书恰好是冷却期内客户端签发的（续签链断裂后重试等形态）并不罕见，拦下续费不会让证书少过期一天（`AutoRenewCommand` 照常兜底），只会让客户端在必然失败的路径上每轮空烧 `issue_retry_count`，10 天触顶进 `CAPPED` 要人工解。续费另有 order 互斥 + 前驱 CAS + `auto_renew` 三道闸，且续费成功后新单 `issued_at` 全新、冷却对新单照常生效。
+
+**判据为什么是 `private_key` 为空**：`CsrUtil::auto` 的 `csr_generate=0` 分支（客户端提交 CSR）不写 `private_key`，故它精确等价于「这张证书的私钥只在某台客户端机器上」，也正是冷却要保护的状态。据此两条边界天然成立：首次 setup 时初始证书由 web/admin 下单、服务端持私钥 → 不冷却；pull 模式不 POST 推进（`deploy-spec.md` §3.4 只 GET）→ 不进该分支。
+
+**覆盖范围只到「多台 local 客户端」**：窗口锚在**当前证书行**的 `private_key`/`issued_at`，不追溯历史证书行。中途任何一次服务端持钥签发（会员中心/管理端手工重签、pull setup 打开 `auto_reissue` 后 scheduler 抢跑，以及本端点任何一次不带 CSR 的提交）都会把 `private_key` 变非空，从而重置窗口——不必有人工介入。这是有意的：那些形态里服务端本来就持有私钥、客户端按 `deploy-spec.md` §5.3 可直接取用，不构成互抢；防 scheduler 抢跑的闸门是 local setup 关 `auto_reissue`（§5.2），不是本冷却。
+
+**客户端提交内容的判定口径是 trim 后非空**，不用 `empty()`：`empty('0')` 恒为 true，会把 `csr='0'` 这类畸形值当「未携带 CSR」静默改走服务端生成 CSR 重签，客户端以为完成了 local 重签、实际拿到另一把私钥的证书（此后按 §2.4 比对 CSR 永远失配）；`domains='0'` 同理会静默回落旧域名后返回成功。`csr` 与 `domains` 各只判定一次，在途订单守卫、冷却判定、`csr_generate` 与 domains 分支、签发失败留痕都复用，避免漂移。显式空值（`null` / 空串 / 纯空白，后两者经 TrimStrings + ConvertEmptyStringsToNull 归零）仍按「未携带」处理，语义与既有下游一致。
+
+**不用「最后部署时间」做冷却起点**：`auto_deploy_reports` 的部署回调按 `deploy-spec.md` §2.8 是**非关键路径**（无 outbox、无幂等 ID、允许缺行，且触顶/过期/停更/policy 阻断路径根本不发回调），拿它做判定会被丢包直接旁路。`certs.issued_at` 由服务端解析已签发证书的 notBefore 落库（`ActionTrait` 的 `validFrom_time_t`），是 CA 侧时间而非服务端时钟，但**零依赖客户端上报**——这正是选它的理由。两个衍生行为：`issued_at` 为 `null` 时 `?->` 短路 → 冷却 fail-open（不拦）；CA 若签出未来 notBefore，窗口整体后移且无自助解除接口（真实 CA 一般倒签，窗口只会略短于 15 天）。证书解析失败不会落 0——`parseCert` 直接 `error('证书解析失败')` 中断签发。
+
+**要解决的问题**：同一订单被多台 local 客户端纳入自动续签管理时，私钥只在最后一次提交 CSR 的那台机器上，其余机器每轮都因私钥失配而重新建立 CSR 尝试，把彼此的证书翻成 `reissued`，形成无限互相重签。冷却使非持有私钥的客户端在签发计数触顶后停摆等待人工。**不提供解除冷却的接口**：换机部署走客户端重新 setup 并提供原私钥（`deploy-spec.md` §5.3）。
+
+> 冷却**不带 error_code**，走未分类确定性失败。客户端侧的处置（清理本轮 pending 与 CSR metadata、保留签发计数、停止本轮）见 `deploy-spec.md` §2.6。
+
+### query 响应下发当前动作的 CSR（`ApiController::getOrderData`）
+
+`getOrderData()` 在**所有状态**下发 `csr`（取 `latestCert->csr`，缺失为空串），不限 active。local 客户端靠它比对 pending 私钥公钥，判断在途签发是不是本机提交的——`processing` 阶段正是要靠它决定跟随还是重提，只在 active 返回等于让该机制失效。`latestCert` 恒为当前签发动作，天然不会下发无关的历史 CSR。
+
+> 这条是 `deploy-spec.md` §2.4 的服务端实现。缺它会让所有持有 pending 的 local 客户端永远无法确认提交是否被接受 → 永远保留 pending、永远停止本轮 → 撑到无进展时限（14 天）集体进 `CAPPED`，即 local 自动续签全线停摆。
 
 ### 错误响应的机器可读标识（`App\Support\ApiErrorCode`）
 
@@ -97,3 +121,5 @@
 - 客户端 IP 证书 setup 关 `auto_reissue`（local）↔ 服务端 scheduler 因开关无效天然排除。
 - 客户端「单次请求取完即止、不翻页」↔ 服务端 query 不分页、响应无 `total` / `page` / `page_size`，条数由 `MAX_BATCH_ITEMS` 封顶。
 - 客户端按 `errors.error_code` 分类停止而非重试 ↔ 服务端**三个中间件/控制器自身出口**的确定性失败带 error_code（覆盖边界见上节，不是"全部错误"）。
+- 客户端首次 setup 无配对私钥时进「需要私钥」、不自动提交新 CSR ↔ 服务端 local 重签冷却，两侧共同保证一个订单的 local 私钥只归一台机器；冷却是后者的兜底，拦的是两台都已完成 setup 的残留形态。
+- 客户端用服务端 CSR 判断签发归属（不比 PEM 原文，验签后比公钥） ↔ 服务端 query 所有状态下发 `latestCert->csr`。

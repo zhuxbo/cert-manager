@@ -419,6 +419,22 @@ test('query 返回数据包含完整字段', function () {
         ->status->toBe('active');
 });
 
+test('query 所有状态都返回当前签发动作的 csr', function () {
+    [$user, $token] = createDeployAuth();
+    $csr = "-----BEGIN CERTIFICATE REQUEST-----\nCURRENT\n-----END CERTIFICATE REQUEST-----";
+
+    // processing：客户端要在签发在途时就靠 csr 判断是不是本机提交的，故此阶段必须可见
+    [$processingOrder] = createDeployOrder($user, 'processing', ['csr' => $csr]);
+    expect(deployGet($token, "order=$processingOrder->id")->assertOk()->json('data.data.0.csr'))->toBe($csr);
+
+    [$activeOrder] = createDeployOrder($user, 'active', ['csr' => $csr]);
+    expect(deployGet($token, "order=$activeOrder->id")->assertOk()->json('data.data.0.csr'))->toBe($csr);
+
+    // 无 CSR 的历史订单返回空串
+    [$legacyOrder] = createDeployOrder($user, 'active', ['csr' => null]);
+    expect(deployGet($token, "order=$legacyOrder->id")->assertOk()->json('data.data.0.csr'))->toBe('');
+});
+
 test('query 非 active 状态不返回证书字段', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'pending');
@@ -889,7 +905,10 @@ test('update active 产品不支持委托验证', function () {
 
 test('update 本地 CSR 前置校验失败不写签发失败记录', function () {
     [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active', [], [], [
+    // private_key 非空 = 当前证书由服务端签发（客户端首次 local 接管），不触发 local 重签冷却
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nSERVER\n-----END PRIVATE KEY-----",
+    ], [], [
         'validation_methods' => ['txt', 'http'],
     ]);
 
@@ -904,7 +923,10 @@ test('update 本地 CSR 前置校验失败不写签发失败记录', function ()
 
 test('update 本地 CSR 进入重签处理后失败自写签发失败记录（ip 留空）', function () {
     [$user, $token] = createDeployAuth();
-    [$order, $cert] = createDeployOrder($user, 'active', [], [], [
+    // private_key 非空 = 当前证书由服务端签发（客户端首次 local 接管），不触发 local 重签冷却
+    [$order, $cert] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nSERVER\n-----END PRIVATE KEY-----",
+    ], [], [
         'validation_methods' => ['delegation', 'txt'],
     ]);
 
@@ -934,6 +956,172 @@ test('update 非本地（未携 CSR）处理失败不自写签发失败记录', 
     ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证']);
 
     expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
+// ========================================
+// update() — local 重签冷却
+// ========================================
+
+test('update local 重签冷却期内拒绝提交', function () {
+    // 文案里的可再试时间由服务端按 issued_at 计算，冻结时钟避免断言跨秒失配
+    Carbon::setTestNow(Carbon::parse('2026-07-01 10:00:00'));
+
+    [$user, $token] = createDeployAuth();
+    // private_key 为空 = 当前证书由客户端提交 CSR 签发，私钥只在那台机器上
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => null,
+        'issued_at' => now()->subDays(3),
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----other-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('msg', '该证书 15 天内已重签，请于 2026-07-13 10:00:00 后再试');
+
+    // 冷却拦截发生在进入重签处理之前，不留签发失败记录
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
+test('update csr 传 0 按客户端 CSR 处理不静默改走服务端生成', function () {
+    [$user, $token] = createDeployAuth();
+    // 服务端持钥单：不触发 local 重签冷却，请求必须真正走到 csr_generate 分支才有意义
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nSERVER\n-----END PRIVATE KEY-----",
+        'issued_at' => now(),
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    // empty('0') 恒为 true：旧口径把 csr='0' 当「未携带 CSR」静默改走服务端生成 CSR 重签，
+    // 客户端以为完成 local 重签、实际拿到另一把私钥的证书。新口径按客户端 CSR 处理，
+    // 签发链路显式失败，不产生新的服务端持钥证书行
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '0',
+        'validation_method' => 'delegation',
+    ]);
+
+    expect($response->json('code'))->not->toBe(1);
+    expect(Cert::where('order_id', $order->id)->count())->toBe(1);
+});
+
+test('update local 重签冷却期满后放行', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => null,
+        'issued_at' => now()->subDays(16),
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----test-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk();
+
+    // 放行后进入重签处理（无真实上游故失败），关键是没被冷却拦下
+    expect($response->json('msg'))->not->toContain('15 天内已重签');
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeTrue();
+});
+
+test('update local 重签冷却只约束重签不拦续费', function () {
+    [$user, $token] = createDeployAuth();
+    // 临期（period_till < 15 天）走续费分支：当前证书虽是 15 天内客户端签发的，也不得被冷却拦下——
+    // 拦下会让客户端在必然失败的路径上每轮空烧签发计数直到触顶停摆
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => null,
+        'issued_at' => now()->subDays(3),
+    ], [
+        'period_till' => now()->addDays(10),
+    ], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    // 已推进到续费分支（此单未开自动续费故止步于此），而非被冷却拦在前面
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----test-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('errors.error_code', 'auto_renew_disabled');
+});
+
+test('update 服务端签发的证书不受 local 重签冷却影响', function () {
+    [$user, $token] = createDeployAuth();
+    // private_key 非空 = 服务端持有私钥，客户端首次 local 接管，即使刚签发也放行
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nSERVER\n-----END PRIVATE KEY-----",
+        'issued_at' => now(),
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----test-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk();
+
+    expect($response->json('msg'))->not->toContain('15 天内已重签');
+    // 正向锚定：确实进了重签处理（无真实上游故失败自写记录），不是被别的前置校验提前挡下
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeTrue();
+});
+
+test('update local 重签冷却窗口只看当前证书行 服务端持钥签发即重置', function () {
+    [$user, $token] = createDeployAuth();
+    // 当前证书为服务端持钥签发，同订单 3 天前另有客户端 CSR 签发的历史证书行
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nSERVER\n-----END PRIVATE KEY-----",
+        'issued_at' => now(),
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+    Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'reissued',
+        'private_key' => null,
+        'issued_at' => now()->subDays(3),
+    ]);
+
+    // 冷却窗口锚在当前证书行、不追溯历史证书：服务端持钥形态客户端可直接取用私钥，不属于多客户端互抢，
+    // 故放行。这条边界是有意的，local setup 关 auto_reissue 才是防 scheduler 抢跑的那道闸
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----test-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk();
+
+    expect($response->json('msg'))->not->toContain('15 天内已重签');
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeTrue();
+});
+
+test('update 未携带 CSR 不受 local 重签冷却影响', function () {
+    [$user, $token] = createDeployAuth();
+    // 当前证书是刚由客户端 CSR 签发的（冷却期内），但本次请求不带 csr
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => null,
+        'issued_at' => now(),
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    // 服务端生成 CSR 路径（pull / 推进）不携带 csr，冷却只约束客户端提交 CSR 的 local 重签
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'validation_method' => 'delegation',
+    ])->assertOk();
+
+    // 成功响应无 msg，强制转字符串保证断言对成功/失败两种形态都成立
+    expect((string) $response->json('msg'))->not->toContain('15 天内已重签');
+    // 正向锚定：确实走完服务端生成 CSR 的重签（新建服务端持钥证书行），不是被冷却拦在前面
+    expect(Cert::where('order_id', $order->id)->whereNotNull('private_key')->exists())->toBeTrue();
 });
 
 test('update active 产品不支持文件验证', function () {
@@ -1026,6 +1214,40 @@ test('update pending 携带新 domains 显式报错（在途订单域名已定�
         'domains' => 'a.example.com,b.example.com',
     ])->assertOk()->assertJson(['code' => 0])
         ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'))
+        ->assertJsonPath('errors.error_code', 'order_in_progress');
+});
+
+test('update active 携带 domains 为 0 不静默回落旧域名', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'active', [
+        'private_key' => "-----BEGIN PRIVATE KEY-----\nSERVER\n-----END PRIVATE KEY-----",
+        'alternative_names' => 'old.example.com,www.old.example.com',
+    ], [], [
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    // 旧口径下 domains='0' 被 empty() 当未携带，重签静默回落旧域名并返回 code=1——客户端以为改域名成功。
+    // 不带 csr（服务端生成）才能让这条断言真正压在 domains 分支上：带畸形 CSR 会先在 CSR 解析处失败，
+    // 新旧口径都返回 code=0，用例就锁不住任何东西
+    $response = deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'domains' => '0',
+        'validation_method' => 'delegation',
+    ]);
+
+    expect($response->json('code'))->not->toBe(1);
+    expect(Cert::where('order_id', $order->id)->count())->toBe(1);
+});
+
+test('update pending 携带 domains 为 0 同样命中守卫（不走 empty 口径）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'pending');
+
+    // empty('0') 恒为 true：旧口径会把 domains='0' 当未携带放过，重签静默回落旧域名后返回成功
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'domains' => '0',
+    ])->assertOk()->assertJson(['code' => 0])
         ->assertJsonPath('errors.error_code', 'order_in_progress');
 });
 

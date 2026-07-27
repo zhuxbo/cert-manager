@@ -41,6 +41,23 @@ class ApiController extends Controller
     private const RENEW_CHAIN_MAX_HOPS = 60;
 
     /**
+     * 同订单 local 重签冷却天数
+     *
+     * 客户端提交 CSR 签发的证书，私钥只存在于那一台机器上（CsrUtil::auto 的 csr_generate=0
+     * 分支不写 private_key）。同一订单被多台客户端纳入自动续签管理时，非持有私钥的那些机器
+     * 每轮都会因私钥失配而重新提交 CSR，把彼此的证书翻成 reissued，形成无限互相重签。
+     *
+     * 取 15 天而非对齐 renewBeforeDays：客户端每天一轮、签发尝试上限 10 次，非持有者会在
+     * 10 天内触顶停摆，15 天完整盖住这个周期，不会出现「熬过冷却继续抢」。
+     *
+     * 覆盖范围仅「多台 local 客户端」：窗口锚在当前证书行的 private_key/issued_at，中途任何一次
+     * 服务端持钥签发（会员中心/管理端手工重签、pull 模式打开 auto_reissue 后 scheduler 抢跑，
+     * 以及本端点任何一次不带 CSR 的提交）都会把 private_key 变非空从而重置窗口。这是有意的——那些形态里服务端本来就持有私钥、客户端可直接
+     * 取用，不属于互抢；local setup 关 auto_reissue（见 deploy-spec §5.2）正是防 scheduler 抢跑。
+     */
+    private const LOCAL_REISSUE_COOLDOWN_DAYS = 15;
+
+    /**
      * 查询订单
      *
      * order 必填：单个订单 ID，或英文逗号分隔的多个订单 ID（上限 MAX_BATCH_ITEMS）。
@@ -167,11 +184,21 @@ class ApiController extends Controller
         $orderId = $order->id;
         $reQuery = false;
 
+        // 客户端提交内容的唯一判定口径：trim 后非空才算「客户端传了」。
+        // 不用 empty()——empty('0') 恒为 true，会把 csr='0' 静默改走服务端生成 CSR 重签（客户端以为完成
+        // 了 local 重签、实际拿到另一把私钥的证书，此后按 CSR 比对私钥永远失配），domains='0' 同理会静默
+        // 回落旧域名后返回成功。显式非空判定让这类畸形值走进签发流程后报错，失败可见。
+        // 全方法只此两处判定：在途订单守卫 / 冷却 / csr_generate 与 domains 分支 / 签发失败留痕都用它。
+        $clientCsr = trim((string) ($params['csr'] ?? ''));
+        $hasClientCsr = $clientCsr !== '';
+        $clientDomains = trim((string) ($params['domains'] ?? ''));
+        $hasClientDomains = $clientDomains !== '';
+
         // 在途订单（unpaid/pending，签发进行中）CSR/域名已在建单时定型、无法再变更：
         // 客户端携带非空 csr 或 domains 时显式报错，不静默丢弃新 CSR 后签发出与新私钥错配的证书。
         // 仅传 order_id 的推进（pay/commit 自愈）不带 csr/domains，不触发此守卫。
         if (in_array($cert->status, ['unpaid', 'pending'], true)
-            && (! empty($params['csr']) || ! empty($params['domains']))) {
+            && ($hasClientCsr || $hasClientDomains)) {
             $this->error(
                 "订单处于{$cert->status}状态（签发进行中），无法变更 CSR 或域名；请等待当前签发完成后再重签，或联系管理员处理卡单",
                 ['error_code' => ApiErrorCode::ORDER_IN_PROGRESS]
@@ -200,18 +227,16 @@ class ApiController extends Controller
                 'order_id' => $orderId,
             ];
 
-            if (empty($params['csr'])) {
-                $updateParams['csr_generate'] = 1;
-            } else {
+            if ($hasClientCsr) {
                 $updateParams['csr_generate'] = 0;
-                $updateParams['csr'] = $params['csr'];
+                $updateParams['csr'] = $clientCsr;
+            } else {
+                $updateParams['csr_generate'] = 1;
             }
 
             $updateParams['channel'] = 'deploy';
             // 优先使用客户端传入的 domains，否则使用当前证书的域名
-            $updateParams['domains'] = ! empty($params['domains'])
-                ? trim($params['domains'])
-                : $cert->alternative_names;
+            $updateParams['domains'] = $hasClientDomains ? $clientDomains : $cert->alternative_names;
             $validationMethod = $params['validation_method'] ?? 'delegation';
             $productMethods = $order->product->validation_methods ?? [];
 
@@ -244,6 +269,27 @@ class ApiController extends Controller
             // 如果订单到期时间小于 15 天则续费，否则重签
             // 产品校验 / auto_renew 校验放互斥锁之前（行为不变，早失败不进临界区）
             $isRenew = $order->period_till?->lt(now()->addDays(15));
+
+            // local 重签冷却：private_key 为空即「当前证书由客户端提交 CSR 签发、私钥只在那台机器上」，
+            // 冷却期内拒绝同订单的再次 local 提交，防多客户端共用订单互相重签（见常量注释）。
+            // **只约束重签、不拦续费**：临期证书若恰好是冷却期内客户端签发的，拦下续费会让客户端在必然
+            // 失败的路径上每轮空烧签发计数直到触顶；续费另有 order 互斥 + 前驱 CAS + auto_renew 三道闸，
+            // 且续费成功后新单 issued_at 全新，冷却对新单照常生效。
+            // 判据只认服务端自有数据（private_key / issued_at），不依赖客户端上报的部署回调——
+            // 回调是允许缺行的非关键路径，做判定依据会被丢包直接旁路。
+            // 放互斥锁之前，与产品校验 / auto_renew 校验同纪律：早失败不进临界区。
+            if (! $isRenew
+                && $hasClientCsr
+                && empty($cert->private_key)
+                && $cert->issued_at?->gt(now()->subDays(self::LOCAL_REISSUE_COOLDOWN_DAYS))
+            ) {
+                $this->error(sprintf(
+                    '该证书 %d 天内已重签，请于 %s 后再试',
+                    self::LOCAL_REISSUE_COOLDOWN_DAYS,
+                    $cert->issued_at->copy()->addDays(self::LOCAL_REISSUE_COOLDOWN_DAYS)->toDateTimeString(),
+                ));
+            }
+
             if ($isRenew) {
                 // 续费需要检查 auto_renew 设置
                 $autoRenewEnabled = app(AutoRenewService::class)->isAutoRenewEnabled($order, $order->user);
@@ -324,7 +370,7 @@ class ApiController extends Controller
                 // local CSR 提交（renew_mode=local，携带 CSR）后的服务端签发处理失败：服务端自写一行签发
                 // 失败记录（客户端零参与——签发失败不由客户端上报）。非本地路径（服务端生成 CSR）的同步错误
                 // 由调用方自行感知、不重复留痕。message 以「本地签发失败：」开头，与客户端部署失败天然可辨。
-                if (! empty($params['csr'])) {
+                if ($hasClientCsr) {
                     app(AutoDeployReportService::class)->recordServerFailure(
                         $order,
                         '本地签发失败：'.($e->getApiResponse()['msg'] ?? '未知错误')
@@ -589,6 +635,10 @@ class ApiController extends Controller
             'order_id' => $order->id,
             'domains' => $cert->alternative_names,
             'status' => $cert->status,
+            // 当前签发动作使用的 CSR：latestCert 恒为当前动作，天然不会返回无关的历史 CSR。
+            // local 客户端靠它比对 pending 私钥判断「在途签发是不是本机提交的」，故所有状态都要给，
+            // 不能只在 active 返回——processing 阶段正是要靠它决定跟随还是重提。缺失时为空串。
+            'csr' => (string) $cert->csr,
         ];
 
         if ($cert->status === 'active') {
