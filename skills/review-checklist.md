@@ -140,6 +140,10 @@
 **真实案例**:`log_warn "dump-autoload 失败(不阻断升级,可手动重试)"` — 注释明说"不阻断",实际 `set -e` + 函数不存在 → 升级中断;但 commit 时 lint 不报错。
 **修复**:统一 `log_warning`,并把这条加入 reviewer 必扫项。
 
+**第二例(`set -u` + UTF-8 locale 下变量名吞掉全角首字节 — 门禁自身静默假绿)**:bash 3.2(macOS 系统自带 `/bin/bash`;`#!/usr/bin/env bash` 在没装 homebrew bash 的开发机上解析到的正是它)在 UTF-8 locale 下会把紧跟变量名的全角字符首字节并进标识符 —— `echo "enum 缺少 $code（已定义）"` 被解析成变量 `code\xef`,`set -u` 直接 `unbound variable`,无 `set -u` 时静默丢值(消息里变量位置变乱码)。`finish-check-greps.sh` 的 Z15 四条差异报错全是这个形态,而报错又被 `run_check` 里 `raw="$("$fn" || true)"` 的 `|| true` 吞掉 → **整项静默 PASS**:实测修复前在 macOS UTF-8 终端下 8 个漂移形变有 7 个被放过(裸 const / 同行属性 / 清单漏码多码 / yaml 漏码多码),而容器与 CI(C locale + bash 5.2)全绿,门禁看起来一直在工作。bash ≥4.2 与 C locale 均不复现,所以只在开发机终端暴露 —— 与第一例同源:shell 层把"检查失效"伪装成"检查通过"。
+**修复**:变量后紧跟中文 / 全角标点一律加大括号 —— **shell 写 `${var}`、PHP 写 `{$var}`**(PHP 8.2 起 `"${var}"` 已 deprecated,别把 shell 写法搬过去);shell 侧全仓 22 处一并收敛(Z15 引入见 `cbcc6f07`),并加 Z16 硬零断言防复发。
+**检查动作**:`finish-check-greps.sh` Z16 扫「已跟踪 + 未跟踪未忽略的全部 `*.sh`,并上首行是 shell shebang 的非 `.sh` 脚本(`frontend/*/.husky/*` 即此类)」,未转义 `$VAR` 紧跟非 ASCII 字节即 FAIL(`${VAR}` / `\$VAR` / 注释行不算;Makefile 配方与 workflow `run:` 块不是独立文件,不在扫描面内);同时 `run_check` 捕检查函数的退出码与 stderr,**退出码非零或 stderr 非空**即判门禁故障 —— 「检查没跑完」不再和「检查零命中」同形(本次 Z15 静默假绿的放大器正是原先的 `raw="$("$fn" || true)"`);代价对称:检查函数必须自己消化预期内的非零(零命中的 `git grep` 一律补 `|| true`,`pipefail` 下管道末尾同理),否则"零命中"会被误报成"没跑完"。**PHP 侧同源**(`"$var，"` 把全角首字节并进变量名致整个值消失)无硬零断言,由 finish-check §2.7 的复选框人工守;本轮已清仓全仓仅存的 2 处(`PluginManagerTest.php` / `VendorCoexistenceTest.php` 的诊断串)。第一例的函数名笔误无机器判据(`bash -n` 与 shfmt 都不查函数是否存在),仍靠 reviewer 逐处核对 `log_warn` 类同义词。
+
 ---
 
 ## 反模式 8: 数组键类型混淆

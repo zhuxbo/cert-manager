@@ -190,7 +190,7 @@ make test-mysql57
 > 详见 `skills/backend/core.md` 的 PHP 规范。
 
 - [ ] 双引号变量不加大括号（`"$var"` 而非 `"{$var}"`）
-- [ ] 例外：变量后紧跟中文等非 ASCII 字符时必须加（`"{$var}，中文"` 而非 `"$var，中文"`）
+- [ ] 例外：变量后紧跟中文等非 ASCII 字符时必须加（`"{$var}，中文"` 而非 `"$var，中文"`）—— 不是风格问题：PHP 标识符合法字节含 `\x80-\xff`，`"$var，"` 会把全角字符首字节并进变量名，实测输出**整个值消失**（同族问题在 shell 侧更狠，见 `skills/review-checklist.md` 反模式 7 第二例：曾让硬零门禁整项静默 PASS）。shell 侧由 Z16 机器守，PHP 侧靠本条人工守
 - [ ] 禁止 raw SQL：原生 SQL 通过 Eloquent / Query Builder（`DB::raw`/`whereRaw` 仅在 mysql 函数表达式时使用，如 `DATE_SUB(NOW(), INTERVAL N DAY)`）
 
 ---

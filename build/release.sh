@@ -53,7 +53,7 @@ load_config() {
     # 检查配置文件权限（应为 600）
     local perms=$(stat -c %a "$CONFIG_FILE" 2>/dev/null || stat -f %OLp "$CONFIG_FILE" 2>/dev/null)
     if [ "$perms" != "600" ]; then
-        log_warning "配置文件权限不安全（当前: $perms），建议设置为 600:"
+        log_warning "配置文件权限不安全（当前: ${perms}），建议设置为 600:"
         log_info "  chmod 600 $CONFIG_FILE"
     fi
 

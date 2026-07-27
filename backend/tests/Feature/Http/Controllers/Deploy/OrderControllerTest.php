@@ -1008,6 +1008,13 @@ test('update csr 传 0 按客户端 CSR 处理不静默改走服务端生成', f
 
     expect($response->json('code'))->not->toBe(1);
     expect(Cert::where('order_id', $order->id)->count())->toBe(1);
+
+    // 业务失败必须留在「HTTP 200 + code=0」内（有意保留的非 200 出口只有并发忙的 503 与 field= PEM
+    // 直出）：'0' 曾被 OrderUtil::convertNumericValues 转成 int 0，撞 CsrUtil::matchKey(string $csr)
+    // 抛 TypeError → HTTP 400 + 裸类型错误文案（带内部路径）。这类确定性失败一旦不落在契约内，
+    // 下游就按网络错误无限每日重试。
+    $response->assertOk();
+    expect((string) $response->json('msg'))->not->toContain('must be of type');
 });
 
 test('update local 重签冷却期满后放行', function () {

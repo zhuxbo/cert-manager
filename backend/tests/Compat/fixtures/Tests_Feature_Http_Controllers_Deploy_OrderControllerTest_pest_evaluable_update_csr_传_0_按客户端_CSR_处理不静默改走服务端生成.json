@@ -10,7 +10,7 @@
                 "order_id",
                 "validation_method"
             ],
-            "response_status": "4xx",
+            "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
                 "msg": "string"

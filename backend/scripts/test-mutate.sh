@@ -41,7 +41,7 @@ if php -m | grep -qiE '^pcov$'; then
     PCOV_INI="${PHP_INI_DIR:-/usr/local/etc/php}/conf.d/zzz-pcov-mutate.ini"
     printf 'pcov.enabled=1\npcov.directory=%s\n' "$(pwd)" >"$PCOV_INI" 2>/dev/null ||
         {
-            echo "⚠ 无法写 $PCOV_INI；pcov.enabled=0 时变异无覆盖，请手动启用覆盖率驱动" >&2
+            echo "⚠ 无法写 ${PCOV_INI}；pcov.enabled=0 时变异无覆盖，请手动启用覆盖率驱动" >&2
             PCOV_INI=""
         }
 fi

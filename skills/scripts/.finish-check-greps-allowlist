@@ -22,6 +22,16 @@ BinaryLocatorTest.php 本机无 curl   # 环境无 curl 二进制时跳过
 PfxDownloadTest.php 需要真 OpenSSL CLI   # 环境无 OpenSSL CLI 时跳过
 DatabaseStructureServiceTest.php 数据库连接不可用   # 环境无 DB 连接时跳过
 
+# --- W3 补充 2026-07-28：宿主 macOS 才成立的环境门，容器/CI 内全部真跑（实测非静默跳过）---
+# 容器实测 PHP_OS_FAMILY=Linux、pcntl+posix 均已装、/proc 存在；三个文件 46 个用例
+# **0 skipped 全 passed**（`php artisan test tests/Feature/Console/UpgradeWatchdogCommandTest.php
+# tests/Unit/Services/Nginx/NginxRendererTest.php tests/Unit/Services/Upgrade/UpgradeStatusManagerTest.php`）。
+# 即这些 skip 分支只在开发者宿主上生效，`make test` 与 CI 都跑到了实体断言，不构成"静默跳过吞 bug"。
+# 锚定含具体理由串：将来在同文件写别的理由的 skip 仍会重新 WARN。
+UpgradeStatusManagerTest.php 非 Linux   # 容器内 Linux，实测真跑
+UpgradeWatchdogCommandTest.php 非 Linux   # 同上
+NginxRendererTest.php 需要 pcntl + posix 扩展来检测死锁   # 容器已装 pcntl/posix，实测真跑
+
 # --- W4 factory faker：均为展示字段，无 unique/业务校验撞风险 ---
 NotificationFactory.php 'title' => fake()->sentence(4)   # 通知标题，可重复
 NotificationFactory.php 'content' => fake()->paragraph()   # 通知内容，可重复

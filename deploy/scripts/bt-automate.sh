@@ -643,7 +643,7 @@ except Exception:
         status="$(_bt_json_get "$resp" "status")"
         msg="$(_bt_json_get "$resp" "msg")"
         if [ "$status" = "true" ]; then
-            log_success "supervisor 进程已添加: $pjname（重试通过）"
+            log_success "supervisor 进程已添加: ${pjname}（重试通过）"
             return 0
         fi
     fi
@@ -855,7 +855,7 @@ bt_inject_vhost_include() {
             log_warning "BT vhost root 与 INSTALL_DIR 不一致："
             log_warning "  BT vhost root  = $actual_root"
             log_warning "  INSTALL_DIR    = $expected_root"
-            log_warning "继续注入会导致 include 指向 $expected_root，但 nginx 仍把 $actual_root 作为站点根目录"
+            log_warning "继续注入会导致 include 指向 ${expected_root}，但 nginx 仍把 $actual_root 作为站点根目录"
             log_warning "→ SPA 静态资源（admin/user）将 404"
             log_info "修复方法：到宝塔面板 → 网站 → $domain → 修改站点目录为 $expected_root"
 
@@ -883,7 +883,7 @@ bt_inject_vhost_include() {
     local include_path_re
     include_path_re=$(printf '%s' "$include_path" | sed -E 's/[][\.|^$*+?(){}\\]/\\&/g')
     if grep -qE "^[[:space:]]*include[[:space:]]+${include_path_re}[[:space:]]*;" "$vhost"; then
-        log_info "vhost 已包含 include $include_path，跳过"
+        log_info "vhost 已包含 include ${include_path}，跳过"
         return 0
     fi
 
@@ -941,7 +941,7 @@ bt_inject_vhost_include() {
     if [ "$awk_rc" != "0" ]; then
         log_warning "未在 server 块直接子级找到根 root 行（vhost 结构异常？）"
         rm -f "$tmp"
-        log_info "已保留备份: $backup（无修改）"
+        log_info "已保留备份: ${backup}（无修改）"
         return 1
     fi
 

@@ -573,7 +573,7 @@ function forceRemoveResidualPluginDir(string $dir): void
 
     if ($exitCode !== 0 || is_dir($dir)) {
         throw new RuntimeException(
-            "插件测试目录清理失败：$dir；exit=$exitCode；output=".implode("\n", $output)
+            "插件测试目录清理失败：{$dir}；exit={$exitCode}；output=".implode("\n", $output)
         );
     }
 }

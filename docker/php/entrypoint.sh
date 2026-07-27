@@ -54,7 +54,7 @@ elseif (version_compare(preg_replace('/[^0-9.].*/', '', \$v), '8.0', '>=')) { ec
 else { echo 'utf8mb4_unicode_520_ci'; }
 " 2>/dev/null || echo 'utf8mb4_unicode_ci')
 set_env DB_COLLATION "$DB_COLLATION"
-echo "==> DB_COLLATION=$DB_COLLATION（按 MySQL 版本自动选择）"
+echo "==> DB_COLLATION=${DB_COLLATION}（按 MySQL 版本自动选择）"
 
 # 测试 base 库（make test 注入 DB_DATABASE=ssl_manager_test，并行 worker 在其上派生 _test_<token>）
 php -r "(new PDO('mysql:host=mysql;port=3306', 'root', 'password'))->exec('CREATE DATABASE IF NOT EXISTS ssl_manager_test CHARACTER SET utf8mb4 COLLATE ${DB_COLLATION}');"

@@ -361,7 +361,7 @@ test_a9() {
     if [ "$ok" -eq 1 ]; then
         pass "A9 composer 判定：vendor 缺失/回迁强制/hash 变化→装(0)，present+相等+无强制→跳过(1)"
     else
-        fail "A9 composer 判定（9a=$r9a 9b=$r9b 9c=$r9c 9d=$r9d，期望 0/1/0/0）"
+        fail "A9 composer 判定（9a=$r9a 9b=$r9b 9c=$r9c 9d=${r9d}，期望 0/1/0/0）"
     fi
     rm -rf "$base"
 }
