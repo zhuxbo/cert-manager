@@ -12,10 +12,6 @@ class CertObserver
     public function created(Cert $cert): void
     {
         $this->forgetUserDashboardCache($cert);
-
-        if ($cert->wasChanged('amount')) {
-            $this->recalculateOrderAmount($cert);
-        }
     }
 
     public function updated(Cert $cert): void

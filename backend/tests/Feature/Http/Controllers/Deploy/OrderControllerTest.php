@@ -1124,6 +1124,61 @@ test('update 未携带 CSR 不受 local 重签冷却影响', function () {
     expect(Cert::where('order_id', $order->id)->whereNotNull('private_key')->exists())->toBeTrue();
 });
 
+test('update 冷却在互斥锁内权威复判：抢锁窗口内当前证书被换掉不再放行重签', function () {
+    // 锁外那次冷却判定读的是请求开头的 $cert，与真正被重签的证书之间隔着抢锁窗口：期间当前证书
+    // 可能已被并发的 Deploy / V1V2 / scheduler 换成刚签发、仍在冷却期内的新证书。用 DB::listen 在
+    // 控制器读完订单后、进互斥锁前换证，确定性复现该形态（非真并发、预设态），锁死锁内复判存在。
+    config(['cache.default' => 'array']);
+    Cache::store('array')->flush();
+    Carbon::setTestNow(Carbon::parse('2026-07-01 10:00:00'));
+
+    [$user, $token] = createDeployAuth();
+    // 锁外读到的当前证书：客户端持钥但已远过窗口 → 快速失败那一关必然放行
+    [$order, $cert] = createDeployOrder($user, 'active', [
+        'common_name' => 'race.example.com',
+        'alternative_names' => 'race.example.com',
+        'private_key' => null,
+        'issued_at' => now()->subDays(100),
+    ], [
+        'period_till' => now()->addMonths(6), // >15 天 → 重签分支
+    ], [
+        'source' => 'default',
+        'reissue' => 1,
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    $swapped = false;
+    DB::listen(function ($query) use (&$swapped, $order, $cert) {
+        // 卡在 latestCert 的 eager load（select * from `certs` ...）之后换证：控制器手里已经是这一刻
+        // 读出的旧证书（正是要复现的 stale 读），而库里当前证书自此已换成刚签发的那张
+        if ($swapped || ! str_starts_with(strtolower($query->sql), 'select * from `certs`')) {
+            return;
+        }
+
+        $swapped = true;
+        $fresh = Cert::factory()->active()->create([
+            'order_id' => $order->id,
+            'private_key' => null,
+            'issued_at' => now(),
+        ]);
+        DB::table('certs')->where('id', $cert->id)->update(['status' => 'reissued']);
+        DB::table('orders')->where('id', $order->id)->update(['latest_cert_id' => $fresh->id]);
+    });
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => '-----BEGIN CERTIFICATE REQUEST-----other-----END CERTIFICATE REQUEST-----',
+        'validation_method' => 'delegation',
+    ])->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonPath('msg', '该证书 15 天内已重签，请于 2026-07-16 10:00:00 后再试');
+
+    expect($swapped)->toBeTrue();                                  // 确认换证路径确实被触发
+    expect(Cert::where('order_id', $order->id)->count())->toBe(2); // 未新建证书行 = 没进重签
+    // 冷却是策略拒绝、签发根本没开始，与锁外那次拒绝一样不写「本地签发失败」
+    expect(AutoDeployReport::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
 test('update active 产品不支持文件验证', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'active', [], [], [
@@ -1190,7 +1245,7 @@ test('update active 续费余额不足返回 insufficient_balance', function () 
 });
 
 // ========================================
-// update() — 在途订单 CSR/域名守卫（F1-1）
+// update() — 非 active 的 CSR/域名守卫（F1-1）
 // ========================================
 
 test('update unpaid 携带新 csr 显式报错（在途订单 CSR 已定型）', function () {
@@ -1249,6 +1304,58 @@ test('update pending 携带 domains 为 0 同样命中守卫（不走 empty 口�
         'domains' => '0',
     ])->assertOk()->assertJson(['code' => 0])
         ->assertJsonPath('errors.error_code', 'order_in_progress');
+});
+
+test('update processing 携带新 csr 显式报错（在途签发中，本次 CSR 未被接受）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order, $cert] = createDeployOrder($user, 'processing');
+
+    // 旧口径只拦 unpaid/pending：processing 既不会消费 csr 也不报错，末尾直接返回 code=1，
+    // 客户端据此认为新 CSR 已被接受，此后永远等不到与本机私钥匹配的证书
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => "-----BEGIN CERTIFICATE REQUEST-----\nNEW\n-----END CERTIFICATE REQUEST-----",
+    ])->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'))
+        ->assertJsonPath('errors.error_code', 'order_in_progress');
+
+    expect($cert->fresh()->csr)->toBeNull();
+});
+
+test('update 终态订单携带新 csr 显式报错 order_not_active（不会自行回到 active）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'cancelled');
+
+    // 终态不会自行推进到 active，与在途分开下发 error_code：客户端据此「停」而不是「等」
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'csr' => "-----BEGIN CERTIFICATE REQUEST-----\nNEW\n-----END CERTIFICATE REQUEST-----",
+    ])->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('msg', fn ($msg) => str_contains((string) $msg, '无法变更'))
+        ->assertJsonPath('errors.error_code', 'order_not_active');
+});
+
+test('update 过期证书携带新 domains 显式报错 order_not_active', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'expired');
+
+    // 证书已过期时服务端策略是交人工处理（scheduler 侧同样以 expires_at >= now() 为下界），
+    // 静默成功会让客户端以为改域名生效
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'domains' => 'a.example.com,b.example.com',
+    ])->assertOk()->assertJson(['code' => 0])
+        ->assertJsonPath('errors.error_code', 'order_not_active');
+});
+
+test('update processing 仅传 order_id 不触发守卫（轮询形态不被破坏）', function () {
+    [$user, $token] = createDeployAuth();
+    [$order] = createDeployOrder($user, 'processing');
+
+    // 守卫只针对携带 csr/domains 的提交；不带二者的 POST 仍按既有契约返回当前订单数据
+    deployPost($token, '/api/deploy/', ['order_id' => $order->id])
+        ->assertOk()->assertJson(['code' => 1])
+        ->assertJsonPath('data.status', 'processing');
 });
 
 test('update unpaid 仅传 order_id 不触发守卫（推进自愈路径不被破坏）', function () {

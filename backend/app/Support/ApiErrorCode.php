@@ -43,8 +43,11 @@ final class ApiErrorCode
     /** 订单存在但没有可用证书 */
     public const CERT_NOT_FOUND = 'cert_not_found';
 
-    /** 订单在途（unpaid/pending，签发进行中），不接受变更 CSR / 域名 */
+    /** 订单在途（unpaid/pending/processing/approving，签发进行中），不接受变更 CSR / 域名 */
     public const ORDER_IN_PROGRESS = 'order_in_progress';
+
+    /** 订单当前状态（cancelling 与各终态）不接受变更 CSR / 域名，且不会自行回到 active，需人工介入 */
+    public const ORDER_NOT_ACTIVE = 'order_not_active';
 
     /** 产品不支持请求的验证方式（delegation / file 系） */
     public const VALIDATION_METHOD_UNSUPPORTED = 'validation_method_unsupported';

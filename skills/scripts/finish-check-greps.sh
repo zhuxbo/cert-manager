@@ -18,6 +18,7 @@
 #     Z12 Task 模型 lockForUpdate 逸出 Task/TaskJob 白名单        — 反模式 10
 #     Z13 Task 表索引最终态快照禁止回归                          — 反模式 10
 #     Z14 Task::lockForMutation 索引 hint 接线必须完整            — 反模式 10
+#     Z15 error_code 三份对称副本等价（常量↔yaml enum↔skill 清单）— 反模式 4
 #   WARN（命中只列清单人工核对，不影响退出码）：
 #     W1  ->password = 赋值点（同方法须 revokeAllSessions，创建/注册豁免）— 反模式 17
 #     W2  Services registry 类 register() 未绑 singleton          — 反模式 2
@@ -328,6 +329,109 @@ z14_task_lock_scope_wiring() {
     fi
 }
 
+z15_error_code_symmetry() {
+    # ApiErrorCode 常量 ↔ deploy.yaml enum ↔ deploy-renewal.md 清单 三份对称副本的等价校验。
+    # 三份都在本仓内（客户端 deploy-spec.md 已移出同步面），故可机器比对——此前"跨仓章节号无法
+    # 校验"的借口不再成立。漏同步的代价：新增的永久性失败码在下游落进"未分类"→ 沿用重试策略 →
+    # 需人工介入的事故被降级成 daemon 每日静默重试（正是 ApiErrorCode 类注释要消灭的形态）。
+    local src='backend/app/Support/ApiErrorCode.php'
+    local yaml='backend/resources/docs/api/deploy.yaml'
+    local doc='skills/backend/deploy-renewal.md'
+    local f
+    for f in "$src" "$yaml" "$doc"; do
+        if [[ ! -f "$f" ]]; then
+            echo "$f: missing file"
+            return 0
+        fi
+    done
+
+    # 常量提取必须覆盖全部 public 形态；只认一种写法会让偏离形态静默漏采——那正是本检查唯一要守
+    # 的方向（只改常量、漏改 yaml/清单）上的假绿。修饰符写成 (final|public)* 而非要求 public 字面量：
+    # **PHP 类常量省略可见性即为 public**（裸 `const X = 'x';` 是正式发布的取值），`public final` 与
+    # `final public` 两种顺序也都合法。行首到 const 之间只允许 final/public，故 private/protected 仍不匹配。
+    local consts yaml_enum declared extracted
+    consts=$(sed -nE "s/^[[:space:]]*(final[[:space:]]+|public[[:space:]]+)*const[[:space:]]+([a-z]+[[:space:]]+)?[A-Z0-9_]+[[:space:]]*=[[:space:]]*['\"]([a-z0-9_]+)['\"];.*/\3/p" "$src" | sort -u)
+
+    # 奇偶断言：声明条数 ≠ 抽取条数即两数对不上，响亮报错而非静默 PASS。
+    # 成因不止"提取正则漏采"一种（同值常量别名、非取值常量如分组数组、跨行声明都会让两数不等），
+    # 故文案保持中性并列出差集常量名，别把维护者一律引到正则上去。
+    local declared_names missing_names
+    declared_names=$(sed -nE 's/^[[:space:]]*(final[[:space:]]+|public[[:space:]]+)*const[[:space:]]+([a-z]+[[:space:]]+)?([A-Z0-9_]+).*/\3/p' "$src" | sort -u)
+    declared=$(printf '%s' "$declared_names" | grep -c . || true)
+    extracted=$(printf '%s' "$consts" | grep -c . || true)
+    if [[ "$declared" -ne "$extracted" ]]; then
+        missing_names=$(sed -nE 's/^[[:space:]]*(final[[:space:]]+|public[[:space:]]+)*const[[:space:]]+([a-z]+[[:space:]]+)?([A-Z0-9_]+)[[:space:]]*=[[:space:]]*['\''"][a-z0-9_]+['\''"];.*/\3/p' "$src" | sort -u)
+        echo "$src: 声明 $declared 个 public const 但只取到 $extracted 个字面取值，两数不一致（可能是新增非取值常量 / 同值别名 / 跨行声明 / 提取正则漏采）；未取到取值的常量：$(comm -23 <(printf '%s\n' "$declared_names") <(printf '%s\n' "$missing_names") | tr '\n' ' ')"
+        return 0
+    fi
+    # error_code 的 enum 块：定位到 error_code: 后的**首个** enum:，取到闭合 ] 为止。
+    # 命中 ] 时把 seen 一并复位：否则该标志永不失效，error_code 之后任何 block 风格 enum:
+    # （如给 DeployOrder.status 补枚举）都会被重新拉起，把无关字段的枚举当成漏同步的错误码误红。
+    yaml_enum=$(awk '
+        /^[[:space:]]*error_code:[[:space:]]*$/ { seen = 1 }
+        seen && /^[[:space:]]*enum:[[:space:]]*$/ { grab = 1; next }
+        grab { if ($0 ~ /\]/) { grab = 0; seen = 0 } gsub(/[][,[:space:]]/, ""); if ($0 != "") print }
+    ' "$yaml" | sort -u)
+
+    if [[ -z "$consts" ]]; then
+        echo "$src: 未解析到任何 error_code 常量（提取规则失效，检查已形同虚设）"
+        return 0
+    fi
+    if [[ -z "$yaml_enum" ]]; then
+        echo "$yaml: 未解析到 error_code enum 块（提取规则失效，检查已形同虚设）"
+        return 0
+    fi
+
+    local code
+    while IFS= read -r code; do
+        [[ -z "$code" ]] && continue
+        echo "$yaml: enum 缺少 $code（ApiErrorCode 已定义）"
+    done < <(comm -23 <(printf '%s\n' "$consts") <(printf '%s\n' "$yaml_enum"))
+    while IFS= read -r code; do
+        [[ -z "$code" ]] && continue
+        echo "$yaml: enum 多出 $code（ApiErrorCode 无对应常量）"
+    done < <(comm -13 <(printf '%s\n' "$consts") <(printf '%s\n' "$yaml_enum"))
+
+    # 文档清单段：从「错误响应的机器可读标识」小节标题到下一个同级或更高层级标题（h1-h3）为止；
+    # 只停在 ### 会漏掉后续 ## 小节，把别处的 backtick token 卷进反向校验（已踩过）。
+    # 边界写成显式并列而非 /^#{1,3} /：**mawk 不支持 ERE 区间量词**，会把 {1,3} 当字面串，
+    # 边界永不成立 → 干净树在 Debian/Ubuntu（awk 默认 provider 即 mawk，CI runner 正是它）恒红。
+    local section
+    section=$(awk '/^### 错误响应的机器可读标识/ { f = 1; next } f && /^# |^## |^### / { f = 0 } f' "$doc")
+    if [[ -z "$section" ]]; then
+        echo "$doc: 未找到「错误响应的机器可读标识」小节（提取规则失效，检查已形同虚设）"
+        return 0
+    fi
+
+    # 只认「出口清单行」——判据是「以 `- \`` 开头**且**含 →」，不是所有 `- ` 行：小节里新增一条
+    # 普通说明列表项（无 → 或以别的字符起头）不该被当成出口清单参与比对（否则一句补充说明就误红）。
+    # 取首个 → 之后的 backtick token，不认全节文本：
+    # 同节的说明段落也会提到码名，拿整节做 containment 会让「清单漏登记新码」蒙混过关（已踩过）。
+    # 切首个 → 用 [^→]* 而非 .*：贪婪匹配会在出口行出现第二个 → 时把其左侧的码整段丢掉，
+    # 表现为「清单缺少 X」误红（失败方向安全但排查成本高、错误信息误导）。
+    # 出口行 → 之后**只允许**出现取值本身；DOC_NON_CODE_TOKENS 是唯一例外白名单：
+    # retry_after 是 rate_limited 的伴随字段而非取值。往括注里写别的 backtick token 会让门禁误红，
+    # 这是有意的严格——要写说明请放到出口行之外的段落。
+    local -a DOC_NON_CODE_TOKENS=(retry_after)
+    local doc_codes exclude
+    exclude=$(printf '%s\n' "${DOC_NON_CODE_TOKENS[@]}")
+    doc_codes=$(printf '%s\n' "$section" | grep '^- `' | grep '→' | sed 's/^[^→]*→//' |
+        grep -oE '`[a-z][a-z0-9_]*`' | tr -d '`' | grep -vxF "$exclude" | sort -u)
+    if [[ -z "$doc_codes" ]]; then
+        echo "$doc: 清单未解析到任何出口取值（提取规则失效，检查已形同虚设）"
+        return 0
+    fi
+
+    while IFS= read -r code; do
+        [[ -z "$code" ]] && continue
+        echo "$doc: 清单缺少 $code（ApiErrorCode 已定义）"
+    done < <(comm -23 <(printf '%s\n' "$consts") <(printf '%s\n' "$doc_codes"))
+    while IFS= read -r code; do
+        [[ -z "$code" ]] && continue
+        echo "$doc: 清单出现 $code（ApiErrorCode 无对应常量）"
+    done < <(comm -13 <(printf '%s\n' "$consts") <(printf '%s\n' "$doc_codes"))
+}
+
 # ---------- WARN 项 ----------
 
 w1_password_assign() {
@@ -374,6 +478,7 @@ chk_zero "Z11 > /dev/null 2>&1 丢 stderr（反模式 12）" z11_devnull_discard
 chk_zero "Z12 Task 模型 lockForUpdate 逸出 Task/TaskJob 白名单（反模式 10）" z12_task_lockforupdate
 chk_zero "Z13 Task 表索引最终态快照禁止回归（反模式 10）" z13_task_structure_snapshot
 chk_zero "Z14 Task::lockForMutation 索引 hint 接线必须完整（反模式 10）" z14_task_lock_scope_wiring
+chk_zero "Z15 error_code 三份对称副本必须等价（反模式 4）" z15_error_code_symmetry
 
 chk_warn "W1 ->password = 赋值点须同方法 revokeAllSessions（反模式 17）" w1_password_assign
 chk_warn "W2 Services registry 类未绑 singleton（反模式 2）" w2_registry_singleton

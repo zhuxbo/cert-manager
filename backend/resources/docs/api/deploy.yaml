@@ -59,7 +59,9 @@ paths:
       description: |
         按订单当前状态推进：`unpaid`→支付、`pending`→提交、
         `active`→到期 ≤15 天续费（需开启自动续费）、否则重签。
-        在途订单（`unpaid`/`pending`）不接受 `csr`/`domains`；携带 `csr` 的**重签**有 15 天冷却（续费不受限）。
+        只有 `active` 接受 `csr`/`domains`：在途（`unpaid`/`pending`/`processing`/`approving`）报
+        `order_in_progress`，`cancelling` 与终态报 `order_not_active`；两者都不静默丢弃后返回成功。
+        携带 `csr` 的**重签**有 15 天冷却（续费不受限）。
       requestBody:
         required: true
         content:
@@ -241,6 +243,7 @@ components:
                   order_not_found,
                   cert_not_found,
                   order_in_progress,
+                  order_not_active,
                   validation_method_unsupported,
                   auto_renew_disabled,
                   insufficient_balance

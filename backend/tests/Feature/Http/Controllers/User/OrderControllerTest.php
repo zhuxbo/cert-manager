@@ -98,12 +98,13 @@ test('获取订单列表-按状态筛选', function () {
         ->toBe('active');
 });
 
-test('获取订单列表-忽略状态集并按证书到期区间升序排列', function () {
+test('获取订单列表-按证书到期区间过滤默认活动中状态集并升序排列', function () {
     $user = User::factory()->create();
     $product = Product::factory()->create();
     $certs = [
         [3, 'cancelled'],
         [6, 'active'],
+        [2, 'active'],
         [10, 'failed'],
     ];
     $orders = collect($certs)->map(function (array $certData) use ($user, $product) {
@@ -135,8 +136,9 @@ test('获取订单列表-忽略状态集并按证书到期区间升序排列', f
         ->assertOk()
         ->assertJson(['code' => 1]);
 
+    // cancelled（3 天后到期）在区间内但不属于默认活动中状态集，不得出现
     expect(collect($response->json('data.items'))->pluck('id')->all())
-        ->toBe([$orders[0]->id, $orders[1]->id]);
+        ->toBe([$orders[2]->id, $orders[1]->id]);
 });
 
 test('获取订单详情', function () {

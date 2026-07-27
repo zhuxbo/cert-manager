@@ -43,7 +43,7 @@
 
 ## Deploy API 边界契约
 
-跨仓权威副本是 sslctl 仓库的 `deploy-spec.md`（本仓不留副本）；改下列各条必须同步该文件。共同前提：**所有拉取与回调都必须有边界**——下游是无人值守长驻进程，任何"由服务端自报数据决定何时停"的循环都是无界循环。
+客户端契约规范 `deploy-spec.md` 由客户端仓自行维护：**本仓是服务端，不保存该文件、也不承担它的同步**。契约改动在本仓只落到代码、`deploy.yaml` 与本文，客户端侧的跟进交给客户端仓的会话。**本文与代码注释都不引用该文件的小节号**——跨仓章节号各自漂移、无法校验，需要说明客户端行为时直接把事实写清楚。共同前提：**所有拉取与回调都必须有边界**——下游是无人值守长驻进程，任何"由服务端自报数据决定何时停"的循环都是无界循环。
 
 ### query 只按订单 ID，不分页（`ApiController::query`）
 
@@ -64,29 +64,41 @@
 
 触顶/判环都**返回当前 order（status 仍是 renewed）并记 `Log::error('[deploy.renew_chain] ...')`（带 order_id + 走过的链路），不返回 error**：客户端收到 renewed 走终态分支停止等人工，正是数据成环这类事故需要的语义；若返 `code=0`，客户端会当网络错误每天重试，把需人工介入的数据事故降级成静默重试。
 
+### 非 active 的 CSR/域名守卫（`ApiController::update`）
+
+`csr` / `domains` 只有 active 分支会消费，故**任何非 active 状态携带非空 `csr`/`domains` 都显式报错**，不是只拦 `unpaid`/`pending`：`processing`/`approving`/`cancelling` 与各终态既不会改 CSR 也走不到任何动作，静默落到末尾 `success()` 返回 `code=1` 会让客户端认为新 CSR 已被接受，此后按 CSR 比对私钥永远失配、永远等不到匹配私钥的证书。仅传 `order_id` 的推进（`unpaid` 付款 / `pending` commit 自愈，以及 `processing` 轮询）不带二者，不触发守卫。
+
+按「会不会自行回到 active」分两个 error_code：`unpaid`/`pending`/`processing`/`approving` → `order_in_progress`（过渡态，客户端归一 `processing` 后只 GET）；`cancelling` 与各终态 → `order_not_active`（不会自行恢复，每轮重现直到人工介入）。分开是为了不让客户端对一张永不回到 active 的订单一直轮询到无进展时限。
+
+> 边界：`Cert::retrieved` 在 active 但缺中间证书时把内存里的 status 读成 `approving`（等下次同步补链），这类订单的 local 提交会落 `order_in_progress`。相比旧行为（静默返回 approving 数据）只是把「本次不签发」这个事实显式化。
+
 ### local 重签冷却（`ApiController::update` active 分支）
 
-携 CSR 的 local **重签**受同订单 15 天冷却约束（`LOCAL_REISSUE_COOLDOWN_DAYS`）：当前 active 证书 `private_key` 为空且 `issued_at` 未满 15 天时直接 `error()`，错误文本给出可再次提交的时间。判定在互斥锁之前、`$isRenew` 判定之后，与产品校验 / auto_renew 校验同纪律——早失败不进临界区。
+携 CSR 的 local **重签**受同订单 15 天冷却约束（`LOCAL_REISSUE_COOLDOWN_DAYS`）：当前 active 证书 `private_key` 为空且 `issued_at` 未满 15 天时直接 `error()`，错误文本给出可再次提交的时间。判定在 `$isRenew` 之后，且**做两次**：互斥锁之前那次是主判定（与产品校验 / auto_renew 校验同纪律——早失败不进临界区），`reissue` 分支在互斥锁 + 事务内、订单行锁与前驱 CAS 之前用当前证书再复判一次。
+
+**锁内复判的定位是纵深防御，别高估它**：`withMutex` 是非阻塞抢锁（`Cache::lock()->get()`，抢不到直接抛 `MutationBusyException`），锁外快速失败到抢到锁之间只隔着 `$isRenew` / 产品校验这几步纯本地运算、不含任何上游调用，窗口是毫秒级；要在其中把 `latest_cert` 换成一张同时满足 `active` + `private_key` 空 + `issued_at` 在窗口内的新证书，另一路请求得跑完 reissue→pay→commit→上游签发→解析 notBefore 落 `issued_at` 的完整链路，现实不可达。窗口内真正可能出现的并发形态是新证书停在 `pending`/`processing`（`issued_at` 为 `null`），那种形态冷却按设计 fail-open 放行，实际由 `initParams` 的订单状态校验拒掉。**真正需要这次复判的是两条锁失效路径**：① Cache 故障时 `withMutex` fail-open 直接执行 callback（此时根本没有互斥，两路请求可同时进临界区）；② 未来新增的非 Deploy 写入方不持同一把 `order_mutate` 锁。维护时不要因为这段而删掉 `initParams` 的状态校验——那才是 `issued_at=null` 形态的实际兜底。
+
+**一致性论证以 MySQL 默认 REPEATABLE READ 为前提**（仓内未显式声明隔离级别，`config/database.php` 对 isolation 零命中，完全依赖 MySQL 默认）：锁内那次重读同时确立本事务的一致读视图，`initParams` 随后捕获的基线 `last_cert_id` 与它读到的是同一张证书，而前驱 CAS 是锁定写（current read）、被抢先即 affected=0 回滚，判定对象与实际被重签对象由此对齐。生产实例若被调成 `READ-COMMITTED`（客户自管 MySQL 的常见调优项），`initParams` 那次独立非锁定读会看到更新的已提交数据，复判退化为窄窗口检查——不产生资金或状态损坏，兜底仍是基线比对 + 前驱 CAS。**此处不加 `FOR UPDATE` 预锁**：会把 `initParams` 的 keygen + 委托 DNS 罩进订单行锁，违反锁内不做上游 HTTP 的红线。锁内复判的拒绝**不写「本地签发失败」记录**（签发根本没开始），与锁外那次一致。
 
 **只约束重签，不拦续费**：判定放在 `$isRenew` 之后。临期证书恰好是冷却期内客户端签发的（续签链断裂后重试等形态）并不罕见，拦下续费不会让证书少过期一天（`AutoRenewCommand` 照常兜底），只会让客户端在必然失败的路径上每轮空烧 `issue_retry_count`，10 天触顶进 `CAPPED` 要人工解。续费另有 order 互斥 + 前驱 CAS + `auto_renew` 三道闸，且续费成功后新单 `issued_at` 全新、冷却对新单照常生效。
 
-**判据为什么是 `private_key` 为空**：`CsrUtil::auto` 的 `csr_generate=0` 分支（客户端提交 CSR）不写 `private_key`，故它精确等价于「这张证书的私钥只在某台客户端机器上」，也正是冷却要保护的状态。据此两条边界天然成立：首次 setup 时初始证书由 web/admin 下单、服务端持私钥 → 不冷却；pull 模式不 POST 推进（`deploy-spec.md` §3.4 只 GET）→ 不进该分支。
+**判据为什么是 `private_key` 为空**：`CsrUtil::auto` 的 `csr_generate=0` 分支（客户端提交 CSR）不写 `private_key`，故它精确等价于「这张证书的私钥只在某台客户端机器上」，也正是冷却要保护的状态。据此两条边界天然成立：首次 setup 时初始证书由 web/admin 下单、服务端持私钥 → 不冷却；pull 模式只 GET、不 POST 推进 → 不进该分支。
 
-**覆盖范围只到「多台 local 客户端」**：窗口锚在**当前证书行**的 `private_key`/`issued_at`，不追溯历史证书行。中途任何一次服务端持钥签发（会员中心/管理端手工重签、pull setup 打开 `auto_reissue` 后 scheduler 抢跑，以及本端点任何一次不带 CSR 的提交）都会把 `private_key` 变非空，从而重置窗口——不必有人工介入。这是有意的：那些形态里服务端本来就持有私钥、客户端按 `deploy-spec.md` §5.3 可直接取用，不构成互抢；防 scheduler 抢跑的闸门是 local setup 关 `auto_reissue`（§5.2），不是本冷却。
+**覆盖范围只到「多台 local 客户端」**：窗口锚在**当前证书行**的 `private_key`/`issued_at`，不追溯历史证书行。中途任何一次服务端持钥签发（会员中心/管理端手工重签、pull setup 打开 `auto_reissue` 后 scheduler 抢跑，以及本端点任何一次不带 CSR 的提交）都会把 `private_key` 变非空，从而重置窗口——不必有人工介入。这是有意的：那些形态里服务端本来就持有私钥、客户端可直接取用，不构成互抢；防 scheduler 抢跑的闸门是 local setup 关 `auto_reissue`，不是本冷却。
 
-**客户端提交内容的判定口径是 trim 后非空**，不用 `empty()`：`empty('0')` 恒为 true，会把 `csr='0'` 这类畸形值当「未携带 CSR」静默改走服务端生成 CSR 重签，客户端以为完成了 local 重签、实际拿到另一把私钥的证书（此后按 §2.4 比对 CSR 永远失配）；`domains='0'` 同理会静默回落旧域名后返回成功。`csr` 与 `domains` 各只判定一次，在途订单守卫、冷却判定、`csr_generate` 与 domains 分支、签发失败留痕都复用，避免漂移。显式空值（`null` / 空串 / 纯空白，后两者经 TrimStrings + ConvertEmptyStringsToNull 归零）仍按「未携带」处理，语义与既有下游一致。
+**客户端提交内容的判定口径是 trim 后非空**，不用 `empty()`：`empty('0')` 恒为 true，会把 `csr='0'` 这类畸形值当「未携带 CSR」静默改走服务端生成 CSR 重签，客户端以为完成了 local 重签、实际拿到另一把私钥的证书（此后客户端按下发的 CSR 比对本机私钥永远失配）；`domains='0'` 同理会静默回落旧域名后返回成功。`csr` 与 `domains` 各只判定一次，非 active 守卫、冷却判定、`csr_generate` 与 domains 分支、签发失败留痕都复用，避免漂移。显式空值（`null` / 空串 / 纯空白，后两者经 TrimStrings + ConvertEmptyStringsToNull 归零）仍按「未携带」处理，语义与既有下游一致。
 
-**不用「最后部署时间」做冷却起点**：`auto_deploy_reports` 的部署回调按 `deploy-spec.md` §2.8 是**非关键路径**（无 outbox、无幂等 ID、允许缺行，且触顶/过期/停更/policy 阻断路径根本不发回调），拿它做判定会被丢包直接旁路。`certs.issued_at` 由服务端解析已签发证书的 notBefore 落库（`ActionTrait` 的 `validFrom_time_t`），是 CA 侧时间而非服务端时钟，但**零依赖客户端上报**——这正是选它的理由。两个衍生行为：`issued_at` 为 `null` 时 `?->` 短路 → 冷却 fail-open（不拦）；CA 若签出未来 notBefore，窗口整体后移且无自助解除接口（真实 CA 一般倒签，窗口只会略短于 15 天）。证书解析失败不会落 0——`parseCert` 直接 `error('证书解析失败')` 中断签发。
+**不用「最后部署时间」做冷却起点**：`auto_deploy_reports` 的部署回调是客户端侧的**非关键路径**（无 outbox、无幂等 ID、允许缺行，且触顶/过期/停更/policy 阻断路径根本不发回调），拿它做判定会被丢包直接旁路。`certs.issued_at` 由服务端解析已签发证书的 notBefore 落库（`ActionTrait` 的 `validFrom_time_t`），是 CA 侧时间而非服务端时钟，但**零依赖客户端上报**——这正是选它的理由。两个衍生行为：`issued_at` 为 `null` 时 `?->` 短路 → 冷却 fail-open（不拦）；CA 若签出未来 notBefore，窗口整体后移且无自助解除接口（真实 CA 一般倒签，窗口只会略短于 15 天）。证书解析失败不会落 0——`parseCert` 直接 `error('证书解析失败')` 中断签发。
 
-**要解决的问题**：同一订单被多台 local 客户端纳入自动续签管理时，私钥只在最后一次提交 CSR 的那台机器上，其余机器每轮都因私钥失配而重新建立 CSR 尝试，把彼此的证书翻成 `reissued`，形成无限互相重签。冷却使非持有私钥的客户端在签发计数触顶后停摆等待人工。**不提供解除冷却的接口**：换机部署走客户端重新 setup 并提供原私钥（`deploy-spec.md` §5.3）。
+**要解决的问题**：同一订单被多台 local 客户端纳入自动续签管理时，私钥只在最后一次提交 CSR 的那台机器上，其余机器每轮都因私钥失配而重新建立 CSR 尝试，把彼此的证书翻成 `reissued`，形成无限互相重签。冷却使非持有私钥的客户端在签发计数触顶后停摆等待人工。**不提供解除冷却的接口**：换机部署走客户端重新 setup 并提供原私钥。
 
-> 冷却**不带 error_code**，走未分类确定性失败。客户端侧的处置（清理本轮 pending 与 CSR metadata、保留签发计数、停止本轮）见 `deploy-spec.md` §2.6。
+> 冷却**不带 error_code**，走未分类确定性失败：客户端据此清理本轮 pending 与 CSR metadata、保留签发计数、停止本轮（客户端侧行为，权威定义在客户端仓）。
 
 ### query 响应下发当前动作的 CSR（`ApiController::getOrderData`）
 
 `getOrderData()` 在**所有状态**下发 `csr`（取 `latestCert->csr`，缺失为空串），不限 active。local 客户端靠它比对 pending 私钥公钥，判断在途签发是不是本机提交的——`processing` 阶段正是要靠它决定跟随还是重提，只在 active 返回等于让该机制失效。`latestCert` 恒为当前签发动作，天然不会下发无关的历史 CSR。
 
-> 这条是 `deploy-spec.md` §2.4 的服务端实现。缺它会让所有持有 pending 的 local 客户端永远无法确认提交是否被接受 → 永远保留 pending、永远停止本轮 → 撑到无进展时限（14 天）集体进 `CAPPED`，即 local 自动续签全线停摆。
+> 这条是客户端「按 CSR 判断在途签发归属」的服务端实现。缺它会让所有持有 pending 的 local 客户端永远无法确认提交是否被接受 → 永远保留 pending、永远停止本轮 → 撑到无进展时限（14 天）集体进 `CAPPED`，即 local 自动续签全线停摆。
 
 ### 错误响应的机器可读标识（`App\Support\ApiErrorCode`）
 
@@ -95,13 +107,13 @@
 - `RateLimiter::checkLimit`（v1/v2/acme/deploy 唯一出口）→ `rate_limited` + `retry_after`（`$window * 2 - $elapsed`，睡满即可重试的保守秒数，取值理由见下）
 - `DeployAuthenticate` → `token_missing` / `token_invalid` / `token_disabled` / `account_disabled` / `ip_not_allowed`
 - `Deploy\ApiController` query 侧 → `invalid_order`（order 缺失、形态非法、或超 `MAX_BATCH_ITEMS`）、`order_not_found`（单 ID 未命中）
-- `Deploy\ApiController` 写侧 → `order_not_found`（update / callback / toggleAutoReissue）、`cert_not_found`（callback）、`order_in_progress`（在途订单拒改 CSR/域名）、`validation_method_unsupported`（产品不支持委托/文件验证）、`auto_renew_disabled`（续费窗口内未开自动续费）、`insufficient_balance`（续费余额预检不足）
+- `Deploy\ApiController` 写侧 → `order_not_found`（update / callback / toggleAutoReissue）、`cert_not_found`（callback）、`order_in_progress`（在途订单拒改 CSR/域名）、`order_not_active`（cancelling 与终态拒改 CSR/域名）、`validation_method_unsupported`（产品不支持委托/文件验证）、`auto_renew_disabled`（续费窗口内未开自动续费）、`insufficient_balance`（续费余额预检不足）
 
-> 写侧（POST `/api/deploy`）是 daemon 每日续签的主路径，其中 `validation_method_unsupported` / `auto_renew_disabled` / `insufficient_balance` 是"改配置 / 充值前每天必然重现"的永久性失败（`order_in_progress` 相反，是 unpaid/pending 过渡态，签发完成即自行消失，下游应停止本轮而非永久停止）——**永久性失败漏挂 error_code 的代价最大**：下游按未分类沿用重试策略，等于把需人工介入的事故变成静默每日重试。新增出口时同步本清单、`backend/resources/docs/api/deploy.yaml` 的 enum、以及跨仓 spec（见下方"同步面"），`tests/Feature/Http/Controllers/Deploy/OrderControllerTest.php` 有逐码用例锁定。
+> 写侧（POST `/api/deploy`）是 daemon 每日续签的主路径，其中 `validation_method_unsupported` / `auto_renew_disabled` / `insufficient_balance` 是"改配置 / 充值前每天必然重现"的永久性失败，`order_not_active`（cancelling 与终态）同属此类（`order_in_progress` 相反，是 unpaid/pending/processing/approving 过渡态，签发完成即自行消失，下游应停止本轮而非永久停止）——**永久性失败漏挂 error_code 的代价最大**：下游按未分类沿用重试策略，等于把需人工介入的事故变成静默每日重试。新增出口时同步本清单与 `backend/resources/docs/api/deploy.yaml` 的 enum（见下方"同步面"），`tests/Feature/Http/Controllers/Deploy/OrderControllerTest.php` 有逐码用例锁定。
 >
 > **覆盖边界（勿当成"全部错误都有码"）**：`errors` 有三种形态，只有第一种参与分类——① `{error_code, retry_after?}`；② Laravel 参数校验失败袋 `{字段名:[消息]}`（有 `errors` 键但**无码**）；③ 无 `errors` 键，即 `update()` 经 `getData()` 从 `Order\Api\Action` 透传的业务错误（如 `产品配置错误`）沿用 `$result['errors'] ?? null` 恒为空。那是整个订单服务层的错误面，逐条分类是独立课题，未纳入本次收敛。**下游判定必须看 `errors.error_code` 非空，不能看"有没有 errors 键"**；②③ 一律按未分类沿用既有重试策略。这条边界必须在客户端 spec 里如实写明，不要写成"确定性失败一律有码"。
 >
-> **同步面（4 份对称副本，目前只靠本条约束，无机器校验）**：`ApiErrorCode` 常量 ↔ `deploy.yaml` 的 enum ↔ 本清单 ↔ 跨仓 `deploy-spec.md`（权威副本在 sslctl 仓，sslctlw / sslbt 保持 byte 相同，`md5` 三份一致即同步到位）。另因 `RateLimiter` 是 v1/v2/acme/deploy 共用中间件，`rate_limited` 同时出现在 `acme.yaml` / `v2.yaml` 的 `ApiResponse.errors`——改限流出口时这两份也要跟。
+> **同步面（3 份对称副本，由 `finish-check-greps.sh` 的 Z15 硬零断言机器校验）**：`ApiErrorCode` 常量 ↔ `deploy.yaml` 的 enum ↔ 本清单。三份都在本仓内（客户端 `deploy-spec.md` **不在同步面内**，见「Deploy API 边界契约」开头，新增取值只需知会客户端仓），故可机器比对：Z15 对常量集与 enum 做双向集合相等、对本清单的**出口行**（`- <出口> → <码>`）做双向比对，任一方向缺漏或多出即 FAIL。**新增取值必须同时改三处**，只改常量会被门禁当场拦下。出口行的判据是「以 `` - ` `` 开头**且**含 `→`」，其首个 `→` 之后**只允许出现取值本身**，非取值的 backtick token 仅有 `retry_after`（`rate_limited` 的伴随字段）在脚本白名单里，往括注里写别的 backtick token 会让门禁误红——这是有意的严格，补充说明写成普通段落或不以 `` - ` `` 起头的列表项即可。改 Z15 的提取规则时注意这些已踩过的坑：小节边界只停在 `###` 会把后续 `##` 小节卷进来；用整节文本做 containment 会让「清单漏登记新码」蒙混过关（说明段落提到码名即算命中）；边界正则**不能用 `{1,3}` 区间量词**（mawk 不支持，CI 的 Debian/Ubuntu runner 默认 awk 正是 mawk，会让干净树恒红）；常量提取正则必须覆盖 `final` / PHP 8.3 类型化类常量 / 双引号取值，并由「声明数 == 字面取值数」断言兜底（该断言的成因不止漏采，同值别名 / 非取值常量 / 跨行声明同样触发，故文案中性并列出差集）；yaml 抽取命中闭合 `]` 时必须把 `error_code` 定位标志一并复位，否则该文件后续任何 block 风格 `enum:` 都会被重新拉起、当成漏同步的错误码误红。另因 `RateLimiter` 是 v1/v2/acme/deploy 共用中间件，`rate_limited` 同时出现在 `acme.yaml` / `v2.yaml` 的 `ApiResponse.errors`——改限流出口时这两份也要跟。
 
 **限流刻意不改 HTTP 429**：客户端 isRetryable 认 429 → 4 次尝试 + 指数退避（1s→2s→4s），7 秒内全部落在同一 60s 窗口注定失败；且 `checkLimit` 的 `Cache::increment` 在阈值判断**之前**，每次重试都继续推高计数器、把恢复时间往后拖。返回 200 让客户端不重试反而是对的。改状态码还会同时改掉所有 API channel 的错误模型（`RateLimiter` 是共用中间件类）。
 

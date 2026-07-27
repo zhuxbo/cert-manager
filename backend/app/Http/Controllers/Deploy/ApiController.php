@@ -53,7 +53,7 @@ class ApiController extends Controller
      * 覆盖范围仅「多台 local 客户端」：窗口锚在当前证书行的 private_key/issued_at，中途任何一次
      * 服务端持钥签发（会员中心/管理端手工重签、pull 模式打开 auto_reissue 后 scheduler 抢跑，
      * 以及本端点任何一次不带 CSR 的提交）都会把 private_key 变非空从而重置窗口。这是有意的——那些形态里服务端本来就持有私钥、客户端可直接
-     * 取用，不属于互抢；local setup 关 auto_reissue（见 deploy-spec §5.2）正是防 scheduler 抢跑。
+     * 取用，不属于互抢；local setup 关 auto_reissue 正是防 scheduler 抢跑。
      */
     private const LOCAL_REISSUE_COOLDOWN_DAYS = 15;
 
@@ -188,20 +188,29 @@ class ApiController extends Controller
         // 不用 empty()——empty('0') 恒为 true，会把 csr='0' 静默改走服务端生成 CSR 重签（客户端以为完成
         // 了 local 重签、实际拿到另一把私钥的证书，此后按 CSR 比对私钥永远失配），domains='0' 同理会静默
         // 回落旧域名后返回成功。显式非空判定让这类畸形值走进签发流程后报错，失败可见。
-        // 全方法只此两处判定：在途订单守卫 / 冷却 / csr_generate 与 domains 分支 / 签发失败留痕都用它。
+        // 全方法只此两处判定：非 active 守卫 / 冷却 / csr_generate 与 domains 分支 / 签发失败留痕都用它。
         $clientCsr = trim((string) ($params['csr'] ?? ''));
         $hasClientCsr = $clientCsr !== '';
         $clientDomains = trim((string) ($params['domains'] ?? ''));
         $hasClientDomains = $clientDomains !== '';
 
-        // 在途订单（unpaid/pending，签发进行中）CSR/域名已在建单时定型、无法再变更：
-        // 客户端携带非空 csr 或 domains 时显式报错，不静默丢弃新 CSR 后签发出与新私钥错配的证书。
-        // 仅传 order_id 的推进（pay/commit 自愈）不带 csr/domains，不触发此守卫。
-        if (in_array($cert->status, ['unpaid', 'pending'], true)
-            && ($hasClientCsr || $hasClientDomains)) {
+        // 只有 active 接受新的 CSR/域名（重签/续费入口），其余状态本方法根本不会消费它们：
+        //   unpaid/pending —— 在途，CSR/域名建单时已定型
+        //   processing/approving —— 上一次提交已进签发流程，本次 CSR 明确未被接受
+        //   cancelling 与各终态 —— 订单已无可推进动作
+        // 全部显式报错，不静默丢弃后返回 code=1：静默成功会让客户端认为新 CSR 已被接受，
+        // 此后永远等不到与本机私钥匹配的证书（active 分支的 CSR 错配同理，见 domains 分支注释）。
+        // 仅传 order_id 的推进（unpaid/pending 的 pay/commit 自愈）不带 csr/domains，不触发此守卫。
+        if ($cert->status !== 'active' && ($hasClientCsr || $hasClientDomains)) {
+            // 在途（会自行推进到 active，客户端归一 processing 后只 GET）与非在途（不会自行回到 active，
+            // 每轮重现直到人工介入）分两个 error_code 下发，客户端据此区分「等」和「停」。
+            $inProgress = in_array($cert->status, ['unpaid', 'pending', 'processing', 'approving'], true);
+
             $this->error(
-                "订单处于{$cert->status}状态（签发进行中），无法变更 CSR 或域名；请等待当前签发完成后再重签，或联系管理员处理卡单",
-                ['error_code' => ApiErrorCode::ORDER_IN_PROGRESS]
+                $inProgress
+                    ? "订单处于{$cert->status}状态（签发进行中），无法变更 CSR 或域名；请等待当前签发完成后再重签，或联系管理员处理卡单"
+                    : "订单处于{$cert->status}状态，无法变更 CSR 或域名；请在会员中心处理该订单或联系管理员",
+                ['error_code' => $inProgress ? ApiErrorCode::ORDER_IN_PROGRESS : ApiErrorCode::ORDER_NOT_ACTIVE]
             );
         }
 
@@ -277,18 +286,10 @@ class ApiController extends Controller
             // 且续费成功后新单 issued_at 全新，冷却对新单照常生效。
             // 判据只认服务端自有数据（private_key / issued_at），不依赖客户端上报的部署回调——
             // 回调是允许缺行的非关键路径，做判定依据会被丢包直接旁路。
-            // 放互斥锁之前，与产品校验 / auto_renew 校验同纪律：早失败不进临界区。
-            if (! $isRenew
-                && $hasClientCsr
-                && empty($cert->private_key)
-                && $cert->issued_at?->gt(now()->subDays(self::LOCAL_REISSUE_COOLDOWN_DAYS))
-            ) {
-                $this->error(sprintf(
-                    '该证书 %d 天内已重签，请于 %s 后再试',
-                    self::LOCAL_REISSUE_COOLDOWN_DAYS,
-                    $cert->issued_at->copy()->addDays(self::LOCAL_REISSUE_COOLDOWN_DAYS)->toDateTimeString(),
-                ));
-            }
+            // 此处这次是**主判定**（读锁外 $cert），保持早失败不进临界区的纪律；reissue 分支在临界区内
+            // 还会用当前证书复判一次，那次是防锁失效路径的纵深防御，不是本处的兜底（理由见该处注释）。
+            $cooldownUntil = ! $isRenew && $hasClientCsr ? $this->localReissueCooldownUntil($cert) : null;
+            $cooldownUntil && $this->errorLocalReissueCooldown($cooldownUntil);
 
             if ($isRenew) {
                 // 续费需要检查 auto_renew 设置
@@ -322,6 +323,10 @@ class ApiController extends Controller
                 $updateParams['action'] = 'reissue';
             }
 
+            // 锁内冷却复判命中时记下截止时间：这类失败是策略拒绝而非签发失败，catch 里据此不写
+            // 「本地签发失败」记录（与锁外那次拒绝的处置一致，避免同一逻辑拒绝在审计视图里两副面孔）。
+            $lockedCooldownUntil = null;
+
             try {
                 // order 级互斥 + 外层事务：把本地 renew/reissue（终态化旧证书 + 建新单）+ pay(false)（扣费落 pending）
                 // 串行且原子，根治多下游服务器共用订单时并发双开续费单 + 双扣费（被审计的 Deploy×Deploy）。
@@ -339,16 +344,38 @@ class ApiController extends Controller
                 //     一致读建立的 RR view 影响，无需外层再叠一把预锁）。此前的预锁会把 keygen + 委托 DNS HTTP 全
                 //     罩进订单行锁内——DNSPod 劣化时 ≥4 token 即超 innodb_lock_wait_timeout=50，同订单 sync/renew
                 //     抢锁 1205，违反锁内不做上游 HTTP 红线。移除后对齐 V2/AutoRenew「CSR/委托生成先于行锁」范式。
-                $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew) {
+                $orderId = $this->withMutex("order_mutate_$orderId", function () use ($orderId, $action, $updateParams, $isRenew, $hasClientCsr, &$lockedCooldownUntil) {
                     $resolved = $orderId;
 
-                    DB::transaction(function () use (&$resolved, $orderId, $action, $updateParams, $isRenew) {
+                    DB::transaction(function () use (&$resolved, $orderId, $action, $updateParams, $isRenew, $hasClientCsr, &$lockedCooldownUntil) {
                         if ($isRenew) {
                             // renew→new：initParams（CSR+委托，锁前）→ persistOrder 锁源订单行 + 前驱 active→renewed CAS。
                             // code=1 成功由 getData 吸收返回 data；并发抢先则内部 CAS affected=0 抛「订单已续费」回滚。
                             $result = $this->getData($action, 'renew', [$updateParams]);
                             $resolved = $result['data']['order_id'] ?? $orderId;
                         } else {
+                            // local 重签冷却在临界区内的复判，定位是**纵深防御**而非主防线，别高估它：
+                            // withMutex 是非阻塞抢锁（Cache::lock()->get()，抢不到直接抛 MutationBusyException），
+                            // 锁外快速失败到抢到锁之间只隔着 $isRenew / 产品校验这几步纯本地运算（无上游调用），
+                            // 窗口是毫秒级；要在其中把 latest_cert 换成一张同时满足 active + private_key 空 +
+                            // issued_at 在窗口内的新证书，另一路得跑完 reissue→pay→commit→上游签发→落 issued_at，
+                            // 现实不可达。窗口内真能出现的是新证书停在 pending/processing（issued_at 为 null），
+                            // 那种形态本方法按设计 fail-open 放行，实际由 initParams 的订单状态校验拒掉。
+                            // 真正需要这次复判的是两条锁失效路径：① Cache 故障时 withMutex fail-open 直接执行
+                            // callback（此时根本没有互斥，两路请求可同时进临界区）；② 未来新增的非 Deploy 写入方
+                            // 不持同一把 order_mutate 锁。
+                            // 一致性论证（以 MySQL 默认 REPEATABLE READ 为前提，见 skills/backend/deploy-renewal.md）：
+                            // 这次重读确立本事务的一致读视图，reissue 的 initParams 随后捕获的基线 last_cert_id
+                            // 与这里读到的是同一张证书；前驱 CAS 是锁定写（current read），被并发抢先即 affected=0
+                            // 回滚。若实例被调成 READ COMMITTED，复判退化成窄窗口检查（不产生状态损坏），
+                            // 兜底仍是 initParams 的基线比对 + 前驱 CAS。
+                            // 不在此处对订单行加 FOR UPDATE 预锁：会把 initParams 的 keygen + 委托 DNS 罩进行锁（见上方锁纪律 4）。
+                            if ($hasClientCsr) {
+                                $currentCert = Order::with('latestCert')->find($orderId)?->latestCert;
+                                $lockedCooldownUntil = $currentCert ? $this->localReissueCooldownUntil($currentCert) : null;
+                                $lockedCooldownUntil && $this->errorLocalReissueCooldown($lockedCooldownUntil);
+                            }
+
                             // reissue：initParams（CSR+委托，锁前）→ 事务内锁源订单行 + latest_cert_id 基线比对 + 前驱 CAS 翻 reissued。
                             $this->getData($action, 'reissue', [$updateParams]);
                         }
@@ -370,7 +397,8 @@ class ApiController extends Controller
                 // local CSR 提交（renew_mode=local，携带 CSR）后的服务端签发处理失败：服务端自写一行签发
                 // 失败记录（客户端零参与——签发失败不由客户端上报）。非本地路径（服务端生成 CSR）的同步错误
                 // 由调用方自行感知、不重复留痕。message 以「本地签发失败：」开头，与客户端部署失败天然可辨。
-                if ($hasClientCsr) {
+                // 锁内冷却复判拒绝不算签发失败（签发根本没开始），与锁外那次拒绝一样不留痕。
+                if ($hasClientCsr && ! $lockedCooldownUntil) {
                     app(AutoDeployReportService::class)->recordServerFailure(
                         $order,
                         '本地签发失败：'.($e->getApiResponse()['msg'] ?? '未知错误')
@@ -393,6 +421,40 @@ class ApiController extends Controller
         $data['renew_before_days'] = (int) get_system_setting('site', 'renewBeforeDays', 14);
 
         $this->success($data);
+    }
+
+    /**
+     * local 重签冷却窗口的截止时间；null = 不在冷却期，可以重签
+     *
+     * private_key 非空 = 服务端持钥，客户端可直接取用、不构成互抢，永不冷却；
+     * issued_at 缺失 → fail-open 不拦（判据取值理由见 LOCAL_REISSUE_COOLDOWN_DAYS 常量注释）。
+     */
+    private function localReissueCooldownUntil(Cert $cert): ?Carbon
+    {
+        $issuedAt = $cert->issued_at;
+
+        if (! empty($cert->private_key) || ! $issuedAt instanceof Carbon) {
+            return null;
+        }
+
+        $until = $issuedAt->copy()->addDays(self::LOCAL_REISSUE_COOLDOWN_DAYS);
+
+        return $until->isFuture() ? $until : null;
+    }
+
+    /**
+     * 冷却拒绝：文案给出可再次提交的时间
+     *
+     * 刻意不带 error_code（走未分类确定性失败）：客户端据此清理本轮 pending 与 CSR metadata、
+     * 保留签发计数、停止本轮，而不是当网络错误在同轮重试。
+     */
+    private function errorLocalReissueCooldown(Carbon $until): void
+    {
+        $this->error(sprintf(
+            '该证书 %d 天内已重签，请于 %s 后再试',
+            self::LOCAL_REISSUE_COOLDOWN_DAYS,
+            $until->toDateTimeString(),
+        ));
     }
 
     /**
