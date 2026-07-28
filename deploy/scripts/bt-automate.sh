@@ -456,11 +456,11 @@ _bt_supervisor_plugin_install() {
         return 1
     fi
 
-    log_info "  step 1 完成：tmp_path=${tmp_path}, install_opt=${install_opt}"
+    log_info "step 1 完成：tmp_path=${tmp_path}, install_opt=${install_opt}"
 
     # === step 2: input_package 拷贝 + 同步执行 install.sh ===
     # install.sh 编译 supervisor 可能耗时 60~180s，临时把 curl 超时拉到 BT_PLUGIN_INSTALL_TIMEOUT
-    log_info "  step 2: 调 input_package 同步执行 install.sh（编译 supervisor 可能耗时 60~180s）..."
+    log_info "step 2: 调 input_package 同步执行 install.sh（编译 supervisor 可能耗时 60~180s）..."
     local resp2
     resp2=$(BT_API_TIMEOUT="$BT_PLUGIN_INSTALL_TIMEOUT" _bt_api_post "/plugin?action=input_package" \
         "--data-urlencode 'tmp_path=${tmp_path}' \
@@ -477,7 +477,7 @@ _bt_supervisor_plugin_install() {
     fi
 
     # curl 超时或非标准应答时，BT 后台可能仍在跑 install.sh —— 轮询 GetIndex 兜底确认
-    log_info "  input_package 应答非 status=true（${msg2:-curl 超时}），轮询 GetIndex 兜底..."
+    log_info "input_package 应答非 status=true（${msg2:-curl 超时}），轮询 GetIndex 兜底..."
     local elapsed=0
     while [ "$elapsed" -lt "$BT_PLUGIN_INSTALL_TIMEOUT" ]; do
         sleep 5
@@ -516,14 +516,14 @@ _bt_supervisor_ensure_runtime() {
         return 0
     fi
 
-    log_info "  $svc 服务未运行，尝试 reset-failed + restart"
+    log_info "$svc 服务未运行，尝试 reset-failed + restart"
     systemctl reset-failed "$svc" 2>/dev/null || true
     systemctl restart "$svc" 2>/dev/null || true
     sleep 2
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
-        log_info "  $svc 服务已启动"
+        log_info "$svc 服务已启动"
     else
-        log_warning "  $svc 服务启动失败，到面板 → SuperVisord 检查日志（常见原因：旧进程 ini 中 logfile 父目录缺失）"
+        log_warning "$svc 服务启动失败，到面板 → SuperVisord 检查日志（常见原因：旧进程 ini 中 logfile 父目录缺失）"
     fi
 }
 
@@ -598,7 +598,7 @@ except Exception:
     pass
 " 2>/dev/null)
     if [ -n "$existing" ]; then
-        log_info "  同名进程 $pjname 已存在，先删除（覆盖重装）"
+        log_info "同名进程 $pjname 已存在，先删除（覆盖重装）"
         _bt_api_post "/plugin?action=a&name=supervisor&s=RemoveProcess" \
             "--data-urlencode 'program=$pjname'" >/dev/null 2>&1 || true
         sleep 1
@@ -632,7 +632,7 @@ except Exception:
     # BT 数据库中的进程配置记录仍然保留，AddProcess 报"已被使用"。
     # 强制 RemoveProcess（操作 BT 数据库不依赖 supervisor 服务运行）+ 重试 AddProcess。
     if echo "$msg" | grep -qE '已被使用|已存在|exist'; then
-        log_info "  AddProcess 报名称冲突，强制 RemoveProcess + 重试（supervisor 服务停止时 GetProcessList 漏检）"
+        log_info "AddProcess 报名称冲突，强制 RemoveProcess + 重试（supervisor 服务停止时 GetProcessList 漏检）"
         _bt_api_post "/plugin?action=a&name=supervisor&s=RemoveProcess" \
             "--data-urlencode 'program=$pjname'" >/dev/null 2>&1 || true
         sleep 1
@@ -718,7 +718,7 @@ except Exception:
     pass
 " 2>/dev/null)
     if [ -n "$existing_id" ]; then
-        log_info "  同名 cron $name (id=$existing_id) 已存在，先删除（覆盖重装）"
+        log_info "同名 cron $name (id=$existing_id) 已存在，先删除（覆盖重装）"
         _bt_api_post "/crontab?action=DelCrontab" \
             "--data-urlencode 'id=$existing_id'" >/dev/null 2>&1 || true
         sleep 1
@@ -1020,7 +1020,7 @@ bt_reload_php_fpm() {
     local status
     status="$(_bt_json_get "$resp" "status")"
     if [ "$status" = "true" ]; then
-        log_success "  PHP-FPM $php_ver 已重启"
+        log_success "PHP-FPM $php_ver 已重启"
         return 0
     fi
 

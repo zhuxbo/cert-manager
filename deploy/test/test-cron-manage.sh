@@ -29,7 +29,8 @@ fail() {
     FAIL=$((FAIL + 1))
 }
 
-log_info() { :; }
+MESSAGE_LOG="$(mktemp)"
+log_info() { printf 'INFO|%s\n' "$1" >>"$MESSAGE_LOG"; }
 log_success() { :; }
 log_error() { :; }
 log_warning() { :; }
@@ -87,6 +88,7 @@ SCHED_PLAIN="/www/server/php/84/bin/php /www/wwwroot/site/backend/artisan schedu
 reset_scenario() {
     : >"$CALL_LOG"
     : >"$MOCK_CRON_FILE"
+    : >"$MESSAGE_LOG"
     BT_ADD_RC=0
 }
 has() { grep -qF "$1" "$CALL_LOG"; }
@@ -97,8 +99,10 @@ cron_line 1 site minute-n 1 "$SCHED_OLD" >"$MOCK_CRON_FILE"
 update_jobs_php_path >/dev/null 2>&1
 has "ADD|name=site|type=minute-n|where1=1|body=/www/server/php/84/bin/php" &&
     has ">> /dev/null 2>&1" &&
+    grep -qF "INFO|期望 PHP: /www/server/php/84/bin/php" "$MESSAGE_LOG" &&
+    ! grep -qF "INFO|  期望 PHP:" "$MESSAGE_LOG" &&
     pass "schedule 仅修 PHP 路径并保留原重定向" ||
-    fail "schedule 修复意外改变了日志策略"
+    fail "schedule 修复或期望 PHP 日志格式不正确"
 
 echo "=== 场景 2：干净 schedule ==="
 reset_scenario
@@ -126,7 +130,7 @@ grep -qF 'echo " 脚本内容: $PHP_CMD $INSTALL_DIR/backend/artisan schedule:ru
     pass "新安装由宝塔记录 schedule 日志且不创建 probe/logrotate" ||
     fail "新安装 cron 契约不正确"
 
-rm -rf "$CALL_LOG" "$MOCK_CRON_FILE" "$SCRIPT_DIR"
+rm -rf "$CALL_LOG" "$MESSAGE_LOG" "$MOCK_CRON_FILE" "$SCRIPT_DIR"
 
 echo ""
 echo "==================== 结果 ===================="

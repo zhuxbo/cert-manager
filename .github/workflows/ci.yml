@@ -677,7 +677,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: '8.4'
           coverage: none
 
       - name: version_gt bash↔PHP 等价
@@ -691,6 +691,9 @@ jobs:
 
       - name: upgrade cron 管理段（M3/M6 §1.5）mock 演练
         run: bash deploy/test/test-cron-manage.sh
+
+      - name: upgrade queue worker 状态检测演练
+        run: bash deploy/test/test-queue-worker-status.sh
 
       - name: upgrade 入口残留升级状态处置演练
         run: bash deploy/test/test-upgrade-stale-status.sh

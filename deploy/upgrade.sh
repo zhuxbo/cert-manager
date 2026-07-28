@@ -1310,18 +1310,18 @@ _fix_installer_cron() {
         if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$new_body"; then
             return 0
         fi
-        log_warning "  cron [$cname] 添加新版失败，尝试用原命令回滚..."
+        log_warning "cron [$cname] 添加新版失败，尝试用原命令回滚..."
         if bt_add_crontab "$cname" "$ctype" "$cwhere1" "$cbody"; then
-            log_info "  原 cron 已恢复（PHP 路径仍是旧版本，需手工修改）"
+            log_info "原 cron 已恢复（PHP 路径仍是旧版本，需手工修改）"
             other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
         else
-            log_error "  ⚠️  cron [$cname] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
+            log_error "⚠️ cron [$cname] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
             log_error "  原命令: $cbody"
             log_error "  新命令: $new_body"
         fi
         return 1
     fi
-    log_warning "  cron [$cname] DelCrontab 失败，跳过自动修复"
+    log_warning "cron [$cname] DelCrontab 失败，跳过自动修复"
     other_cron_entries+=("$cid|$cname|$paths|$cbody_enc")
     return 1
 }
@@ -1358,7 +1358,7 @@ update_jobs_php_path() {
     fi
 
     log_step "扫描 cron / supervisor 的 PHP 绝对路径..."
-    log_info "  期望 PHP: $target_php"
+    log_info "期望 PHP: $target_php"
 
     # install.sh 自管特征（cron: schedule:run；supervisor: queue:work），按 INSTALL_DIR 锚定。
     # marker 即 artisan 命令串本身（面板可见 shell 命令，已是唯一稳定特征，不引额外注释 token）
@@ -1498,7 +1498,7 @@ update_jobs_php_path() {
     local total_mismatch=$((${#installer_cron_entries[@]} + ${#other_cron_entries[@]} + \
         ${#installer_supervisor_entries[@]} + ${#other_supervisor_entries[@]}))
     if [ "$total_mismatch" -eq 0 ]; then
-        log_success "  cron / supervisor 的 PHP 路径与当前一致"
+        log_success "cron / supervisor 的 PHP 路径与当前一致"
         return 0
     fi
 
@@ -1511,7 +1511,7 @@ update_jobs_php_path() {
             auto_fixed=$((auto_fixed + 1))
         fi
     elif [ ${#installer_cron_entries[@]} -gt 1 ]; then
-        log_info "  检测到 ${#installer_cron_entries[@]} 个 schedule:run cron，非唯一，保留手工提示"
+        log_info "检测到 ${#installer_cron_entries[@]} 个 schedule:run cron，非唯一，保留手工提示"
         for entry in "${installer_cron_entries[@]}"; do
             local cid cname paths ctype cwhere1 cbody_enc
             IFS='|' read -r cid cname paths ctype cwhere1 cbody_enc <<<"$entry"
@@ -1533,19 +1533,19 @@ update_jobs_php_path() {
         if bt_add_supervisor_process "$sprogram" "$suser" "$spath" "$new_cmd" "${snumprocs:-1}"; then
             auto_fixed=$((auto_fixed + 1))
         else
-            log_warning "  supervisor [$sprogram] 添加新版失败，尝试用原命令回滚..."
+            log_warning "supervisor [$sprogram] 添加新版失败，尝试用原命令回滚..."
             if bt_add_supervisor_process "$sprogram" "$suser" "$spath" "$scommand" "${snumprocs:-1}"; then
-                log_info "  原 supervisor 已恢复（PHP 路径仍是旧版本，需手工修改）"
+                log_info "原 supervisor 已恢复（PHP 路径仍是旧版本，需手工修改）"
                 other_supervisor_entries+=("$sprogram|$paths|$scommand_enc")
             else
-                log_error "  ⚠️  supervisor [$sprogram] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
+                log_error "⚠️ supervisor [$sprogram] 自动更新 + 回滚均失败！请到宝塔面板手工添加"
                 log_error "  运行用户: $suser  工作目录: $spath  进程数: ${snumprocs:-1}"
                 log_error "  原命令: $scommand"
                 log_error "  新命令: $new_cmd"
             fi
         fi
     elif [ ${#installer_supervisor_entries[@]} -gt 1 ]; then
-        log_info "  检测到 ${#installer_supervisor_entries[@]} 个 install.sh 风格 supervisor 进程，非唯一，保留手工提示"
+        log_info "检测到 ${#installer_supervisor_entries[@]} 个 install.sh 风格 supervisor 进程，非唯一，保留手工提示"
         for entry in "${installer_supervisor_entries[@]}"; do
             local sprogram suser spath snumprocs paths scommand_enc
             IFS='|' read -r sprogram suser spath snumprocs paths scommand_enc <<<"$entry"
@@ -1555,12 +1555,12 @@ update_jobs_php_path() {
 
     local remaining=$((${#other_cron_entries[@]} + ${#other_supervisor_entries[@]}))
     if [ "$remaining" -eq 0 ]; then
-        log_success "  cron / supervisor 全部自动修复完成（共 $auto_fixed 项）"
+        log_success "cron / supervisor 全部自动修复完成（共 $auto_fixed 项）"
         return 0
     fi
 
     if [ "$auto_fixed" -gt 0 ]; then
-        log_info "  已自动修复 $auto_fixed 项；以下仍需手工处理："
+        log_info "已自动修复 $auto_fixed 项；以下仍需手工处理："
     fi
 
     log_warning "═══════════════════════════════════════════════════════"
@@ -1596,6 +1596,46 @@ update_jobs_php_path() {
     log_warning "请将上述命令中的旧路径替换为：$target_php"
     log_warning "（不自动替换以避免误改用户配置；cron/supervisor 改完会自动生效，无需重启服务）"
     log_warning "═══════════════════════════════════════════════════════"
+}
+
+# 检查本站 queue worker 的真实进程。不能用裸 supervisorctl：
+# 宝塔插件可能使用独立的命令路径 / socket，命令不可用时会把“无法检测”误报为“未运行”；
+# 同时全局 grep RUNNING 也可能被其他站点进程冒充。升级末尾在 supervisor 自动修复后调用。
+check_queue_worker_status() {
+    local marker="$INSTALL_DIR/backend/artisan queue:work"
+    local backend_dir="${INSTALL_DIR%/}/backend"
+    local attempt ps_output pid args cwd
+
+    for attempt in 1 2 3; do
+        if ! ps_output=$(ps -eww -o pid=,args= 2>/dev/null); then
+            log_info "未能读取进程列表，跳过 queue worker 状态检测"
+            return 0
+        fi
+
+        while read -r pid args; do
+            [ -n "${pid:-}" ] || continue
+
+            # install.sh 当前写入完整 artisan 绝对路径，直接按本站路径精确命中。
+            if [[ "$args" == *"$marker"* ]]; then
+                log_success "queue worker 正在运行（本站进程）"
+                return 0
+            fi
+
+            # 兼容存量裸 `php artisan queue:work`：必须同时校验进程 cwd 是本站 backend，
+            # 避免其他站点的相同命令被误认。宝塔生产环境是 Linux，cwd 从 /proc 读取。
+            if [[ "$args" == *"artisan queue:work"* ]]; then
+                cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+                if [ "${cwd%/}" = "$backend_dir" ]; then
+                    log_success "queue worker 正在运行（本站进程）"
+                    return 0
+                fi
+            fi
+        done <<<"$ps_output"
+
+        [ "$attempt" -lt 3 ] && sleep 1
+    done
+
+    log_warning "queue worker 未运行，请到宝塔面板检查 Supervisor"
 }
 
 # 判定是否需要跑 composer install（返回 0=需要 / 1=可跳过）。入参：old/new composer.json hash、old/new lock hash。
@@ -2105,11 +2145,11 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     else
         log_warning "queue:restart 失败（如未启用队列可忽略）"
     fi
-    # 非阻断：仅兜 supervisor 进程级崩溃（罕见）；supervisorctl 缺失即整体假、仅提示不阻断
-    supervisorctl status 2>/dev/null | grep -qi running || log_warning "queue worker 可能未运行，请到宝塔面板检查 Supervisor"
-
     # 15. 扫描 cron / supervisor 的 PHP 绝对路径（PHP 版本切换后保护性检查 + 自动修复 install.sh 自管项）
     update_jobs_php_path
+
+    # 非阻断：在 supervisor PHP 路径修复 / 重建完成后，检查本站 worker 真实进程。
+    check_queue_worker_status
 
     # 15a. 重载 PHP-FPM 清 opcache，加载新代码
     # 仅宝塔环境（PHP_CMD 形如 /www/server/php/83/bin/php）；其他环境提示手工重启
