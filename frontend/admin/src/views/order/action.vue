@@ -340,6 +340,7 @@ import {
   periodLabels,
   validationMethodLabels
 } from "@/views/system/dictionary";
+import { isCurrentProductResponse } from "@shared/utils/orderProductResponse";
 import type { FormInstance, FormRules } from "element-plus";
 import { useDialogSize } from "@/views/system/dialog";
 import { OrganizationEditor } from "@shared/components/OrganizationEditor";
@@ -703,6 +704,8 @@ const productSelected = (productId: any) => {
   if (!productId) return;
 
   productShow(productId).then(({ data }) => {
+    if (!isCurrentProductResponse(productId, formData.product_id)) return;
+
     // 更新产品相关信息
     formData.product = {
       ...formData.product,
