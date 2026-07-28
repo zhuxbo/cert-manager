@@ -68,7 +68,6 @@ class Cert extends BaseModel
         'domain_verify_status',
         'org_verify_status',
         'status',
-        'auto_deploy_at',
     ];
 
     protected $casts = [
@@ -85,7 +84,6 @@ class Cert extends BaseModel
         'org_verify_status' => 'integer',
         'issued_at' => 'datetime',
         'expires_at' => 'datetime',
-        'auto_deploy_at' => 'datetime',
     ];
 
     protected $appends = ['intermediate_cert'];

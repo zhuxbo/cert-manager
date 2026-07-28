@@ -110,7 +110,9 @@ bash build/build.sh --clear-cache
 }
 ```
 
-`build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
+`build/scripts/release-common.sh::generate_releases_update_script` 在 `release.sh` 上传 zip 后远程执行 Python 计算 sha256，合并入站点根的 `releases.json`；main/dev 通道分别按发布时间保留 `KEEP_VERSIONS` 条（默认各 5 条）。install.sh / bt-install.sh / upgrade.sh 下载产物后强校验，失败立即退出（不降级）。`latest`/`dev` 占位符通过 `_resolve_version`（depth 计数解析 release 块）映射到 `prerelease=false`/`prerelease=true` 的最新版本。
+
+每台服务器完成上传、索引更新、脚本部署、latest 链接更新和旧目录清理后，`release.sh` 自动执行两层验收：先经 SSH 校验远程 `releases.json`、三个 zip 的大小/sha256、latest 链接及入口脚本，再从该服务器的公网 URL 下载索引和全部 zip 复算大小/sha256。任一目标服务器的任一校验失败，发布命令返回失败，不得只凭上传命令成功判定发布完成。
 
 后台升级（PHP 端 `ReleaseClient`）同样 **fail-closed**：releases.json 缺 sha256 或下载产物不匹配时拒绝升级（不降级放行）；`validateReleaseUrl` 对下载 URL 做 SSRF 校验（https 放行 / 公网 http 拒绝 / 明文 http 仅放行 RFC1918 私网 + loopback，link-local 169.254 含云元数据 / CGNAT / 保留段拒绝），下载 curl/Http 重定向限 https + 限 5 跳，防「https 校验通过 → 302 降级到 http 内网」绕过。
 
@@ -259,7 +261,14 @@ GitHub Release 仅用于代码存档，实际部署使用自建 release 服务�
 
 - `build.env` - 覆盖默认构建变量
 - `config.json` - 覆盖默认配置
-- `logo.png` - 自定义 Logo
+- `logo.svg` - 自定义默认 Logo
+- `qrcode.svg` - 自定义默认二维码占位图
+
+打包资产边界：`backend/storage/app` 是运行数据，构建工作区、产物汇总和完整包都必须排除并清空旧缓存；Web 根入口不携带默认 `favicon.ico`，站点图标只由后台 `site.favicon` 配置提供。前端 `src/assets` 中无引用的图片应删除，`public` 目录则只保留仍在使用的运行时回落资源。
+
+二维码占位资产分包边界：完整包携带新版 `frontend/user/qrcode.svg`；升级包同时排除 `qrcode.svg` 和旧版 `qrcode.png`，由升级流程保留安装目录原有文件。这样旧安装继续使用 PNG，新安装继续使用 SVG，前端仅在后台未上传二维码时按 SVG → PNG 顺序回落。
+
+登录配图 `frontend/user/login.svg` 的边界不同：完整包与升级包都携带（无历史兼容包袱，存量部署升级后即可获得默认配图），升级保护由两条路径的保留逻辑负责——PackageExtractor `protectedFrontendAssets` 与 `deploy/upgrade.sh` 的 `frontend_config` 清单在目标机已存在 `login.svg`（含运营商定制版）时原样保留，包内默认图仅在目标机缺失时落地。
 
 ---
 

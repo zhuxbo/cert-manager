@@ -43,7 +43,7 @@ class UpdateRequest extends BaseRequest
                 })->ignore($id),
             ],
             // 更新 type 规则，添加 select
-            'type' => ['required', 'string', Rule::in(['string', 'integer', 'float', 'boolean', 'array', 'select', 'base64'])],
+            'type' => ['required', 'string', Rule::in(['string', 'integer', 'float', 'boolean', 'array', 'select', 'base64', 'image'])],
             // 添加 options 验证：当 type 为 select 时必须存在且为有效格式
             'options' => [
                 'required_if:type,select',

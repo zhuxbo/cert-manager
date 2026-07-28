@@ -24,7 +24,6 @@ const showLogo = ref(
 );
 
 const {
-  title,
   pureApp,
   getLogo,
   isCollapse,
@@ -39,6 +38,9 @@ const childMenu = ref([]);
 const subMenuData = ref([]);
 
 const menuData = computed(() => usePermissionStoreHook().wholeMenus);
+const currentMenuTitle = computed(
+  () => menuData.value[curActive.value]?.meta?.title ?? ""
+);
 
 const defaultActive = computed(() =>
   !isAllEmpty(route.meta?.activePath) ? route.meta.activePath : route.path
@@ -151,7 +153,9 @@ onBeforeUnmount(() => {
       @mouseleave.prevent="isShow = false"
     >
       <div v-show="!isCollapse" class="sidebar-logo-container">
-        <span class="sidebar-title" :title="title">{{ title }}</span>
+        <span class="sidebar-title" :title="currentMenuTitle">
+          {{ currentMenuTitle }}
+        </span>
       </div>
 
       <el-scrollbar wrap-class="scrollbar-wrapper">

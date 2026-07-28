@@ -16,6 +16,35 @@ use Tests\Traits\GeneratesCertChains;
 
 uses(CreatesTestData::class, GeneratesCertChains::class);
 
+test('sync 将上游 Certum 审核 documents 原样持久化到证书', function () {
+    Cache::flush();
+    $documents = [
+        ['type' => 'organization', 'status' => 'required', 'name' => '营业执照'],
+        ['type' => 'authorization', 'status' => 'accepted', 'name' => '授权书'],
+    ];
+
+    $mock = Mockery::mock(Api::class);
+    $mock->shouldReceive('get')->once()->andReturn([
+        'code' => 1,
+        'data' => [
+            'status' => 'processing',
+            'documents' => $documents,
+        ],
+    ]);
+    app()->instance(Api::class, $mock);
+
+    $order = $this->createTestOrder(
+        $this->createTestUser(['balance' => '100.00']),
+        $this->createTestProduct(['source' => 'default']),
+        ['amount' => '100.00']
+    );
+    $cert = $this->createTestCert($order, ['status' => 'processing', 'action' => 'new', 'api_id' => 'certum-docs-001']);
+
+    app(Action::class)->sync($order->id, true);
+
+    expect($cert->refresh()->documents)->toBe($documents);
+});
+
 /**
  * F2-4 sync 证书链签名校验门禁行为（锁外 gate）。
  */

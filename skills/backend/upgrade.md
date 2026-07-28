@@ -33,11 +33,11 @@
 `deploy/upgrade.sh` 是 `set -e` 全量替换升级（`rm -rf` 各目录 + 整体 cp），切代码窗需先把活的 `backend/storage`（含 `storage/databak` 全部本地 DB 备份）搬走再搬回。此窗一旦中断，储存数据面临被空 storage 覆盖的风险。四道守卫：
 
 - **① PRESERVE_DIR 同文件系统 + same-fs 断言**：`PRESERVE_DIR="$INSTALL_DIR/.upgrade-preserve-$$"`（安装目录根级、**非** `TEMP_DIR` 内——EXIT trap 的 `rm -rf TEMP_DIR` 天然够不着它）。`mv storage → preserve` 前 `_assert_storage_same_fs`（`stat -c %d` / `-f %d` 双兼容取设备号）强制断言同 fs：**mv 跨 fs 不报错而是静默 copy+unlink**，复制窗中断会让 cleanup 用半份覆盖完好源 → 异构挂载时**断言失败中止升级、原地未破坏**（需调整挂载后重试）。
-- **② cleanup trap 守卫还原**：`trap cleanup EXIT INT TERM HUP`——失败退出 / `Ctrl-C` / SSH 断连均**先 `_restore_preserved_storage` 把 storage（databak 最高优先级）移回原位再清理**。守卫自身失败绝不吞：保留 PRESERVE_DIR（唯一副本）、只删 TEMP_DIR、非零退出。trap 先 `trap '' INT TERM HUP` 防重入（还原幂等：存在性门 + rc 首行捕获，双跑无害）。PRESERVE 在持久盘（非 `/tmp`），故即便 **SIGKILL/断电**（trap 跑不了）数据也存活在 `.upgrade-preserve-*/storage`。**删 preserve 前先 `_restore_preserved_extras` 还原 api_adapters/frontend_config 副本**：中断落在「rm 旧代码 ~ 步骤 9 恢复」窗内时这些是唯一在线副本（原件已 rm、备份 zip 虽含但 rollback 自动选最新=绿灯重跑的无适配器备份救不回），还原失败则保留 preserve 供人工恢复（不静默销毁）。
+- **② cleanup trap 守卫还原**：`trap cleanup EXIT INT TERM HUP`——失败退出 / `Ctrl-C` / SSH 断连均**先 `_restore_preserved_storage` 把 storage（databak 最高优先级）移回原位再清理**。守卫自身失败绝不吞：保留 PRESERVE_DIR（唯一副本）、只删 TEMP_DIR、非零退出。trap 先 `trap '' INT TERM HUP` 防重入（还原幂等：存在性门 + rc 首行捕获，双跑无害）。PRESERVE 在持久盘（非 `/tmp`），故即便 **SIGKILL/断电**（trap 跑不了）数据也存活在 `.upgrade-preserve-*/storage`。**删 preserve 前先 `_restore_preserved_extras` 还原 api_adapters/frontend_config 副本**：中断落在「rm 旧代码 ~ 步骤 9 恢复」窗内时这些是唯一在线副本（原件已 rm、备份 zip 虽含但 rollback 自动选最新=绿灯重跑的无适配器备份救不回），还原失败则保留 preserve 供人工恢复（不静默销毁）。`platform-config.json` 不再进入 preserve，随升级包更新。
 - **③ 入口残留检测搁浅中止 + vendor 回迁**：SIGKILL/断电后 storage 滞留 preserve 而 `backend/storage` 缺失时，重跑入口 `_check_stranded_preserve` 检测到 `preserve/storage` 存在即 **exit 1 中止**（否则后续 mkdir 出空 storage 把真数据连同 databak 静默埋掉），打印手工恢复指引（mv 回 + rm 残留）。**vendor-only 残留（无 storage、preserve 留 vendor 唯一副本、`backend/vendor` 缺失）回迁而非当空壳 rm**：直接清会毁唯一副本 + 后续 composer 因新旧 hash 相等误跳过 → artisan fatal 砖机自循环；回迁到原位并置 `NEED_COMPOSER_FORCE=1` 令后续 composer 强制重装对齐新 lock。其余空壳残留（storage 已消费、仅剩 api_adapters 等副本）顺手清理 + `ls` 列内容留痕（防静默清走无迹可查）。
 - **④ 失败不自动 up + runbook**：`FREEZE_FIRED` / `UPGRADE_DONE` 双 flag——升级未完成且已冻结 → cleanup 打印 `_print_recovery_runbook`（unfreeze→up→`queue:restart` 三步，与 H2 顺序契约一致），**服务侧不自动 up**（与 watchdog「误 up 半迁移库比卡死更坏」同哲学）。仅打脚本 PID 的 kill 会让在途前台命令跑完 rc=0 → 强制提升非零，使「已冻结未完成」永不以 0 谎报成功。运维恢复步骤见 `skills/ops/deploy-ops.md`。
 - **⑤ 入口残留升级状态处置（watchdog 互杀第二道，第一道=锁归属校验见上）**：step5 down/freeze 前 `_handle_stale_upgrade_status`——status.json 为 running 且进程死（SIGKILL/OOM 残留）→ 归档 `.stale.<epoch>`，消除 watchdog 在本次升级危险窗内的触发源；running 且进程活 → **中止**（并发双升级必互毁；PID 复用误判时 `UPGRADE_IGNORE_RUNNING=1` 逃生）；缺文件/损坏/终态/php 探测失败 → 不动交后端防线。PID 探活镜像 `UpgradeStatusManager::isProcessAlive`（`/proc` → `posix_kill` 回落）。
-- **演练固化**：`deploy/test/test-upgrade-preserve-guard.sh`（19/19 双 bash 绿 + 反向注入自检；A7 vendor 回迁 / A8+A10 extras 还原 / A9 composer 判定 / B 组 `set -m` 真投递 SIGINT + 睡满哨兵）+ `deploy/test/test-upgrade-stale-status.sh`（A 组纯 shell 分支 + B 组真 php verdict，双环境绿）+ CI 挂载。
+- **演练固化**：`deploy/test/test-upgrade-preserve-guard.sh`（22/22 双 bash 绿 + 反向注入自检；A7 vendor 回迁 / A8+A10 extras 还原 / A9 composer 判定 / B 组 `set -m` 真投递 SIGINT + 睡满哨兵 / C 组锁定 platform-config 不再 preserve 且升级包必须携带、admin logo 不再保护）+ `deploy/test/test-upgrade-stale-status.sh`（A 组纯 shell 分支 + B 组真 php verdict，双环境绿）+ CI 挂载。
 
 #### 定时备份互斥 + 失败告警（`schedule:backup`）
 
@@ -83,12 +83,12 @@
 - **upgrade.sh 入口（升级时）**：
   - 解压后、切代码前调 `check_php_environment "$src_dir"`：读 release zip 内 `$src_dir/php-requirements.json`
   - PHP 版本错 → 手工指引 exit；仅扩展/函数错 → 询问是否走 BT API 自动修复
-  - BT API 自动修复：`bt_resolve_key`（仅自动读 `api.json`，不当场 read 收 key）→ 调 `bt-deps.sh::auto_install_ext`（三路径 fallback：BT API → legacy script → ini 直写）装扩展 → 调 `bt-deps.sh::enable_functions` 直接 sed `php.ini` + `php-cli.ini` 移除禁用函数（绕过 BT API GetPHPConfig，因其在 CLI ini 单独配置时返回不准）→ 直接重新校验（升级流程全程 CLI 启新进程读 ini，不依赖 FPM 状态，故不再 sleep / reload FPM；FPM reload 推迟到升级末尾步骤 15b 统一处理）
+  - BT API 自动修复：`bt_resolve_key`（仅自动读 `api.json`，不当场 read 收 key）→ 调 `bt-deps.sh::auto_install_ext`（三路径 fallback：BT API → legacy script → ini 直写）装扩展 → 调 `bt-deps.sh::enable_functions` 直接 sed `php.ini` + `php-cli.ini` 移除禁用函数（绕过 BT API GetPHPConfig，因其在 CLI ini 单独配置时返回不准）→ 直接重新校验（升级流程全程 CLI 启新进程读 ini，不依赖 FPM 状态，故不再 sleep / reload FPM；FPM reload 推迟到升级末尾步骤 15a 统一处理）
   - 未探测到 BT key → 提示用户到面板"设置 → API 接口"启用并加 IP 白名单后重跑（与 install.sh `detect_bt_key` 一致，避免明文 key 进终端历史）
 - **后端 web 入口（管理后台触发）**：`UpgradeService::performUpgradeWithStatus()` 的 `check_environment` 步骤（extract 之后、apply 之前）。不通过抛 `PhpEnvironmentException`，catch 块把 `details` 写入 `status.json.error_details`，前端 ElDialog 弹窗展示
 - **cron/supervisor PHP 路径**：upgrade.sh 升级末尾调 `update_jobs_php_path`，扫 `bt_list_crontab_all` + `bt_list_supervisor_all` 中含 `/www/server/php/XX/bin/php`（或裸 `php` token）与当前 `$PHP_CMD` 不一致的项。对 install.sh 自管（cron 含 `$INSTALL_DIR/backend/artisan schedule:run`；supervisor 含 `artisan queue:work` 且 path=`$INSTALL_DIR/backend`）且类型内唯一的项，自动覆盖更新（cron 走"先删后加 + 失败用原 body 回滚"三段语义；supervisor 走 `bt_add_supervisor_process` 自带 Remove+Add，失败也回滚）。不满足"自管+唯一"的项保留列表 + 手工提示
-- **监控 cron 存量交付（P0-4 §1.5，`update_jobs_php_path` 扩展）**：给存量生产机补齐 M3 拨测 + M6 日志（upgrade.sh cron 管理段划入包M，与包U preserve 段落不重叠）。三件：① **双 marker 分组**——按 body 命中 `schedule:run` marker 归 schedule 组、命中 `monitor:probe` marker 归 probe 组，两组**各自组内唯一才修**（probe 存在不使 schedule 退手工，PHP 大版本升级后各自独立修正路径）；② **probe 缺失幂等 ensure**——本机确有 schedule:run 自管行（`schedule_marker_seen`，天然排除 `bt_list_crontab_all` 瞬时失败/空响应）且面板无 probe cron（按 body marker 判 `probe_cron_exists`、PHP 路径已对的行也算存在）→ 新增 `<目录名>-probe`（每 5min）。**ensure 前移至 `total_mismatch -eq 0` 早返之前**——否则干净存量机（cron 全对 + probe 缺失）永不获 probe；③ **schedule body one-shot 迁移**——`>> /dev/null` → `>> storage/logs/schedule.log`（`_fix_installer_cron` sed）。配套 `write_logrotate_conf` 写 `/etc/logrotate.d/ssl-manager`（weekly rotate 4，`/etc/logrotate.d` 不可写降级跳过）。**无宝塔 API key**（`update_jobs_php_path` 提前 return）时整段跳过，需手工核对两条 cron（见 deploy-ops.md）。upgrade.sh 与 bt-install.sh 的 `write_logrotate_conf` 对称（两脚本独立发布不能 source），改一处须同步
-- **升级末尾 PHP-FPM reload（步骤 15b）**：upgrade.sh 在权限检查前显式调 `bt_reload_php_fpm`，让 web 入口清 opcache 加载新代码。失败提示手工到面板 reload；非宝塔 PHP 路径跳过
+- **cron 日志策略**：`schedule:run` 只在 PHP 路径不一致时修复，保留原命令主体和日志策略；新安装不重定向输出，由宝塔面板保存任务日志。
+- **升级末尾 PHP-FPM reload（步骤 15a）**：upgrade.sh 在权限检查前显式调 `bt_reload_php_fpm`，让 web 入口清 opcache 加载新代码。失败提示手工到面板 reload；非宝塔 PHP 路径跳过
 - **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function` → `handleFatalShutdown`（静态、注入 `error_get_last()`，便于直测），捕获 `E_ERROR / E_PARSE` 等 fatal：双守卫（非 fatal / 非 running 早退）后 `unfreeze` → `artisan up` → `fail`（序契约见「freeze 接入」节；fail 放最后让 up 二次 fatal 时 status 留 running 交 watchdog 接管），避免卡 running 死锁 + freeze 滞留
 - **classmap 自愈**：upgrade.sh composer 块后**无条件**跑 `dump-autoload --optimize --no-scripts`，修复跨小版本升级时 vendor 路径变更（如 `Pdo\Mysql` polyfill / `ReflectsClosures` 跨目录）导致的 classmap 漂移
 - **composer 触发收口 `_need_composer_install`**：依赖变化判定统一走此函数，判据「`vendor/autoload.php` 缺失 ∨ `NEED_COMPOSER_FORCE=1`（入口回迁旧 vendor）∨ composer.json/lock hash 变化」任一即装。**vendor 缺失必装是砖机兜底**——中断丢 vendor 后重跑时 `backend/composer.json` 已是新版本、新旧 hash 相等会误跳过 composer → artisan fatal 自循环，runbook 的「重跑」指引失效；从新 lock 重建始终正确幂等，宁可多装一次
@@ -96,6 +96,12 @@
 ### 数据库结构校验
 
 升级后自动校验数据库结构与标准 `structure.json` 是否一致。
+
+#### 平台设置升级顺序
+
+- migration 只负责表结构（如扩展 `settings.type` 枚举）；设置项补齐、类型整理和旧 `platform-config.json` 导入统一由 `SettingSeeder` 幂等处理。
+- 两条自动升级路径均按 `migrate --force` → `db:seed --force` 执行；Seeder 失败必须中止升级，不得吞错。
+- `storage/app/legacy-platform-config` 只能在 Seeder 成功后删除；关闭 `auto_seed` 或 Seeder 失败时保留，供修复后重跑。
 
 **配置项** (`config/upgrade.php`):
 

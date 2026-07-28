@@ -58,7 +58,7 @@ test('检查充值状态-订单不存在返回成功', function () {
     $user = User::factory()->create();
 
     $response = $this->actingAsUser($user)
-        ->getJson('/api/top-up/check/99999')
+        ->postJson('/api/top-up/check/99999')
         ->assertOk()
         ->assertJson(['code' => 1]);
 
@@ -74,7 +74,7 @@ test('检查充值状态-已完成订单返回 successful', function () {
     ]);
 
     $response = $this->actingAsUser($user)
-        ->getJson("/api/top-up/check/$fund->id")
+        ->postJson("/api/top-up/check/$fund->id")
         ->assertOk()
         ->assertJson(['code' => 1]);
 
@@ -93,7 +93,7 @@ test('检查充值状态-无权访问他人订单返回 successful', function ()
     ]);
 
     $response = $this->actingAsUser($other)
-        ->getJson("/api/top-up/check/$fund->id")
+        ->postJson("/api/top-up/check/$fund->id")
         ->assertOk()
         ->assertJson(['code' => 1]);
 
@@ -344,7 +344,7 @@ test('检查充值状态-微信查单参数带 Wechatpay-Serial 公钥序列号'
     $captured = mockPayCapture();
 
     $this->actingAsUser($user)
-        ->getJson("/api/top-up/check/$fund->id")
+        ->postJson("/api/top-up/check/$fund->id")
         ->assertOk();
 
     expect($captured->query)->not->toBeNull();

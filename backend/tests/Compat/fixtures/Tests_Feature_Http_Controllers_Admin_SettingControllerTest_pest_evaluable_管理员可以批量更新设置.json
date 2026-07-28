@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "calls": [
         {
-            "method": "PUT",
+            "method": "PATCH",
             "uri_pattern": "/api/admin/setting/batch-update",
             "request_keys": [
                 "settings"

@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\ApiToken;
 use App\Models\DeployToken;
+use App\Support\ApiErrorCode;
 use App\Traits\ApiResponse;
 use App\Traits\ExtractsToken;
 use Closure;
@@ -150,7 +151,21 @@ class RateLimiter
         $estimated = $prevCount * $prevWeight + $currentCount;
 
         if ($estimated > $limit) {
-            $this->error($errorMessage);
+            // 机器可读标识：错误响应固定 HTTP 200 + code=0（全站统一契约，v1/v2/acme/deploy 共用
+            // 本出口），客户端只能靠 error_code 区分"确定性限流"与网络错误。
+            // 刻意不改 429：客户端把 429 认作可重试，指数退避 1s→2s→4s 全落在同一 60s 窗口内注定
+            // 全失败，且上面的 Cache::increment 在阈值判断之前，每次重试都继续推高计数器、把恢复
+            // 时间往后拖。返回 200 让客户端不重试，反而是对的。
+            //
+            // retry_after 取「跨过下一个整窗口」而非「当前窗口剩余」：本方法用滑动窗口加权判定，
+            // 只睡到下一窗口起点时 elapsed=0 → prevWeight=1 → 刚刚超限的那个计数全额计入，
+            // estimated 必然仍超限、必再被拒一次，而那次重试又会把计数器垫高、把恢复时间继续
+            // 往后推。多睡一个窗口后，prev 指向的是中间那个（客户端不再请求即为 0）窗口，
+            // estimated 归零，睡够即可重试的语义才成立。
+            $this->error($errorMessage, [
+                'error_code' => ApiErrorCode::RATE_LIMITED,
+                'retry_after' => $window * 2 - $elapsed,
+            ]);
         }
     }
 

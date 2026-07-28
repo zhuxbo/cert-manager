@@ -413,3 +413,26 @@ test('V2 get 非国密订单不返回 enc 字段(空值清理，与 private_key 
     expect($response['code'])->toBe(1);
     expect($response['data'])->not->toHaveKeys(['enc_cert', 'enc_key', 'enc_key2']);
 });
+
+test('V2 get 原样返回上游 Certum 审核 documents 供下游继续透传', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $documents = [
+        ['type' => 'organization', 'status' => 'required', 'name' => '营业执照'],
+        ['type' => 'authorization', 'status' => 'accepted', 'name' => '授权书'],
+    ];
+    $this->createTestCert($order, [
+        'status' => 'active',
+        'documents' => $documents,
+    ]);
+
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('sync')->andReturnNull();
+
+    $controller = makeController(['order_id' => (string) $order->id], 'GET', $action, $user->id);
+    $response = captureResponse(fn () => $controller->get());
+
+    expect($response['code'])->toBe(1)
+        ->and($response['data']['documents'])->toBe($documents);
+});

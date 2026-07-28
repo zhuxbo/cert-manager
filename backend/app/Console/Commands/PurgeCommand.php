@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Exceptions\ApiResponseException;
 use App\Models\AdminLog;
 use App\Models\ApiLog;
+use App\Models\AutoDeployReport;
 use App\Models\CallbackLog;
 use App\Models\CaLog;
 use App\Models\ErrorLog;
@@ -15,6 +16,7 @@ use App\Models\OrderDocument;
 use App\Models\Task;
 use App\Models\UserLog;
 use App\Services\Order\Action;
+use App\Services\Order\AutoDeployReportService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -126,11 +128,12 @@ class PurgeCommand extends Command
         // 清理 storage/temp-certs 下超过 1 小时的残留（下载中断/异常/exit 未清理的临时证书目录，含私钥）
         $this->purgeStaleTempCerts();
 
-        // 清理超保留期的终态运行时表行（对账痕迹 tasks / 交付记录 notifications）
+        // 清理超保留期的终态运行时表行（对账痕迹 tasks / 交付记录 notifications / 自动部署上报 auto_deploy_reports）
         // 包裹与上方 _logs 清理对称：清理是次要职责，抛错不得中止后续退款期取消主流程
         try {
             $this->purgeTerminalTasks();
             $this->purgeTerminalNotifications();
+            $this->purgeTerminalOrderReports();
         } catch (Throwable $e) {
             $this->warn('Terminal rows cleanup failed: '.$e->getMessage());
         }
@@ -293,6 +296,29 @@ class PurgeCommand extends Command
 
         $deleted = $this->deletePurgeInChunks($query, 'terminal notifications');
         $this->info("Purged $deleted terminal notifications");
+    }
+
+    /**
+     * 清理超保留期的终态订单自动部署上报记录（auto_deploy_reports）。
+     *
+     * 报告随订单生命周期管理：仅清「订单已终态」（latestCert 落
+     * ORDER_TERMINAL_CERT_STATUSES = cancelled/revoked/renewed/reissued/expired/failed）且超保留期的历史行；
+     * 仍 active（部署中）/ 在途（unpaid/pending/processing/approving/cancelling）的订单显式排除，保住审计视图。
+     * 孤儿行（order 已不存在）照常按保留期清理。用户删除沿 UserDataTableRegistry 走订单链、不在此路径。
+     */
+    private function purgeTerminalOrderReports(): void
+    {
+        $cutoff = now()->subDays((int) config('purge.retention.auto_deploy_reports', 90));
+        $terminal = AutoDeployReportService::ORDER_TERMINAL_CERT_STATUSES;
+
+        $query = fn () => AutoDeployReport::where('created_at', '<', $cutoff)
+            ->where(function ($q) use ($terminal) {
+                $q->whereDoesntHave('order')
+                    ->orWhereHas('order', fn ($o) => $o->whereHas('latestCert', fn ($c) => $c->whereIn('status', $terminal)));
+            });
+
+        $deleted = $this->deletePurgeInChunks($query, 'terminal order reports');
+        $this->info("Purged $deleted terminal order reports");
     }
 
     /**

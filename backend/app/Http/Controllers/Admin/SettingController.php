@@ -2,12 +2,18 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Http\Requests\Setting\ClearPayCacheRequest;
 use App\Http\Requests\Setting\GetIdsRequest;
 use App\Http\Requests\Setting\StoreRequest;
 use App\Http\Requests\Setting\UpdateRequest;
+use App\Http\Requests\Setting\UploadSiteImageRequest;
 use App\Models\Setting;
 use App\Models\SettingGroup;
+use App\Services\Payment\PayConfigCache;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class SettingController extends BaseController
 {
@@ -179,15 +185,162 @@ class SettingController extends BaseController
     }
 
     /**
+     * 清除支付配置缓存并删除已落盘的支付证书（下次调用支付时按当前设置重新落盘）。
+     *
+     * 不传 type 清全部支付类型；支付设置组保存后由 Setting::clearGroupCache 自动清理，
+     * 本端点用于设置未变但磁盘证书需强制重建的场景。
+     */
+    public function clearPayCache(ClearPayCacheRequest $request): void
+    {
+        $type = $request->validated('type');
+        if (is_string($type) && $type !== '') {
+            PayConfigCache::forget($type);
+        } else {
+            PayConfigCache::forgetAll();
+        }
+        $this->success();
+    }
+
+    /**
      * 清除系统全部缓存
      */
     public function clearAllCache(): void
     {
         try {
             Artisan::call('cache:clear-all', ['--quick' => true, '--without-composer' => true]);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             $this->error('缓存清除失败');
         }
         $this->success();
+    }
+
+    /**
+     * 上传站点 Favicon、Logo、展开版 Logo、客服二维码或用户端登录配图。
+     */
+    public function uploadSiteImage(UploadSiteImageRequest $request, string $kind): void
+    {
+        $settingKey = match ($kind) {
+            'logo-expanded' => 'logoExpanded',
+            'login-image' => 'loginImage',
+            default => $kind,
+        };
+        $isLogo = in_array($kind, ['logo', 'logo-expanded'], true);
+
+        /** @var UploadedFile $file */
+        $file = $request->file('file');
+        $extension = match ($file->getMimeType()) {
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/svg+xml' => $isLogo ? 'svg' : null,
+            default => null,
+        };
+        if ($kind === 'favicon') {
+            $extension = 'ico';
+        }
+        if ($extension === null) {
+            $this->error('不支持的图片格式');
+        }
+
+        $contents = file_get_contents($file->getRealPath());
+        if ($contents === false) {
+            $this->error('读取上传图片失败');
+        }
+
+        $path = 'site/'.$kind.'-'.hash('sha256', $contents).'.'.$extension;
+        $group = SettingGroup::where('name', 'site')->first();
+        if (! $group) {
+            $this->error('站点设置不存在');
+        }
+
+        $setting = Setting::where('group_id', $group->id)
+            ->where('key', $settingKey)
+            ->where('type', 'image')
+            ->first();
+        if (! $setting) {
+            $this->error('站点图片设置不存在');
+        }
+
+        $oldUrl = is_string($setting->value) ? $setting->value : '';
+        $oldPath = $this->managedSiteImagePath($oldUrl, $kind);
+        $url = '/api/meta/site-image/'.basename($path);
+        if (! Storage::disk('public')->put($path, $contents)) {
+            $this->error('保存图片失败');
+        }
+
+        try {
+            $setting->value = $url;
+            $setting->save();
+        } catch (Throwable) {
+            if ($oldPath !== $path) {
+                Storage::disk('public')->delete($path);
+            }
+            $this->error('保存站点图片设置失败');
+        }
+
+        if ($oldPath !== null && $oldPath !== $path) {
+            Storage::disk('public')->delete($oldPath);
+        }
+
+        $this->success(['url' => $url]);
+    }
+
+    /**
+     * 清除站点图片设置并删除托管文件（恢复默认回落资源）。
+     */
+    public function deleteSiteImage(string $kind): void
+    {
+        $settingKey = match ($kind) {
+            'logo-expanded' => 'logoExpanded',
+            'login-image' => 'loginImage',
+            default => $kind,
+        };
+
+        $group = SettingGroup::where('name', 'site')->first();
+        if (! $group) {
+            $this->error('站点设置不存在');
+        }
+
+        $setting = Setting::where('group_id', $group->id)
+            ->where('key', $settingKey)
+            ->where('type', 'image')
+            ->first();
+        if (! $setting) {
+            $this->error('站点图片设置不存在');
+        }
+
+        $oldUrl = is_string($setting->value) ? $setting->value : '';
+        $oldPath = $this->managedSiteImagePath($oldUrl, $kind);
+
+        $setting->value = '';
+        $setting->save();
+
+        // 仅删除本系统托管的文件；外部 URL 只清配置不动文件
+        if ($oldPath !== null) {
+            Storage::disk('public')->delete($oldPath);
+        }
+
+        $this->success();
+    }
+
+    private function managedSiteImagePath(string $url, string $kind): ?string
+    {
+        $prefix = "/api/meta/site-image/$kind-";
+        if (! str_starts_with($url, $prefix)) {
+            return null;
+        }
+
+        $path = 'site/'.substr($url, strlen('/api/meta/site-image/'));
+
+        $kindPattern = preg_quote($kind, '/');
+        $extensions = match ($kind) {
+            'favicon' => 'ico',
+            'qrcode', 'login-image' => 'jpg|png|webp',
+            default => 'jpg|png|webp|svg',
+        };
+
+        return preg_match("/^site\/$kindPattern-[a-f0-9]{64}\.($extensions)$/", $path) === 1
+            ? $path
+            : null;
     }
 }

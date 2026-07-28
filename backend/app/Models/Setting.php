@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Bootstrap\ApiExceptions;
+use App\Services\Payment\PayConfigCache;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Cache;
@@ -123,8 +124,8 @@ class Setting extends BaseModel
         try {
             return Cache::remember($cacheKey, self::CACHE_TTL, $loader);
         } catch (Throwable) {
-            // Cache 后端故障（如 redis 宕机）→ 直读 DB。settings 是告警最后防线（HealthProbeCommand
-            // 读 site.adminEmail / mail 配置发信）与 health 阈值的依赖，绝不能因 cache 死而整链哑火。
+            // Cache 后端故障（如 redis 宕机）→ 直读 DB。settings 是告警配置与 health 阈值的依赖，
+            // 绝不能因 cache 死而整链哑火。
             return $loader();
         }
     }
@@ -286,12 +287,11 @@ class Setting extends BaseModel
             Cache::forget(self::CACHE_PREFIX.'group_name:'.$group->name);
 
             // 支付配置（wechat/alipay）另有独立缓存 pay_config_{group}（PaymentConfigTrait，365 天，
-            // 含已注册的微信公钥 / 支付宝证书路径）。保存支付设置时必须同步清掉，否则缓存与 live 设置
-            // 不一致：wechat 公钥轮换后 getPayConfig 命中旧缓存只注册旧公钥，而 wechatSerial 实时读
-            // live 发新 serial 头，微信遂以新公钥签回调、本地却验不了 → 回调验签失败、入账中断。
-            if (in_array($group->name, ['wechat', 'alipay'], true)) {
-                Cache::forget('pay_config_'.$group->name);
-            }
+            // 含已注册的微信公钥 / 支付宝证书路径）与 storage/pay 下的落盘证书。保存支付设置时两处副本
+            // 必须同步失效，否则与 live 设置不一致：wechat 公钥轮换后 getPayConfig 命中旧缓存只注册旧
+            // 公钥，而 wechatSerial 实时读 live 发新 serial 头，微信遂以新公钥签回调、本地却验不了 →
+            // 回调验签失败、入账中断；证书文件同理，getPayConfig 只在文件缺失时才按新设置重写。
+            PayConfigCache::forget($group->name);
         }
     }
 

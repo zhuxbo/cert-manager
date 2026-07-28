@@ -4,7 +4,7 @@
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/admin/product-price/initialization",
+            "uri_pattern": "/api/admin/product-price/initialize",
             "request_keys": null,
             "response_status": "4xx",
             "response_schema": {

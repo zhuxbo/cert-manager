@@ -99,6 +99,8 @@
 仅靠注释"修改时同步" 是 **不够** 的（commit 9dd8ce1d 第 5 轮发现两份算法已经漂移但注释仍声称对称）。
 新增对称副本 PR 必须在 finish-check 总结的"已知局限性"段列出"对端校验机制"。
 
+**仓内已落地实例**：`ApiErrorCode` 常量 ↔ `deploy.yaml` enum ↔ `skills/backend/deploy-renewal.md` 清单三份副本，由 `finish-check-greps.sh` 的 Z15 做双向集合等价的硬零断言（走上述第 1 条）。教训：这三份此前以"跨仓章节号无法校验"为由只挂注释约束，直到客户端 spec 移出同步面才发现障碍早已消失——**"无法机器校验"的理由要随结构变化重新审视**，否则一个本可一行 grep 覆盖的漂移面会长期裸奔。
+
 ---
 
 ## 反模式 5: 新方法必有边界测试
@@ -137,6 +139,10 @@
 
 **真实案例**:`log_warn "dump-autoload 失败(不阻断升级,可手动重试)"` — 注释明说"不阻断",实际 `set -e` + 函数不存在 → 升级中断;但 commit 时 lint 不报错。
 **修复**:统一 `log_warning`,并把这条加入 reviewer 必扫项。
+
+**第二例(`set -u` + UTF-8 locale 下变量名吞掉全角首字节 — 门禁自身静默假绿)**:bash 3.2(macOS 系统自带 `/bin/bash`;`#!/usr/bin/env bash` 在没装 homebrew bash 的开发机上解析到的正是它)在 UTF-8 locale 下会把紧跟变量名的全角字符首字节并进标识符 —— `echo "enum 缺少 $code（已定义）"` 被解析成变量 `code\xef`,`set -u` 直接 `unbound variable`,无 `set -u` 时静默丢值(消息里变量位置变乱码)。`finish-check-greps.sh` 的 Z15 四条差异报错全是这个形态,而报错又被 `run_check` 里 `raw="$("$fn" || true)"` 的 `|| true` 吞掉 → **整项静默 PASS**:实测修复前在 macOS UTF-8 终端下 8 个漂移形变有 7 个被放过(裸 const / 同行属性 / 清单漏码多码 / yaml 漏码多码),而容器与 CI(C locale + bash 5.2)全绿,门禁看起来一直在工作。bash ≥4.2 与 C locale 均不复现,所以只在开发机终端暴露 —— 与第一例同源:shell 层把"检查失效"伪装成"检查通过"。
+**修复**:变量后紧跟中文 / 全角标点一律加大括号 —— **shell 写 `${var}`、PHP 写 `{$var}`**(PHP 8.2 起 `"${var}"` 已 deprecated,别把 shell 写法搬过去);shell 侧全仓 22 处一并收敛(Z15 引入见 `cbcc6f07`),并加 Z16 硬零断言防复发。
+**检查动作**:`finish-check-greps.sh` Z16 扫「已跟踪 + 未跟踪未忽略的全部 `*.sh`,并上首行是 shell shebang 的非 `.sh` 脚本(`frontend/*/.husky/*` 即此类)」,未转义 `$VAR` 紧跟非 ASCII 字节即 FAIL(`${VAR}` / `\$VAR` / 注释行不算;Makefile 配方与 workflow `run:` 块不是独立文件,不在扫描面内);同时 `run_check` 捕检查函数的退出码与 stderr,**退出码非零或 stderr 非空**即判门禁故障 —— 「检查没跑完」不再和「检查零命中」同形(本次 Z15 静默假绿的放大器正是原先的 `raw="$("$fn" || true)"`);代价对称:检查函数必须自己消化预期内的非零(零命中的 `git grep` 一律补 `|| true`,`pipefail` 下管道末尾同理),否则"零命中"会被误报成"没跑完"。**PHP 侧同源**(`"$var，"` 把全角首字节并进变量名致整个值消失)无硬零断言,由 finish-check §2.7 的复选框人工守;本轮已清仓全仓仅存的 2 处(`PluginManagerTest.php` / `VendorCoexistenceTest.php` 的诊断串)。第一例的函数名笔误无机器判据(`bash -n` 与 shfmt 都不查函数是否存在),仍靠 reviewer 逐处核对 `log_warn` 类同义词。
 
 ---
 
@@ -276,7 +282,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **解压走 ArchiveGuard**:zip-slip / 符号链接统一防护,备份恢复与插件 / 升级包解压共用。
 
 **真实案例**:`39cd024`(升级包 sha256 fail-closed + 强制 HTTPS,但 169.254 半修)/ `dc97990`(插件 sha256 + SSRF 双重收敛 + ArchiveGuard)/ `76a2f58`(补 link-local 拒绝 + 重定向限 https)。
-**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单——**两种语义勿混用**:下载"明文 http 仅放行私网"场景用 `isPrivateOrLoopbackIp`(PluginManager/ReleaseClient);出站回调"私网必须拒绝"场景用 `IpUtil::isPrivateOrReserved`(ActionCallbackTrait,拒私网+loopback+link-local+CGNAT+多播+benchmark 等全部保留段,直接复用 isPrivateOrLoopbackIp 会放行 169.254 云元数据));grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugins/plugin-dev.md` `## 安全机制` + `skills/backend/auth.md` `### 归档解压统一防护`。
+**检查动作**:`grep -rn "FILTER_FLAG_NO_RES_RANGE" backend/app`(用了即黑名单制,改白名单——**两种语义勿混用**:下载"明文 http 仅放行私网"场景用 `isPrivateOrLoopbackIp`(PluginManager/ReleaseClient);出站回调"私网必须拒绝"场景用 `IpUtil::isPrivateOrReserved`(ActionCallbackTrait,拒私网+loopback+link-local+CGNAT+多播+benchmark 等全部保留段,直接复用 isPrivateOrLoopbackIp 会放行 169.254 云元数据));grep 下载点是否有 `--proto-redir` / `allow_redirects.protocols`;sha256 缺失是抛异常还是跳过;下载入口(非仅配置入口)是否再校验 URL。细节见 `skills/plugins/lifecycle.md` `## 安全机制` + `skills/backend/auth.md` `### 归档解压统一防护`。
 
 ---
 
@@ -289,7 +295,7 @@ awk '/TaskJob::dispatch/ && $0 !~ /^[[:space:]]*(\/\/|\*|#)/ { stmt=$0; line=FNR
 - **部署脚本外部值**:走 env + `getenv` 不插值进 PHP / shell 字符串(防注入);`curl -k` 仅限 loopback;composer 等下载校验 SHA384。
 
 **真实案例**:`0d91294`(user_created 密码走 transient)/ `3f716ec`(security 专用 Builder 白名单 + 不回落 Default)/ `dc97990`(CORS 白名单 + nosniff attachment + 部署脚本 URL env 传参 + composer SHA384)/ `d8f75e63`(NotificationJob ShouldBeEncrypted + 多通道附件清理)/ `b6017ff5`(PDF inline 白名单 + CSP sandbox,修"收紧打断 iframe 预览"回归)。
-**检查动作**:grep 新增通知 code 是否注册专用 Builder(携密 / 安全字段绝不回落 Default);diff 涉及 `backend/app/Jobs/` 时跑 `git grep -L 'ShouldBeEncrypted' backend/app/Jobs/*.php` 列出未加密 Job,逐个核对**构造参数**是否携密(handle() 内运行时读 config 的凭据不进 payload,不算携密);`grep -rn "Access-Control-Allow-Origin.*\*" backend`;`git grep -n "'inline'" backend/app | grep -vE 'isImage|isPdf'` 应 0 命中(新增 inline 出口必过白名单);部署脚本 `php -r "...$VAR..."` 插值。细节见 `CLAUDE.md` 通知体系章节。
+**检查动作**:grep 新增通知 code 是否注册专用 Builder(携密 / 安全字段绝不回落 Default);diff 涉及 `backend/app/Jobs/` 时跑 `git grep -L 'ShouldBeEncrypted' backend/app/Jobs/*.php` 列出未加密 Job,逐个核对**构造参数**是否携密(handle() 内运行时读 config 的凭据不进 payload,不算携密);`grep -rn "Access-Control-Allow-Origin.*\*" backend`;`git grep -n "'inline'" backend/app | grep -vE 'isImage|isPdf'` 应 0 命中(新增 inline 出口必过白名单);部署脚本 `php -r "...$VAR..."` 插值。细节见 `skills/backend/notification.md`。
 
 ---
 
@@ -329,7 +335,7 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - **副作用未在卸载时清理**:`setInterval` / `addEventListener` / `mitt.on` 未在 `onBeforeUnmount` 清理 → 路由切换后泄漏继续跑;事件监听显式声明 `passive` 意图。
 
 **真实案例**:`30d122a5`(Order 详情聚合页轮询上提父级,消除多卡片并发风暴)/ `43acaa88`(同一问题在 ACME 页二次出现 = 同类扩散,后抽 shared composable `59e70a25`)/ `e1e27952`(lay-tag wheel 监听显式 passive:false)/ `095e08fe`(Dashboard 折线图首帧空数据)。
-**检查动作**:新增轮询/定时器时先 grep `frontend/shared/composables` 是否已有可复用 composable(反模式 6 同理);`grep -rn "setInterval\|addEventListener\|mitt.on" <改动组件>` 逐处核对 onBeforeUnmount 清理。细节见 `skills/frontend/frontend-dev.md` 轮询与视口懒加载章节。
+**检查动作**:新增轮询/定时器时先 grep `frontend/shared/composables` 是否已有可复用 composable(反模式 6 同理);`grep -rn "setInterval\|addEventListener\|mitt.on" <改动组件>` 逐处核对 onBeforeUnmount 清理。细节见 `skills/frontend/ui.md` 轮询与视口懒加载章节。
 
 ---
 

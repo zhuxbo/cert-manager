@@ -3,7 +3,7 @@
 return [
     /*
     |--------------------------------------------------------------------------
-    | 健康监控命令（包E：E1~E6）
+    | 健康监控命令
     |--------------------------------------------------------------------------
     |
     | 每条监控命令均可经 enabled 独立开关；告警统一走 SystemAlert（code=system_alert）
@@ -56,13 +56,6 @@ return [
         'alert_threshold' => (int) env('MONITORING_FAILED_JOBS_ALERT_THRESHOLD', 50),
         'prune_retention_hours' => (int) env('MONITORING_FAILED_JOBS_PRUNE_RETENTION_HOURS', 336),
         'dedupe_ttl_hours' => (int) env('MONITORING_FAILED_JOBS_TTL_HOURS', 72),
-    ],
-
-    // M3 外部健康拨测（monitor:probe，独立 BT cron 5min，脱离 Laravel 队列）
-    // url 可覆盖：若站点强制 301→https 且回环 hairpin 不通，配为 https://127.0.0.1/api/health（verify=false 已豁免证书）
-    'probe' => [
-        'url' => env('MONITORING_PROBE_URL', 'http://127.0.0.1/api/health'),
-        'dedupe_ttl_hours' => (int) env('MONITORING_PROBE_DEDUPE_TTL_HOURS', 1),
     ],
 
     // E6 卡单聚合告警（schedule:stuck-orders，周期 1d，周提醒）

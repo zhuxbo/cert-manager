@@ -20,12 +20,18 @@
                     },
                     "orders": {
                         "total_orders": "integer",
+                        "order_count": "integer",
                         "active_orders": "integer",
+                        "processing_orders": "integer",
                         "expiring_7_days": "integer",
                         "expiring_30_days": "integer",
                         "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "status_distribution": "array<unknown>",
+                        "brand_distribution": "array<unknown>",
                         "monthly_orders": "integer",
+                        "monthly_cancelled_orders": "integer",
+                        "monthly_net_orders": "integer",
                         "monthly_consumption": "integer"
                     }
                 }

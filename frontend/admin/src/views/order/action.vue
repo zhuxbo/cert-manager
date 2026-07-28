@@ -213,6 +213,15 @@
           </div>
         </el-form-item>
 
+        <el-alert
+          v-if="showCertumActivationNotice"
+          class="certum-activation-alert"
+          title="证书激活邮件将发送到联系人邮箱，请确保联系人邮箱正确。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+
         <!-- 联系人：SMIME individual 仅需联系人 -->
         <el-form-item
           v-if="smimeNeedContactOnly && props.actionType !== 'reissue'"
@@ -331,6 +340,7 @@ import {
   periodLabels,
   validationMethodLabels
 } from "@/views/system/dictionary";
+import { isCurrentProductResponse } from "@shared/utils/orderProductResponse";
 import type { FormInstance, FormRules } from "element-plus";
 import { useDialogSize } from "@/views/system/dialog";
 import { OrganizationEditor } from "@shared/components/OrganizationEditor";
@@ -459,6 +469,12 @@ const isSSL = computed(() => productType.value === "ssl");
 const isSMIME = computed(() => productType.value === "smime");
 const isCodeSign = computed(() => productType.value === "codesign");
 const isDocSign = computed(() => productType.value === "docsign");
+const showCertumActivationNotice = computed(
+  () =>
+    props.actionType === "apply" &&
+    (isCodeSign.value || isDocSign.value) &&
+    formData.product?.ca?.toString().toLowerCase() === "certum"
+);
 
 // SMIME 子类型检测（从产品 code 中提取）
 const smimeType = computed(() => {
@@ -688,10 +704,13 @@ const productSelected = (productId: any) => {
   if (!productId) return;
 
   productShow(productId).then(({ data }) => {
+    if (!isCurrentProductResponse(productId, formData.product_id)) return;
+
     // 更新产品相关信息
     formData.product = {
       ...formData.product,
       product_type: data.product_type || "ssl",
+      ca: data.ca,
       code: data.code, // 用于 SMIME 类型检测
       total_max: data.total_max,
       validation_type: data.validation_type,
@@ -1053,5 +1072,9 @@ watch(
   gap: 8px;
   align-items: center;
   width: 100%;
+}
+
+.certum-activation-alert {
+  margin-bottom: 18px;
 }
 </style>

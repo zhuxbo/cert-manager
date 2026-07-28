@@ -21,7 +21,7 @@ function slimmingInitializationPayload(UserLevel $level, array $overrides = []):
 function validateSlimmingInitializationPayload(array $payload): Illuminate\Validation\Validator
 {
     $request = InitializationRequest::create(
-        '/api/admin/product-price/initialization',
+        '/api/admin/product-price/initialize',
         'POST',
         $payload,
     );

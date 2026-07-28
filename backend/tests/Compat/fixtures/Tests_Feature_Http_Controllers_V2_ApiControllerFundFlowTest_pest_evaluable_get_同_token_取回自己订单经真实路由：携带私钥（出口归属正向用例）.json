@@ -21,6 +21,7 @@
                     "alternative_names": "string",
                     "dcv": "array<unknown>",
                     "validation": "array<unknown>",
+                    "documents": "array<unknown>",
                     "csr": "null",
                     "private_key": "string",
                     "cert": "null",

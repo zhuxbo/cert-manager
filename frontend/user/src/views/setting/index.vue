@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { usePassword } from "./password";
 import { PlusForm } from "plus-pro-components";
 import { useApi } from "./api";
@@ -10,6 +12,46 @@ import { useAutoPreference } from "./auto";
 import { getConfig } from "@/config";
 
 const showAutoDeploy = getConfig()?.AutoDeploy !== false;
+const route = useRoute();
+const router = useRouter();
+
+const settingTabs = [
+  "profile",
+  "password",
+  ...(showAutoDeploy ? ["deploy"] : []),
+  "api",
+  "callback",
+  "auto",
+  "notification"
+];
+
+const readQueryTab = () => {
+  const tab = Array.isArray(route.query.tab)
+    ? route.query.tab[0]
+    : route.query.tab;
+
+  return typeof tab === "string" && settingTabs.includes(tab) ? tab : "profile";
+};
+
+const activeTab = ref(readQueryTab());
+
+watch(
+  activeTab,
+  tab => {
+    if (route.query.tab !== tab) {
+      router.replace({ query: { ...route.query, tab } });
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => route.query.tab,
+  () => {
+    const tab = readQueryTab();
+    if (activeTab.value !== tab) activeTab.value = tab;
+  }
+);
 
 defineOptions({
   name: "Setting"
@@ -59,145 +101,168 @@ const { autoSettings, autoLoading, handleAutoToggle } = useAutoPreference();
 </script>
 
 <template>
-  <div class="flex flex-col gap-4">
-    <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
-      <PlusForm
-        v-model="profileValues"
-        :columns="profileColumns"
-        :rules="profileRules"
-        label-width="100"
-        label-position="right"
-        label-suffix=""
-        :has-footer="false"
-      />
-    </el-card>
-    <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
-      <PlusForm
-        v-model="passwordValues"
-        :columns="passwordColumns"
-        :rules="passwordRules"
-        label-width="100"
-        label-position="right"
-        label-suffix=""
-        footer-align="right"
-        submit-text="保存"
-        reset-text="重置"
-        :onSubmit="handlePasswordUpdate"
-        :onReset="resetPassword"
-      />
-    </el-card>
-    <el-card
-      v-if="showAutoDeploy"
-      shadow="never"
-      :style="{ border: 'none', paddingTop: '20px' }"
-    >
-      <PlusForm
-        v-model="deployValues"
-        :columns="deployColumns"
-        :rules="deployRules"
-        label-width="100"
-        label-position="right"
-        label-suffix=""
-        footer-align="right"
-        submit-text="保存"
-        reset-text="重置"
-        :onSubmit="handleDeployUpdate"
-        :onReset="resetDeployToken"
-      />
-    </el-card>
-    <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
-      <PlusForm
-        v-model="apiValues"
-        :columns="apiColumns"
-        :rules="apiRules"
-        label-width="100"
-        label-position="right"
-        label-suffix=""
-        footer-align="right"
-        submit-text="保存"
-        reset-text="重置"
-        :onSubmit="handleApiUpdate"
-        :onReset="resetApiToken"
-      />
-    </el-card>
-    <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
-      <PlusForm
-        v-model="callbackValues"
-        :columns="callbackColumns"
-        :rules="callbackRules"
-        label-width="100"
-        label-position="right"
-        label-suffix=""
-        footer-align="right"
-        submit-text="保存"
-        reset-text="重置"
-        :onSubmit="handleCallbackUpdate"
-        :onReset="resetCallback"
-      />
-    </el-card>
-    <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
-      <div class="notification-card__header">
-        <div>
-          <div class="notification-card__title">自动续签设置</div>
-          <div class="notification-card__desc">
-            设置订单的默认自动续费和重签行为
+  <div class="main">
+    <div class="setting-groups bg-bg_color rounded">
+      <el-tabs v-model="activeTab" tab-position="top" class="setting-tabs">
+        <el-tab-pane label="个人资料" name="profile">
+          <div class="setting-pane">
+            <PlusForm
+              v-model="profileValues"
+              :columns="profileColumns"
+              :rules="profileRules"
+              label-width="100"
+              label-position="right"
+              label-suffix=""
+              :has-footer="false"
+            />
           </div>
-        </div>
-      </div>
-      <div class="notification-channel__items">
-        <div class="notification-item">
-          <div class="notification-item__label">
-            <span>自动重签</span>
-            <small>证书到期时自动重签（订单周期内免费）</small>
+        </el-tab-pane>
+
+        <el-tab-pane label="修改密码" name="password">
+          <div class="setting-pane">
+            <PlusForm
+              v-model="passwordValues"
+              :columns="passwordColumns"
+              :rules="passwordRules"
+              label-width="100"
+              label-position="right"
+              label-suffix=""
+              footer-align="right"
+              submit-text="保存"
+              reset-text="重置"
+              :onSubmit="handlePasswordUpdate"
+              :onReset="resetPassword"
+            />
           </div>
-          <el-switch
-            v-model="autoSettings.auto_reissue"
-            :loading="autoLoading"
-            @change="handleAutoToggle('auto_reissue')"
-          />
-        </div>
-        <div class="notification-item">
-          <div class="notification-item__label">
-            <span>自动续费</span>
-            <small>订单到期时自动购买新订单（需扣费）</small>
+        </el-tab-pane>
+
+        <el-tab-pane v-if="showAutoDeploy" label="自动部署" name="deploy">
+          <div class="setting-pane">
+            <PlusForm
+              v-model="deployValues"
+              :columns="deployColumns"
+              :rules="deployRules"
+              label-width="100"
+              label-position="right"
+              label-suffix=""
+              footer-align="right"
+              submit-text="保存"
+              reset-text="重置"
+              :onSubmit="handleDeployUpdate"
+              :onReset="resetDeployToken"
+            />
           </div>
-          <el-switch
-            v-model="autoSettings.auto_renew"
-            :loading="autoLoading"
-            @change="handleAutoToggle('auto_renew')"
-          />
-        </div>
-      </div>
-    </el-card>
-    <el-card shadow="never" :style="{ border: 'none', paddingTop: '20px' }">
-      <div class="notification-card__header">
-        <div>
-          <div class="notification-card__title">邮件通知设置</div>
-          <div class="notification-card__desc">选择是否接收邮件通知提醒</div>
-        </div>
-      </div>
-      <el-empty
-        v-if="mailNotificationItems.length === 0"
-        description="暂无可配置的通知类型"
-      />
-      <div v-else class="notification-channel__items">
-        <div
-          v-for="item in mailNotificationItems"
-          :key="item.type"
-          class="notification-item"
-        >
-          <div class="notification-item__label">
-            <span>{{ item.label }}</span>
-            <small>{{ item.type }}</small>
+        </el-tab-pane>
+
+        <el-tab-pane label="API 设置" name="api">
+          <div class="setting-pane">
+            <PlusForm
+              v-model="apiValues"
+              :columns="apiColumns"
+              :rules="apiRules"
+              label-width="100"
+              label-position="right"
+              label-suffix=""
+              footer-align="right"
+              submit-text="保存"
+              reset-text="重置"
+              :onSubmit="handleApiUpdate"
+              :onReset="resetApiToken"
+            />
           </div>
-          <el-switch
-            :model-value="notificationValues[item.type]"
-            :loading="notificationLoading"
-            @change="val => handleToggle(item.type, val as boolean)"
-          />
-        </div>
-      </div>
-    </el-card>
+        </el-tab-pane>
+
+        <el-tab-pane label="回调设置" name="callback">
+          <div class="setting-pane">
+            <PlusForm
+              v-model="callbackValues"
+              :columns="callbackColumns"
+              :rules="callbackRules"
+              label-width="100"
+              label-position="right"
+              label-suffix=""
+              footer-align="right"
+              submit-text="保存"
+              reset-text="重置"
+              :onSubmit="handleCallbackUpdate"
+              :onReset="resetCallback"
+            />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="自动续签" name="auto">
+          <div class="setting-pane">
+            <div class="notification-card__header">
+              <div>
+                <div class="notification-card__title">自动续签设置</div>
+                <div class="notification-card__desc">
+                  设置订单的默认自动续费和重签行为
+                </div>
+              </div>
+            </div>
+            <div class="notification-channel__items">
+              <div class="notification-item">
+                <div class="notification-item__label">
+                  <span>自动重签</span>
+                  <small>证书到期时自动重签（订单周期内免费）</small>
+                </div>
+                <el-switch
+                  v-model="autoSettings.auto_reissue"
+                  :loading="autoLoading"
+                  @change="handleAutoToggle('auto_reissue')"
+                />
+              </div>
+              <div class="notification-item">
+                <div class="notification-item__label">
+                  <span>自动续费</span>
+                  <small>订单到期时自动购买新订单（需扣费）</small>
+                </div>
+                <el-switch
+                  v-model="autoSettings.auto_renew"
+                  :loading="autoLoading"
+                  @change="handleAutoToggle('auto_renew')"
+                />
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="邮件通知" name="notification">
+          <div class="setting-pane">
+            <div class="notification-card__header">
+              <div>
+                <div class="notification-card__title">邮件通知设置</div>
+                <div class="notification-card__desc">
+                  选择是否接收邮件通知提醒
+                </div>
+              </div>
+            </div>
+            <el-empty
+              v-if="mailNotificationItems.length === 0"
+              description="暂无可配置的通知类型"
+            />
+            <div v-else class="notification-channel__items">
+              <div
+                v-for="item in mailNotificationItems"
+                :key="item.type"
+                class="notification-item"
+              >
+                <div class="notification-item__label">
+                  <span>{{ item.label }}</span>
+                  <small>{{ item.type }}</small>
+                </div>
+                <el-switch
+                  :model-value="notificationValues[item.type]"
+                  :loading="notificationLoading"
+                  @change="val => handleToggle(item.type, val as boolean)"
+                />
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+
     <VerifyDialog
       :visible="verifyDialogVisible"
       :type="verifyType"
@@ -212,6 +277,14 @@ const { autoSettings, autoLoading, handleAutoToggle } = useAutoPreference();
 </template>
 
 <style scoped lang="scss">
+.setting-tabs {
+  padding: 8px 16px 16px;
+}
+
+.setting-pane {
+  padding-top: 20px;
+}
+
 ::v-deep(.el-input-group__append) .el-button--primary {
   color: #fff !important;
   background-color: var(--el-color-primary) !important;

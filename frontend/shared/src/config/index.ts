@@ -1,6 +1,7 @@
 import axios from "axios";
 import type { App } from "vue";
 import type { PlatformConfigs } from "./types";
+import { mergePlatformConfigSources } from "./merge";
 
 let config: PlatformConfigs = {};
 
@@ -27,7 +28,10 @@ const getConfig = (key?: string): any => {
 };
 
 /** 获取项目动态全局配置 */
-export const getPlatformConfig = async (app: App): Promise<PlatformConfigs> => {
+export const getPlatformConfig = async (
+  app: App,
+  backendConfig?: PlatformConfigs
+): Promise<PlatformConfigs> => {
   app.config.globalProperties.$config = getConfig();
   const publicPath = import.meta.env.VITE_PUBLIC_PATH || "/";
   return axios({
@@ -38,7 +42,10 @@ export const getPlatformConfig = async (app: App): Promise<PlatformConfigs> => {
       let $config = app.config.globalProperties.$config;
       // 自动注入系统配置
       if (app && $config && typeof configData === "object") {
-        $config = Object.assign($config, configData);
+        $config = Object.assign(
+          $config,
+          mergePlatformConfigSources(configData, backendConfig)
+        );
         app.config.globalProperties.$config = $config;
         // 设置全局配置
         setConfig($config);

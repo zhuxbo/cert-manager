@@ -5,6 +5,14 @@ use App\Services\LogBuffer;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
+beforeEach(function () {
+    LogBuffer::clear();
+});
+
+afterEach(function () {
+    LogBuffer::clear();
+});
+
 test('FlushLogs handle 方法透传请求', function () {
     $middleware = new FlushLogs;
     $request = Request::create('/test', 'GET');

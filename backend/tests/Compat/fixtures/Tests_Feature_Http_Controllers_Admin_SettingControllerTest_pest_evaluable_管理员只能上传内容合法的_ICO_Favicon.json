@@ -1,0 +1,27 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingControllerTest::__pest_evaluable_管理员只能上传内容合法的_ICO_Favicon",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/meta/site-image/{filename}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": null
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/setting/site-image/{kind}",
+            "request_keys": [
+                "file"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "url": "string"
+                }
+            }
+        }
+    ]
+}

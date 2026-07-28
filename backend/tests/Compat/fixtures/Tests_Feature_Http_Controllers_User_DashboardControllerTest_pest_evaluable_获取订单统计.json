@@ -11,14 +11,22 @@
                 "code": "integer",
                 "data": {
                     "total_orders": "integer",
+                    "order_count": "integer",
                     "active_orders": "integer",
+                    "processing_orders": "integer",
                     "expiring_7_days": "integer",
                     "expiring_30_days": "integer",
                     "cancelled_orders": "integer",
+                    "net_orders": "integer",
                     "status_distribution": {
                         "active": "integer"
                     },
+                    "brand_distribution": {
+                        "test brand": "integer"
+                    },
                     "monthly_orders": "integer",
+                    "monthly_cancelled_orders": "integer",
+                    "monthly_net_orders": "integer",
                     "monthly_consumption": "integer"
                 }
             }

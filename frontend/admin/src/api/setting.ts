@@ -58,7 +58,7 @@ export function batchUpdateSettings(settings: any[]): Promise<BaseResponse> {
         : String(setting.value)
   }));
 
-  return http.request<BaseResponse>("put", "/setting/batch-update", {
+  return http.request<BaseResponse>("patch", "/setting/batch-update", {
     data: { settings: settingsData }
   });
 }
@@ -120,4 +120,34 @@ export function clearCache(): Promise<BaseResponse> {
 // 清除系统全部缓存
 export function clearAllCache(): Promise<BaseResponse> {
   return http.request<BaseResponse>("post", "/setting/clear-all-cache");
+}
+
+// 清除支付配置缓存并删除已落盘的支付证书；不传 type 清全部支付类型
+export function clearPayCache(
+  type?: "alipay" | "wechat"
+): Promise<BaseResponse> {
+  return http.request<BaseResponse>("post", "/setting/clear-pay-cache", {
+    data: type ? { type } : {}
+  });
+}
+
+export function uploadSiteImage(
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode" | "login-image",
+  file: File
+): Promise<BaseResponse<{ url: string }>> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return http.request<BaseResponse<{ url: string }>>(
+    "post",
+    `/setting/site-image/${kind}`,
+    { data: formData }
+  );
+}
+
+// 清除站点图片并删除托管文件（恢复默认回落资源）
+export function deleteSiteImage(
+  kind: "favicon" | "logo" | "logo-expanded" | "qrcode" | "login-image"
+): Promise<BaseResponse> {
+  return http.request<BaseResponse>("delete", `/setting/site-image/${kind}`);
 }

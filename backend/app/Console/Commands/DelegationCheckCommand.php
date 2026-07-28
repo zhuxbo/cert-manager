@@ -4,10 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Cert;
 use App\Models\CnameDelegation;
-use App\Models\User;
 use App\Services\Delegation\CnameDelegationService;
-use App\Services\Notification\DTOs\NotificationIntent;
-use App\Services\Notification\NotificationCenter;
 use App\Services\Notification\SystemAlert;
 use Illuminate\Console\Command;
 use Throwable;
@@ -21,12 +18,12 @@ use Throwable;
  *  阶段①：逐条纯探测（不落库），跨 chunk 累积标量三态 outcome（valid|invalid|unreachable）
  *  与 last_checked_at 快照；
  *  阶段②轮末：先判全局熔断——不可达占比 ≥ RATIO 且样本 ≥ MIN_SAMPLE 判系统性停摆，本轮零落库/
- *  零删除/零通知 + SystemAlert 告警；未熔断才逐条 CAS 落库（applyProbeOutcomeIfUnchanged，
+ *  零删除 + SystemAlert 告警；未熔断才逐条 CAS 落库（applyProbeOutcomeIfUnchanged，
  *  条件 = 快照未变，防两阶段间隔内 ValidateCommand/手动检查写入的新鲜结论被陈旧探测覆盖）、
- *  按 post-apply fail_count gate 删除/通知，通知按 user 聚合（累积-后派发，每用户一封）。
+ *  按 post-apply fail_count gate 删除无用记录。
  *
  * 无效委托处理（未熔断轮）：
- * - 有 active 证书（active/unpaid/pending/processing/approving）：保留，fail_count≥阈值时发用户通知；
+ * - 有 active 证书（active/unpaid/pending/processing/approving）：保留，用户通知由自动续签发起前的委托检查负责；
  * - 无 active 证书：fail_count≥阈值才删除（未达阈值保留、等下轮确认，抖动 gate 防单次误删）。
  */
 class DelegationCheckCommand extends Command
@@ -45,8 +42,8 @@ class DelegationCheckCommand extends Command
      */
     protected $description = 'Check CNAME delegation health and cleanup unused invalid delegations';
 
-    /** 抖动 gate 阈值：连续失败 ≥ 此值才发通知/才删除（删除/通知/console 预警共用）。 */
-    private const NOTIFY_FAIL_THRESHOLD = 2;
+    /** 抖动 gate 阈值：连续失败 ≥ 此值才删除（删除/console 预警共用）。 */
+    private const CLEANUP_FAIL_THRESHOLD = 2;
 
     /** 全局熔断：不可达占比 ≥ 此值判系统性停摆（含恰等于）。 */
     private const CIRCUIT_BREAKER_RATIO = 0.5;
@@ -138,19 +135,18 @@ class DelegationCheckCommand extends Command
         // 未熔断（健康轮）→ 清熔断去重键（恢复后再停摆立即告警）
         app(SystemAlert::class)->clearDedupe(self::PATROL_OUTAGE_KEY);
 
-        // ── 阶段②：CAS 落库 + post-apply gate + 通知候选累积（累积-后派发）───────────────
+        // ── 阶段②：CAS 落库 + post-apply 清理 gate ──────────────────────────
         $validCount = 0;
         $invalidKeepCount = 0;
         $deletedCount = 0;
         $staleSkipCount = 0;
-        $notifyCandidates = []; // user_id => [{delegation_id, zone}]
 
         foreach (array_chunk($outcomes, 200) as $batch) {
             foreach ($batch as $o) {
-                // TOCTOU CAS 落库（dry-run 也照写，与历史一致；仅删除/通知受 dry-run 拦截）：
+                // TOCTOU CAS 落库（dry-run 也照写，与历史一致；仅删除受 dry-run 拦截）：
                 // 条件 = 阶段①快照 last_checked_at 未变。探测期间已有更新鲜结论落库
                 // （ValidateCommand 每分钟/双端手动检查/AutoRenew）或行已删 → affected=0，
-                // 本条陈旧结论作废、跳过全部 gate（不删/不通知/不计数）。
+                // 本条陈旧结论作废、跳过全部 gate（不删/不计数）。
                 $applied = $this->delegationService->applyProbeOutcomeIfUnchanged(
                     $o['id'], $o['outcome'], $o['last_checked_at']
                 );
@@ -170,7 +166,7 @@ class DelegationCheckCommand extends Command
                 }
 
                 if ($o['outcome'] === 'unreachable') {
-                    // 冻结个体：本轮不删不通知（结果不可信，等下轮或熔断层）
+                    // 冻结个体：本轮不删（结果不可信，等下轮或熔断层）
                     $this->warn("… 委托 #{$o['id']} ({$o['zone']}) - 本轮探测不可达，冻结计数");
 
                     continue;
@@ -186,12 +182,11 @@ class DelegationCheckCommand extends Command
                     $invalidKeepCount++;
                     $this->warn("✗ 委托 #{$o['id']} ({$o['zone']}) - 无效但有 active 证书，保留");
 
-                    // post-apply fail_count 达阈：console 预警 + 通知候选
-                    if ($postFailCount >= self::NOTIFY_FAIL_THRESHOLD) {
+                    // post-apply fail_count 达阈：仅 console 预警。用户通知收敛到自动续签发起前。
+                    if ($postFailCount >= self::CLEANUP_FAIL_THRESHOLD) {
                         $this->error("  ⚠ 连续失败 $postFailCount 次，请检查 CNAME 配置");
-                        $notifyCandidates[$o['user_id']][] = ['delegation_id' => $o['id'], 'zone' => $o['zone']];
                     }
-                } elseif ($postFailCount >= self::NOTIFY_FAIL_THRESHOLD) {
+                } elseif ($postFailCount >= self::CLEANUP_FAIL_THRESHOLD) {
                     // 无 active 证书且达抖动阈值：删除委托记录（已无用）
                     if ($dryRun) {
                         $deletedCount++;
@@ -208,11 +203,6 @@ class DelegationCheckCommand extends Command
                     $this->warn("✗ 委托 #{$o['id']} ({$o['zone']}) - 无效但未达失败阈值（{$postFailCount}），暂留待下轮确认");
                 }
             }
-        }
-
-        // ── 通知派发（per-user 聚合，每用户一封；dry-run 跳过）───────────────────────
-        if (! $dryRun) {
-            $this->dispatchInvalidNotifications($notifyCandidates);
         }
 
         $this->printSummary($totalCount, $validCount, $invalidKeepCount, $deletedCount, $errorCount, $unreachableCount, $staleSkipCount);
@@ -251,44 +241,6 @@ class DelegationCheckCommand extends Command
             self::PATROL_OUTAGE_TTL_HOURS,
             self::PATROL_OUTAGE_FINGERPRINT,
         );
-    }
-
-    /**
-     * 按 user 聚合派发委托失效通知（每用户一封，context 显式传 delegation_ids）。
-     * 单用户失败不中断整批（镜像 BalanceForecastCommand）。
-     *
-     * @param  array<int, array<int, array{delegation_id: int, zone: string}>>  $notifyCandidates
-     */
-    private function dispatchInvalidNotifications(array $notifyCandidates): void
-    {
-        if (empty($notifyCandidates)) {
-            return;
-        }
-
-        $notificationCenter = app(NotificationCenter::class);
-
-        foreach ($notifyCandidates as $userId => $items) {
-            $user = User::find($userId);
-            if (! $user || ! $user->email) {
-                continue;
-            }
-
-            try {
-                $notificationCenter->dispatch(new NotificationIntent(
-                    'delegation_invalid',
-                    'user',
-                    $userId,
-                    [
-                        // Builder 数据来源只能是该 ids 列表（禁 Builder 自行全表扫失效委托）
-                        'delegation_ids' => array_column($items, 'delegation_id'),
-                        'email' => $user->email,
-                    ]
-                ));
-                $this->info("用户 #$userId 委托失效通知：".count($items).' 条');
-            } catch (Throwable $e) {
-                $this->error("用户 #$userId 委托失效通知失败: {$e->getMessage()}");
-            }
-        }
     }
 
     /**

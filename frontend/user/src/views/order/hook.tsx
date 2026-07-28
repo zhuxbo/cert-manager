@@ -95,6 +95,11 @@ export function useOrder(tableRef) {
     onSearch();
   }
 
+  function setSort(prop?: string, order?: string) {
+    sortProp.value = prop;
+    sortOrder.value = order;
+  }
+
   const onCollapse = () => {
     setTimeout(() => {
       window.dispatchEvent(new Event("resize"));
@@ -109,6 +114,7 @@ export function useOrder(tableRef) {
     handleSizeChange,
     handleCurrentChange,
     handleSortChange,
+    setSort,
     onSearch,
     onReset,
     onCollapse

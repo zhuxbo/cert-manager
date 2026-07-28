@@ -52,8 +52,8 @@ SSL证书管理系统 - 打包脚本
 
 选项:
   --version VER     指定版本号（优先级最高）
-  --source DIR      指定生产代码目录（默认: $PRODUCTION_DIR）
-  --output DIR      指定输出目录（默认: $OUTPUT_DIR）
+  --source DIR      指定生产代码目录（默认: ${PRODUCTION_DIR}）
+  --output DIR      指定输出目录（默认: ${OUTPUT_DIR}）
   --channel NAME    指定发布通道 main|dev（自动根据版本号判断）
   -h, --help        显示此帮助信息
 
@@ -364,7 +364,7 @@ EOF
 # 故必须保证打进包（同 deploy/scripts 关键脚本校验）
 PHP_REQ_FILE="$PROJECT_ROOT/build/php-requirements.json"
 if [ ! -f "$PHP_REQ_FILE" ]; then
-    log_error "缺少 PHP 环境需求清单: $PHP_REQ_FILE（升级流程 EnvironmentChecker / upgrade.sh 必读，缺失会静默跳过 PHP 环境检测）"
+    log_error "缺少 PHP 环境需求清单: ${PHP_REQ_FILE}（升级流程 EnvironmentChecker / upgrade.sh 必读，缺失会静默跳过 PHP 环境检测）"
     exit 1
 fi
 cp "$PHP_REQ_FILE" "$FULL_DIR/php-requirements.json"
@@ -383,7 +383,7 @@ mkdir -p "$FULL_DIR/scripts"
 cp "$DEPLOY_SCRIPTS_SRC"/*.sh "$FULL_DIR/scripts/"
 for required in "${DEPLOY_SCRIPTS_REQUIRED[@]}"; do
     if [ ! -f "$FULL_DIR/scripts/$required" ]; then
-        log_error "升级包缺少关键脚本: scripts/$required（升级时 SCRIPT_DIR 重定向会失败）"
+        log_error "升级包缺少关键脚本: scripts/${required}（升级时 SCRIPT_DIR 重定向会失败）"
         exit 1
     fi
 done
@@ -463,7 +463,7 @@ EOF
 # upgrade.sh 解压后从 src_dir/php-requirements.json 读；UpgradeService 从 extractedPath/php-requirements.json 读
 # fail-closed：升级包是该清单的主要消费者，缺失会让升级静默跳过 PHP 环境检测
 if [ ! -f "$PHP_REQ_FILE" ]; then
-    log_error "缺少 PHP 环境需求清单: $PHP_REQ_FILE（升级包必须包含，否则升级流程静默跳过 PHP 环境检测）"
+    log_error "缺少 PHP 环境需求清单: ${PHP_REQ_FILE}（升级包必须包含，否则升级流程静默跳过 PHP 环境检测）"
     exit 1
 fi
 cp "$PHP_REQ_FILE" "$UPGRADE_DIR/php-requirements.json"
@@ -473,7 +473,7 @@ mkdir -p "$UPGRADE_DIR/scripts"
 cp "$DEPLOY_SCRIPTS_SRC"/*.sh "$UPGRADE_DIR/scripts/"
 for required in "${DEPLOY_SCRIPTS_REQUIRED[@]}"; do
     if [ ! -f "$UPGRADE_DIR/scripts/$required" ]; then
-        log_error "升级包缺少关键脚本: scripts/$required（升级时 SCRIPT_DIR 重定向会失败）"
+        log_error "升级包缺少关键脚本: scripts/${required}（升级时 SCRIPT_DIR 重定向会失败）"
         exit 1
     fi
 done
@@ -492,8 +492,9 @@ cat >"$UPGRADE_DIR/UPGRADE.md" <<EOF
 2. 解压升级包覆盖文件
 3. 安装 PHP 依赖: composer install --no-dev
 4. 运行数据库迁移: php artisan migrate --force
-5. 清理缓存: php artisan optimize:clear
-6. 重启服务
+5. 补齐和整理基础数据: php artisan db:seed --force
+6. 清理缓存: php artisan optimize:clear
+7. 重启服务
 
 ## 注意事项
 
@@ -536,7 +537,7 @@ if [ -d "$SCRIPT_DIR_SRC" ]; then
     # fail-closed：缺失会让安装脚本无从判定 PHP 版本/扩展，必须打进包
     PHP_REQ_FILE="$PROJECT_ROOT/build/php-requirements.json"
     if [ ! -f "$PHP_REQ_FILE" ]; then
-        log_error "缺少 PHP 环境需求清单: $PHP_REQ_FILE（脚本部署包必须包含，install.sh/bt-install.sh 需据此判定 PHP 版本/扩展）"
+        log_error "缺少 PHP 环境需求清单: ${PHP_REQ_FILE}（脚本部署包必须包含，install.sh/bt-install.sh 需据此判定 PHP 版本/扩展）"
         exit 1
     fi
     cp "$PHP_REQ_FILE" "$SCRIPT_PKG_DIR/php-requirements.json"

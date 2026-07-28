@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# derive-scope.sh — 从 git diff 机器推导 .claude/commands/finish-check.md §1 范围表
+# derive-scope.sh — 从 git diff 机器推导 skills/finish-check.md §1 范围表
 # 取代纯自报枚举制：路径行 glob 推导、内容行只扫 + 新增行、安全面/删除审核保持人工（仅给关键词提示）
 #
 # 规则 ↔ finish-check.md §1 范围表行 映射（**范围表行增删时必须同步本脚本**）：
@@ -180,7 +180,7 @@ ROW_TRIG=(
     "§2.4 必跑；实跑 migrate + db:structure --check、增量迁移回灌建表迁移（反模式 21）"
     "§2.4 必跑"
     "§2.4 必跑"
-    "admin + user 两端构建必验"
+    "admin + user 两端构建必验 + pnpm test:shared 必跑"
     "§4 插件检查必跑"
     "反模式 7/21 + 19（仅其部署脚本外部值条目）重点扫描；必跑 deploy/test/test-*.sh 贴输出"
     "§2.3 测试集 + 反模式 14（flaky 四源）+ 15（伪绿）"

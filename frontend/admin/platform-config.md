@@ -1,201 +1,56 @@
 # Platform Config 配置说明
 
-## 概述
+管理端启动配置由两部分组成：
 
-`platform-config.json` 是前端管理端的核心配置文件，位于 `public/` 目录下，在应用启动时动态加载。该文件包含了系统的基础配置、主题设置、API配置和业务相关配置。
+- `public/platform-config.json`：部署和界面配置，例如 `BaseUrlApi`、存储命名空间、布局、主题和功能开关。
+- 后台“系统设置”：长期站点配置。应用完整刷新时通过 `GET /api/meta?channel=admin` 加载一次。
 
-## 配置文件结构
-
-```json
-{
-  "Title": "SSL",
-  "BaseUrlApi": "http://localhost:5300/admin",
-  "Brands": ["certum", "gogetssl", "positive", ...],
-  // ... 其他配置项
-}
-```
-
-## 核心配置项说明
-
-### 🌐 BaseUrlApi 配置
-
-**配置项**: `BaseUrlApi`  
-**类型**: `string`  
-**默认值**: `"http://localhost:5300/admin"`  
-**说明**: 管理端API的基础URL地址
-
-#### 用途说明
-
-- 定义管理端所有API请求的基础地址
-- 对应后端Laravel项目的管理员API路由组 (`routes/api.admin.php`)
-- 支持JWT认证的管理员专用接口
-
-#### 环境配置
+## 静态配置
 
 ```json
 {
-  // 开发环境
-  "BaseUrlApi": "http://localhost:5300/admin",
-
-  // 测试环境
-  "BaseUrlApi": "https://test-api.example.com/admin",
-
-  // 生产环境
-  "BaseUrlApi": "https://api.example.com/admin"
+  "BaseUrlApi": "/api/admin",
+  "StorageNameSpace": "admin-",
+  "ResponsiveStorageNameSpace": "admin-responsive-",
+  "Layout": "vertical",
+  "Theme": "light",
+  "Acme": true
 }
 ```
 
-#### API路由说明
+`platform-config.json` 不再保存版本号、标题、品牌、DNS 工具、备案号、Logo 或二维码。跨版本首次升级时，Seeder 从旧 admin 配置提取活动品牌，并从旧前端词典补齐显示名称；后续前端完全读取后台配置。
 
-管理端API遵循以下路由结构：
+## 后台配置
 
-- 基础路径: `/admin`
-- 认证方式: JWT Token (管理员专用)
-- 主要接口模块:
-  - `/admin/auth/*` - 管理员认证
-  - `/admin/user/*` - 用户管理
-  - `/admin/order/*` - 订单管理
-  - `/admin/cert/*` - 证书管理
-  - `/admin/setting/*` - 系统设置
+“站点设置”提供 admin/user 共用配置：
 
-### 🏢 Brands 配置
+- `name`：系统标题。
+- `dnsTools`：DNS 检测服务地址的普通数组，按数组顺序优先尝试。
+- `beian`：备案号。
+- `copyStart`：可选版权起始年份；不由 Seeder 创建，缺失或无效时回落 `2017`。
+- `logo`：折叠态 Logo，上传时按 1:1 裁剪（输出不超过 200×200、200KB；SVG 需为正方形）；未上传时回落用户端公开目录的 `logo.svg`，该文件在升级时保留。
+- `logoExpanded`：可选的展开版 Logo，配置后在展开侧栏中代替 `logo + name`；留空时保持原有 `logo + name` 显示。
+- `qrcode`：用户首页客服二维码，上传时按 1:1 裁剪（输出不超过 800×800、1MB）；未上传时先使用用户端公开目录的轻量 `qrcode.svg`，文件不存在则回落旧版 `qrcode.png`。升级包不交付二维码占位图，而是保留安装目录中已有的新旧占位文件。
 
-**配置项**: `Brands`  
-**类型**: `string[]`  
-**说明**: SSL证书CA品牌列表配置
+“品牌设置”的 `all` 是 `{ "品牌值": "显示名称" }` 键值对象，是产品维护、订单详情和其他品牌展示的唯一名称词典；`admin`、`user` 是活动品牌值普通数组。管理端产品筛选读取 `admin` 并严格保持其数组顺序，产品新增、编辑和导入读取 `all`。
 
-#### 支持的CA品牌
+`url`（用户 URL）为空时，管理员登录后台成功后会自动按 HTTPS 回填当前访问域名（单域名部署下 admin 与 user 同域）；已设置的值不会被覆盖，开发环境不一致时可在设置里手工修改。
 
-```json
-{
-  "Brands": [
-    "certum", // Certum
-    "gogetssl", // GoGetSSL
-    "positive", // Positive SSL
-    "geotrust", // GeoTrust
-    "digicert", // DigiCert
-    "ssltrus", // SslTrus
-    "trustasia" // TrustAsia
-  ]
-}
-```
+这些配置是长期配置，不轮询。后台保存会立即清除服务端设置缓存；完整刷新前端后会重新请求 `/api/meta`。上传图片使用内容哈希文件名，因此替换后不会命中旧图片缓存。
 
-#### 品牌配置说明
+## 使用方式
 
-| 品牌代码    | 品牌名称     | 说明                            |
-| ----------- | ------------ | ------------------------------- |
-| `certum`    | Certum       | 波兰CA品牌，提供多种SSL证书产品 |
-| `gogetssl`  | GoGetSSL     | 知名SSL证书经销商，价格优势明显 |
-| `positive`  | Positive SSL | Comodo旗下品牌，入门级证书      |
-| `geotrust`  | GeoTrust     | DigiCert旗下品牌，企业级证书    |
-| `digicert`  | DigiCert     | 顶级CA品牌，高端证书产品        |
-| `ssltrus`   | SslTrus      | 专业SSL证书提供商               |
-| `trustasia` | TrustAsia    | 亚洲地区知名CA品牌              |
-
-#### 在系统中的应用
-
-1. **产品管理**: 创建SSL证书产品时选择对应品牌
-2. **订单处理**: 根据品牌调用相应的CA接口
-3. **证书申请**: 不同品牌有不同的申请流程和验证方式
-4. **界面展示**: 前端根据品牌显示相应的图标和说明
-
-## 其他重要配置项
-
-### 系统基础配置
-
-```json
-{
-  "Title": "SSL" // 系统标题
-}
-```
-
-### 界面主题配置
-
-```json
-{
-  "Layout": "vertical", // 布局方式：vertical/horizontal
-  "Theme": "light", // 主题：light/dark
-  "EpThemeColor": "#409EFF", // Element Plus主题色
-  "ShowLogo": true, // 是否显示Logo
-  "FixedHeader": true // 是否固定头部
-}
-```
-
-### 功能开关配置
-
-```json
-{
-  "KeepAlive": true, // 是否启用页面缓存
-  "MultiTagsCache": true, // 是否启用多标签缓存
-  "HiddenSideBar": false, // 是否隐藏侧边栏
-  "CachingAsyncRoutes": false // 是否缓存异步路由
-}
-```
-
-## 配置使用方式
-
-### 在代码中获取配置
+启动完成后仍统一通过运行时配置读取：
 
 ```typescript
 import { getConfig } from "@/config";
 
-// 获取API基础URL
-const baseUrl = getConfig("BaseUrlApi");
-
-// 获取品牌列表
+const title = getConfig("Title");
+const allBrands = getConfig("AllBrands");
 const brands = getConfig("Brands");
-
-// 获取完整配置
-const config = getConfig();
+const copyStart = getConfig("CopyStart");
+const logo = getConfig("Logo");
+const logoExpanded = getConfig("LogoExpanded");
 ```
 
-### HTTP请求中的使用
-
-```typescript
-// 在axios配置中使用
-import { getConfig } from "@/config";
-
-const api = axios.create({
-  baseURL: getConfig("BaseUrlApi"),
-  timeout: 10000
-});
-```
-
-## 部署注意事项
-
-### 1. 环境区分
-
-不同环境需要配置对应的 `BaseUrlApi`：
-
-- 确保API地址可访问
-- 注意CORS跨域配置
-- HTTPS环境下API也需要HTTPS
-
-### 2. 品牌配置
-
-- 新增CA品牌需要同步更新后端支持
-- 品牌代码需要与后端保持一致
-- 品牌图标和文案需要对应更新
-
-### 3. 配置验证
-
-建议在应用启动时验证配置的有效性：
-
-```typescript
-// 验证必要配置项
-const requiredConfigs = ["BaseUrlApi", "Brands"];
-const config = getConfig();
-
-requiredConfigs.forEach(key => {
-  if (!config[key]) {
-    throw new Error(`Missing required config: ${key}`);
-  }
-});
-```
-
-## 最佳实践
-
-1. **环境隔离**: 不同环境使用不同的配置文件
-2. **安全考虑**: 敏感信息不应放在前端配置中
-3. **缓存策略**: 配置变更后需要清理浏览器缓存
-4. **测试验证**: 配置变更后需要完整测试各功能模块
+敏感信息不得写入静态配置或公开的站点配置。

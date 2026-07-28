@@ -12,14 +12,12 @@
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "total": "integer",
-                    "page": "integer",
-                    "page_size": "integer",
                     "data": {
                         "__list_of__": {
                             "order_id": "integer",
                             "domains": "string",
-                            "status": "string"
+                            "status": "string",
+                            "csr": "string"
                         }
                     },
                     "renew_before_days": "integer"

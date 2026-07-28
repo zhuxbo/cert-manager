@@ -14,7 +14,7 @@ use Throwable;
  * 订单级互斥原语：commit/cancel 进 DB 行锁前先抢一把按订单 id 的 Cache 互斥锁，
  * 把「DB 锁等待 innodb_lock_wait_timeout(50s) → 1205」转化为「Cache 抢锁立即失败」。
  *
- * 详见 .superpowers/specs 方案 C / CLAUDE.md「资金/状态变更必须在事务+行锁内」：
+ * 详见 skills/backend/order-fund.md 的资金与状态并发约束：
  *   - 抢到 → 执行闭包，finally 原子释放（Cache::lock 带 owner token，TTL 过期后不误删他人锁）
  *   - 抢不到 → 抛 MutationBusyException（同步转 503 友好提示 / 异步 TaskJob release 重试）
  *   - Cache 故障 → fail-open 放行（退回 DB 锁串行，由 Sdk 锁内超时兜底；慢但不 1205、不阻塞业务）

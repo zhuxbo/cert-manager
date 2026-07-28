@@ -23,6 +23,7 @@
                         }
                     },
                     "validation": "array<unknown>",
+                    "documents": "array<unknown>",
                     "status": "string",
                     "application_status": "string",
                     "dcv_status": "string",

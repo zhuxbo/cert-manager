@@ -13,7 +13,7 @@ use App\Exceptions\MutationBusyException;
  * （new/renew/reissue/pay）照常报错。收敛到此处消除拷贝漂移——下次调整吞并集合只改一处，杜绝
  * 「改了 V1/V2 漏改 Deploy → 该入口冒泡 500/503、下游按失败重试建单双扣费」的 P0 形态。
  *
- * 【吞并边界是 P0 资金韧性红线，一条都不许挪】见 CLAUDE.md「API 一条龙下单韧性」段：
+ * 【吞并边界是 P0 资金韧性红线，一条都不许挪】见 skills/backend/order-fund.md：
  * 仅 action==='commit' 段吞 code=0 + MutationBusyException、扣费不回滚。
  *
  * 【Deploy M-2 不对称由传入 $action 值天然保留】unpaid resume 走 pay(autoCommit=true)，其

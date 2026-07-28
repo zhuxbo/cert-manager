@@ -14,7 +14,7 @@ use Throwable;
  * 公开运维健康检查
  *
  * 路由 GET /api/health（命名空间无关），供安装等待、升级 smoke test、
- * 外部健康检查使用。不鉴权、不写日志、不受 MaintenanceMode 拦截。
+ * 管理后台健康度及可选外部健康检查使用。不鉴权、不写日志、不受 MaintenanceMode 拦截。
  *
  * 与现有 /api/v1/health、/api/v2/health 区别：现有两个端点是 API 业务接口
  * （挂在 v1/v2 命名空间下，未来 v3 可能改），本端点是命名空间无关的运维标准入口。
@@ -34,7 +34,15 @@ class HealthController extends Controller
      *     "queue_lag_seconds": int,
      *     "disk_free_gb": float,
      *     "heartbeat_age_seconds": int|null
-     *   }
+     *   },
+     *   "check_statuses": {
+     *     "db": "ok" | "degraded" | "error",
+     *     "cache": "ok" | "degraded" | "error",
+     *     "heartbeat": "ok" | "degraded" | "error",
+     *     "queue": "ok" | "degraded" | "error",
+     *     "disk": "ok" | "degraded" | "error"
+     *   },
+     *   "queue_lag_unit": "seconds" | "jobs"
      * }
      *
      * HTTP 状态码：error → 503；ok / degraded → 200。
@@ -55,8 +63,9 @@ class HealthController extends Controller
         ];
 
         $status = $this->aggregate($checks, $freeze);
+        $checkStatuses = $this->checkStatuses($checks, $freeze);
         // 仅 error → 503；degraded（心跳缺失）与 ok 均 200：
-        // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，防止误报卡外部监控。
+        // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，便于后台准确展示状态。
         $httpStatus = $status === 'error'
             ? Response::HTTP_SERVICE_UNAVAILABLE
             : Response::HTTP_OK;
@@ -65,7 +74,53 @@ class HealthController extends Controller
             'status' => $status,
             'freeze' => $freeze,
             'checks' => $checks,
+            'check_statuses' => $checkStatuses,
+            'queue_lag_unit' => config('queue.default') === 'redis' ? 'jobs' : 'seconds',
         ], $httpStatus);
+    }
+
+    /**
+     * 逐项状态供管理后台着色；不改变 aggregate() 的整体健康判定。
+     *
+     * freeze 期间队列积压和心跳过旧是升级流程的预期现象，显示 degraded 而非 error。
+     * cache 故障时无法可靠读取可配置阈值，其余依赖阈值的项目显示 degraded。
+     *
+     * @param  array{db: array{ok: bool, latency_ms: int}, cache: array{ok: bool}, queue_lag_seconds: int, disk_free_gb: float, heartbeat_age_seconds: int|null}  $checks
+     * @return array{db: string, cache: string, heartbeat: string, queue: string, disk: string}
+     */
+    protected function checkStatuses(array $checks, bool $freeze): array
+    {
+        $statuses = [
+            'db' => $checks['db']['ok'] === true ? 'ok' : 'error',
+            'cache' => $checks['cache']['ok'] === true ? 'ok' : 'error',
+            'heartbeat' => 'degraded',
+            'queue' => 'degraded',
+            'disk' => 'degraded',
+        ];
+
+        if ($checks['db']['ok'] !== true || $checks['cache']['ok'] !== true) {
+            return $statuses;
+        }
+
+        $statuses['disk'] = $checks['disk_free_gb'] < (float) get_system_setting(
+            'health',
+            'disk_free_threshold_gb',
+            1.0
+        ) ? 'error' : 'ok';
+
+        $queueExceeded = $checks['queue_lag_seconds'] > $this->queueThreshold();
+        $statuses['queue'] = $queueExceeded ? ($freeze ? 'degraded' : 'error') : 'ok';
+
+        if ($checks['heartbeat_age_seconds'] !== null) {
+            $heartbeatStale = $checks['heartbeat_age_seconds'] > (int) get_system_setting(
+                'health',
+                'heartbeat_stale_seconds',
+                300
+            );
+            $statuses['heartbeat'] = $heartbeatStale ? ($freeze ? 'degraded' : 'error') : 'ok';
+        }
+
+        return $statuses;
     }
 
     /**
@@ -95,7 +150,7 @@ class HealthController extends Controller
      * 心跳年龄（heartbeatAge）与 health 阈值（aggregate/queueThreshold 经 get_system_setting →
      * Cache::remember）均依赖 Cache（driver=redis 时）。Cache 后端故障绝不能让 /api/health 白屏
      * 500 丢弃结构化输出——须显式探活并结构化上报 error（503）。用只读 get 探连通性（不写键，
-     * 避免 probe / 外部监控高频拨测频繁写 cache）；不抛异常，失败 ok=false。
+     * 避免后台刷新或外部监控访问时频繁写 cache）；不抛异常，失败 ok=false。
      *
      * @return array{ok: bool}
      */

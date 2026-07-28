@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from "vue";
-import { brandOptions } from "@/views/system/dictionary";
+import { brandOptionsAll } from "@/views/system/dictionary";
 import { importProduct } from "@/api/product";
 import { message } from "@shared/utils";
 import { useDialogSize } from "@/views/system/dialog";
@@ -105,7 +105,7 @@ const handleConfirm = () => {
           style="width: 100%"
         >
           <el-option
-            v-for="item in brandOptions"
+            v-for="item in brandOptionsAll"
             :key="item.value"
             :label="item.label"
             :value="item.value"

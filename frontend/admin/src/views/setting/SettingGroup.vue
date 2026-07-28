@@ -12,9 +12,15 @@ import {
   ElOption
 } from "element-plus";
 import { PlusDrawerForm } from "plus-pro-components";
-import { getGroupSettings, destroy, batchUpdateSettings } from "@/api/setting";
+import {
+  getGroupSettings,
+  destroy,
+  batchUpdateSettings,
+  clearPayCache
+} from "@/api/setting";
 import { useSettingFormStore } from "./settingFormStore";
 import ArrayInput from "./ArrayInput.vue";
+import SiteImageUpload from "./SiteImageUpload.vue";
 import { message } from "@shared/utils";
 import { useDrawerSize } from "@/views/system/drawer";
 
@@ -104,6 +110,18 @@ const handleAddSetting = () => {
   openStoreForm(0, props.group.id);
 };
 
+// 支付设置组（alipay/wechat）才提供支付缓存清理
+const isPayGroup = computed(() =>
+  ["alipay", "wechat"].includes(props.group.name)
+);
+
+// 清理本支付类型的配置缓存与落盘证书（下次支付按当前设置重新落盘）
+const handleClearPayCache = () => {
+  clearPayCache(props.group.name).then(() => {
+    message("支付缓存已清理", { type: "success" });
+  });
+};
+
 // 编辑设置项
 const handleEditSetting = id => {
   openStoreForm(id);
@@ -125,7 +143,8 @@ const typeMap = {
   boolean: "布尔值",
   array: "数组",
   select: "选择",
-  base64: "文本"
+  base64: "文本",
+  image: "图片"
 };
 
 // 确保值是数组
@@ -198,6 +217,27 @@ const handleValueChange = (row, value) => {
   }
 };
 
+const isSiteImage = row =>
+  row.type === "image" &&
+  props.group.name === "site" &&
+  ["favicon", "logo", "logoExpanded", "qrcode", "loginImage"].includes(row.key);
+
+const siteImageKind = (
+  key: string
+): "favicon" | "logo" | "logo-expanded" | "qrcode" | "login-image" => {
+  if (key === "favicon") return "favicon";
+  if (key === "logoExpanded") return "logo-expanded";
+  if (key === "loginImage") return "login-image";
+  return key === "qrcode" ? "qrcode" : "logo";
+};
+
+const handleSiteImageChange = (row, value: string) => {
+  row.value = value;
+  const setting = settings.value.find(item => item.id === row.id);
+  if (setting) setting.value = value;
+  handleValueChange(row, value);
+};
+
 // 格式化布尔值显示
 const formatBoolean = value => {
   return value === "1" || value === "true" || value === true ? "是" : "否";
@@ -254,6 +294,16 @@ onMounted(() => {
           >
             批量编辑
           </el-button>
+          <el-popconfirm
+            v-if="isPayGroup"
+            title="确定要清理支付缓存吗？将删除已落盘的支付证书，下次支付按当前设置重新生成。"
+            width="320"
+            @confirm="handleClearPayCache"
+          >
+            <template #reference>
+              <el-button type="warning" plain>清理支付缓存</el-button>
+            </template>
+          </el-popconfirm>
         </template>
         <template v-else>
           <el-button type="success" @click="saveBatchEdit">保存</el-button>
@@ -274,7 +324,13 @@ onMounted(() => {
           </el-table-column>
           <el-table-column prop="value" label="值" min-width="300">
             <template #default="{ row }">
-              <template v-if="row.type === 'boolean'">
+              <SiteImageUpload
+                v-if="isSiteImage(row)"
+                :model-value="row.value"
+                :kind="siteImageKind(row.key)"
+                @update:model-value="val => handleSiteImageChange(row, val)"
+              />
+              <template v-else-if="row.type === 'boolean'">
                 {{ formatBoolean(row.value) }}
               </template>
               <template v-else-if="row.type === 'array'">
@@ -318,7 +374,15 @@ onMounted(() => {
           </el-table-column>
           <el-table-column prop="value" label="值" min-width="200">
             <template #default="{ row }">
-              <template v-if="row.type === 'string' || row.type === 'base64'">
+              <SiteImageUpload
+                v-if="isSiteImage(row)"
+                :model-value="row.value"
+                :kind="siteImageKind(row.key)"
+                @update:model-value="val => handleSiteImageChange(row, val)"
+              />
+              <template
+                v-else-if="row.type === 'string' || row.type === 'base64'"
+              >
                 <el-input
                   :model-value="row.value"
                   :type="row.type === 'base64' ? 'textarea' : 'text'"

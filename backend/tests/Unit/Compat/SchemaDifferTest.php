@@ -207,3 +207,41 @@ test('diff 多差异同时报', function () {
     sort($kinds);
     expect($kinds)->toBe(['added', 'missing', 'type_changed']);
 });
+
+// =================== diffRequestKeys ===================
+
+test('diffRequestKeys 相同 key 列表无差异', function () {
+    expect(SchemaDiffer::diffRequestKeys(['email', 'id'], ['email', 'id']))->toBe([]);
+});
+
+test('diffRequestKeys 两侧均无入参无差异', function () {
+    expect(SchemaDiffer::diffRequestKeys(null, null))->toBe([]);
+});
+
+test('diffRequestKeys 新增入参 key 报 request_keys_changed', function () {
+    $diffs = SchemaDiffer::diffRequestKeys(['id'], ['id', 'mode']);
+    expect($diffs)->toHaveCount(1)
+        ->and($diffs[0]['kind'])->toBe('request_keys_changed')
+        ->and($diffs[0]['path'])->toBe('$.request_keys')
+        ->and($diffs[0]['expected'])->toBe(['id'])
+        ->and($diffs[0]['actual'])->toBe(['id', 'mode']);
+});
+
+test('diffRequestKeys 丢失入参 key 报 request_keys_changed', function () {
+    $diffs = SchemaDiffer::diffRequestKeys(['email', 'id'], ['id']);
+    expect($diffs)->toHaveCount(1)
+        ->and($diffs[0]['kind'])->toBe('request_keys_changed');
+});
+
+test('diffRequestKeys 从无入参变成有入参报差异', function () {
+    $diffs = SchemaDiffer::diffRequestKeys(null, ['mode']);
+    expect($diffs)->toHaveCount(1)
+        ->and($diffs[0]['expected'])->toBeNull()
+        ->and($diffs[0]['actual'])->toBe(['mode']);
+});
+
+test('diffRequestKeys 入参全部消失报差异', function () {
+    $diffs = SchemaDiffer::diffRequestKeys(['mode'], null);
+    expect($diffs)->toHaveCount(1)
+        ->and($diffs[0]['actual'])->toBeNull();
+});

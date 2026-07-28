@@ -1,0 +1,36 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_到期统计按自然日区间计算",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/orders",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "total_orders": "integer",
+                    "order_count": "integer",
+                    "active_orders": "integer",
+                    "processing_orders": "integer",
+                    "expiring_7_days": "integer",
+                    "expiring_30_days": "integer",
+                    "cancelled_orders": "integer",
+                    "net_orders": "integer",
+                    "status_distribution": {
+                        "active": "integer",
+                        "processing": "integer"
+                    },
+                    "brand_distribution": {
+                        "test brand": "integer"
+                    },
+                    "monthly_orders": "integer",
+                    "monthly_cancelled_orders": "integer",
+                    "monthly_net_orders": "integer",
+                    "monthly_consumption": "integer"
+                }
+            }
+        }
+    ]
+}

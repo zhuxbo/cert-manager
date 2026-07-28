@@ -13,14 +13,12 @@
             "response_schema": {
                 "code": "integer",
                 "data": {
-                    "total": "integer",
-                    "page": "integer",
-                    "page_size": "integer",
                     "data": {
                         "__list_of__": {
                             "order_id": "integer",
                             "domains": "string",
                             "status": "string",
+                            "csr": "string",
                             "certificate": "null",
                             "private_key": "null",
                             "ca_certificate": "null",

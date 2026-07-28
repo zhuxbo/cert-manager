@@ -72,6 +72,10 @@ export function useSettingFormStore(onSuccess) {
         {
           label: "文本",
           value: "base64"
+        },
+        {
+          label: "图片",
+          value: "image"
         }
       ],
       onChange: val => handleTypeChange(val as string)
@@ -146,6 +150,12 @@ export function useSettingFormStore(onSuccess) {
                   ? value
                   : [],
               "onUpdate:modelValue": onChange
+            });
+          case "image":
+            return h(ElInput, {
+              modelValue: value as string,
+              disabled: true,
+              placeholder: "保存设置后，请在设置列表上传图片"
             });
           case "select":
             // 确保值的正确类型
@@ -280,10 +290,13 @@ export function useSettingFormStore(onSuccess) {
     const baseRules: FormRules = {
       key: [{ required: true, message: "请输入键名", trigger: "blur" }],
       type: [{ required: true, message: "请选择类型", trigger: "change" }],
-      value: [
-        { required: true, message: "请输入值", trigger: "blur" },
-        { validator: validateSelectValue, trigger: ["blur", "change"] }
-      ],
+      value:
+        storeValues.value.type === "image"
+          ? []
+          : [
+              { required: true, message: "请输入值", trigger: "blur" },
+              { validator: validateSelectValue, trigger: ["blur", "change"] }
+            ],
       weight: [{ required: true, message: "请输入权重", trigger: "blur" }]
     };
 

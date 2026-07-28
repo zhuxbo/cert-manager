@@ -19,9 +19,9 @@ class OrderOptionController extends BaseController
         ));
     }
 
-    public function show(int $order, OrderOptionService $service): void
+    public function show(int $id, OrderOptionService $service): void
     {
-        $item = $service->show($order, (int) $this->guard->id(), true);
+        $item = $service->show($id, (int) $this->guard->id(), true);
         if (! $item) {
             $this->error('订单不存在');
         }

@@ -208,7 +208,7 @@ fi
 # 检查 build.env
 if [ ! -f "$BUILD_ENV" ]; then
     log_error "未找到 $BUILD_ENV"
-    log_info "请创建 $BUILD_ENV，示例见 README"
+    log_info "请创建 ${BUILD_ENV}，示例见 README"
     exit 1
 fi
 
@@ -386,7 +386,7 @@ DOCKER_OPTS+=(-v "$TEMP_DIR/caches/pnpm-store:/pnpm/store")
 log_info "容器将在构建完成后自动销毁"
 set +e
 # 临时移除 ERR trap：本脚本 set -E（errtrace）下，trap 会在管道失败时触发，
-# 其内部 echo 会重置 $PIPESTATUS，使下面 RUN_STATUS 读到 0 而非容器真实退出码
+# 其内部 echo 会重置 ${PIPESTATUS}，使下面 RUN_STATUS 读到 0 而非容器真实退出码
 # —— 构建失败被误报成功。捕获退出码后立即恢复 trap。
 trap - ERR
 docker run "${DOCKER_OPTS[@]}" "$BUILD_IMAGE_FULL" 2>&1 | tee "$BUILD_REPORT"

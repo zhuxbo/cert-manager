@@ -22,7 +22,30 @@
                             "version": "string"
                         }
                     },
-                    "version": "string"
+                    "version": "string",
+                    "platform": {
+                        "Title": "string",
+                        "AllBrands": {
+                            "__list_of__": {
+                                "label": "string",
+                                "value": "string"
+                            }
+                        },
+                        "Brands": {
+                            "__list_of__": {
+                                "label": "string",
+                                "value": "string"
+                            }
+                        },
+                        "DnsTools": "array<string>",
+                        "Beian": "string",
+                        "CopyStart": "string",
+                        "Favicon": "string",
+                        "Logo": "string",
+                        "LogoExpanded": "string",
+                        "Qrcode": "string",
+                        "LoginImage": "string"
+                    }
                 }
             }
         }

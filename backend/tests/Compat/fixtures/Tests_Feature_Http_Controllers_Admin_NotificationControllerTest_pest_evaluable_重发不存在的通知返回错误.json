@@ -4,7 +4,7 @@
     "calls": [
         {
             "method": "POST",
-            "uri_pattern": "/api/admin/notification/{id}/resend",
+            "uri_pattern": "/api/admin/notification/resend/{id}",
             "request_keys": null,
             "response_status": "2xx",
             "response_schema": {

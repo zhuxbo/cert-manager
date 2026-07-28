@@ -1,0 +1,50 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\MetaControllerTest::__pest_evaluable_user_平台设置复用_site_并读取独立品牌",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/meta",
+            "request_keys": [
+                "channel"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "channels": {
+                        "admin": "boolean",
+                        "user": "boolean",
+                        "api": "boolean",
+                        "deploy": "boolean"
+                    },
+                    "plugins": "array<unknown>",
+                    "version": "string",
+                    "platform": {
+                        "Title": "string",
+                        "AllBrands": {
+                            "__list_of__": {
+                                "label": "string",
+                                "value": "string"
+                            }
+                        },
+                        "Brands": {
+                            "__list_of__": {
+                                "label": "string",
+                                "value": "string"
+                            }
+                        },
+                        "DnsTools": "array<string>",
+                        "Beian": "string",
+                        "CopyStart": "string",
+                        "Favicon": "string",
+                        "Logo": "string",
+                        "LogoExpanded": "string",
+                        "Qrcode": "string",
+                        "LoginImage": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

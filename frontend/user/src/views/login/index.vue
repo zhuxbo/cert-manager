@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import Motion from "./utils/motion";
+import LoginAside from "./components/LoginAside.vue";
 import { useRouter, useRoute } from "vue-router";
-import { message } from "@shared/utils";
+import { message, resolveCopyrightStart } from "@shared/utils";
 import { loginRules } from "./utils/rule";
 import { debounce } from "@pureadmin/utils";
 import { useNav } from "@/layout/hooks/useNav";
 import { useEventListener } from "@vueuse/core";
 import type { FormInstance } from "element-plus";
 import { useLayout } from "@/layout/hooks/useLayout";
-import { bg, illustration } from "./utils/static";
-import { ref, toRaw, reactive, watch, onMounted } from "vue";
+import { ref, reactive, watch, onMounted } from "vue";
 import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
 import { useDataThemeChange } from "@/layout/hooks/useDataThemeChange";
 import { getConfig } from "@/config";
@@ -43,6 +43,8 @@ initStorage();
 const { dataTheme, overallStyle, dataThemeChange } = useDataThemeChange();
 dataThemeChange(overallStyle.value);
 const { title } = useNav();
+const currentYear = new Date().getFullYear();
+const copyStart = resolveCopyrightStart(getConfig("CopyStart"), currentYear);
 
 const ruleForm = reactive({
   account: "",
@@ -180,26 +182,23 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="select-none">
-    <img :src="bg" class="wave" />
-    <div class="flex-c absolute right-5 top-3">
-      <!-- 主题 -->
-      <el-switch
-        v-model="dataTheme"
-        inline-prompt
-        :active-icon="dayIcon"
-        :inactive-icon="darkIcon"
-        @change="dataThemeChange"
-      />
-    </div>
-    <div class="login-container">
-      <div class="img">
-        <component :is="toRaw(illustration)" />
+  <div class="select-none login-page">
+    <LoginAside />
+    <div class="login-main">
+      <div class="flex-c absolute right-5 top-3">
+        <!-- 主题 -->
+        <el-switch
+          v-model="dataTheme"
+          inline-prompt
+          :active-icon="dayIcon"
+          :inactive-icon="darkIcon"
+          @change="dataThemeChange"
+        />
       </div>
       <div class="login-box">
         <div class="login-form">
           <Motion :delay="300">
-            <h2 class="outline-none">{{ title }}</h2>
+            <h2 class="login-title outline-none">{{ title }}</h2>
           </Motion>
 
           <el-form
@@ -249,7 +248,8 @@ onMounted(() => {
                       <select
                         v-model="loginDay"
                         :style="{
-                          width: loginDay < 10 ? '10px' : '16px',
+                          width: loginDay < 10 ? '12px' : '20px',
+                          border: 'none',
                           outline: 'none',
                           background: 'none',
                           appearance: 'none',
@@ -304,21 +304,21 @@ onMounted(() => {
           </el-form>
         </div>
       </div>
-    </div>
-    <div
-      class="w-full flex-c absolute bottom-3 text-sm text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
-    >
-      Copyright © 2017-{{ new Date().getFullYear() }}
-      <a class="hover:text-primary" href="/" target="_blank">
-        &nbsp;{{ title }}
-      </a>
-      <a
-        class="hover:text-primary"
-        href="https://beian.miit.gov.cn/"
-        target="_blank"
+      <div
+        class="w-full flex-c absolute bottom-3 text-sm text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
       >
-        &nbsp;{{ getConfig("Beian") }}
-      </a>
+        Copyright © {{ copyStart }}-{{ currentYear }}
+        <a class="hover:text-primary" href="/" target="_blank">
+          &nbsp;{{ title }}
+        </a>
+        <a
+          class="hover:text-primary"
+          href="https://beian.miit.gov.cn/"
+          target="_blank"
+        >
+          &nbsp;{{ getConfig("Beian") }}
+        </a>
+      </div>
     </div>
   </div>
 </template>

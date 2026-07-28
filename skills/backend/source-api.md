@@ -90,6 +90,20 @@ interface OrderSourceApiInterface
 
 8 个核心方法通过接口约束，`getOrders` 等可选方法仍用 `checkMethodExists()` 运行时检查。
 
+## Certum 续费的 SAN 继承边界
+
+传统订单的 `renew` 在 Manager 内仍是**新订单**：创建新 `orders`/`certs` 记录，主价格、基础 SAN 配额及超额 SAN 全部按新购口径计费；源证书只用于续费资格、接替关系和状态翻转。这一点不能与上游接口的域名能力混为一谈。
+
+Certum 是需要保留续费 SAN 限制的特殊来源。Certum `renewCertificate` 接口只提交 `customer`、续费产品码、CSR、原证书序列号及验证方式等字段，**不提交域名列表或 `SANEntries`**；续费域名等订阅者数据从原证书继承。`SANEntries` 只用于 `reissueCertificate` 的新增域名。因此：
+
+- `add_san=0` 时，续费不得提交超过原证书标准/通配符数量的本地 SAN 集合；否则 Manager 会记录上游不会兑现的新增域名。
+- `replace_san=0` 时，续费必须保留并合并原证书 SAN；否则 Manager 会记录上游不会兑现的删除或替换。
+- 合并仅发生在 `replace_san=0`；合并、去重后必须对最终完整域名集合重新计算 SAN 数量，并应用 `gift_root_domain`，避免赠送根域名跨新旧集合时重复计数。
+- 这两个限制表达的是**产品/上游操作能力**，不是“续费复用原订单”或“续费按重签增量计费”。不得仅因续费创建新订单，就从 `ActionTrait::getCert()` 删除 `renew` 的 `add_san` / `replace_san` 约束。
+- 非 Certum 来源若续费接口支持完整替换 SAN，应通过准确的产品能力值表达；不要在 Manager 中按 CA 名称硬编码分支。
+
+相关测试应同时固定两条轴：续费金额与新增同口径；`add_san=0` / `replace_san=0` 时，本地续费证书的最终 SAN 集合与上游继承能力一致。
+
 ## 返回值约定
 
 - 成功：`['code' => 1, 'data' => [...]]`
@@ -137,6 +151,12 @@ $sourceApi = app(Api\Api::class)->getSourceApi($source);
 
 如需独立配置（API 地址、Token），在 `system_settings` 表 `ca` 组添加对应键。
 
+### 回调入口与 ID 字段约定
+
+- `callback` 设置组的每个键名就是一个接入商回调入口：`/callback/{endpoint}` 读取 `callback.{endpoint}`；非 `default` 入口未配置时才回落 `callback.default`。
+- 一个键名对应一家接入商，该接入商回调的订单 ID 参数名是统一契约，故保持单值 `id_field`；不扩展为逗号分隔的 `id_fields` 多字段尝试。
+- 若另一家接入商使用不同 ID 参数名，应新增独立回调键名并配置其 `id_field`，不在同一入口内猜测多个字段。
+
 ### 5. 测试
 
 ```php
@@ -149,7 +169,7 @@ app()->instance(\App\Services\Acme\Api\Api::class, $mockFactory);
 
 `Order\Api\default\Sdk::call()` 与 `Acme\Api\default\Sdk` 的上游 HTTP 调用**必须有 timeout 上限**，且**锁内调用的 timeout 必须 < `innodb_lock_wait_timeout`（已通过 `config/database.php` 的 PDO `MYSQL_ATTR_INIT_COMMAND` 固化为 session=50、覆盖 global 漂移，见 `InnodbLockWaitTimeoutTest`）**。
 
-**为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求，见主 `CLAUDE.md`「资金/状态变更必须在事务 + 行锁内」）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
+**为什么**：`commit()`（下单 new/renew/reissue）和 `cancel()` 在 `orders`/`acmes` 行锁内同步调上游（资金安全要求见 `skills/backend/order-fund.md`）。Guzzle `new Client` 默认 `timeout=0`（无限等待），上游慢/挂时持锁事务无限阻塞，超过 50s 后任何并发访问同一订单行的 `for update`（另一个 commit/cancel/sync 写回/commitCancel/revokeCancel/markRenewed）都会报 `SQLSTATE[HY000] 1205 Lock wait timeout`。
 
 **Order default Sdk**：`call()` 带可选第四参 `?int $timeout`，经 `makeClient()` 注入缝传给 Guzzle client config（`connect_timeout = min(10, $timeout)` + `timeout`；Guzzle `timeout` 含 connect，单次墙钟上限 = `timeout`）。connect_timeout 取 10s（早期 3s）：manager 是多级代理，上游可能是任意深度的另一个 manager，网络路径/DNS/地域全不可控，按"不可控上游"处理，对齐 callback 的 `connectTimeout(10)`；10 < 50 不破坏 1205 防护（总 timeout 45s 封顶不变，connect 不叠加），黑洞上游失败慢一点换多级链路的连接宽容，是有意取舍。
 

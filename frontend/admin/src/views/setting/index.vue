@@ -131,8 +131,8 @@ onMounted(() => {
       <h3 class="text-xl font-bold text-gray-600">系统设置</h3>
       <div class="flex gap-2">
         <el-popconfirm
-          title="确定要清除所有设置缓存吗？"
-          width="240"
+          title="确定要清除所有设置缓存吗？支付组的落盘证书会一并删除，下次支付按当前设置重新生成。"
+          width="320"
           @confirm="handleClearCache"
         >
           <template #reference>

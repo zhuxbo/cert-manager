@@ -46,7 +46,7 @@ export function destroy(id: number): Promise<any> {
 }
 
 export function batchDestroy(ids: number[]): Promise<any> {
-  return http.delete("/agiso", { data: { ids } });
+  return http.delete("/agiso/batch", { data: { ids } });
 }
 
 export function products(): Promise<any> {

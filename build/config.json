@@ -56,6 +56,7 @@
     "full": {
       "exclude": [
         "backend/vendor/",
+        "backend/storage/app/***",
         "backend/storage/upgrades/",
         "backend/storage/backups/",
         "backend/storage/logs/*.log",
@@ -74,11 +75,9 @@
         "backend/vendor/",
         "backend/public/install.php",
         "backend/public/install-assets/",
-        "frontend/admin/logo.svg",
-        "frontend/admin/platform-config.json",
         "frontend/easy/",
         "frontend/user/logo.svg",
-        "frontend/user/platform-config.json",
+        "frontend/user/qrcode.svg",
         "frontend/user/qrcode.png",
         "manifest.json"
       ]

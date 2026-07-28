@@ -1,0 +1,40 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_订单统计返回处理中订单数和品牌分布",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/orders",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "total_orders": "integer",
+                    "order_count": "integer",
+                    "active_orders": "integer",
+                    "processing_orders": "integer",
+                    "expiring_7_days": "integer",
+                    "expiring_30_days": "integer",
+                    "cancelled_orders": "integer",
+                    "net_orders": "integer",
+                    "status_distribution": {
+                        "unpaid": "integer",
+                        "pending": "integer",
+                        "processing": "integer",
+                        "approving": "integer",
+                        "active": "integer"
+                    },
+                    "brand_distribution": {
+                        "sectigo": "integer",
+                        "digicert": "integer"
+                    },
+                    "monthly_orders": "integer",
+                    "monthly_cancelled_orders": "integer",
+                    "monthly_net_orders": "integer",
+                    "monthly_consumption": "integer"
+                }
+            }
+        }
+    ]
+}

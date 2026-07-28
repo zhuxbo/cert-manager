@@ -14,6 +14,8 @@
                     "today": {
                         "processing_orders": "integer",
                         "new_orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "new_users": "integer"
                     },
                     "alerts": {

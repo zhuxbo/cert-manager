@@ -11,10 +11,11 @@
     "build:user": "pnpm --filter user build",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
-    "lint:check": "pnpm -r lint:check"
+    "lint:check": "pnpm -r lint:check",
+    "test:shared": "node --test frontend/shared/tests/*.test.ts"
   },
   "engines": {
-    "node": ">=22.13.0",
+    "node": ">=22.18.0",
     "pnpm": ">=11"
   },
   "dependencies": {

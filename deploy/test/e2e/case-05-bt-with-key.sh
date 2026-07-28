@@ -171,7 +171,7 @@ for field in name sType sBody sName backupTo save urladdress save_local notice n
     if echo "$ADD_CRONTAB_BLOCK" | grep -qE "data-urlencode '$field="; then
         e2e_pass "AddCrontab 含字段 $field"
     else
-        e2e_fail "AddCrontab 缺字段 $field（与抓包不对齐）"
+        e2e_fail "AddCrontab 缺字段 ${field}（与抓包不对齐）"
     fi
 done
 

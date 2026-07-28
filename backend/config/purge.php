@@ -13,6 +13,9 @@
  *   故 90 天对已收尾订单成立、对卡单不适用（卡单收尾后其 task 才进入清理）。
  * - retention.notifications：交付记录保留期（天）。90 天 >> 自动重试窗口（1h）+
  *   admin 手动重发运维窗口（几天），清理与重发时间窗零重叠。
+ * - retention.auto_deploy_reports：自动部署上报记录保留期（天）。报告随订单生命周期管理——
+ *   订单终态后按 order_id 清理（PurgeCommand::purgeTerminalOrderReports 显式排除仍 active/在途的订单，
+ *   仅清终态订单超保留期的历史行）；用户删除沿订单链走 UserDataTableRegistry，不按用户维度另建路径。
  * - chunk：单批删除行数上限。分批 + 每批独立事务避免单条大事务撑爆 binlog /
  *   长事务锁等待，与 UserDataPurger 既有分批范式一致。
  *
@@ -22,6 +25,7 @@ return [
     'retention' => [
         'tasks' => (int) env('PURGE_RETENTION_TASKS_DAYS', 90),
         'notifications' => (int) env('PURGE_RETENTION_NOTIFICATIONS_DAYS', 90),
+        'auto_deploy_reports' => (int) env('PURGE_RETENTION_AUTO_DEPLOY_REPORTS_DAYS', 90),
     ],
 
     'chunk' => (int) env('PURGE_CHUNK_SIZE', 1000),

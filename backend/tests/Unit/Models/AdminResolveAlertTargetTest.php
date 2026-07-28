@@ -7,10 +7,8 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 // 收敛：运维告警 admin 目标解析单一源 Admin::resolveAlertTarget()。
-// 原 4 份逐字拷贝（TaskJob/FundAuditCommand/SystemAlert/HealthProbeCommand）。解析规则演进漏改
-// 任一份 → 最需要时（HealthProbe 是脱离 worker 的最后防线）投错地址。
-// 关键：返回 ['admin'=>?Admin,'email'=>?string]，让各调用方保留自己的空值判定——
-// HealthProbe 判 !email（有 adminEmail 别名即使无 Admin 记录也发），其余三份判 !admin?->email。
+// 原多份逐字拷贝（TaskJob/FundAuditCommand/SystemAlert）。解析规则演进漏改任一份都会投错地址。
+// 关键：返回 ['admin'=>?Admin,'email'=>?string]，让各调用方保留自己的空值判定。
 uses(TestCase::class, RefreshDatabase::class);
 
 function setSiteAdminEmailForResolve(?string $email): void
@@ -49,13 +47,12 @@ test('adminEmail 为别名（不命中）但有 Admin → admin=first, email=别
         ->and($t['email'])->toBe('ops-alias@corp.example');
 });
 
-test('adminEmail 为别名且无任何 Admin 记录 → admin=null, email=别名（HealthProbe 最后防线仍可投递）', function () {
+test('adminEmail 为别名且无任何 Admin 记录 → admin=null, email=别名', function () {
     setSiteAdminEmailForResolve('ops-alias@corp.example');
     // 无 Admin 记录
 
     $t = Admin::resolveAlertTarget();
 
-    // 杀手场景：三份判 !admin?->email=true 不发；HealthProbe 判 !email=false → 仍发到别名
     expect($t['admin'])->toBeNull()
         ->and($t['email'])->toBe('ops-alias@corp.example');
 });

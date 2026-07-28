@@ -2,6 +2,7 @@
 
 namespace App\Http\Traits;
 
+use App\Services\Payment\PayConfigCache;
 use Throwable;
 use Yansongda\Pay\Pay;
 
@@ -134,36 +135,11 @@ trait PaymentConfigTrait
     }
 
     /**
-     * 清除支付配置缓存
-     */
-    public function clearConfigCache(): void
-    {
-        $this->clearAlipayCache();
-        $this->clearWechatCache();
-        $this->success(['message' => '支付配置缓存已清除']);
-    }
-
-    /**
      * 清除支付宝缓存 删除证书文件
      */
     public function clearAlipayCache(): void
     {
-        // 清除支付宝配置缓存
-        cache()->forget(self::CACHE_KEY_PREFIX.'alipay');
-
-        // 删除支付宝证书文件
-        $certFiles = [
-            'alipayAppCertPublicKey.crt',
-            'alipayCertPublicKeyRSA2.crt',
-            'alipayRootCert.crt',
-        ];
-
-        foreach ($certFiles as $file) {
-            $filePath = storage_path('pay/'.$file);
-            if (file_exists($filePath)) {
-                unlink($filePath);
-            }
-        }
+        PayConfigCache::forget('alipay');
     }
 
     /**
@@ -171,22 +147,7 @@ trait PaymentConfigTrait
      */
     public function clearWechatCache(): void
     {
-        // 清除微信配置缓存
-        cache()->forget(self::CACHE_KEY_PREFIX.'wechat');
-
-        // 删除微信证书文件
-        $certFiles = [
-            'wechatApiclientKey.pem',
-            'wechatApiclientCert.pem',
-            'wechatPublicKey.pem',
-        ];
-
-        foreach ($certFiles as $file) {
-            $filePath = storage_path('pay/'.$file);
-            if (file_exists($filePath)) {
-                unlink($filePath);
-            }
-        }
+        PayConfigCache::forget('wechat');
     }
 
     /**

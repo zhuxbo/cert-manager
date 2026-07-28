@@ -2,6 +2,8 @@
 
 use App\Models\Admin;
 use App\Models\AdminRefreshToken;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Tests\Traits\ActsAsAdmin;
@@ -178,4 +180,37 @@ test('管理员可以退出登录', function () {
     expect($admin->token_version)->toBe(1);
     expect($admin->logout_at)->not->toBeNull();
     expect(AdminRefreshToken::where('admin_id', $admin->id)->count())->toBe(0);
+});
+
+test('管理员登录成功时回填空的 site.url 为当前访问域名', function () {
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点设置', 'weight' => 1]);
+    Setting::updateOrCreate(['group_id' => $group->id, 'key' => 'url'], ['type' => 'string', 'value' => '']);
+    Admin::factory()->create(['username' => 'urladmin', 'password' => 'password123']);
+
+    $this->postJson('/api/admin/login', ['account' => 'urladmin', 'password' => 'password123'])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    expect(Setting::getByGroupName('site')['url'])->toBe('https://localhost');
+});
+
+test('管理员登录不覆盖已设置的 site.url', function () {
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点设置', 'weight' => 1]);
+    Setting::updateOrCreate(['group_id' => $group->id, 'key' => 'url'], ['type' => 'string', 'value' => 'https://ssl.example.com']);
+    Admin::factory()->create(['username' => 'urladmin2', 'password' => 'password123']);
+
+    $this->postJson('/api/admin/login', ['account' => 'urladmin2', 'password' => 'password123'])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    expect(Setting::getByGroupName('site')['url'])->toBe('https://ssl.example.com');
+});
+
+test('管理员登录失败不回填 site.url', function () {
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点设置', 'weight' => 1]);
+    Setting::updateOrCreate(['group_id' => $group->id, 'key' => 'url'], ['type' => 'string', 'value' => '']);
+    Admin::factory()->create(['username' => 'urladmin3', 'password' => 'password123']);
+
+    $this->postJson('/api/admin/login', ['account' => 'urladmin3', 'password' => 'wrong-password'])
+        ->assertJson(['code' => 0]);
+
+    expect(Setting::getByGroupName('site')['url'])->toBe('');
 });

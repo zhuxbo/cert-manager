@@ -50,11 +50,11 @@ function initializeTaskFourOrderPrices($test, array $productAttributes = []): ar
     ];
     $headers = ['Authorization' => 'Bearer '.JWTAuth::fromUser($admin)];
     $preview = $test->withHeaders($headers)
-        ->postJson('/api/admin/product-price/initialization', $payload)
+        ->postJson('/api/admin/product-price/initialize', $payload)
         ->assertOk()
         ->assertJsonPath('code', 1)
         ->assertJsonPath('data.can_execute', true);
-    $test->withHeaders($headers)->postJson('/api/admin/product-price/initialization', [
+    $test->withHeaders($headers)->postJson('/api/admin/product-price/initialize', [
         ...$payload,
         'preview' => false,
         'preview_token' => $preview->json('data.preview_token'),

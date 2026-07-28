@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\User\AcmeController;
 use App\Http\Controllers\User\AuthController;
+use App\Http\Controllers\User\AutoDeployReportController;
 use App\Http\Controllers\User\ContactController;
 use App\Http\Controllers\User\DashboardController;
 use App\Http\Controllers\User\DelegationController;
@@ -84,7 +85,7 @@ Route::middleware('api.user')->group(function () {
         Route::post('remark/{id}', [OrderController::class, 'remark'])->where('id', '[0-9]+');
         Route::get('download', [OrderController::class, 'download']);
         Route::get('download-validate-file/{id}', [OrderController::class, 'downloadValidateFile'])->where('id', '[0-9]+');
-        Route::get('send-active/{id}', [OrderController::class, 'sendActive'])->where('id', '[0-9]+');
+        Route::post('send-active/{id}', [OrderController::class, 'sendActive'])->where('id', '[0-9]+');
         Route::post('batch-pay', [OrderController::class, 'batchPay']);
         Route::post('batch-commit', [OrderController::class, 'batchCommit']);
         Route::post('batch-revalidate', [OrderController::class, 'batchRevalidate']);
@@ -146,17 +147,15 @@ Route::middleware('api.user')->group(function () {
     Route::prefix('top-up')->group(function () {
         Route::post('alipay', [TopUpController::class, 'alipay']);
         Route::post('wechat', [TopUpController::class, 'wechat']);
-        Route::get('check/{id}', [TopUpController::class, 'check'])->where('id', '[0-9]+');
+        Route::post('check/{id}', [TopUpController::class, 'check'])->where('id', '[0-9]+');
         Route::get('get-bank-account', [TopUpController::class, 'getBankAccount']);
-        // 清除支付配置缓存
-        Route::get('clear-pay-config', [TopUpController::class, 'clearConfigCache']);
     });
 
     // ACME 路由
     Route::prefix('acme')->group(function () {
         Route::get('/', [AcmeController::class, 'index']);
-        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::get('{id}', [AcmeController::class, 'show'])->where('id', '[0-9]+');
+        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::post('new', [AcmeController::class, 'new']);
         Route::post('pay/{id}', [AcmeController::class, 'pay'])->where('id', '[0-9]+');
         Route::post('commit/{id}', [AcmeController::class, 'commit'])->where('id', '[0-9]+');
@@ -178,6 +177,8 @@ Route::middleware('api.user')->group(function () {
         Route::post('check/{id}', [DelegationController::class, 'check'])->where('id', '[0-9]+');
         Route::post('batch-store', [DelegationController::class, 'batchStore']);
     });
+
+    Route::get('auto-deploy-report', [AutoDeployReportController::class, 'index']);
 
     // 工商信息查询
     Route::get('enterprise-lookup/status', [EnterpriseLookupController::class, 'status']);

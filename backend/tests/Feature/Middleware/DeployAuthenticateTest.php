@@ -66,8 +66,11 @@ test('DeployAuthenticate GET query token 通过', function () {
         'status' => 1,
     ]);
 
+    // 不带 order 会被业务层参数校验拦下（invalid_order）——这恰好证明请求已穿过认证中间件，
+    // 比只断 assertOk 精确：认证失败同样是 HTTP 200，单看状态码分辨不出（反模式 15 伪绿）。
     $this->getJson("/api/deploy?token=$deployToken->token")
-        ->assertOk();
+        ->assertOk()
+        ->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
 test('DeployAuthenticate GET query token 无效返回错误', function () {
@@ -83,11 +86,13 @@ test('DeployAuthenticate Bearer 优先于 GET query token', function () {
         'status' => 1,
     ]);
 
-    // Bearer 有效 + query 无效 → 应通过（Bearer 优先）
+    // Bearer 有效 + query 无效 → 应通过（Bearer 优先）。
+    // 断 invalid_order 而非 token_invalid：前者说明认证已放行、被业务层参数校验拦下，
+    // 后者才是"用了 query 里那个无效 token"——这一对取值精确区分了优先级是否生效。
     $this->withHeaders(['Authorization' => "Bearer $validToken->token"])
         ->getJson('/api/deploy?token=invalid-token')
         ->assertOk()
-        ->assertJson(['code' => 1]);
+        ->assertJsonPath('errors.error_code', 'invalid_order');
 });
 
 test('DeployAuthenticate IP 受限 token 在不允许的 IP 返回错误', function () {

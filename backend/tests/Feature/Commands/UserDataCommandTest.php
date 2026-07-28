@@ -2,6 +2,7 @@
 
 use App\Models\Acme;
 use App\Models\ApiToken;
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\CnameDelegation;
 use App\Models\Contact;
@@ -304,6 +305,7 @@ test('exportTables 白名单含 callbacks 不含运营数据', function () {
         ->toContain('users')
         ->toContain('orders')
         ->toContain('certs')
+        ->toContain('auto_deploy_reports')
         ->toContain('funds')
         ->toContain('transactions')
         ->toContain('callbacks')
@@ -312,6 +314,28 @@ test('exportTables 白名单含 callbacks 不含运营数据', function () {
         ->not->toContain('domain_validation_records')
         ->not->toContain('notifications')
         ->not->toContain('order_documents');
+});
+
+test('自动部署上报记录随用户数据导出、统计和清理', function () {
+    $user = User::factory()->create(['status' => 0]);
+    $order = Order::factory()->create(['user_id' => $user->id]);
+    $cert = Cert::factory()->create(['order_id' => $order->id]);
+    $report = AutoDeployReport::create([
+        'order_id' => $order->id,
+        'cert_id' => $cert->id,
+        'status' => 'success',
+        'ip' => '203.0.113.8',
+    ]);
+
+    $stats = collect(UserDataTableRegistry::getStatistics($user));
+    expect($stats->first(fn ($row) => $row[0] === '自动部署上报记录')[1])->toBe(1);
+
+    $this->artisan("user:data export {$user->id} --force")->assertSuccessful();
+    $files = glob(storage_path("app/private/exports/users/{$user->id}_*.sql"));
+    expect(file_get_contents($files[0]))->toContain('INSERT INTO `auto_deploy_reports`');
+
+    $this->artisan("user:data purge {$user->id} --force")->assertSuccessful();
+    expect(AutoDeployReport::find($report->id))->toBeNull();
 });
 
 test('export 雪花 ID 表保留 id 列', function () {

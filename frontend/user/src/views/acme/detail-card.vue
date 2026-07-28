@@ -27,7 +27,9 @@
                 </tr>
                 <tr>
                   <td class="label">品牌</td>
-                  <td class="content">{{ acme.brand }}</td>
+                  <td class="content">
+                    {{ brandLabels[acme.brand?.toLowerCase()] || acme.brand }}
+                  </td>
                 </tr>
                 <tr>
                   <td class="label">产品</td>
@@ -190,6 +192,7 @@ import { nextTick, onMounted, provide, reactive, ref } from "vue";
 import { getAcmeDetail, remarkAcme } from "@/api/acme";
 import type { Acme } from "@/api/acme";
 import { status, statusType } from "./dictionary";
+import { brandLabels } from "@/views/system/dictionary";
 import { message } from "@shared/utils";
 import { DocumentCopy } from "@element-plus/icons-vue";
 import { ElButton } from "element-plus";

@@ -19,13 +19,14 @@
 - 每个用户仅一个 DeployToken（唯一约束）
 - 通过 `UserScope` 限制只能访问用户自己的 Order
 - 支持查询证书、续费/重签、部署回调
+- 认证失败（token 缺失/无效/被禁用、账号禁用、IP 不允许）与限流均返回 HTTP 200 + `code=0`，靠 `errors.error_code` 给下游机器可读分类，取值见 `App\Support\ApiErrorCode`；契约详见 [deploy-renewal.md](deploy-renewal.md)
 
 ### certimate URL 拉取模式
 
 - `GET /api/deploy/?order={id|domain}&field=certificate|private_key`：返回纯 PEM 文本（`Content-Type: text/plain`），适配 certimate `BizUpload` 节点 URL 源
 - `field=certificate` 返回 `cert + intermediate_cert`（fullchain）；`field=private_key` 返回私钥
 - `order` 支持单个数字 ID（跟随 renewed 链）或单个域名（按 `common_name` 精确匹配，`issued_at` 降序取最新 active 证书），续费后 certimate URL 无需变更
-- 不带 `field` 时走原 JSON 分页逻辑（向后兼容）
+- 不带 `field` 时走 JSON 响应：`order` 必填且仅接受订单 ID（多个逗号分隔，上限 100），无分页字段；域名形态**只在带 `field` 时**受理（见 [deploy-renewal.md](deploy-renewal.md)）
 
 ### 凭据不进 URL：用短时签名 URL
 

@@ -1,0 +1,49 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\AutoDeployReportControllerTest::__pest_evaluable_管理员可以分页筛选全部自动部署记录",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/auto-deploy-report",
+            "request_keys": [
+                "status",
+                "user_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "order_id": "integer",
+                            "cert_id": "integer",
+                            "status": "string",
+                            "deployed_at": "null",
+                            "ip": "string",
+                            "message": "string",
+                            "created_at": "string",
+                            "cert": {
+                                "id": "integer",
+                                "common_name": "string",
+                                "intermediate_cert": "null"
+                            },
+                            "order": {
+                                "id": "integer",
+                                "user_id": "integer",
+                                "user": {
+                                    "id": "integer",
+                                    "email": "string",
+                                    "username": "string"
+                                }
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

@@ -84,17 +84,17 @@ class DatabaseBackupController extends BaseController
     }
 
     /**
-     * Schema 对比：GET /api/admin/database/backups/{id}/schema-diff
+     * Schema 对比：GET /api/admin/database/backups/{backupId}/schema-diff
      * 返回当前数据库结构 vs 备份自带 schema.json 的差异摘要。
      */
-    public function schemaDiff(string $id): void
+    public function schemaDiff(string $backupId): void
     {
-        $backup = $this->service->resolveBackup($id);
+        $backup = $this->service->resolveBackup($backupId);
         if ($backup === null) {
             $this->error('备份不存在');
         }
 
-        $schema = $this->service->readSchema($id);
+        $schema = $this->service->readSchema($backupId);
         if ($schema === null) {
             $this->success([
                 'has_schema' => false,
@@ -155,16 +155,16 @@ class DatabaseBackupController extends BaseController
     }
 
     /**
-     * 触发异步恢复：POST /api/admin/database/backups/{id}/restore
+     * 触发异步恢复：POST /api/admin/database/backups/{backupId}/restore
      * body: { mode: full|incremental }
      */
-    public function restore(Request $request, string $id): void
+    public function restore(Request $request, string $backupId): void
     {
         $data = $request->validate([
             'mode' => 'required|in:full,incremental',
         ]);
 
-        $backup = $this->service->resolveBackup($id);
+        $backup = $this->service->resolveBackup($backupId);
         if ($backup === null) {
             $this->error('备份不存在');
         }
@@ -183,44 +183,44 @@ class DatabaseBackupController extends BaseController
         $this->service->setJobProgress($token, [
             'status' => 'queued',
             'message' => '任务已入队',
-            'backup_id' => $id,
+            'backup_id' => $backupId,
             'mode' => $data['mode'],
             'admin_id' => $adminId,
             'updated_at' => now()->toDateTimeString(),
         ]);
 
-        RestoreBackupJob::dispatch($token, $id, $data['mode'], $adminId)
+        RestoreBackupJob::dispatch($token, $backupId, $data['mode'], $adminId)
             ->onQueue(config('queue.names.tasks'));
 
         $this->success(['token' => $token]);
     }
 
     /**
-     * 删除：DELETE /api/admin/database/backups/{id}
+     * 删除：DELETE /api/admin/database/backups/{backupId}
      */
-    public function destroy(string $id): void
+    public function destroy(string $backupId): void
     {
-        $backup = $this->service->resolveBackup($id);
+        $backup = $this->service->resolveBackup($backupId);
         if ($backup === null) {
             $this->error('备份不存在');
         }
 
-        $count = $this->service->deleteBackup($id);
+        $count = $this->service->deleteBackup($backupId);
         $this->success(['deleted' => $count]);
     }
 
     /**
-     * 签发一次性下载 token：POST /api/admin/database/backups/{id}/download-token
+     * 签发一次性下载 token：POST /api/admin/database/backups/{backupId}/download-token
      */
-    public function downloadToken(string $id): void
+    public function downloadToken(string $backupId): void
     {
-        $backup = $this->service->resolveBackup($id);
+        $backup = $this->service->resolveBackup($backupId);
         if ($backup === null) {
             $this->error('备份不存在');
         }
 
         $adminId = (int) ($this->guard->id() ?? 0);
-        $token = $this->service->issueDownloadToken($id, $adminId);
+        $token = $this->service->issueDownloadToken($backupId, $adminId);
 
         $this->success([
             'token' => $token,

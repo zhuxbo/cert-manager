@@ -18,9 +18,8 @@ use Illuminate\Support\Facades\Cache;
  *  - 带 TTL 则键到期消失 → 缺失 → degraded 200，会把死 scheduler 误判为「未装机」。
  *  - cache:clear 清键 → 缺失 → degraded 200（新装机/清缓存不 503）。
  *
- * F1 死角（文档化于 skills/ops/deploy-ops.md）：「已死 scheduler + 之后 cache:clear」→ 键缺失
- * → degraded 200 → 拨测静默。这是 forever+missing→degraded 换取「新装机不 503」的固有对价；
- * 兜底 = 宝塔站点外部监控（部署必选项，无视本机 cache 状态）。
+ * 访问时检测边界（文档化于 skills/ops/deploy-ops.md）：「已死 scheduler + 之后 cache:clear」
+ * → 键缺失 → degraded 200，后台健康度显示“需要关注”，不会主动发信。
  */
 class HeartbeatCommand extends Command
 {

@@ -7,6 +7,7 @@ use App\Http\Requests\Auth\UpdatePasswordRequest;
 use App\Http\Requests\Auth\UpdateProfileRequest;
 use App\Models\Admin;
 use App\Models\AdminRefreshToken;
+use App\Models\Setting;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -94,6 +95,8 @@ class AuthController extends BaseController
         $admin->last_login_ip = request()->ip();
         $admin->save();
 
+        $this->backfillSiteUrl($request);
+
         $this->success([
             'access_token' => $accessToken,
             'expires_in' => now()->addMinutes(config('jwt.ttl')),
@@ -102,6 +105,24 @@ class AuthController extends BaseController
             'roles' => null,
             'permissions' => null,
         ]);
+    }
+
+    /**
+     * site.url 为空时，用管理员登录成功时的访问域名按 HTTPS 回填（单域名部署 admin 与 user 同域）。
+     * 已认证上下文 + 真实管理员从真实域名访问，Host 可信；仅空值写一次，之后以后台设置为准。
+     */
+    private function backfillSiteUrl(LoginRequest $request): void
+    {
+        $setting = Setting::query()
+            ->whereHas('group', fn ($query) => $query->where('name', 'site'))
+            ->where('key', 'url')
+            ->first();
+        if (! $setting || (is_string($setting->value) && trim($setting->value) !== '')) {
+            return;
+        }
+
+        $setting->value = 'https://'.$request->getHttpHost();
+        $setting->save();
     }
 
     /**

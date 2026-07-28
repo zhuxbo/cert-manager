@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\AcmeController;
 use App\Http\Controllers\Admin\AdminController;
 use App\Http\Controllers\Admin\ApiTokenController;
 use App\Http\Controllers\Admin\AuthController;
+use App\Http\Controllers\Admin\AutoDeployReportController;
 use App\Http\Controllers\Admin\CallbackController;
 use App\Http\Controllers\Admin\CertController;
 use App\Http\Controllers\Admin\ChainController;
@@ -95,19 +96,20 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     RouteHelper::registerResourceRoutes('deploy-token', DeployTokenController::class);
     RouteHelper::registerResourceRoutes('product', ProductController::class);
     Route::prefix('product')->group(function () {
+        Route::post('batch-delegation', [ProductController::class, 'batchDelegation']);
         Route::post('import', [ProductController::class, 'import']);
         Route::get('cost/{id}', [ProductController::class, 'getCost'])->where('id', '[0-9]+');
         Route::patch('cost/{id}', [ProductController::class, 'updateCost'])->where('id', '[0-9]+');
         Route::get('source', [ProductController::class, 'getSourceList']);
         Route::post('export', [ProductController::class, 'export']);
     });
-    Route::prefix('product-price')->group(function () {
-        Route::post('initialization', [ProductPriceController::class, 'initialization']);
-        Route::get('get', [ProductPriceController::class, 'get']);
-        Route::put('set', [ProductPriceController::class, 'set']);
-        Route::get('export', [ProductPriceController::class, 'export']);
-    });
     RouteHelper::registerResourceRoutes('product-price', ProductPriceController::class);
+    Route::prefix('product-price')->group(function () {
+        Route::post('initialize', [ProductPriceController::class, 'initialization']);
+        Route::get('prices', [ProductPriceController::class, 'get']);
+        // set 是按 (product_id, level_code, period) 的子集 upsert，不删未提及行 → PATCH
+        Route::patch('prices', [ProductPriceController::class, 'set']);
+    });
 
     // 订单路由
     Route::prefix('order')->group(function () {
@@ -131,7 +133,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('remark/{id}', [OrderController::class, 'remark'])->where('id', '[0-9]+');
         Route::get('download', [OrderController::class, 'download']);
         Route::get('download-validate-file/{id}', [OrderController::class, 'downloadValidateFile'])->where('id', '[0-9]+');
-        Route::get('send-active/{id}', [OrderController::class, 'sendActive'])->where('id', '[0-9]+');
+        Route::post('send-active/{id}', [OrderController::class, 'sendActive'])->where('id', '[0-9]+');
         Route::post('batch-pay', [OrderController::class, 'batchPay']);
         Route::post('batch-commit', [OrderController::class, 'batchCommit']);
         Route::post('batch-revalidate', [OrderController::class, 'batchRevalidate']);
@@ -168,12 +170,12 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     // 任务管理
     Route::prefix('task')->group(function () {
         Route::get('/', [TaskController::class, 'index']);
-        Route::get('/{id}', [TaskController::class, 'show'])->where('id', '[0-9]+');
-        Route::delete('/{id}', [TaskController::class, 'destroy'])->where('id', '[0-9]+');
-        Route::delete('/batch', [TaskController::class, 'batchDestroy']);
-        Route::post('/batch-start', [TaskController::class, 'batchStart']);
-        Route::post('/batch-stop', [TaskController::class, 'batchStop']);
-        Route::post('/batch-execute', [TaskController::class, 'batchExecute']);
+        Route::get('{id}', [TaskController::class, 'show'])->where('id', '[0-9]+');
+        Route::delete('{id}', [TaskController::class, 'destroy'])->where('id', '[0-9]+');
+        Route::delete('batch', [TaskController::class, 'batchDestroy']);
+        Route::post('batch-start', [TaskController::class, 'batchStart']);
+        Route::post('batch-stop', [TaskController::class, 'batchStop']);
+        Route::post('batch-execute', [TaskController::class, 'batchExecute']);
     });
 
     // 财务管理路由
@@ -190,10 +192,17 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     RouteHelper::registerResourceRoutes('setting', SettingController::class);
     RouteHelper::registerResourceRoutes('notification-template', NotificationTemplateController::class);
     Route::prefix('setting')->group(function () {
-        Route::get('group/{groupId}', [SettingController::class, 'getByGroup']);
-        Route::put('batch-update', [SettingController::class, 'batchUpdate']);
+        Route::post('site-image/{kind}', [SettingController::class, 'uploadSiteImage'])
+            ->where('kind', 'favicon|logo|logo-expanded|qrcode|login-image');
+        Route::delete('site-image/{kind}', [SettingController::class, 'deleteSiteImage'])
+            ->where('kind', 'favicon|logo|logo-expanded|qrcode|login-image');
+        Route::get('group/{groupId}', [SettingController::class, 'getByGroup'])
+            ->where('groupId', '[0-9]+');
+        Route::patch('batch-update', [SettingController::class, 'batchUpdate']);
         Route::post('clear-cache', [SettingController::class, 'clearCache']);
         Route::post('clear-all-cache', [SettingController::class, 'clearAllCache']);
+        // 清除支付配置缓存并删除已落盘的支付证书（仅 admin 可调）
+        Route::post('clear-pay-cache', [SettingController::class, 'clearPayCache']);
     });
 
     // 日志路由
@@ -212,8 +221,8 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     // ACME 路由
     Route::prefix('acme')->group(function () {
         Route::get('/', [AcmeController::class, 'index']);
-        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::get('{id}', [AcmeController::class, 'show'])->where('id', '[0-9]+');
+        Route::get('batch', [AcmeController::class, 'batchShow']);
         Route::post('new', [AcmeController::class, 'new']);
         Route::post('pay/{id}', [AcmeController::class, 'pay'])->where('id', '[0-9]+');
         Route::post('commit/{id}', [AcmeController::class, 'commit'])->where('id', '[0-9]+');
@@ -236,12 +245,14 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('batch-store', [DelegationController::class, 'batchStore']);
     });
 
+    Route::get('auto-deploy-report', [AutoDeployReportController::class, 'index']);
+
     // 通知管理
     Route::prefix('notification')->group(function () {
         Route::get('/', [NotificationController::class, 'index']);
         Route::get('{id}', [NotificationController::class, 'show'])->where('id', '[0-9]+');
         Route::post('test-send', [NotificationController::class, 'sendTest']);
-        Route::post('{id}/resend', [NotificationController::class, 'resend'])->where('id', '[0-9]+');
+        Route::post('resend/{id}', [NotificationController::class, 'resend'])->where('id', '[0-9]+');
     });
 
     // 插件管理
@@ -262,14 +273,14 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     Route::prefix('database')->group(function () {
         Route::get('backups', [DatabaseBackupController::class, 'index']);
         Route::post('backups', [DatabaseBackupController::class, 'store']);
-        Route::delete('backups/{id}', [DatabaseBackupController::class, 'destroy'])
-            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
-        Route::get('backups/{id}/schema-diff', [DatabaseBackupController::class, 'schemaDiff'])
-            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
-        Route::post('backups/{id}/restore', [DatabaseBackupController::class, 'restore'])
-            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
-        Route::post('backups/{id}/download-token', [DatabaseBackupController::class, 'downloadToken'])
-            ->where('id', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::delete('backups/{backupId}', [DatabaseBackupController::class, 'destroy'])
+            ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::get('backups/{backupId}/schema-diff', [DatabaseBackupController::class, 'schemaDiff'])
+            ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::post('backups/{backupId}/restore', [DatabaseBackupController::class, 'restore'])
+            ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
+        Route::post('backups/{backupId}/download-token', [DatabaseBackupController::class, 'downloadToken'])
+            ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
         Route::get('jobs/{token}', [DatabaseBackupController::class, 'jobStatus']);
     });
 

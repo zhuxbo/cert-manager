@@ -182,10 +182,10 @@ export function downloadValidateFile(id: number): Promise<any> {
 
 /** 发送激活邮件 */
 export function sendActive(id: number, email?: string): Promise<BaseResponse> {
-  return http.get<BaseResponse<null>, { id: number; email?: string }>(
+  return http.post<BaseResponse<null>, { email?: string }>(
     `/order/send-active/${id}`,
     {
-      params: { email }
+      data: { email }
     }
   );
 }

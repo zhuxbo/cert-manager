@@ -9,11 +9,15 @@ uses(TestCase::class);
 
 beforeEach(function () {
     $this->extractor = new PackageExtractor;
+    $this->originalStoragePath = storage_path();
     $this->testDir = storage_path('upgrades/test_'.uniqid());
     File::makeDirectory($this->testDir, 0755, true);
+    app()->useStoragePath("$this->testDir/storage");
 });
 
 afterEach(function () {
+    app()->useStoragePath($this->originalStoragePath);
+
     // 清理测试目录
     if (File::isDirectory($this->testDir)) {
         File::deleteDirectory($this->testDir);
@@ -308,6 +312,127 @@ test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态�
         expect("$installDir/app/Marker.php")->toBeFile();
     } finally {
         app()->setBasePath($originalBase);
+    }
+});
+
+test('applyFrontendUpgrade 更新 platform config 且不保留 admin logo', function () {
+    $sourceDir = "$this->testDir/pkg/frontend/admin";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/platform-config.json", '{"source":"new"}');
+
+    $installDir = "$this->testDir/install";
+    $targetDir = "$installDir/frontend/admin";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory($targetDir, 0755, true);
+    File::put("$targetDir/platform-config.json", '{"source":"old"}');
+    File::put("$targetDir/logo.svg", 'OLD-LOGO');
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
+        $method->invoke($this->extractor, $sourceDir, 'admin');
+
+        expect(File::get("$targetDir/platform-config.json"))->toBe('{"source":"new"}')
+            ->and("$targetDir/logo.svg")->not->toBeFile()
+            // 不含迁移键（Title/Beian/Brands）的配置不暂存——新版配置形态，后续升级不再产生暂存
+            ->and(storage_path('app/legacy-platform-config/admin.json'))->not->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+        File::deleteDirectory(storage_path('app/legacy-platform-config'));
+    }
+});
+
+test('applyFrontendUpgrade 保留 user 的 Logo、新旧二维码和登录配图回落资源', function () {
+    $sourceDir = "$this->testDir/pkg/frontend/user";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/app.js", 'NEW-APP');
+
+    $installDir = "$this->testDir/install";
+    $targetDir = "$installDir/frontend/user";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory($targetDir, 0755, true);
+    File::put("$targetDir/logo.svg", 'OLD-LOGO');
+    File::put("$targetDir/qrcode.svg", 'SVG-QRCODE');
+    File::put("$targetDir/qrcode.png", 'PNG-QRCODE');
+    File::put("$targetDir/login.svg", 'OLD-LOGIN');
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
+        $method->invoke($this->extractor, $sourceDir, 'user');
+
+        expect(File::get("$targetDir/logo.svg"))->toBe('OLD-LOGO')
+            ->and(File::get("$targetDir/qrcode.svg"))->toBe('SVG-QRCODE')
+            ->and(File::get("$targetDir/qrcode.png"))->toBe('PNG-QRCODE')
+            ->and(File::get("$targetDir/login.svg"))->toBe('OLD-LOGIN')
+            ->and(File::get("$targetDir/app.js"))->toBe('NEW-APP');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyFrontendUpgrade 不向仅有旧 PNG 二维码的安装交付 SVG', function () {
+    $sourceDir = "$this->testDir/pkg/frontend/user";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/app.js", 'NEW-APP');
+
+    $installDir = "$this->testDir/install";
+    $targetDir = "$installDir/frontend/user";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory($targetDir, 0755, true);
+    File::put("$targetDir/qrcode.png", 'OLD-QRCODE');
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
+        $method->invoke($this->extractor, $sourceDir, 'user');
+
+        expect(File::get("$targetDir/qrcode.png"))->toBe('OLD-QRCODE')
+            ->and("$targetDir/qrcode.svg")->not->toBeFile()
+            ->and(File::get("$targetDir/app.js"))->toBe('NEW-APP');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyFrontendUpgrade 暂存旧 platform config 供 SettingSeeder 导入', function () {
+    $sourceDir = "$this->testDir/pkg/frontend/user";
+    File::makeDirectory($sourceDir, 0755, true);
+    File::put("$sourceDir/platform-config.json", '{"source":"new"}');
+
+    $installDir = "$this->testDir/install";
+    $targetDir = "$installDir/frontend/user";
+    File::makeDirectory("$installDir/backend", 0755, true);
+    File::makeDirectory($targetDir, 0755, true);
+    File::put("$targetDir/platform-config.json", '{"Beian":"真实备案号","Brands":["certum"]}');
+
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
+        $method->invoke($this->extractor, $sourceDir, 'user');
+
+        // 旧配置在被新包覆盖前暂存到 storage（storage_path 在测试中被按 worker 隔离钉死，
+        // 与实现同源取值），迁移据此导入历史定制值
+        expect(File::get(storage_path('app/legacy-platform-config/user.json')))
+            ->toBe('{"Beian":"真实备案号","Brands":["certum"]}')
+            ->and(File::get("$targetDir/platform-config.json"))->toBe('{"source":"new"}');
+
+        // 中断重跑：即使当前文件仍含迁移键，已存在的暂存也不得被覆盖（首跑旧值优先）
+        File::put("$targetDir/platform-config.json", '{"Beian":"重跑时的新值"}');
+        $method->invoke($this->extractor, $sourceDir, 'user');
+        expect(File::get(storage_path('app/legacy-platform-config/user.json')))
+            ->toBe('{"Beian":"真实备案号","Brands":["certum"]}');
+    } finally {
+        app()->setBasePath($originalBase);
+        File::deleteDirectory(storage_path('app/legacy-platform-config'));
     }
 });
 

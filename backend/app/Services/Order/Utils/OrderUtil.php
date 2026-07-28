@@ -235,6 +235,18 @@ class OrderUtil
     }
 
     /**
+     * 转换数值时必须保持字符串的键（任意层级按键名豁免）
+     *
+     * 这些字段的取值语义就是「一段文本」，被转成数字后下游按 string 声明的形参会直接抛
+     * TypeError：`csr='0'` 曾让 Deploy 的 POST /api/deploy 返回 **HTTP 400 + 裸 TypeError 文案**
+     * （`CsrUtil::matchKey(): Argument #1 ($csr) must be of type string, int given`，还带内部路径），
+     * 违反「业务失败一律 HTTP 200 + code=0」的契约（有意保留的非 200 出口只有并发忙的 503 与
+     * `field=` PEM 直出两条，TypeError 不在其列），下游按网络错误无限重试。豁免后畸形取值
+     * 照常走进签发链路、由 CSR 解析报出业务错误（200 + code=0），失败可见且可分类。
+     */
+    private const PRESERVE_STRING_KEYS = ['csr', 'private_key'];
+
+    /**
      * 转换数组中的数值字符串为数值
      */
     public static function convertNumericValues(array $array): array
@@ -244,6 +256,8 @@ class OrderUtil
             if (is_array($value)) {
                 // 如果是数组，递归调用
                 $newArray[$key] = self::convertNumericValues($value);
+            } elseif (in_array($key, self::PRESERVE_STRING_KEYS, true)) {
+                $newArray[$key] = $value;
             } elseif (is_numeric($value) && (! is_string($value) || (! preg_match('/[eE]/', $value) && strlen($value) <= 15))) {
                 $newArray[$key] = $value + 0;
             } else {

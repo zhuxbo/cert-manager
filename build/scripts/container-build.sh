@@ -105,16 +105,19 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 if [ "$BUILD_BACKEND" = "true" ]; then
     log_info "复制后端源码..."
     mkdir -p "$WORKSPACE_DIR/backend"
+    rm -rf "$WORKSPACE_DIR/backend/storage/app"
     rsync -a --delete \
         --exclude='.git' \
         --exclude='vendor' \
         --exclude='.idea' \
         --exclude='.vscode' \
         --exclude='storage/debugbar' \
+        --exclude='storage/app/***' \
         --exclude='storage/backups' \
         --exclude='storage/upgrades' \
         --exclude='storage/logs/*.log' \
         "$SOURCE_DIR/backend/" "$WORKSPACE_DIR/backend/"
+    mkdir -p "$WORKSPACE_DIR/backend/storage/app/public" "$WORKSPACE_DIR/backend/storage/app/private"
     log_success "后端源码已复制"
 fi
 
@@ -161,22 +164,27 @@ if [ "$BUILD_ADMIN" = "true" ] || [ "$BUILD_USER" = "true" ]; then
     # 覆盖 logo.svg（如果 custom 中存在）
     if [ -f "$CUSTOM_DIR/logo.svg" ]; then
         log_info "使用自定义 logo.svg 覆盖..."
-        if [ "$BUILD_ADMIN" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/admin/public" ]; then
-            cp "$CUSTOM_DIR/logo.svg" "$WORKSPACE_DIR/frontend/admin/public/logo.svg"
-            log_success "已覆盖 admin logo.svg"
-        fi
         if [ "$BUILD_USER" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/user/public" ]; then
             cp "$CUSTOM_DIR/logo.svg" "$WORKSPACE_DIR/frontend/user/public/logo.svg"
             log_success "已覆盖 user logo.svg"
         fi
     fi
 
-    # 覆盖 qrcode.png（如果 custom 中存在，仅 user）
-    if [ -f "$CUSTOM_DIR/qrcode.png" ]; then
+    # 覆盖 qrcode.svg（如果 custom 中存在，仅 user）
+    if [ -f "$CUSTOM_DIR/qrcode.svg" ]; then
         if [ "$BUILD_USER" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/user/public" ]; then
-            log_info "使用自定义 qrcode.png 覆盖..."
-            cp "$CUSTOM_DIR/qrcode.png" "$WORKSPACE_DIR/frontend/user/public/qrcode.png"
-            log_success "已覆盖 user qrcode.png"
+            log_info "使用自定义 qrcode.svg 覆盖..."
+            cp "$CUSTOM_DIR/qrcode.svg" "$WORKSPACE_DIR/frontend/user/public/qrcode.svg"
+            log_success "已覆盖 user qrcode.svg"
+        fi
+    fi
+
+    # 覆盖 login.svg（如果 custom 中存在，仅 user）
+    if [ -f "$CUSTOM_DIR/login.svg" ]; then
+        if [ "$BUILD_USER" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/user/public" ]; then
+            log_info "使用自定义 login.svg 覆盖..."
+            cp "$CUSTOM_DIR/login.svg" "$WORKSPACE_DIR/frontend/user/public/login.svg"
+            log_success "已覆盖 user login.svg"
         fi
     fi
 fi

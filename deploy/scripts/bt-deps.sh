@@ -395,7 +395,7 @@ auto_install_ext() {
         # 路径 3：.so 已存在但 ini 未启用（PHP 内置扩展如 calendar 常见）
         # 检测 extension_dir/<ext>.so 是否存在 → 写 cli + fpm 两份 ini → 验证生效
         if [ "$installed" = false ] && [ -n "$php_ext_dir" ] && [ -f "$php_ext_dir/${ext}.so" ]; then
-            log_info "  → 检测到 ${ext}.so 已编译于 $php_ext_dir，启用 ini"
+            log_info "  → 检测到 ${ext}.so 已编译于 ${php_ext_dir}，启用 ini"
             local ini_dir="/www/server/php/$PHP_VERSION/etc"
             for ini_file in "$ini_dir/php.ini" "$ini_dir/php-cli.ini"; do
                 if [ -f "$ini_file" ] && ! grep -qE "^[[:space:]]*extension[[:space:]]*=[[:space:]]*${ext}\.so" "$ini_file"; then

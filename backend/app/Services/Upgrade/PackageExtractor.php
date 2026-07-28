@@ -221,12 +221,11 @@ class PackageExtractor
     }
 
     /**
-     * 需要保护的前端用户配置文件
+     * 需要保护的前端静态回落资源
      * 这些文件在升级时会被保留，不会被覆盖
      */
-    protected array $protectedFrontendFiles = [
-        'admin' => ['logo.svg', 'platform-config.json'],
-        'user' => ['logo.svg', 'platform-config.json', 'qrcode.png'],
+    protected array $protectedFrontendAssets = [
+        'user' => ['logo.svg', 'qrcode.svg', 'qrcode.png', 'login.svg'],
     ];
 
     /**
@@ -269,8 +268,22 @@ class PackageExtractor
             File::makeDirectory($targetDir, 0755, true);
         }
 
-        // 保护用户配置文件：先备份
-        $preserved = $this->preserveFrontendConfig($targetDir, $type);
+        // 存量 platform-config.json 一次性暂存到 storage，供 SettingSeeder 导入历史定制值
+        // （Beian/Title/Brands）；seed 成功后由 UpgradeService 统一清理，不还原到前端。
+        // 仅当源文件含迁移键时才暂存（新版配置已不含，后续升级自然不再暂存）；
+        // 已存在的暂存不覆盖：升级中断重试时前端已是新包配置，覆盖会冲掉首跑幸存的旧值
+        $legacyConfig = "$targetDir/platform-config.json";
+        $legacyStash = storage_path("app/legacy-platform-config/$type.json");
+        if (File::exists($legacyConfig) && ! File::exists($legacyStash)) {
+            $legacyContents = File::get($legacyConfig);
+            if (preg_match('/"(Title|Beian|Brands)"/', $legacyContents) === 1) {
+                File::ensureDirectoryExists(storage_path('app/legacy-platform-config'));
+                File::put($legacyStash, $legacyContents);
+            }
+        }
+
+        // 保护静态回落资源：先备份
+        $preserved = $this->preserveFrontendAssets($targetDir, $type);
 
         // 清空旧前端文件（构建产物带 hash，不清理会越积越多）
         File::deleteDirectory($targetDir);
@@ -279,23 +292,23 @@ class PackageExtractor
         // 同步目录
         $this->syncDirectory($sourceDir, $targetDir);
 
-        // 恢复用户配置文件
-        $this->restoreFrontendConfig($targetDir, $preserved, $type);
+        // 恢复静态回落资源
+        $this->restoreFrontendAssets($targetDir, $preserved, $type);
     }
 
     /**
-     * 保留前端用户配置文件
+     * 保留前端静态回落资源
      */
-    protected function preserveFrontendConfig(string $targetDir, string $type): array
+    protected function preserveFrontendAssets(string $targetDir, string $type): array
     {
         $preserved = [];
-        $files = $this->protectedFrontendFiles[$type] ?? [];
+        $files = $this->protectedFrontendAssets[$type] ?? [];
 
         foreach ($files as $file) {
             $filePath = "$targetDir/$file";
             if (File::exists($filePath)) {
                 $preserved[$file] = File::get($filePath);
-                Log::info("保留前端配置文件: $type/$file");
+                Log::info("保留前端静态资源: $type/$file");
             }
         }
 
@@ -303,14 +316,14 @@ class PackageExtractor
     }
 
     /**
-     * 恢复前端用户配置文件
+     * 恢复前端静态回落资源
      */
-    protected function restoreFrontendConfig(string $targetDir, array $preserved, string $type): void
+    protected function restoreFrontendAssets(string $targetDir, array $preserved, string $type): void
     {
         foreach ($preserved as $file => $content) {
             $filePath = "$targetDir/$file";
             File::put($filePath, $content);
-            Log::info("恢复前端配置文件: $type/$file");
+            Log::info("恢复前端静态资源: $type/$file");
         }
     }
 

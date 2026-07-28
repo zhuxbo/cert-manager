@@ -57,3 +57,7 @@ export * from "./responsive";
 export * from "./globalPolyfills";
 export * from "./preventDefault";
 export * from "./propTypes";
+export * from "./siteLogo";
+export * from "./favicon";
+export * from "./copyright";
+export * from "./brandOptions";

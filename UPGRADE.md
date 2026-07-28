@@ -72,7 +72,7 @@ rm /www/wwwroot/ssl-manager/backend/storage/framework/upgrade.lock
 14. queue:restart（常驻 worker 跑完当前 job 后退出、supervisor 自动拉起新代码——**滚动重启，非停 worker**）
 ```
 
-> **升级冻结（freeze）+ 停 worker 为人工 / 外部编排步骤，一键流程不自动执行。** 冻结锁（`POST /api/admin/upgrade/freeze` 或 `php artisan upgrade:freeze`）让 HTTP 返回 503、且队列 Job 在 `SkipWhenUpgradeFrozen` 中被 `release(60)` 暂存回队列——但它**不停止 worker 进程**；worker 不停则每 60s 逐次 release、累加 attempts，最终可能把 Job 误杀为 `MaxAttemptsExceeded`（详见 `CLAUDE.md` 升级冻结约定）。要形成"冻结 + 停 worker"双保险，须运维在宝塔面板（软件商店 → Supervisor）手工停掉队列守护进程——**程序名为站点域名**（`bt-install.sh` 按 `$SITE_DOMAIN` 创建以保多站点唯一，**不是** `manager-queue` / `ssl-manager-queue`）——升级完成后 `php artisan upgrade:unfreeze` 再重启该进程。`UpgradeService::performUpgradeWithStatus()` 与 `deploy/upgrade.sh` 当前**均不调用 freeze、也不停 worker**。
+> **升级冻结（freeze）+ 停 worker 为人工 / 外部编排步骤，一键流程不自动执行。** 冻结锁（`POST /api/admin/upgrade/freeze` 或 `php artisan upgrade:freeze`）让 HTTP 返回 503、且队列 Job 在 `SkipWhenUpgradeFrozen` 中被 `release(60)` 暂存回队列——但它**不停止 worker 进程**；worker 不停则每 60s 逐次 release、累加 attempts，最终可能把 Job 误杀为 `MaxAttemptsExceeded`（详见 `skills/backend/upgrade.md` 升级冻结契约）。要形成"冻结 + 停 worker"双保险，须运维在宝塔面板（软件商店 → Supervisor）手工停掉队列守护进程——**程序名为站点域名**（`bt-install.sh` 按 `$SITE_DOMAIN` 创建以保多站点唯一，**不是** `manager-queue` / `ssl-manager-queue`）——升级完成后 `php artisan upgrade:unfreeze` 再重启该进程。`UpgradeService::performUpgradeWithStatus()` 与 `deploy/upgrade.sh` 当前**均不调用 freeze、也不停 worker**。
 
 ---
 
@@ -118,6 +118,8 @@ sudo -u www php artisan schedule:backup:restore <id>
 ---
 
 ## 健康检查端点
+
+升级末尾仅在站点 PHP 版本发生变化时修正宝塔 `schedule:run` 计划任务的 PHP 绝对路径，保留任务原有命令主体和日志策略；新安装的任务输出由宝塔面板记录。
 
 ```bash
 # 公开端点

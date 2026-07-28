@@ -5,7 +5,6 @@ namespace App\Http\Controllers\V2;
 use App\Exceptions\ApiResponseException;
 use App\Exceptions\MutationBusyException;
 use App\Http\Controllers\Controller;
-use App\Http\Traits\OrderIdCompatTrait;
 use App\Models\ApiToken;
 use App\Models\Cert;
 use App\Models\Order;
@@ -24,8 +23,6 @@ use Throwable;
 
 class ApiController extends Controller
 {
-    use OrderIdCompatTrait;
-
     protected Order $model;
 
     protected Action $action;
@@ -267,9 +264,6 @@ class ApiController extends Controller
 
         $this->resolveReferId($params['refer_id'] ?? '');
 
-        // 处理order_id参数兼容
-        $this->processOrderIdParamInArray($params);
-
         $params['action'] = 'renew';
         $params['channel'] = 'api';
 
@@ -315,9 +309,6 @@ class ApiController extends Controller
         }
 
         $this->resolveReferId($params['refer_id'] ?? '');
-
-        // 处理order_id参数兼容
-        $this->processOrderIdParamInArray($params);
 
         $params['action'] = 'reissue';
         $params['channel'] = 'api';
@@ -383,7 +374,7 @@ class ApiController extends Controller
      */
     public function get(): void
     {
-        $order_id = $this->processOrderIdParam();
+        $order_id = (int) $this->request->input('order_id', '');
 
         $latestCertFields = [
             'id',
@@ -393,6 +384,7 @@ class ApiController extends Controller
             'alternative_names',
             'dcv',
             'validation',
+            'documents',
             'csr',
             'private_key',
             'cert',
@@ -501,7 +493,7 @@ class ApiController extends Controller
      */
     public function cancel(): void
     {
-        $order_id = $this->processOrderIdParam();
+        $order_id = (int) $this->request->input('order_id', '');
 
         $order = Order::with(['latestCert', 'product'])
             ->where('orders.id', $order_id)
@@ -588,7 +580,7 @@ class ApiController extends Controller
      */
     public function revalidate(): void
     {
-        $order_id = $this->processOrderIdParam();
+        $order_id = (int) $this->request->input('order_id', '');
         $this->action->revalidate($order_id);
     }
 
@@ -597,7 +589,7 @@ class ApiController extends Controller
      */
     public function updateDCV(): void
     {
-        $order_id = $this->processOrderIdParam();
+        $order_id = (int) $this->request->input('order_id', '');
         $method = (string) $this->request->input('method');
 
         // API 不支持委托验证方法
@@ -613,7 +605,7 @@ class ApiController extends Controller
      */
     public function download(): void
     {
-        $order_id = $this->processOrderIdParam();
+        $order_id = (int) $this->request->input('order_id', '');
         $type = $this->request->input('type', 'all') ?? 'all';
 
         $this->action->download($order_id, $type);

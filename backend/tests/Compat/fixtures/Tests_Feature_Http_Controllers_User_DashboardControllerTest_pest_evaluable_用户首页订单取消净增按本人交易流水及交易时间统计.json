@@ -1,0 +1,82 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DashboardControllerTest::__pest_evaluable_用户首页订单取消净增按本人交易流水及交易时间统计",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/monthly-comparison",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "current_month": {
+                        "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "consumption": "integer"
+                    },
+                    "last_month": {
+                        "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "consumption": "integer"
+                    },
+                    "growth": {
+                        "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "consumption": "integer"
+                    }
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/orders",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "total_orders": "integer",
+                    "order_count": "integer",
+                    "active_orders": "integer",
+                    "processing_orders": "integer",
+                    "expiring_7_days": "integer",
+                    "expiring_30_days": "integer",
+                    "cancelled_orders": "integer",
+                    "net_orders": "integer",
+                    "status_distribution": "array<unknown>",
+                    "brand_distribution": {
+                        "test brand": "integer"
+                    },
+                    "monthly_orders": "integer",
+                    "monthly_cancelled_orders": "integer",
+                    "monthly_net_orders": "integer",
+                    "monthly_consumption": "integer"
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/dashboard/trend",
+            "request_keys": [
+                "period"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "__list_of__": {
+                        "date": "string",
+                        "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
+                        "consumption": "integer"
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -51,7 +51,7 @@ export function show(id: number) {
 
 export function resend(id: number, data: Record<string, never>) {
   return http.post<BaseResponse<{ notification_id: number }>, typeof data>(
-    `/notification/${id}/resend`,
+    `/notification/resend/${id}`,
     { data }
   );
 }

@@ -558,6 +558,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Agent config drift check
+        run: make check-agent-config
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -625,6 +628,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # shared 对称副本等价夹具等测试（反模式 4 配套；与 backend PlatformConfigServiceTest 共享夹具）
+      - name: Shared unit tests
+        run: pnpm test:shared
 
       - name: Build admin
         run: pnpm build:admin

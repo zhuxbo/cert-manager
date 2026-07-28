@@ -66,10 +66,10 @@ function taskThreePreviewAndInitialize(array $params, int $adminId): array
     return $service->initialize($params, $adminId, $preview['preview_token']);
 }
 
-test('混合多域名产品只按适用同名成本倍乘且包含禁用产品', function () {
+test('混合多域名产品只按适用同名成本倍乘', function () {
     $level = taskThreeLevel();
     $product = taskThreeVerifiedProduct([
-        'status' => 0,
+        'status' => 1,
         'alternative_name_types' => ['standard'],
     ], [
         'price' => ['12' => '0'],
@@ -95,6 +95,51 @@ test('混合多域名产品只按适用同名成本倍乘且包含禁用产品',
         ->and($row->getRawOriginal('alternative_standard_price'))->toBe('12.30')
         ->and($row->getRawOriginal('alternative_wildcard_price'))->toBe('0.00')
         ->and($level->refresh()->getRawOriginal('cost_rate'))->toBe('1.0000');
+});
+
+test('预览和强制执行完整排除禁用产品并保留其历史价格', function () {
+    $level = taskThreeLevel();
+    $enabled = taskThreeVerifiedProduct(['status' => 1]);
+    $disabled = Product::factory()->create([
+        'periods' => [12],
+        'alternative_name_types' => [],
+        'status' => 0,
+    ]);
+    DB::table('products')->where('id', $disabled->id)->update([
+        'cost' => json_encode(['price' => []]),
+    ]);
+    $disabledPrice = ProductPrice::factory()->create([
+        'product_id' => $disabled->id,
+        'level_code' => $level->code,
+        'period' => 12,
+        'price' => '7.77',
+    ]);
+    $params = taskThreeInitializationParams([
+        ['code' => $level->code, 'cost_rate' => '1.0000'],
+    ], ['force' => true]);
+    $service = app(ProductPriceInitializationService::class);
+
+    $preview = $service->preview($params, $this->admin->id);
+
+    expect($preview)->toMatchArray([
+        'can_execute' => true,
+        'product_count' => 1,
+        'target_count' => 1,
+        'warnings' => [],
+    ]);
+
+    $disabledPrice->update(['price' => '8.88']);
+    $result = $service->initialize($params, $this->admin->id, $preview['preview_token']);
+
+    expect($result)->toMatchArray([
+        'can_execute' => true,
+        'executed' => true,
+        'product_count' => 1,
+        'target_count' => 1,
+        'deleted_count' => 0,
+        'rebuilt_count' => 1,
+    ])->and(ProductPrice::query()->where('product_id', $enabled->id)->count())->toBe(1)
+        ->and($disabledPrice->refresh()->getRawOriginal('price'))->toBe('8.88');
 });
 
 test('重复周期只生成一个目标且初始化只写入一行', function () {
@@ -194,7 +239,7 @@ test('预览零写且成本告警不签 token', function () {
     $invalid = Product::factory()->create([
         'periods' => [12],
         'alternative_name_types' => [],
-        'status' => 0,
+        'status' => 1,
     ]);
     DB::table('products')->where('id', $invalid->id)->update([
         'cost' => json_encode(['price' => []]),
@@ -305,6 +350,7 @@ test('预览后任一指纹状态变化都 stale 且强制模式在删除前零�
             $product->save();
         }),
         'periods' => $product->update(['periods' => [12, 24]]),
+        'status' => $product->update(['status' => 0]),
         'level' => $level->update(['cost_rate' => '1.1000']),
         'price' => $existing->update(['price' => '8.88']),
         'new-price' => ProductPrice::factory()->create([
@@ -326,7 +372,7 @@ test('预览后任一指纹状态变化都 stale 且强制模式在删除前零�
     ])->and(ProductPrice::query()->count())->toBe($priceCount)
         ->and($existing->refresh()->getRawOriginal('price'))->toBe($currentExistingPrice)
         ->and($level->refresh()->getRawOriginal('cost_rate'))->toBe($currentRate);
-})->with(['cost', 'periods', 'level', 'price', 'new-price']);
+})->with(['cost', 'periods', 'status', 'level', 'price', 'new-price']);
 
 test('同秒强制删除重插同值后旧 token 不可重放且价格行 ID 不再变化', function () {
     $level = taskThreeLevel();

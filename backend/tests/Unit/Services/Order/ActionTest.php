@@ -1782,7 +1782,7 @@ test('reissue 双开物理底线：last_cert_id UNIQUE 槽位被占死 → Cert:
 
 // 注：reissue 的 re-read 守卫（latest_cert_id 锁内重读 != 基线 → 订单已重签）无干净同连接 seam——
 // initParams 内 filterParamsField→getProductType 有一次无锁 Order::find（首个 plain orders 查询），
-// DB::listen 会在 last_cert_id 捕获前命中它使基线同步推进、注入空过（计划 RECHECK R-3 明示）。
+// DB::listen 会在 last_cert_id 捕获前命中它使基线同步推进、注入空过。
 // 计数命中第二个查询的构造过于脆弱（随查询序漂移），故弃 ②b；该守卫是 UNIQUE 物理底线（②）之上的
 // 纵深防御，双开物理阻断由 ② 覆盖。
 

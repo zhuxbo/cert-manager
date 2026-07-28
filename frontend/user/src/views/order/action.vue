@@ -182,6 +182,15 @@
           </div>
         </el-form-item>
 
+        <el-alert
+          v-if="showCertumActivationNotice"
+          class="certum-activation-alert"
+          title="证书激活邮件将发送到联系人邮箱，请确保联系人邮箱正确。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+
         <!-- 联系人：SMIME individual 仅需联系人 -->
         <el-form-item
           v-if="smimeNeedContactOnly && props.actionType !== 'reissue'"
@@ -297,6 +306,11 @@ import {
   periodLabels,
   validationMethodLabels
 } from "@/views/system/dictionary";
+import {
+  createAsyncGenerationGuard,
+  isCurrentProductResponse,
+  preloadProductSelection
+} from "@shared/utils/orderProductResponse";
 import router from "@/router";
 import type { FormInstance, FormRules } from "element-plus";
 import { useDialogSize } from "@/views/system/dialog";
@@ -415,6 +429,12 @@ const isSSL = computed(() => productType.value === "ssl");
 const isSMIME = computed(() => productType.value === "smime");
 const isCodeSign = computed(() => productType.value === "codesign");
 const isDocSign = computed(() => productType.value === "docsign");
+const showCertumActivationNotice = computed(
+  () =>
+    props.actionType === "apply" &&
+    (isCodeSign.value || isDocSign.value) &&
+    formData.product?.ca?.toString().toLowerCase() === "certum"
+);
 
 // SMIME 子类型检测（从产品 code 中提取）
 const smimeType = computed(() => {
@@ -661,14 +681,20 @@ const handleAlgChange = () => {
 };
 
 // 产品选择处理
+const productSelectionGeneration = createAsyncGenerationGuard();
+
 const productSelected = (productId: any) => {
+  productSelectionGeneration.invalidate();
   if (!productId) return;
 
   productShow(productId).then(({ data }) => {
+    if (!isCurrentProductResponse(productId, formData.product_id)) return;
+
     // 更新产品相关信息
     formData.product = {
       ...formData.product,
       product_type: data.product_type || "ssl",
+      ca: data.ca,
       code: data.code, // 用于 SMIME 类型检测
       total_max: data.total_max,
       validation_type: data.validation_type,
@@ -996,6 +1022,7 @@ watch(
     ) {
       // 首先重置表单
       initFormData();
+      const preloadGeneration = productSelectionGeneration.invalidate();
 
       // 延迟一下再加载订单信息，确保表单已经重置完成
       setTimeout(() => {
@@ -1006,54 +1033,27 @@ watch(
         ) {
           loadOrderInfo(newOrderId as number);
         }
-        // 如果是申请并且有product_id，加载产品信息
-        if (
-          ["batchApply", "apply"].includes(newActionType as string) &&
-          product_id
-        ) {
-          const productIdNum = Number(product_id);
-
-          // 先预加载产品信息，然后注入选项，最后设置ID
-          productShow(productIdNum).then(({ data }) => {
-            // 等待组件完成初始化
-            setTimeout(() => {
-              // 直接注入产品选项到组件
-              if (productSelectRef.value) {
-                const productOption = {
-                  label: data.name,
-                  value: data.id
-                };
-
-                // 确保组件有 options 数组
-                if (!productSelectRef.value.options) {
-                  productSelectRef.value.options = [];
-                }
-
-                // 检查是否已存在，避免重复
-                const exists = productSelectRef.value.options.some(
-                  option => option.value === data.id
-                );
-
-                if (!exists) {
-                  // 注入选项
-                  productSelectRef.value.options.push(productOption);
-                }
-
-                // 选项注入完成后，设置产品ID
-                setTimeout(() => {
-                  formData.product_id = productIdNum;
-                  // 程序化设置值不会触发@change，需要手动调用
-                  productSelected(productIdNum);
-                }, 100);
-              } else {
-                // 回退方案
-                formData.product_id = productIdNum;
-                productSelected(productIdNum);
-              }
-            }, 200); // 等待组件初始化
-          });
-        }
       }, 100);
+
+      // 如果是申请并且有product_id，预加载产品信息并注入选项
+      if (
+        ["batchApply", "apply"].includes(newActionType as string) &&
+        product_id
+      ) {
+        const productIdNum = Number(product_id);
+        preloadProductSelection({
+          productId: productIdNum,
+          generation: preloadGeneration,
+          generationGuard: productSelectionGeneration,
+          loadProduct: () => productShow(productIdNum).then(({ data }) => data),
+          getProductSelect: () => productSelectRef.value,
+          selectProduct: selectedProductId => {
+            formData.product_id = selectedProductId;
+            // 程序化设置值不会触发@change，需要手动调用
+            productSelected(selectedProductId);
+          }
+        });
+      }
     }
   }
 );
@@ -1074,6 +1074,10 @@ watch(
   gap: 8px;
   align-items: center;
   width: 100%;
+}
+
+.certum-activation-alert {
+  margin-bottom: 18px;
 }
 
 .ml-auto {

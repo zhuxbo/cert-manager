@@ -9,8 +9,8 @@ use Illuminate\Support\Facades\Schedule;
 // 升级 freeze 期间跳过定时任务，避免 migrate 中途运行 Command 引发错误
 $skipWhenFrozen = fn () => UpgradeFreezeLock::isFrozen();
 
-// M6：schedule 命令非零退出时落 Log::error（弱信号兜底可见性——多数命令自 catch 返 SUCCESS，
-// 主信号是 M1 心跳 + M3 拨测）。仅挂 validate/auto-renew/reconcile-pending（backup/finance/E 系自带告警）。
+// M6：schedule 命令非零退出时落 Log::error（弱信号兜底可见性——多数命令自 catch 返 SUCCESS）。
+// 仅挂 validate/auto-renew/reconcile-pending（backup/finance/E 系自带告警）。
 $logScheduleFailure = fn (string $name) => function () use ($name) {
     Log::error("[schedule.failed] $name 非零退出");
 };
@@ -65,14 +65,14 @@ Schedule::command('delegation:cleanup')
     ->description('清理非processing状态订单的委托DNS记录');
 
 // CNAME委托健康周巡检 - 每周一 07:00 执行（错开 cleanup 06:00 / expire 09:00 / balance-forecast 周一 09:30）
-// 无效委托达失败阈值发用户通知（按 user 聚合），无 active 证书的失效委托清理；两阶段+熔断防 dnsTools
-// 系统性停摆误报/误删；weekly 天然「每用户每周期一封」去重
+// 无 active 证书的失效委托清理；两阶段+熔断防 dnsTools 系统性停摆误删。
+// 委托失效的用户通知由 schedule:auto-renew 在真正发起续签/重签前检查并触发。
 Schedule::command('delegation:check')
     ->weeklyOn(1, '07:00')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('check-delegation-health')
-    ->description('CNAME委托健康周巡检（失效通知 + 无用记录清理 + 停摆熔断）');
+    ->description('CNAME委托健康周巡检（无用记录清理 + 停摆熔断）');
 
 // 自动续费/重签任务 - 每天0点执行，commit 分散在0~8点
 Schedule::command('schedule:auto-renew')
@@ -82,6 +82,16 @@ Schedule::command('schedule:auto-renew')
     ->name('auto-renew-certificates')
     ->description('自动续费/重签即将到期的证书')
     ->onFailure($logScheduleFailure('schedule:auto-renew'));
+
+// 自动部署/签发持续未解决失败提醒 - 每天 08:00（错开 auto-renew 00:00 / purge 02:00 / stuck-orders 06:30 / expire 09:00）
+// 事件驱动告警在失败发生时按订单去重发一封；本命令基于「订单最后一条上报仍为 failure」状态判定，
+// 复用同一 per-order 去重键 + 固定指纹，由 TTL 裁决「TTL 内一封、到期仍未解决再一封」，覆盖客户端触顶静默期
+Schedule::command('schedule:deploy-failure-reminder')
+    ->dailyAt('08:00')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('deploy-failure-reminder')
+    ->description('自动部署/签发持续未解决失败提醒（订单终态或证书过期后停止）');
 
 // 余额前瞻预警 - 每周一 09:30 执行（未来 30 天自动续费余额不足则每用户一封，预估上限）
 // 周一 09:30：错开 auto-renew 00:00 / backup 02:00 / audit 03:00，且避开 schedule:expire 的 09:00
@@ -149,7 +159,7 @@ Schedule::command('schedule:sweep-orphan-orders')
     ->onFailure($logScheduleFailure('schedule:sweep-orphan-orders'));
 
 // ============================================================
-// 健康监控命令群（包E：E1~E6）——freeze 期一律 skip（见计划 §0.3）
+// 健康监控命令群——freeze 期一律 skip
 // ============================================================
 
 // E1 上游 CA 凭证健康心跳 - 每 15 分钟（只读探测，仅鉴权维度告警）
@@ -219,8 +229,7 @@ Schedule::command('upgrade:watchdog')
 // ============================================================
 // M1 调度器心跳（P0-4.1）——继 watchdog 后第二个有意 freeze 存活者：
 //   - evenInMaintenanceMode()：与 watchdog 同款，freeze/down 全窗跳动，unfreeze 后即新鲜；
-//   - **不挂** ->skip($skipWhenFrozen)：挂了则 freeze 期心跳停 → /api/health 判 stale 503
-//     → M3 拨测/外部监控在每次升级窗误报「scheduler 死」。
+//   - **不挂** ->skip($skipWhenFrozen)：挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。
 // 写 Cache::forever('schedule:heartbeat')，供 /api/health 判活；health 侧 freeze 期不评估 stale（双保险）。
 // ============================================================
 Schedule::command('schedule:heartbeat')

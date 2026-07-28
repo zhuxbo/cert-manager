@@ -141,6 +141,8 @@ trait ActionTrait
             $params['product_id'] = $order->product_id;
             $params['last_cert_id'] = $order->latestCert->id;
             $params['last_cert'] = $order->latestCert->toArray();
+            $params['purchased_standard_count'] = (int) $order->purchased_standard_count;
+            $params['purchased_wildcard_count'] = (int) $order->purchased_wildcard_count;
 
             // 续费/重签未显式指定算法时，从原证书继承（防止 reuse_csr=0 重新生成 CSR 时
             // getEncryptionParams 回落默认 RSA，导致原 ECDSA/SM2 证书静默降级为 RSA）。
@@ -350,14 +352,6 @@ trait ActionTrait
             $cert['wildcard_count'] = $san_count['wildcard_count'] ?? 0;
 
             if (in_array($cert['action'], ['renew', 'reissue'])) {
-                // 如果产品不支持增加 SAN，则检查 SAN 是否已经超过原证书的数量
-                if (! ($params['product']['add_san'] ?? 0)) {
-                    $cert['standard_count'] > $params['last_cert']['standard_count']
-                    && $this->error('标准域名数量超过原证书');
-                    $cert['wildcard_count'] > $params['last_cert']['wildcard_count']
-                    && $this->error('通配符域名数量超过原证书');
-                }
-
                 // 如果产品不支持替换 SAN，则将原证书中 SAN 添加到当前证书中，重新检查 SAN 数量是否已经超过产品限制, 重新获取 SAN 数量
                 if (! ($params['product']['replace_san'] ?? 0)) {
                     $cert['alternative_names'] = $cert['alternative_names'].','.$params['last_cert']['alternative_names'];
@@ -369,13 +363,28 @@ trait ActionTrait
                     $validation_result = ValidatorUtil::validateSansMaxCount($params['product'], $cert['alternative_names']);
                     empty(array_filter($validation_result)) || $this->error('SAN数量超过产品限制');
 
-                    // 去除旧证书的域名 然后获取 SAN 数量
-                    $add_domains = array_diff(explode(',', $cert['alternative_names']), explode(',', $params['last_cert']['alternative_names']));
-                    $add_sans = OrderUtil::getSansFromDomains(implode(',', $add_domains), $params['product']['gift_root_domain'] ?? 0);
+                    // 合并完成后按最终域名集合重新计算，避免赠送根域名跨新旧集合时被重复计数
+                    $san_count = OrderUtil::getSansFromDomains(
+                        $cert['alternative_names'],
+                        $params['product']['gift_root_domain'] ?? 0
+                    );
+                    $cert['standard_count'] = $san_count['standard_count'];
+                    $cert['wildcard_count'] = $san_count['wildcard_count'];
+                }
 
-                    // 重新设置证书 SAN 数量为 新增的数量 + 旧证书的数量
-                    $cert['standard_count'] = $add_sans['standard_count'] + $params['last_cert']['standard_count'];
-                    $cert['wildcard_count'] = $add_sans['wildcard_count'] + $params['last_cert']['wildcard_count'];
+                // 不支持增加 SAN 时，必须在旧 SAN 合并完成后校验最终送签数量，避免 replace_san=0 绕过
+                if (! ($params['product']['add_san'] ?? 0)) {
+                    if ($cert['action'] === 'renew') {
+                        $cert['standard_count'] > $params['last_cert']['standard_count']
+                        && $this->error('标准域名数量超过原证书');
+                        $cert['wildcard_count'] > $params['last_cert']['wildcard_count']
+                        && $this->error('通配符域名数量超过原证书');
+                    } else {
+                        $cert['standard_count'] > $params['purchased_standard_count']
+                        && $this->error('标准域名数量超过订单已购数量');
+                        $cert['wildcard_count'] > $params['purchased_wildcard_count']
+                        && $this->error('通配符域名数量超过订单已购数量');
+                    }
                 }
             }
 
@@ -1080,6 +1089,8 @@ trait ActionTrait
             }
 
             $cert = $order->latestCert;
+            // 订单可能先于证书删除，保留关联供 CertObserver 解析用户并清理首页缓存。
+            $cert->setRelation('order', $order);
             $cert->status === 'unpaid' || $this->error('只有待支付状态的证书可以删除');
 
             if ($cert->last_cert_id) {

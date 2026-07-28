@@ -9,6 +9,7 @@ use App\Services\Composer\ComposerMirror;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
@@ -213,10 +214,7 @@ class UpgradeService
                 $statusManager->completeStep('migrate');
             }
 
-            // 步骤 11: 数据库结构校验
-            $structureCheckResult = $this->checkAndFixDatabaseStructure($statusManager);
-
-            // 步骤 12: 运行种子
+            // 步骤 11: 运行种子
             if (Config::get('upgrade.behavior.auto_seed', true)) {
                 $statusManager->startStep('seed');
                 $seedClass = Config::get('upgrade.behavior.seed_class');
@@ -226,7 +224,14 @@ class UpgradeService
                 }
                 Artisan::call('db:seed', $seedOptions);
                 $statusManager->completeStep('seed');
+
+                // Seeder 已补齐平台设置并消费存量 platform-config。只有 seed 成功才清理；
+                // auto_seed 关闭或 seed 抛异常时保留暂存，供后续手工幂等重跑。
+                File::deleteDirectory(storage_path('app/legacy-platform-config'));
             }
+
+            // 步骤 12: 数据库结构校验
+            $structureCheckResult = $this->checkAndFixDatabaseStructure($statusManager);
 
             // 步骤 13: 清理缓存
             // 重建缓存必须在全新子进程中执行：当前进程的 RouteServiceProvider/路由文件/类定义

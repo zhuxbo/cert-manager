@@ -164,7 +164,7 @@ e2e_start_release_server() {
         i=$((i + 1))
     done
 
-    e2e_fail "release server 启动超时（端口 $port）"
+    e2e_fail "release server 启动超时（端口 ${port}）"
     return 1
 }
 

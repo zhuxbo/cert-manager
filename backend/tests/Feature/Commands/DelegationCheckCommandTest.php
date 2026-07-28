@@ -141,7 +141,7 @@ test('检查异常时记录错误并继续', function () {
         ->assertSuccessful();
 });
 
-test('连续失败次数超过阈值时输出预警 + 派发通知', function () {
+test('连续失败次数超过阈值时只输出预警不派发用户通知', function () {
     $user = User::factory()->create(['email' => 'fail@example.com']);
     checkDelegationRow($user, ['zone' => 'failing.com', 'fail_count' => 5]);
     checkActiveCert($user, 'failing.com');
@@ -155,9 +155,8 @@ test('连续失败次数超过阈值时输出预警 + 派发通知', function ()
         ->expectsOutputToContain('连续失败')
         ->assertSuccessful();
 
-    // post=min(5+1,100)=6 ≥2 → 派发
-    expect($state->count)->toBe(1)
-        ->and($state->intents[0]->code)->toBe('delegation_invalid');
+    // 周巡检只负责健康检查；用户通知由自动续签发起前的委托检查触发。
+    expect($state->count)->toBe(0);
 });
 
 test('无委托记录时正常完成', function () {
@@ -183,7 +182,7 @@ test('抖动 gate：invalid + 无 active + fail_count=0（post 1 <2）→ 不删
         ->and($state->count)->toBe(0);
 });
 
-test('gate 口径判别（post-apply）：invalid + active + 预置 fail_count=1 → 落库后=2 达阈 → 派发', function () {
+test('gate 口径判别（post-apply）：invalid + active + 预置 fail_count=1 → 落库后=2 仍不派发', function () {
     $user = User::factory()->create(['email' => 'edge@example.com']);
     checkDelegationRow($user, ['zone' => 'edge.com', 'fail_count' => 1]);
     checkActiveCert($user, 'edge.com');
@@ -195,8 +194,7 @@ test('gate 口径判别（post-apply）：invalid + active + 预置 fail_count=1
 
     $this->artisan('delegation:check')->assertSuccessful();
 
-    // post-apply=2 达阈 → 派发（若误读落库前旧值 1<2 则不发、本用例翻红）
-    expect($state->count)->toBe(1);
+    expect($state->count)->toBe(0);
 });
 
 test('gate 口径判别（post-apply）：invalid + 无 active + 预置 fail_count=1 → 落库后=2 → 删除', function () {
@@ -211,10 +209,10 @@ test('gate 口径判别（post-apply）：invalid + 无 active + 预置 fail_cou
     expect(CnameDelegation::find($delegation->id))->toBeNull(); // post=2 → 删
 });
 
-test('聚合（累积-后派发）：同 user 两条失效委托 → 恰一次 dispatch，delegation_ids 含两 id', function () {
+test('同 user 两条失效委托也不由周巡检派发通知', function () {
     $user = User::factory()->create(['email' => 'agg@example.com']);
-    $d1 = checkDelegationRow($user, ['zone' => 'a.com', 'fail_count' => 2]);
-    $d2 = checkDelegationRow($user, ['zone' => 'b.com', 'fail_count' => 2]);
+    checkDelegationRow($user, ['zone' => 'a.com', 'fail_count' => 2]);
+    checkDelegationRow($user, ['zone' => 'b.com', 'fail_count' => 2]);
     checkActiveCert($user, 'a.com');
     checkActiveCert($user, 'b.com');
 
@@ -225,11 +223,7 @@ test('聚合（累积-后派发）：同 user 两条失效委托 → 恰一次 d
 
     $this->artisan('delegation:check')->assertSuccessful();
 
-    expect($state->count)->toBe(1); // 每用户一封
-    $ids = $state->intents[0]->context['delegation_ids'];
-    expect($ids)->toHaveCount(2)
-        ->and($ids)->toContain($d1->id)
-        ->and($ids)->toContain($d2->id);
+    expect($state->count)->toBe(0);
 });
 
 test('熔断轮：≥5 条全 unreachable → 零落库/零删除/零通知 + SystemAlert 告警', function () {
@@ -404,7 +398,7 @@ test('CAS 命中（非 null 快照）：无并发写 → 真落库，fail_count 
     expect($delegation->valid)->toBeFalse()
         ->and($delegation->fail_count)->toBe(2)                      // DB 侧 LEAST(1+1,100)
         ->and($delegation->last_checked_at->isAfter(now()->subMinutes(5)))->toBeTrue() // 时间戳前移
-        ->and($state->count)->toBe(1);                               // post=2 达阈 → 派发
+        ->and($state->count)->toBe(0);                               // 周巡检不派发用户通知
 });
 
 test('CAS 命中（null 快照 <=> NULL）：从未检查过的行正常落库 + fail_count LEAST 封顶 100', function () {
@@ -433,3 +427,7 @@ test('schedule 注册 delegation:check 为周一 07:00', function () {
     expect($event)->not->toBeNull()
         ->and($event->expression)->toBe('0 7 * * 1'); // weeklyOn(1, '07:00')
 })->group('database');
+
+test('委托周巡检不再配置独立用户通知 Builder', function () {
+    expect(config('notification.builders'))->not->toHaveKey('delegation_invalid');
+});

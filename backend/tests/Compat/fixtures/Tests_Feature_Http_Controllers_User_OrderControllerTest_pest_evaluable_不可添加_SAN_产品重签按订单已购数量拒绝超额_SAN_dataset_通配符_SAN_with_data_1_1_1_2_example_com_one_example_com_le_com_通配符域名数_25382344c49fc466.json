@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\OrderControllerTest::__pest_evaluable_不可添加_SAN_产品重签按订单已购数量拒绝超额_SAN@dataset \"通配符 SAN\" with data ([1, 1], [1, 2], 'example.com,*.one.example.com...le.com', '通配符域名数量超过订单已购数量')",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/order/reissue",
+            "request_keys": [
+                "csr_generate",
+                "domains",
+                "order_id",
+                "validation_method"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

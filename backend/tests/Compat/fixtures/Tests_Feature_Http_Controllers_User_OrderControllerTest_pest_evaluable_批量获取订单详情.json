@@ -72,7 +72,6 @@
                                 "documents": "array<unknown>",
                                 "issued_at": "string",
                                 "expires_at": "string",
-                                "auto_deploy_at": "null",
                                 "csr_md5": "string",
                                 "csr": "null",
                                 "private_key": "null",

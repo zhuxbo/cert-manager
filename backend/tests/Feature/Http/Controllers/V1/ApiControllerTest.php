@@ -80,6 +80,9 @@ test('V1 获取订单', function () {
     ]);
     $cert = Cert::factory()->active()->create([
         'order_id' => $order->id,
+        'documents' => [
+            ['type' => 'organization', 'status' => 'required', 'name' => '营业执照'],
+        ],
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
@@ -89,7 +92,9 @@ test('V1 获取订单', function () {
     $this->withHeaders($headers)
         ->postJson('/api/V1/get', ['oid' => $order->id])
         ->assertOk()
-        ->assertJson(['code' => 1]);
+        ->assertJson(['code' => 1])
+        ->assertJsonPath('data.documents.0.type', 'organization')
+        ->assertJsonPath('data.documents.0.status', 'required');
 });
 
 test('V1 获取订单-不存在', function () {
@@ -100,6 +105,21 @@ test('V1 获取订单-不存在', function () {
         ->postJson('/api/V1/get', ['oid' => 99999])
         ->assertOk()
         ->assertJson(['code' => 0]);
+});
+
+test('V1 旧式八位字符 OID 提示改用数字订单号', function () {
+    $user = User::factory()->create();
+    $headers = createV1AuthHeaders($user);
+
+    foreach (['/api/V1/get', '/api/V1/reissue'] as $uri) {
+        $this->withHeaders($headers)
+            ->postJson($uri, ['oid' => 'AB12CD34'])
+            ->assertOk()
+            ->assertJson([
+                'code' => 0,
+                'msg' => '请使用数字订单号',
+            ]);
+    }
 });
 
 test('V1 通过 refer_id 获取订单ID', function () {

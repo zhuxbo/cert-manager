@@ -120,7 +120,7 @@ test('toggle 切换激活状态', function () {
     $notice = Notice::factory()->create(['is_active' => true]);
 
     $response = $this->actingAsAdmin($this->admin)
-        ->patchJson("/api/admin/notice/$notice->id/toggle");
+        ->patchJson("/api/admin/notice/toggle/$notice->id");
 
     $response->assertOk();
     expect($notice->fresh()->is_active)->toBeFalse();
@@ -130,7 +130,7 @@ test('toggle 再次切换恢复激活', function () {
     $notice = Notice::factory()->create(['is_active' => false]);
 
     $this->actingAsAdmin($this->admin)
-        ->patchJson("/api/admin/notice/$notice->id/toggle");
+        ->patchJson("/api/admin/notice/toggle/$notice->id");
 
     expect($notice->fresh()->is_active)->toBeTrue();
 });

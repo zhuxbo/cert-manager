@@ -5,9 +5,8 @@ import { message } from "@shared/utils";
 import { useNav } from "@/layout/hooks/useNav";
 import type { FormInstance } from "element-plus";
 import { useLayout } from "@/layout/hooks/useLayout";
-import { bg, illustration } from "./utils/static";
 import { useRenderIcon } from "@shared/components/ReIcon/src/hooks";
-import { ref, reactive, toRaw, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, reactive, onMounted, onBeforeUnmount, watch } from "vue";
 import { useDataThemeChange } from "@/layout/hooks/useDataThemeChange";
 
 import { addPathMatch, getTopMenu } from "@/router/utils";
@@ -99,8 +98,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="select-none">
-    <img :src="bg" class="wave" />
+  <div class="select-none login-page">
     <div class="flex-c absolute right-5 top-3">
       <!-- 主题 -->
       <el-switch
@@ -111,104 +109,100 @@ onBeforeUnmount(() => {
         @change="dataThemeChange"
       />
     </div>
-    <div class="login-container">
-      <div class="img">
-        <component :is="toRaw(illustration)" />
-      </div>
-      <div class="login-box">
-        <div class="login-form">
-          <Motion>
-            <h2 class="outline-none">{{ title }}</h2>
+    <div class="login-card">
+      <div class="login-form">
+        <Motion>
+          <h2 class="login-title outline-none">{{ title }}</h2>
+        </Motion>
+
+        <el-form ref="ruleFormRef" :model="ruleForm" size="large">
+          <Motion :delay="100">
+            <el-form-item
+              :rules="[
+                {
+                  required: true,
+                  message: '请输入账号',
+                  trigger: 'blur'
+                }
+              ]"
+              prop="account"
+            >
+              <el-input
+                v-model="ruleForm.account"
+                clearable
+                placeholder="用户名/邮箱/手机号"
+                :prefix-icon="useRenderIcon(User)"
+              />
+            </el-form-item>
           </Motion>
 
-          <el-form ref="ruleFormRef" :model="ruleForm" size="large">
-            <Motion :delay="100">
-              <el-form-item
-                :rules="[
-                  {
-                    required: true,
-                    message: '请输入账号',
-                    trigger: 'blur'
-                  }
-                ]"
-                prop="account"
-              >
-                <el-input
-                  v-model="ruleForm.account"
-                  clearable
-                  placeholder="用户名/邮箱/手机号"
-                  :prefix-icon="useRenderIcon(User)"
-                />
-              </el-form-item>
-            </Motion>
+          <Motion :delay="150">
+            <el-form-item
+              :rules="[
+                {
+                  required: true,
+                  message: '请输入密码',
+                  trigger: 'blur'
+                }
+              ]"
+              prop="password"
+            >
+              <el-input
+                v-model="ruleForm.password"
+                clearable
+                show-password
+                placeholder="密码"
+                :prefix-icon="useRenderIcon(Lock)"
+              />
+            </el-form-item>
+          </Motion>
 
-            <Motion :delay="150">
-              <el-form-item
-                :rules="[
-                  {
-                    required: true,
-                    message: '请输入密码',
-                    trigger: 'blur'
-                  }
-                ]"
-                prop="password"
+          <Motion :delay="250">
+            <el-form-item>
+              <div class="w-full h-[20px] flex justify-between items-center">
+                <el-checkbox v-model="checked">
+                  <span class="flex">
+                    记住我
+                    <select
+                      v-model="loginDay"
+                      :style="{
+                        width: loginDay < 10 ? '12px' : '20px',
+                        border: 'none',
+                        outline: 'none',
+                        background: 'none',
+                        appearance: 'none',
+                        marginLeft: '5px'
+                      }"
+                    >
+                      <option value="1">1</option>
+                      <option value="7">7</option>
+                      <option value="30">30</option>
+                    </select>
+                    天
+                    <IconifyIconOffline
+                      v-tippy="{
+                        content: '登录信息保存天数',
+                        placement: 'top'
+                      }"
+                      :icon="Info"
+                      class="ml-1"
+                    />
+                  </span>
+                </el-checkbox>
+              </div>
+              <el-button
+                class="w-full mt-4!"
+                size="default"
+                type="primary"
+                :loading="loading"
+                :disabled="disabled"
+                @click="onLogin(ruleFormRef)"
               >
-                <el-input
-                  v-model="ruleForm.password"
-                  clearable
-                  show-password
-                  placeholder="密码"
-                  :prefix-icon="useRenderIcon(Lock)"
-                />
-              </el-form-item>
-            </Motion>
-
-            <Motion :delay="250">
-              <el-form-item>
-                <div class="w-full h-[20px] flex justify-between items-center">
-                  <el-checkbox v-model="checked">
-                    <span class="flex">
-                      记住我
-                      <select
-                        v-model="loginDay"
-                        :style="{
-                          width: loginDay < 10 ? '10px' : '16px',
-                          outline: 'none',
-                          background: 'none',
-                          appearance: 'none',
-                          marginLeft: '5px'
-                        }"
-                      >
-                        <option value="1">1</option>
-                        <option value="7">7</option>
-                        <option value="30">30</option>
-                      </select>
-                      天
-                      <IconifyIconOffline
-                        v-tippy="{
-                          content: '登录信息保存天数',
-                          placement: 'top'
-                        }"
-                        :icon="Info"
-                        class="ml-1"
-                      />
-                    </span>
-                  </el-checkbox>
-                </div>
-                <el-button
-                  class="w-full mt-4!"
-                  size="default"
-                  type="primary"
-                  :loading="loading"
-                  :disabled="disabled"
-                  @click="onLogin(ruleFormRef)"
-                >
-                  登录
-                </el-button>
-              </el-form-item>
-            </Motion>
-          </el-form>
-        </div>
+                登录
+              </el-button>
+            </el-form-item>
+          </Motion>
+        </el-form>
       </div>
     </div>
   </div>

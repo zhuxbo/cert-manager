@@ -28,6 +28,7 @@ interface SeriesData {
   name: string;
   data: number[];
   color?: string;
+  lineWidth?: number;
   yAxisIndex?: number;
 }
 
@@ -172,7 +173,7 @@ const updateChart = () => {
       yAxisIndex: seriesItem.yAxisIndex || 0,
       lineStyle: {
         color: seriesItem.color || defaultColors[index % defaultColors.length],
-        width: 2
+        width: seriesItem.lineWidth ?? 2
       },
       itemStyle: {
         color: seriesItem.color || defaultColors[index % defaultColors.length]

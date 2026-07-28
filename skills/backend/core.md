@@ -73,6 +73,17 @@ php artisan test          # 测试
 3. 统一异常处理
 4. 分类日志记录
 
+### 路由风格（新增路由必须遵守；存量以 2026-07 统一为准）
+
+- URL 一律 kebab-case；资源前缀用单数（`order`、`cert`；存量 `logs` 等复数不动）。
+- 标准 CRUD 走 `RouteHelper::registerResourceRoutes`，先注册资源路由、再补自定义组；组内声明顺序 `/` → `{id}` → `batch`。
+- 单资源动作统一动词在前 `action/{id}`（如 `pay/{id}`、`resend/{id}`）；嵌套资源下的动作（`backups/{backupId}/restore`）和子资源读取（`order/{id}/certs`）例外。
+- 有副作用的端点禁止用 GET；批量操作统一 `batch` / `batch-*`，不得挂在集合根路径上。
+- 局部更新用 PATCH（子集 upsert 也算局部更新），整份替换用 PUT。
+- 导出统一 POST（入参可能超长且不宜被缓存/预取），响应用 blob 下载。
+- 路径参数默认 `{id}` 并加 `[0-9]+` 约束（含 `{groupId}` 这类数字外键）；非数字主键或语义参数用 camelCase 语义名（如 `{backupId}`、`{userId}`、`{uuid}`、`{token}`）。
+- 对外 API（V1/V2、acme、deploy、callback）契约冻结，风格调整不得波及。
+
 ---
 
 ## 常用 Artisan 命令
@@ -112,7 +123,7 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ## 健康监控与调度心跳（P0-4 监控最小闭环）
 
-`GET /api/health`（`HealthController`，无鉴权、命名空间无关、不受 `MaintenanceMode` 拦截）+ 调度心跳（M1）+ 队列积压（M2）+ 外部拨测（M3），打破「告警与执行通道同生共死」。**运维部署视角（外部监控必选项 / cron 属主 / logrotate）见 `skills/ops/deploy-ops.md`**，此处固化判定机制。
+`GET /api/health`（`HealthController`，无鉴权、命名空间无关、不受 `MaintenanceMode` 拦截）+ 调度心跳（M1）+ 队列积压（M2），供管理后台首页展示系统健康度。**运维部署视角（cron 属主 / 可选外部监控）见 `skills/ops/deploy-ops.md`**，此处固化判定机制。
 
 ### /api/health 三态判定（error 优先序不可乱）
 
@@ -122,16 +133,16 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 - ② **cache 后端故障** → `error`（503）：`cacheCheck` 只读 `Cache::get('schedule:heartbeat')` 探连通性（redis 宕机时抛）。**必须先于下方 disk/queue/heartbeat**——它们经 `get_system_setting`→`Cache::remember` 读阈值/心跳，cache 故障时会抛，早 return 规避二次抛异常；`heartbeatAge` 的 `Cache::get` 亦 try/catch 返 null（不误判 degraded，因 cache error 已先 return）
 - ③ `disk_free_gb` < `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）
 - ④ freeze=false 时：`queue_lag` 超阈 → error；心跳**存在且过旧**（stale，> `health.heartbeat_stale_seconds` 默认 300）→ `error`（503，死 scheduler）
-- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，判 degraded 而非 stale 503，防误报卡外部监控）
+- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，后台显示“需要关注”）
 - ⑥ 其他 → `ok`（200）
 - **freeze 期**：`queue_lag` 与心跳 stale 均不参与 503（worker/scheduler 已按升级流程停止），避免升级窗误报（双保险：console.php 侧心跳不挂 skip、health 侧 freeze 期不评估 stale）；**cache 后端故障不受 freeze 豁免**（cache 是独立于升级流程的基础设施）
 
 ### schedule:heartbeat（M1，第二个有意 freeze 存活者）
 
-`HeartbeatCommand` 每分钟 `Cache::forever('schedule:heartbeat', now()->timestamp)`。调度接线与 `upgrade:watchdog` 同款**有意不对称**：`->everyMinute()->evenInMaintenanceMode()` 且**不挂** `->skip($skipWhenFrozen)`——挂了则 freeze 期心跳停 → health 判 stale 503 → 每次升级窗 M3 拨测/外部监控误报「scheduler 死」。`ScheduleFreezeSkipTest` 对 heartbeat/watchdog 断言 `filtersPass=true`。
+`HeartbeatCommand` 每分钟 `Cache::forever('schedule:heartbeat', now()->timestamp)`。调度接线与 `upgrade:watchdog` 同款**有意不对称**：`->everyMinute()->evenInMaintenanceMode()` 且**不挂** `->skip($skipWhenFrozen)`——挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。`ScheduleFreezeSkipTest` 对 heartbeat/watchdog 断言 `filtersPass=true`。
 
 - **用 forever 无 TTL 是刻意选型**：死 scheduler 留旧时间戳 → age 超阈 → stale 503（正确检出）；带 TTL 则键到期消失 → 缺失 → degraded 200，把死 scheduler 误判「未装机」。
-- **F1 死角**（文档化于 deploy-ops.md）：「已死 scheduler + 之后 `cache:clear`」→ 键缺失 → degraded 200 → 本机拨测静默。这是 `forever`+missing→degraded 换「新装机不 503」的固有对价，兜底 = 外部站点监控（部署必选项，无视本机 cache 状态）。
+- **访问时检测边界**（文档化于 deploy-ops.md）：「已死 scheduler + 之后 `cache:clear`」→ 键缺失 → degraded 200，后台健康度显示黄色“需要关注”，不主动发信。
 
 ### queueLag 队列语义（M2）
 
@@ -139,11 +150,12 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 - **redis**：遍历 `config('queue.names')` 全部队列（notifications/tasks/default）求和——就绪深度 `llen queues:{name}` + **已到期**延时 `zcount queues:{name}:delayed -inf now`。**只计已到期**：整包 zcard 会把 auto-renew 夜间 0~8h 延时 commit 批次（score 在未来）当积压 → 00:00-08:00 持续误报。含 default 与 database 全队列扫描语义对称（约定恒空、非空即真积压——漏写 onQueue 的 Job——应报）。
 - **阈值按驱动取义**（`queueThreshold`）消除「秒 vs 条数」两义：redis 返回**深度条数**用 `health.queue_depth_threshold`（默认 500 条）；database 返回**积压秒数**用 `health.queue_lag_threshold`（默认 600 秒）。低量 redis 部署误用 600「秒」当深度门槛会堆 600 条才 503、worker 死检测显著延迟。
+- `/api/health` 通过 `queue_lag_unit` 明确前端显示单位（database=`seconds`、redis=`jobs`），并通过 `check_statuses` 返回各维度的 `ok/degraded/error`，前端不自行复制可配置阈值。心跳缺失为 `degraded`；freeze 期间超阈队列与过旧心跳也显示 `degraded`，避免把升级窗口的预期暂停标红。
 
 ### M6 cron 可见性
 
-- schedule 命令非零退出挂 `->onFailure(...)` 落 `Log::error('[schedule.failed] ...')`（弱信号兜底；主信号是 M1 心跳 + M3 拨测）。仅挂 validate / auto-renew / reconcile-pending / sweep-stale-tasks / reconcile-acme / sweep-orphan-orders（backup / finance / E 系监控自带告警）。
-- 生产 cron `schedule:run` / `monitor:probe` 输出落 `storage/logs/{schedule,probe}.log`（不再 `>/dev/null`）+ logrotate（weekly rotate 4，防日志涨满盘触发 disk_free 503）。存量机交付细节见 `skills/backend/upgrade.md` §1.5 与 `skills/ops/deploy-ops.md`。
+- schedule 命令非零退出挂 `->onFailure(...)` 落 `Log::error('[schedule.failed] ...')`。仅挂 validate / auto-renew / reconcile-pending / sweep-stale-tasks / reconcile-acme / sweep-orphan-orders（backup / finance / E 系监控自带告警）。
+- 生产仅创建一个 `schedule:run` 宝塔计划任务，不额外重定向输出，由宝塔面板保存任务日志。
 
 ---
 
@@ -193,19 +205,18 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ### 调度配置
 
-| 命令                           | 调度            | 说明                                                          |
-| ------------------------------ | --------------- | ------------------------------------------------------------- |
-| `schedule:validate`            | 每分钟          | 证书验证任务                                                  |
-| `schedule:heartbeat`           | 每分钟          | 调度心跳（写 Cache 供 /api/health 判活；freeze 存活者，见下） |
-| `schedule:auto-renew`          | 每天 00:00      | 自动续费/重签（延时 commit 0~8h）                             |
-| `schedule:reconcile-pending`   | 每 5 分钟       | pending 卡单对账重发 commit（见 order-fund.md）               |
-| `schedule:sweep-stale-tasks`   | 每 5 分钟       | 重派僵尸 executing 任务（T1，见 order-fund.md）               |
-| `schedule:reconcile-acme`      | 每 5 分钟       | ACME 卡单对账（T6，见 acme-module.md）                        |
-| `schedule:sweep-orphan-orders` | 每小时          | 清理 channel=auto 孤儿续费单（O4，见 order-fund.md）          |
-| `schedule:ca-healthcheck`      | 每 15 分钟      | 上游 CA 凭证 + 连通性告警（M7，见 notification.md）           |
-| `monitor:probe`                | 每 5 分钟（BT） | 外部健康拨测（M3，独立 cron 非 schedule:run，见 deploy-ops）  |
-| `delegation:check`             | 每天 05:30      | CNAME 委托健康检查                                            |
-| `delegation:cleanup`           | 每天 06:00      | 委托 DNS 清理                                                 |
+| 命令                           | 调度       | 说明                                                          |
+| ------------------------------ | ---------- | ------------------------------------------------------------- |
+| `schedule:validate`            | 每分钟     | 证书验证任务                                                  |
+| `schedule:heartbeat`           | 每分钟     | 调度心跳（写 Cache 供 /api/health 判活；freeze 存活者，见下） |
+| `schedule:auto-renew`          | 每天 00:00 | 自动续费/重签（延时 commit 0~8h）                             |
+| `schedule:reconcile-pending`   | 每 5 分钟  | pending 卡单对账重发 commit（见 order-fund.md）               |
+| `schedule:sweep-stale-tasks`   | 每 5 分钟  | 重派僵尸 executing 任务（T1，见 order-fund.md）               |
+| `schedule:reconcile-acme`      | 每 5 分钟  | ACME 卡单对账（T6，见 acme-module.md）                        |
+| `schedule:sweep-orphan-orders` | 每小时     | 清理 channel=auto 孤儿续费单（O4，见 order-fund.md）          |
+| `schedule:ca-healthcheck`      | 每 15 分钟 | 上游 CA 凭证 + 连通性告警（M7，见 notification.md）           |
+| `delegation:check`             | 每天 05:30 | CNAME 委托健康检查                                            |
+| `delegation:cleanup`           | 每天 06:00 | 委托 DNS 清理                                                 |
 
 ---
 
@@ -223,7 +234,9 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 > **CI 经验**：本地务必用 `--parallel` 跑测试，与 CI 保持一致。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
 
-> **并行 storage 隔离**：paratest 各 worker 共享同一 `storage/` 真实磁盘但各自独立 DB（RefreshDatabase）。一测试造真实磁盘文件（`storage_path('app/verification/...')`）、另一测试触发扫/删目录的命令（如 `PurgeCommand` 扫 `verification/` 根按本 worker DB 判“孤立”删除）→ 并行时跨 worker 误删对方文件 → `file_exists` 偶发 false。`TestCase::isolateWorkerStorage()` 已按 `TEST_TOKEN` 把运行时 `storage_path()` + Storage 门面（local/public disk）重定向到 `storage/framework/testing/worker-{token}`，**新写“造真实磁盘文件”的测试自动隔离、无需额外处理**（隔离只覆盖运行时 `storage_path()`/门面，不动 framework cache/log/session — 后者用 bootstrap config 路径）。普通 `artisan test --parallel` 无 coverage、窗口小常测不出，**变异门禁 `XDEBUG_MODE=coverage` 放大并发窗口才稳定复现**（曾致 `DocumentSubmit/PreviewTest` 偶发挂）。
+> **storage 隔离（并行 + 单进程都隔离）**：paratest 各 worker 共享同一 `storage/` 真实磁盘但各自独立 DB（RefreshDatabase）。一测试造真实磁盘文件（`storage_path('app/verification/...')`）、另一测试触发扫/删目录的命令（如 `PurgeCommand` 扫 `verification/` 根按本 worker DB 判“孤立”删除）→ 并行时跨 worker 误删对方文件 → `file_exists` 偶发 false。`TestCase::isolateWorkerStorage()` 把运行时 `storage_path()` + Storage 门面（local/public disk）重定向到 `storage/framework/testing/worker-{token}`，token 取 paratest 的 `TEST_TOKEN`、**单进程回落固定 `single`**（不用 pid：每跑一个新目录会让目录无界堆积，且目录内跨运行缓存如 `domain-rules/public_suffix_list.dat` 每跑缺失 → 每跑实网重抓公共后缀表、断网即红；固定 token 让单进程与 worker 一样首跑落缓存、后续复用），故 `php artisan test <文件>` / `composer test:snapshot` 这类定向跑法同样隔离，**新写“造真实磁盘文件”的测试自动隔离、无需额外处理**（隔离只覆盖运行时 `storage_path()`/门面，不动 framework cache/log/session — 后者用 bootstrap config 路径）。曾踩：单进程不隔离时，支付设置类测试经 `Setting::clearGroupCache → PayConfigCache::forget` 删掉开发环境 `storage/pay` 的真实支付证书并留下测试假证书，而 `getPayConfig` 只在文件缺失时才按设置重写 → 该环境此后一直用假证书签名、静默不可用。普通 `artisan test --parallel` 无 coverage、窗口小常测不出，**变异门禁 `XDEBUG_MODE=coverage` 放大并发窗口才稳定复现**（曾致 `DocumentSubmit/PreviewTest` 偶发挂）。
+>
+> **公共后缀表（PSL）夹具**：固定 token 只保证“后续复用”，**首跑仍是空目录**（全新克隆 / 干净 CI / 新增 paratest worker）→ 必须联网，且缓存过期重抓会把测试结果绑到上游当时的表。故 `isolateWorkerStorage()` 建好目录后由 `Tests\Support\PublicSuffixListFixture::seed()` 把仓内快照 `tests/Fixtures/public_suffix_list.dat` 灌进 `domain-rules/public_suffix_list.dat`（`xxh128` 内容比对而非只比体积——同尺寸的旧版本残留/写坏缓存会让 DomainUtil 读到别的表；写同目录 `.<pid>.tmp` 再 `rename` 保证不被读到半截；命中快路径也 `touch` 一次，让 mtime 恒为当下）——**测试离线确定性，生产 `DomainUtil` 一行不改、线上照旧抓最新表**。夹具刷新：`curl -fsSL -o backend/tests/Fixtures/public_suffix_list.dat https://publicsuffix.org/list/public_suffix_list.dat`，跑 `DomainUtilTest` 绿了再提交；按需刷新即可（PSL 只增量改后缀，陈旧不影响既有断言）。夹具被截断/换掉时 `seed()` 直接抛 `RuntimeException` 报出原因与刷新命令，不让 `DomainUtil` 静默回落到**无任何多级后缀**的内置表（那会让 `example.com.cn` / `sub.example.co.uk` 解析整体变形，`DomainUtilTest` 只报“两字符串不相等”）。`PublicSuffixListFixtureTest` 做常驻守卫：夹具行数下限 + `com.cn`/`co.uk` 等多级后缀存在、缓存内容与夹具一致且 mtime 恒为当下，以及**探针用例**——往缓存的 ICANN 段首插一条现实中不存在的后缀再断言 `DomainUtil::getRootDomain()` 随之变化。**探针不可省**：缓存路径是 `DomainUtil::loadRules()` 的手抄副本，抄错时联网 CI 下 DomainUtil 会自己把真表抓回来、一切照常全绿，整套离线机制静默失效。
 
 > **API 快照对照（compat-snapshot）+ tearDown 吞 rollback 陷阱**：`compat-snapshot` job 仅 push main / tag 触发（dev PR 不跑），改了 API schema 或新增 Controller 测试后**必须** `composer test:snapshot:capture` 重新生成 fixtures 并提交，否则合 main 首跑即大面积 diff。更隐蔽的是 `TestCase::tearDown` 把 `SnapshotListener::finalizeTest()`（compare 模式命中 diff 会 `Assert::fail()` 抛异常）放在 `parent::tearDown()` 之前——**任何在 `parent::tearDown()` 之前、可能抛异常的清理逻辑都必须 `try/finally` 兜住 `parent::tearDown()`**，否则异常跳过 RefreshDatabase 的事务 rollback → 连接持锁泄漏 + 事务层级逐测试漂移 → 串行跑全套时后续测试 setUp/seed 撞锁，雪崩成 `Lock wait timeout`（单次 50s × N，job 直接卡满超时）。**只有串行全套暴露**：`--parallel` 各 worker 独立库/连接把泄漏掩盖，单文件也因同连接层级漂移不自锁而看不出。排查时 job 日志会被 MySQL service 容器 health-check 的 `Access denied ... using password: NO` 噪音淹没，真正错因在 `Run snapshot compare` step 的 `php artisan test` 输出尾部。
 

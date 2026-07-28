@@ -11,7 +11,7 @@ Route::prefix('api/admin')->middleware(['global', 'api.admin'])->group(function 
         Route::get('/', [AgisoController::class, 'index']);
         Route::get('{id}', [AgisoController::class, 'show'])->where('id', '[0-9]+');
         Route::delete('{id}', [AgisoController::class, 'destroy'])->where('id', '[0-9]+');
-        Route::delete('/', [AgisoController::class, 'batchDestroy']);
+        Route::delete('batch', [AgisoController::class, 'batchDestroy']);
     });
 
     Route::prefix('logs')->group(function () {

@@ -11,7 +11,7 @@ import {
 import type { FormRules } from "element-plus";
 import { pickByKeys } from "@/views/system/utils";
 import {
-  brandOptions,
+  brandOptionsAll,
   caOptions,
   warrantyCurrencyOptions,
   encryptionStandardOptions,
@@ -139,7 +139,7 @@ export const useProductStore = (onSearch: () => void, sourcesList: any) => {
       fieldProps: {
         placeholder: "请选择品牌"
       },
-      options: brandOptions
+      options: brandOptionsAll
     },
     {
       label: "签发机构",

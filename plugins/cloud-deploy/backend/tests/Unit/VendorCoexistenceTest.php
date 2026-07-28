@@ -180,7 +180,7 @@ test('插件 vendor 不得携带与主系统跨大版本冲突的共享依赖（
             continue; // 插件独有的官方云 SDK 包不共享、无冲突面
         }
         if ($major($ver) !== $major($hostVer[$name])) {
-            $conflicts[] = "$name（插件 $ver vs 主系统 {$hostVer[$name]}）";
+            $conflicts[] = "{$name}（插件 {$ver} vs 主系统 {$hostVer[$name]}）";
         }
     }
 

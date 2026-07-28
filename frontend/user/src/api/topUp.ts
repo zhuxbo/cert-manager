@@ -13,11 +13,7 @@ export function wechat(amount: string): Promise<BaseResponse> {
 }
 
 export function check(id: string): Promise<BaseResponse> {
-  return http.get<BaseResponse, { id: string }>(`/top-up/check/${id}`);
-}
-
-export function clearConfigCache(): Promise<BaseResponse> {
-  return http.get<BaseResponse, null>("/top-up/clear-config-cache");
+  return http.post<BaseResponse, null>(`/top-up/check/${id}`);
 }
 
 export function getBankAccount(): Promise<BaseResponse> {

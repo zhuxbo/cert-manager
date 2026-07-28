@@ -74,6 +74,8 @@ curl -fsSL https://release-cn.cnssl.com/install.sh | sudo bash
 10. admin 密码安全收集并通过 `admin:reset-password` 直接设置（详见下文）
 11. 尝试宝塔 API 自动建站、注入 vhost、添加 supervisor 与 cron；失败时打印手工配置命令
 
+安装器只创建一个每分钟执行的宝塔计划任务：`<PHP绝对路径> <安装目录>/backend/artisan schedule:run`。命令不额外重定向输出，由宝塔面板保存任务日志；计划任务必须以 `www` 用户运行。
+
 ### admin 密码安全
 
 **禁止** `--admin-password=xxx`（命令行明文进 shell history）。允许 4 种来源（严格优先级）：

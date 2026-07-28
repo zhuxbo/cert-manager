@@ -390,6 +390,13 @@ final class SnapshotListener
             $call['response_schema'] ?? null,
             '$.response_schema'
         );
+
+        // 对比 request_keys：入参契约增删同样算 break（旧格式 fixture 无此键时跳过）
+        if (array_key_exists('request_keys', $match)) {
+            $expectedKeys = is_array($match['request_keys']) ? array_values(array_map('strval', $match['request_keys'])) : null;
+            $diffs = array_merge($diffs, SchemaDiffer::diffRequestKeys($expectedKeys, $call['request_keys']));
+        }
+
         foreach ($diffs as $d) {
             self::$diffs[$testName][] = $d + [
                 'call' => $call['method'].' '.$call['uri_pattern'],

@@ -176,7 +176,7 @@ echo "$subscription_response" | jq . 2>/dev/null || echo "$subscription_response
 
 code=$(echo "$subscription_response" | jq -r '.code' 2>/dev/null || echo "")
 if [ "$code" != "1" ]; then
-    fail "订阅创建失败（code=$code），检查 Deploy Token、product_id、余额"
+    fail "订阅创建失败（code=${code}），检查 Deploy Token、product_id、余额"
 fi
 
 order_id=$(echo "$subscription_response" | jq -r '.data.order_id')

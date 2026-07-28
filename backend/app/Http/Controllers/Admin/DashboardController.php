@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\ApiLog;
 use App\Models\Order;
+use App\Models\Transaction;
 use App\Models\User;
 use App\Traits\ApiResponse;
 use Exception;
@@ -33,9 +34,13 @@ class DashboardController extends Controller
         $cacheMinutes = $this->getCacheMinutes();
 
         $data = Cache::remember($cacheKey, $cacheMinutes * 60, function () {
+            $orderStats = $this->getOrderTransactionTotals();
+
             return [
                 'total_users' => User::count(),
-                'total_orders' => Order::count(),
+                'total_orders' => $orderStats['orders'],
+                'cancelled_orders' => $orderStats['cancelled_orders'],
+                'net_orders' => $orderStats['net_orders'],
                 'total_revenue' => Order::sum('amount'),
                 'active_orders' => $this->getActiveOrdersCount(),
             ];
@@ -56,11 +61,14 @@ class DashboardController extends Controller
             $today = now()->startOfDay();
             $thisMonth = now()->startOfMonth();
             $thisWeekMonday = now()->startOfWeek();
+            $orderTotals = $this->getOrderTransactionTotals();
 
             // 月度数据
             $monthlyData = [
                 'total_users' => User::count(),
-                'total_orders' => Order::count(),
+                'total_orders' => $orderTotals['orders'],
+                'cancelled_orders' => $orderTotals['cancelled_orders'],
+                'net_orders' => $orderTotals['net_orders'],
                 'active_orders' => $this->getActiveOrdersCount(),
                 'expiring_orders' => Order::join('certs', 'orders.latest_cert_id', '=', 'certs.id')
                     ->where('certs.status', 'active')
@@ -89,21 +97,8 @@ class DashboardController extends Controller
                 'monthly' => (int) $userRow->monthly,
             ];
 
-            // 新增有效订单统计：日/周/月（一条 SQL）
-            /** @var object $orderRow */
-            $orderRow = Order::where('orders.created_at', '>=', $rangeStart)
-                ->whereHas('latestCert', function ($q) {
-                    $q->whereIn('status', self::ACTIVATING_STATUSES);
-                })
-                ->selectRaw('SUM(CASE WHEN orders.created_at >= ? THEN 1 ELSE 0 END) as monthly', [$thisMonth])
-                ->selectRaw('SUM(CASE WHEN orders.created_at >= ? THEN 1 ELSE 0 END) as weekly', [$thisWeekMonday])
-                ->selectRaw('SUM(CASE WHEN orders.created_at >= ? THEN 1 ELSE 0 END) as daily', [$today])
-                ->first();
-            $newOrders = [
-                'daily' => (int) $orderRow->daily,
-                'weekly' => (int) $orderRow->weekly,
-                'monthly' => (int) $orderRow->monthly,
-            ];
+            $orderStats = $this->getPeriodOrderTransactionStats($rangeStart, $today, $thisWeekMonday, $thisMonth);
+            $newOrders = collect($orderStats)->map(fn (array $stats) => $stats['orders'])->all();
 
             // 每日数据
             $dailyData = [
@@ -119,6 +114,7 @@ class DashboardController extends Controller
                 'finance' => $financeData,
                 'new_users' => $newUsers,
                 'new_orders' => $newOrders,
+                'order_stats' => $orderStats,
             ];
         });
 
@@ -136,6 +132,7 @@ class DashboardController extends Controller
         $realtimeStats = Cache::remember($cacheKey, $cacheMinutes * 60, function () {
             $today = now()->startOfDay();
             $now = now();
+            $todayOrderStats = $this->getPeriodOrderTransactionStats($today, $today, $today, $today)['daily'];
 
             // 单条 SQL 合并：到期、签发、处理中统计
             $certStats = DB::selectOne("
@@ -158,7 +155,9 @@ class DashboardController extends Controller
                 'online_users' => $this->getOnlineUsersCount(),
                 'today' => [
                     'processing_orders' => (int) $certStats->processing,
-                    'new_orders' => Order::whereDate('created_at', $today)->count(),
+                    'new_orders' => $todayOrderStats['orders'],
+                    'cancelled_orders' => $todayOrderStats['cancelled_orders'],
+                    'net_orders' => $todayOrderStats['net_orders'],
                     'new_users' => User::whereDate('created_at', $today)->count(),
                 ],
                 'alerts' => [
@@ -194,12 +193,6 @@ class DashboardController extends Controller
                 ->groupByRaw($dateExpr)
                 ->pluck('cnt', 'date');
 
-            // 订单趋势（GROUP BY 聚合）
-            $orderCounts = Order::where('created_at', '>=', $startDate)
-                ->selectRaw("$dateExpr as date, COUNT(*) as cnt")
-                ->groupByRaw($dateExpr)
-                ->pluck('cnt', 'date');
-
             // 充值和消费趋势（一条 SQL 查出所有天数）
             // 用 Query Builder 而非裸 DB::select：Grammar 层处理 PG 下的 `::date` 语法，避开 PDO
             // 对 `::` 的命名参数前缀解析风险（部分 PDO 版本会误判为参数）。
@@ -209,7 +202,9 @@ class DashboardController extends Controller
                 ->selectRaw(
                     "$dateExpr as date, ".
                     "COALESCE(SUM(CASE WHEN type IN ('addfunds', 'refunds') THEN amount ELSE 0 END), 0) AS recharge, ".
-                    "COALESCE(SUM(CASE WHEN type IN ('order', 'cancel', 'deduct', 'reverse', 'acme_order', 'acme_cancel') THEN -amount ELSE 0 END), 0) AS consumption"
+                    "COALESCE(SUM(CASE WHEN type IN ('order', 'cancel', 'deduct', 'reverse', 'acme_order', 'acme_cancel') THEN -amount ELSE 0 END), 0) AS consumption, ".
+                    "SUM(CASE WHEN type IN ('order', 'acme_order') THEN 1 ELSE 0 END) AS orders, ".
+                    "SUM(CASE WHEN type IN ('cancel', 'acme_cancel') THEN 1 ELSE 0 END) AS cancelled_orders"
                 )
                 ->groupByRaw($dateExpr)
                 ->get();
@@ -219,6 +214,8 @@ class DashboardController extends Controller
                 $financeMap[$row->date] = [
                     'recharge' => round((float) $row->recharge, 2),
                     'consumption' => round((float) $row->consumption, 2),
+                    'orders' => (int) $row->orders,
+                    'cancelled_orders' => (int) $row->cancelled_orders,
                 ];
             }
 
@@ -229,7 +226,9 @@ class DashboardController extends Controller
                 $trends[] = [
                     'date' => $dateStr,
                     'users' => (int) ($userCounts[$dateStr] ?? 0),
-                    'orders' => (int) ($orderCounts[$dateStr] ?? 0),
+                    'orders' => $financeMap[$dateStr]['orders'] ?? 0,
+                    'cancelled_orders' => $financeMap[$dateStr]['cancelled_orders'] ?? 0,
+                    'net_orders' => ($financeMap[$dateStr]['orders'] ?? 0) - ($financeMap[$dateStr]['cancelled_orders'] ?? 0),
                     'recharge' => $financeMap[$dateStr]['recharge'] ?? 0.00,
                     'consumption' => $financeMap[$dateStr]['consumption'] ?? 0.00,
                 ];
@@ -379,6 +378,58 @@ class DashboardController extends Controller
         return Order::whereHas('latestCert', function ($q) {
             $q->whereIn('status', self::ACTIVATING_STATUSES);
         })->count();
+    }
+
+    /**
+     * 获取交易流水口径的累计订单统计。
+     *
+     * @return array{orders: int, cancelled_orders: int, net_orders: int}
+     */
+    private function getOrderTransactionTotals(): array
+    {
+        $row = Transaction::query()
+            ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as orders', Transaction::ORDER_TYPES)
+            ->selectRaw('SUM(CASE WHEN type IN (?, ?) THEN 1 ELSE 0 END) as cancelled_orders', Transaction::CANCEL_TYPES)
+            ->first();
+
+        $orders = (int) ($row?->getAttribute('orders') ?? 0);
+        $cancelledOrders = (int) ($row?->getAttribute('cancelled_orders') ?? 0);
+
+        return [
+            'orders' => $orders,
+            'cancelled_orders' => $cancelledOrders,
+            'net_orders' => $orders - $cancelledOrders,
+        ];
+    }
+
+    /**
+     * 获取交易流水口径的日、周、月订单统计。
+     *
+     * @return array<string, array{orders: int, cancelled_orders: int, net_orders: int}>
+     */
+    private function getPeriodOrderTransactionStats($rangeStart, $today, $thisWeekMonday, $thisMonth): array
+    {
+        $row = Transaction::where('created_at', '>=', $rangeStart)
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as daily_orders', [$today, ...Transaction::ORDER_TYPES])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as daily_cancelled', [$today, ...Transaction::CANCEL_TYPES])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as weekly_orders', [$thisWeekMonday, ...Transaction::ORDER_TYPES])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as weekly_cancelled', [$thisWeekMonday, ...Transaction::CANCEL_TYPES])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as monthly_orders', [$thisMonth, ...Transaction::ORDER_TYPES])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? AND type IN (?, ?) THEN 1 ELSE 0 END) as monthly_cancelled', [$thisMonth, ...Transaction::CANCEL_TYPES])
+            ->first();
+
+        $stats = [];
+        foreach (['daily', 'weekly', 'monthly'] as $period) {
+            $orders = (int) ($row?->getAttribute($period.'_orders') ?? 0);
+            $cancelledOrders = (int) ($row?->getAttribute($period.'_cancelled') ?? 0);
+            $stats[$period] = [
+                'orders' => $orders,
+                'cancelled_orders' => $cancelledOrders,
+                'net_orders' => $orders - $cancelledOrders,
+            ];
+        }
+
+        return $stats;
     }
 
     /**

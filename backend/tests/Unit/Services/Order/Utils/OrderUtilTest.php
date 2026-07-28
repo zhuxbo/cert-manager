@@ -209,6 +209,23 @@ test('convertNumericValues 跳过含科学计数法格式的字符串', function
         ->and($result['normal_float'])->toBe(3.14);
 });
 
+test('convertNumericValues 保持 csr / private_key 为字符串（任意层级）', function () {
+    // 这两个键的取值语义就是一段文本，转成数字会让下游 string 形参直接抛 TypeError：
+    // csr='0' 曾使 POST /api/deploy 返回 HTTP 400 + 裸 TypeError 文案（含内部路径），
+    // 违反「失败一律 HTTP 200 + code=0」契约。豁免后畸形取值由 CSR 解析报业务错误。
+    $result = OrderUtil::convertNumericValues([
+        'csr' => '0',
+        'private_key' => '123456',
+        'order_id' => '42',
+        'params' => ['csr' => '007', 'period' => '12'],
+    ]);
+    expect($result['csr'])->toBe('0')
+        ->and($result['private_key'])->toBe('123456')
+        ->and($result['order_id'])->toBe(42)
+        ->and($result['params']['csr'])->toBe('007')
+        ->and($result['params']['period'])->toBe(12);
+});
+
 test('convertNumericValues 跳过超长纯数字字符串', function () {
     $result = OrderUtil::convertNumericValues([
         'registration_number' => '123715004950202802',

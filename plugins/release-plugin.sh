@@ -525,7 +525,7 @@ fi
 # 检查 zip 是否存在（发布需要）
 if [ "$BUILD_ONLY" = false ]; then
     if [ ! -f "$OUTPUT" ]; then
-        log_error "插件包不存在: $OUTPUT，请先构建"
+        log_error "插件包不存在: ${OUTPUT}，请先构建"
         exit 1
     fi
 

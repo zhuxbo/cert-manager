@@ -238,8 +238,8 @@ function mockPayCapture(): object
 /**
  * 返回一个底层 Store 所有读写操作都抛异常的 Cache Repository。
  * `Cache::swap(throwingCacheRepository())` 之即模拟 redis 后端全故障（get/put/forget/remember 全抛）。
- * 用于验证「最后防线」路径（HealthController 探针 / HealthProbeCommand 告警 / Setting 读取）
- * 在 cache 后端崩溃时降级为结构化输出 / DB 直读，而非白屏 500 或静默丢告警。
+ * 用于验证 HealthController 探针和 Setting 读取在 cache 后端崩溃时降级为结构化输出 / DB 直读，
+ * 而非白屏 500。
  *
  * 注意：swap 后 `Cache::has/forget` 也会抛——用完须 `Cache::swap` 回正常 store（或用例末尾恢复），
  * 否则同用例的 afterEach 清理会被 cache 异常打断。

@@ -18,30 +18,65 @@ import {
   syncCostRatesHint
 } from "./initializationState.ts";
 
-const profile = (code, name, custom, costRate) => ({
-  id: code.length,
+const profile = (
+  code,
+  name,
+  custom,
+  costRate,
+  weight = 100,
+  id = code.length
+) => ({
+  id,
   code,
   name,
   custom,
   cost_rate: costRate,
-  weight: 100
+  weight
 });
 
-test("基础和定制选择跨切换保留，定制项覆盖同 code 并稳定排序", () => {
+test("基础和定制选择跨切换保留，定制项覆盖同 code 并按权重、id 排序", () => {
   const result = mergeSelectedLevels(
     [
-      { code: "standard", name: "标准", custom: 0, cost_rate: "1.0000" },
-      { code: "shared", name: "基础同名", custom: 0, cost_rate: "1.1000" }
+      {
+        id: 30,
+        code: "standard",
+        name: "标准",
+        custom: 0,
+        weight: 20,
+        cost_rate: "1.0000"
+      },
+      {
+        id: 20,
+        code: "shared",
+        name: "基础同名",
+        custom: 0,
+        weight: 10,
+        cost_rate: "1.1000"
+      }
     ],
     [
-      { code: "vip", name: "VIP", custom: 1, cost_rate: "1.2000" },
-      { code: "shared", name: "定制同名", custom: 1, cost_rate: "1.3000" }
+      {
+        id: 10,
+        code: "vip",
+        name: "VIP",
+        custom: 1,
+        weight: 10,
+        cost_rate: "1.2000"
+      },
+      {
+        id: 40,
+        code: "shared",
+        name: "定制同名",
+        custom: 1,
+        weight: 5,
+        cost_rate: "1.3000"
+      }
     ]
   );
 
   assert.deepEqual(
     result.map(item => item.code),
-    ["shared", "standard", "vip"]
+    ["shared", "vip", "standard"]
   );
   assert.equal(result[0].name, "定制同名");
   assert.equal(result[0].cost_rate, "1.3000");
@@ -52,16 +87,37 @@ test("两类 code 仅从完整级别资料映射名称、类型和默认倍率",
     ["base-b", "base-a"],
     ["custom-a"],
     [
-      profile("custom-a", "客户甲", 1, "1.3456"),
-      profile("base-a", "基础甲", 0, "1.1000"),
-      profile("base-b", "基础乙", 0, "1.2000")
+      profile("custom-a", "客户甲", 1, "1.3456", 30, 3),
+      profile("base-a", "基础甲", 0, "1.1000", 10, 1),
+      profile("base-b", "基础乙", 0, "1.2000", 20, 2)
     ]
   );
 
   assert.deepEqual(result, [
-    { code: "base-a", name: "基础甲", custom: 0, cost_rate: "1.1000" },
-    { code: "base-b", name: "基础乙", custom: 0, cost_rate: "1.2000" },
-    { code: "custom-a", name: "客户甲", custom: 1, cost_rate: "1.3456" }
+    {
+      id: 1,
+      code: "base-a",
+      name: "基础甲",
+      custom: 0,
+      weight: 10,
+      cost_rate: "1.1000"
+    },
+    {
+      id: 2,
+      code: "base-b",
+      name: "基础乙",
+      custom: 0,
+      weight: 20,
+      cost_rate: "1.2000"
+    },
+    {
+      id: 3,
+      code: "custom-a",
+      name: "客户甲",
+      custom: 1,
+      weight: 30,
+      cost_rate: "1.3456"
+    }
   ]);
 });
 
@@ -80,7 +136,7 @@ test("完整资料刷新时保留客户已经逐级修改的倍率", () => {
   assert.equal(result[1].cost_rate, "1.3000");
 });
 
-test("分页累计 12 个基础级别并默认全选，不额外请求第三页", async () => {
+test("分页累计基础级别并保留接口排序，不额外请求第三页", async () => {
   const calls = [];
   const pages = {
     1: Array.from({ length: 10 }, (_, index) =>
@@ -100,7 +156,7 @@ test("分页累计 12 个基础级别并默认全选，不额外请求第三页"
   assert.equal(result.length, 12);
   assert.deepEqual(
     result.map(item => item.code),
-    Array.from({ length: 12 }, (_, index) => `base-${index + 1}`).sort()
+    Array.from({ length: 12 }, (_, index) => `base-${index + 1}`)
   );
   assert.deepEqual(calls, [
     [1, 10],

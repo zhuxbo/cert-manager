@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-07-09 00:13:44",
+    "generated_at": "2026-07-21 15:23:35",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -1112,6 +1112,141 @@
                 }
             }
         },
+        "auto_deploy_reports": {
+            "engine": "InnoDB",
+            "collation": "utf8mb4_0900_ai_ci",
+            "comment": "",
+            "auto_increment": null,
+            "columns": {
+                "id": {
+                    "position": 1,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "ID"
+                },
+                "order_id": {
+                    "position": 2,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "订单ID"
+                },
+                "cert_id": {
+                    "position": 3,
+                    "type": "bigint unsigned",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "证书ID"
+                },
+                "status": {
+                    "position": 4,
+                    "type": "enum('success','failure')",
+                    "nullable": false,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报状态"
+                },
+                "deployed_at": {
+                    "position": 5,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "部署时间"
+                },
+                "ip": {
+                    "position": 6,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报IP"
+                },
+                "message": {
+                    "position": 7,
+                    "type": "varchar(500)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报信息"
+                },
+                "created_at": {
+                    "position": 8,
+                    "type": "timestamp",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "上报时间"
+                }
+            },
+            "indexes": {
+                "auto_deploy_reports_cert_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "cert_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_deployed_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "deployed_at"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_order_id_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "order_id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "auto_deploy_reports_status_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "status"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "PRIMARY": {
+                    "unique": true,
+                    "type": "BTREE",
+                    "columns": [
+                        "id"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                }
+            },
+            "foreign_keys": []
+        },
         "ca_logs": {
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
@@ -1679,16 +1814,8 @@
                     "extra": "",
                     "comment": "过期时间"
                 },
-                "auto_deploy_at": {
-                    "position": 23,
-                    "type": "timestamp",
-                    "nullable": true,
-                    "default": null,
-                    "extra": "",
-                    "comment": "自动部署时间"
-                },
                 "csr_md5": {
-                    "position": 24,
+                    "position": 23,
                     "type": "char(32)",
                     "nullable": true,
                     "default": null,
@@ -1696,7 +1823,7 @@
                     "comment": "CSR的MD5"
                 },
                 "csr": {
-                    "position": 25,
+                    "position": 24,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1704,7 +1831,7 @@
                     "comment": "CSR"
                 },
                 "private_key": {
-                    "position": 26,
+                    "position": 25,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1712,7 +1839,7 @@
                     "comment": "私钥"
                 },
                 "cert": {
-                    "position": 27,
+                    "position": 26,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1720,7 +1847,7 @@
                     "comment": "证书"
                 },
                 "enc_cert": {
-                    "position": 28,
+                    "position": 27,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1728,7 +1855,7 @@
                     "comment": "国密加密证书"
                 },
                 "enc_key": {
-                    "position": 29,
+                    "position": 28,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1736,7 +1863,7 @@
                     "comment": "国密加密私钥(GMT-0016)"
                 },
                 "enc_key2": {
-                    "position": 30,
+                    "position": 29,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1744,7 +1871,7 @@
                     "comment": "国密加密私钥(GMT-0009)"
                 },
                 "serial_number": {
-                    "position": 31,
+                    "position": 30,
                     "type": "varchar(128)",
                     "nullable": true,
                     "default": null,
@@ -1752,7 +1879,7 @@
                     "comment": "序列号"
                 },
                 "fingerprint": {
-                    "position": 32,
+                    "position": 31,
                     "type": "varchar(128)",
                     "nullable": true,
                     "default": null,
@@ -1760,7 +1887,7 @@
                     "comment": "指纹"
                 },
                 "encryption_alg": {
-                    "position": 33,
+                    "position": 32,
                     "type": "varchar(20)",
                     "nullable": true,
                     "default": null,
@@ -1768,7 +1895,7 @@
                     "comment": "加密算法"
                 },
                 "encryption_bits": {
-                    "position": 34,
+                    "position": 33,
                     "type": "smallint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1776,7 +1903,7 @@
                     "comment": "加密位数"
                 },
                 "signature_digest_alg": {
-                    "position": 35,
+                    "position": 34,
                     "type": "varchar(20)",
                     "nullable": true,
                     "default": null,
@@ -1784,7 +1911,7 @@
                     "comment": "签名摘要算法"
                 },
                 "cert_apply_status": {
-                    "position": 36,
+                    "position": 35,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1792,7 +1919,7 @@
                     "comment": "证书申请状态: 0=未提交CA, 2=已提交CA"
                 },
                 "domain_verify_status": {
-                    "position": 37,
+                    "position": 36,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1800,7 +1927,7 @@
                     "comment": "域名验证状态: 0=未开始, 1=进行中, 2=已完成"
                 },
                 "org_verify_status": {
-                    "position": 38,
+                    "position": 37,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1808,7 +1935,7 @@
                     "comment": "组织验证状态: 0=未开始, 1=进行中, 2=已完成"
                 },
                 "status": {
-                    "position": 39,
+                    "position": 38,
                     "type": "enum('unpaid','pending','processing','approving','active','failed','cancelling','cancelled','revoked','renewed','reissued','expired')",
                     "nullable": false,
                     "default": "unpaid",
@@ -1816,7 +1943,7 @@
                     "comment": "状态"
                 },
                 "created_at": {
-                    "position": 40,
+                    "position": 39,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -1824,7 +1951,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 41,
+                    "position": 40,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -2684,18 +2811,6 @@
                         "created_at"
                     ],
                     "sub_parts": [
-                        null
-                    ]
-                },
-                "error_logs_exception_created_at_index": {
-                    "unique": false,
-                    "type": "BTREE",
-                    "columns": [
-                        "exception",
-                        "created_at"
-                    ],
-                    "sub_parts": [
-                        null,
                         null
                     ]
                 },
@@ -4817,7 +4932,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 1,
+            "auto_increment": 2,
             "columns": {
                 "id": {
                     "position": 1,
@@ -4914,7 +5029,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 1,
+            "auto_increment": 3,
             "columns": {
                 "id": {
                     "position": 1,
@@ -4942,11 +5057,11 @@
                 },
                 "type": {
                     "position": 4,
-                    "type": "enum('string','integer','float','boolean','select','array','base64')",
+                    "type": "enum('string','integer','float','boolean','select','array','base64','image')",
                     "nullable": false,
                     "default": "string",
                     "extra": "",
-                    "comment": "类型: string=字符串,integer=整数,float=浮点数,boolean=布尔值,select=选择框,array=数组,base64=Base64编码"
+                    "comment": "类型: string=字符串,integer=整数,float=浮点数,boolean=布尔值,select=选择框,array=数组,base64=Base64编码,image=图片"
                 },
                 "options": {
                     "position": 5,

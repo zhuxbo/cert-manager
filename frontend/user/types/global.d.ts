@@ -81,7 +81,6 @@ declare global {
    * @see {@link https://pure-admin.cn/pages/config/#platform-config-json}
    */
   interface PlatformConfigs {
-    Version?: string;
     Title?: string;
     FixedHeader?: boolean;
     HiddenSideBar?: boolean;
@@ -108,9 +107,14 @@ declare global {
     ResponsiveStorageNameSpace?: string;
     MenuSearchHistory?: number;
     BaseUrlApi?: string;
-    Brands?: string[];
+    AllBrands?: Array<{ label: string; value: string }>;
+    Brands?: Array<{ label: string; value: string }>;
     DnsTools?: string[];
     Beian?: string;
+    CopyStart?: string | number;
+    Logo?: string;
+    LogoExpanded?: string;
+    Qrcode?: string;
     Acme?: boolean;
     AutoDeploy?: boolean;
   }

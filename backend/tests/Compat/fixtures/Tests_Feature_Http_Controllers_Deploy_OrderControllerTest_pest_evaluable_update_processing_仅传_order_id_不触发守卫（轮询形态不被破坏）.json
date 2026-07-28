@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_update_processing_仅传_order__id_不触发守卫（轮询形态不被破坏）",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy",
+            "request_keys": [
+                "order_id"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "domains": "string",
+                    "status": "string",
+                    "csr": "string",
+                    "renew_before_days": "integer"
+                }
+            }
+        }
+    ]
+}

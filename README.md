@@ -113,7 +113,9 @@ deploy/ # 部署脚本
 
 运行时并发防护：订单/任务状态变更统一遵循 `task→order/acme` 锁顺序；任务锁查询统一经 Task 模型 scope `Task::lockForMutation` 强制走 `tasks(order_id, action, status)` 复合索引（与之同首列的单列 `order_id` 索引已在 schema 层删除，杜绝优化器退回扩大间隙锁），纯本地 task 变更事务（Order 与 ACME 共用重试助手）启用 3 次死锁重试，降低并发取消、同步时 MySQL 1213 对用户请求的影响。CI 同时守住 Task 锁入口收口、tasks 索引最终态和 scope 接线，防止复合索引或 forceIndex 保护回归。
 
-管理端产品价格支持按会员级别倍率预览并批量初始化；每个级别可单独调整倍率，默认只补齐缺失价格，强制模式也只重建本次选中的级别。
+管理端产品价格支持按会员级别倍率预览并批量初始化；禁用产品不参与预览、校验或价格写入，每个级别可单独调整倍率，默认只补齐缺失价格，强制模式也只重建启用产品中本次选中的级别。
+
+管理后台首页将实时订单、证书与财务摘要集中在“实时监控”卡片，并在“系统健康”卡片展示数据库、缓存、调度心跳、队列积压和磁盘剩余；健康度仅在进入首页或手工刷新时检测，不创建独立监控计划任务。
 
 续费/重签接替单在已提交上游后被取消时不会恢复前驱证书；普通取消以及启用 `autoRefundOnSync` 后由同步发现上游取消的续费单，都会发送一次性 `cert_renew_cancelled` 提醒，避免前驱证书脱离续期监控后静默过期。
 
@@ -139,6 +141,8 @@ _dnsauth.example.com → *******.your-platform.com
 
 配置后，平台自动完成 DNS 验证，无需手动操作。
 
+管理端和用户端的“自动部署”菜单集中提供域名委托与部署记录查询；部署记录保留每次上报的状态、来源 IP 和失败信息。
+
 ### 自动部署工具
 
 配合 [sslctl](https://github.com/zhuxbo/sslctl) 工具实现全自动化：
@@ -161,9 +165,9 @@ sslctl deploy --cert order-12345
 
 ```http
 GET /api/deploy?order=123 # 按订单 ID 查询
-GET /api/deploy?order=example.com # 按域名查询
-GET /api/deploy?order=1,2,a.com # 批量混合查询
-GET /api/deploy # 列出所有 active 订单
+GET /api/deploy?order=1,2,3 # 批量查询（逗号分隔，上限 100）
+GET /api/deploy?order=123&field=certificate # 拉取 PEM 全链证书（order 也可用域名）
+GET /api/deploy?order=123&field=private_key # 拉取私钥
 POST /api/deploy # 更新/续费证书
 POST /api/deploy/callback # 部署结果回调
 ```

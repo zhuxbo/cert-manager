@@ -51,11 +51,11 @@ build/
 
 构建完成后，打包脚本会生成：
 
-| 文件                                | 说明                                                                   |
-| ----------------------------------- | ---------------------------------------------------------------------- |
-| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor，安装期生成）                                  |
-| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级保留现有依赖）                                |
-| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）                       |
+| 文件                                | 说明                                             |
+| ----------------------------------- | ------------------------------------------------ |
+| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor，安装期生成）            |
+| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级保留现有依赖）          |
+| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/） |
 
 > 包清单与 sha256 写入 release 站根目录的 `releases.json`（由 `release.sh` 上传时生成），install/upgrade 链路统一从该文件读 `assets[].sha256` 强校验。打包阶段不再生成包内 `manifest.json`。
 
@@ -178,9 +178,10 @@ KEEP_VERSIONS=5
 └── dev-latest/             # 最新开发版符号链接
 ```
 
-### 版本清理
+### 版本清理与发布校验
 
-每个通道自动保留最新 5 个版本（可通过 `KEEP_VERSIONS` 配置）。
+- 远程版本目录和 `releases.json` 中的版本记录都会按 main/dev 通道分别清理，各保留最新 5 个版本（可通过 `KEEP_VERSIONS` 配置）。
+- 每台服务器上传完成后，脚本会先校验远程索引、三个 zip 的大小/sha256、latest 链接和入口脚本，再从公网 URL 下载索引与全部 zip 复算大小/sha256；任一校验失败都会令发布失败。
 
 ## 定制构建
 

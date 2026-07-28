@@ -59,7 +59,12 @@ class VerifyUtil
                     continue;
                 }
 
-                return $response->json();
+                $result = $response->json();
+                if (! is_array($result)) {
+                    continue;
+                }
+
+                return $result;
             } catch (ConnectionException) {
                 continue; // 尝试下一个API
             }

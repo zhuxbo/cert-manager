@@ -4,7 +4,7 @@
     "calls": [
         {
             "method": "DELETE",
-            "uri_pattern": "/api/admin/database/backups/{id}",
+            "uri_pattern": "/api/admin/database/backups/{backupId}",
             "request_keys": null,
             "response_status": "2xx",
             "response_schema": {

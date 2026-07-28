@@ -1,0 +1,25 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_每次上报独立记录状态与来源_IP",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/deploy/callback",
+            "request_keys": [
+                "deployed_at",
+                "order_id",
+                "status"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "order_id": "integer",
+                    "status": "string",
+                    "recorded": "boolean",
+                    "renew_before_days": "integer"
+                }
+            }
+        }
+    ]
+}

@@ -1,6 +1,6 @@
 import { storeToRefs } from "pinia";
 import { getConfig } from "@/config";
-import { emitter } from "@shared/utils";
+import { emitter, defaultLogoPath, resolveSiteLogo } from "@shared/utils";
 import { getTopMenu } from "@/router/utils";
 import { useFullscreen } from "@vueuse/core";
 import type { routeMetaType } from "../types";
@@ -116,9 +116,18 @@ export function useNav() {
     return remainingPaths.includes(path);
   }
 
-  /** 获取`logo` */
+  /** 获取`logo`：后台未配置时回落 public/logo.svg（升级时保留，可被运营商替换） */
   function getLogo() {
-    return new URL("/logo.svg", import.meta.url).href;
+    return resolveSiteLogo(
+      getConfig("Logo"),
+      defaultLogoPath(import.meta.env.BASE_URL)
+    );
+  }
+
+  /** 可选展开版 Logo；空值表示保持原有 Logo + 站点名称。 */
+  function getExpandedLogo() {
+    const logo = getConfig("LogoExpanded");
+    return typeof logo === "string" ? logo.trim() : "";
   }
 
   return {
@@ -142,6 +151,7 @@ export function useNav() {
     handleResize,
     resolvePath,
     getLogo,
+    getExpandedLogo,
     isCollapse,
     pureApp,
     username,

@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\File;
 
 class SettingSeeder extends Seeder
 {
@@ -24,6 +25,7 @@ class SettingSeeder extends Seeder
             ['name' => 'wechat', 'title' => '微信支付设置', 'description' => null, 'weight' => 7],
             ['name' => 'bankAccount', 'title' => '银行账户设置', 'description' => null, 'weight' => 8],
             ['name' => 'enterprise', 'title' => '工商信息查询', 'description' => null, 'weight' => 9],
+            ['name' => 'brand', 'title' => '品牌设置', 'description' => null, 'weight' => 10],
         ];
 
         // 创建 setting groups 并保存到数组中，用 name 作为 key
@@ -36,14 +38,24 @@ class SettingSeeder extends Seeder
             $groups[$groupData['name']] = $group;
         }
 
+        // 升级时先导入旧静态配置，再由下方默认值补齐其余缺失项。
+        // 已有非空设置不覆盖，保证 Seeder 可幂等重跑。
+        $this->importLegacyPlatformSettings($groups['site'], $groups['brand']);
+
         // 定义 settings，按 group name 分组
         $settings = [
             'site' => [
                 ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '用户URL', 'weight' => 1],
-                ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '站点名称', 'weight' => 2],
-                ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['cn' => 'https://dns-tools-cn.cnssl.com', 'us' => 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 6],
-                ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 7],
-                ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 8],
+                ['key' => 'name', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => 'SSL', 'description' => '站点名称', 'weight' => 2],
+                ['key' => 'favicon', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Favicon', 'weight' => 3],
+                ['key' => 'logo', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '站点 Logo', 'weight' => 4],
+                ['key' => 'logoExpanded', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '展开版 Logo', 'weight' => 5],
+                ['key' => 'qrcode', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '客服微信二维码', 'weight' => 6],
+                ['key' => 'loginImage', 'type' => 'image', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '用户端登录配图', 'weight' => 7],
+                ['key' => 'beian', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '网站备案号', 'weight' => 8],
+                ['key' => 'dnsTools', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['https://dns-tools-cn.cnssl.com', 'https://dns-tools-us.cnssl.com'], 'description' => 'DNS工具', 'weight' => 9],
+                ['key' => 'delegation', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['proxyZone' => '', 'secretId' => '', 'secretKey' => ''], 'description' => 'CNAME委托', 'weight' => 10],
+                ['key' => 'autoRefundOnSync', 'type' => 'boolean', 'options' => null, 'is_multiple' => 0, 'value' => false, 'description' => '上游已取消的未签发订单是否退款', 'weight' => 11],
             ],
             'ca' => [
                 ['key' => 'sources', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['default' => 'Default'], 'description' => '来源', 'weight' => 1],
@@ -87,7 +99,7 @@ class SettingSeeder extends Seeder
                 ['key' => 'bank', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => null, 'description' => '开户行', 'weight' => 0],
             ],
             'callback' => [
-                ['key' => 'default', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['sources' => '', 'token' => '', 'id_field' => 'id', 'allowed_ips' => ''], 'description' => '默认回调配置', 'weight' => 1],
+                ['key' => 'default', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['sources' => 'default', 'token' => '', 'id_field' => 'id', 'allowed_ips' => ''], 'description' => '默认回调配置', 'weight' => 1],
             ],
             'enterprise' => [
                 ['key' => 'url', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '接口URL', 'weight' => 1],
@@ -96,20 +108,56 @@ class SettingSeeder extends Seeder
                 ['key' => 'fieldMap', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => ['name' => 'result.basic.name', 'registration_number' => 'result.basic.creditno', 'address' => 'result.basic.regaddress', 'state' => 'result.basic.province', 'city' => 'result.basic.city', 'regionname' => 'result.basic.regionname', 'legal_person' => 'result.basic.legalperson'], 'description' => '字段映射', 'weight' => 4],
                 ['key' => 'dailyLimit', 'type' => 'integer', 'options' => null, 'is_multiple' => 0, 'value' => 100, 'description' => '全局每日查询接口上限（0 为无限）', 'weight' => 5],
             ],
+            'brand' => [
+                ['key' => 'admin', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultAdminBrands(), 'description' => '管理端品牌选项', 'weight' => 1],
+                ['key' => 'user', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->defaultUserBrands(), 'description' => '用户端品牌选项', 'weight' => 2],
+                ['key' => 'all', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->brandLabels($this->defaultAdminBrands()), 'description' => '全部品牌', 'weight' => 3],
+            ],
         ];
 
         // 创建 settings
         foreach ($settings as $groupName => $groupSettings) {
-            if (isset($groups[$groupName])) {
-                foreach ($groupSettings as $setting) {
-                    $setting['group_id'] = $groups[$groupName]->id;
-                    Setting::firstOrCreate(
-                        ['group_id' => $setting['group_id'], 'key' => $setting['key']],
-                        $setting
-                    );
-                }
+            foreach ($groupSettings as $setting) {
+                $setting['group_id'] = $groups[$groupName]->id;
+                Setting::firstOrCreate(
+                    ['group_id' => $setting['group_id'], 'key' => $setting['key']],
+                    $setting
+                );
             }
         }
+
+        Setting::where('group_id', $groups['site']->id)
+            ->whereIn('key', ['favicon', 'logo', 'logoExpanded', 'qrcode', 'loginImage'])
+            ->update(['type' => 'image']);
+
+        // 只迁移旧默认排序，管理员自定义过的 weight 保持不变。
+        // 同一 key 的多级迁移按顺序链式执行（如 beian 6→7→8）。
+        foreach ([
+            ['logo', 3, 4],
+            ['logoExpanded', 4, 5],
+            ['qrcode', 5, 6],
+            ['beian', 6, 7],
+            ['dnsTools', 7, 8],
+            ['delegation', 8, 9],
+            ['autoRefundOnSync', 9, 10],
+            // loginImage 插入 qrcode 之后，其后默认权重整体 +1
+            ['beian', 7, 8],
+            ['dnsTools', 8, 9],
+            ['delegation', 9, 10],
+            ['autoRefundOnSync', 10, 11],
+        ] as [$key, $oldWeight, $newWeight]) {
+            Setting::where('group_id', $groups['site']->id)
+                ->where('key', $key)
+                ->where('weight', $oldWeight)
+                ->update(['weight' => $newWeight]);
+        }
+
+        Setting::where('group_id', $groups['site']->id)
+            ->where('key', 'name')
+            ->whereNull('value')
+            ->update(['value' => 'SSL']);
+
+        $groups['brand']->update(['description' => null]);
 
         // 迁移 site.callbackToken → callback.default.token
         $oldToken = Setting::where('group_id', $groups['site']->id)
@@ -131,5 +179,211 @@ class SettingSeeder extends Seeder
 
             $oldToken->delete();
         }
+    }
+
+    private function importLegacyPlatformSettings(SettingGroup $siteGroup, SettingGroup $brandGroup): void
+    {
+        $legacy = $this->readLegacyConfigs();
+
+        $legacyTitle = $this->legacyString($legacy, ['user', 'admin'], 'Title');
+        if ($legacyTitle !== '') {
+            $name = Setting::firstOrNew(['group_id' => $siteGroup->id, 'key' => 'name']);
+            // 旧版 Seeder 会预先写入默认值 SSL；它不代表运营商定制，允许旧静态 Title 接管。
+            // 其他非空值视为已迁入后台或人工修改，不再被旧文件覆盖。
+            if (! $name->exists || in_array($name->getRawOriginal('value'), [null, '', 'SSL'], true)) {
+                $name->fill([
+                    'type' => 'string',
+                    'options' => null,
+                    'is_multiple' => false,
+                    'value' => $legacyTitle,
+                    'description' => '站点名称',
+                    'weight' => 2,
+                ])->save();
+            }
+        }
+
+        $legacyBeian = $this->legacyString($legacy, ['user'], 'Beian');
+        if ($legacyBeian !== '') {
+            $beian = Setting::firstOrNew(['group_id' => $siteGroup->id, 'key' => 'beian']);
+            if (! $beian->exists || in_array($beian->getRawOriginal('value'), [null, ''], true)) {
+                $beian->fill([
+                    'type' => 'string',
+                    'options' => null,
+                    'is_multiple' => false,
+                    'value' => $legacyBeian,
+                    'description' => '网站备案号',
+                    'weight' => 6,
+                ])->save();
+            }
+        }
+
+        foreach (['admin', 'user'] as $side) {
+            $brands = $this->legacyBrandValues($legacy[$side] ?? null);
+            if ($brands === null) {
+                continue;
+            }
+
+            if ($side === 'admin') {
+                Setting::firstOrCreate(
+                    ['group_id' => $brandGroup->id, 'key' => 'all'],
+                    [
+                        'type' => 'array',
+                        'options' => null,
+                        'is_multiple' => false,
+                        'value' => $this->brandLabels($brands),
+                        'description' => '全部品牌',
+                        'weight' => 3,
+                    ],
+                );
+            }
+
+            Setting::firstOrCreate(
+                ['group_id' => $brandGroup->id, 'key' => $side],
+                [
+                    'type' => 'array',
+                    'options' => null,
+                    'is_multiple' => false,
+                    'value' => $brands,
+                    'description' => $side === 'admin' ? '管理端品牌选项' : '用户端品牌选项',
+                    'weight' => $side === 'admin' ? 1 : 2,
+                ],
+            );
+        }
+    }
+
+    /** @return array{admin: array<string, mixed>|null, user: array<string, mixed>|null} */
+    private function readLegacyConfigs(): array
+    {
+        $result = ['admin' => null, 'user' => null];
+        foreach (['admin', 'user'] as $side) {
+            $path = storage_path("app/legacy-platform-config/$side.json");
+            if (! File::isFile($path)) {
+                continue;
+            }
+
+            $decoded = json_decode(File::get($path), true);
+            if (is_array($decoded)) {
+                $result[$side] = $decoded;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  array{admin: array<string, mixed>|null, user: array<string, mixed>|null}  $legacy
+     * @param  list<string>  $sides
+     */
+    private function legacyString(array $legacy, array $sides, string $key): string
+    {
+        foreach ($sides as $side) {
+            $value = $legacy[$side][$key] ?? null;
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
+        }
+
+        return '';
+    }
+
+    /** @return list<string>|null */
+    private function legacyBrandValues(?array $config): ?array
+    {
+        if (! is_array($config) || ! array_key_exists('Brands', $config) || ! is_array($config['Brands'])) {
+            return null;
+        }
+
+        $result = [];
+        $seen = [];
+        foreach ($config['Brands'] as $brand) {
+            if (! is_string($brand)) {
+                continue;
+            }
+
+            $value = mb_strtolower(trim($brand));
+            if ($value === '' || isset($seen[$value])) {
+                continue;
+            }
+
+            $seen[$value] = true;
+            $result[] = $value;
+        }
+
+        return $result;
+    }
+
+    /** @return array<string, string> */
+    private function brandDictionary(): array
+    {
+        return [
+            'cnssl' => 'Cnssl',
+            'certum' => 'Certum',
+            'gogetssl' => 'GoGetSSL',
+            'positive' => 'Positive',
+            'ssltrus' => '锐安信',
+            'keeptrust' => '环安信',
+            'rapid' => 'Rapid',
+            'geotrust' => 'GeoTrust',
+            'sectigo' => 'Sectigo',
+            'alpha' => 'Alpha',
+            'globalsign' => 'GlobalSign',
+            'digicert' => 'DigiCert',
+            'trustasia' => 'TrustAsia',
+            'wotrus' => '沃通',
+            'sheca' => '上海CA',
+            'cfca' => 'CFCA',
+        ];
+    }
+
+    /**
+     * @param  list<string>  $brands
+     * @return array<string, string>
+     */
+    private function brandLabels(array $brands): array
+    {
+        $dictionary = $this->brandDictionary();
+        $result = [];
+        foreach ($brands as $brand) {
+            $value = mb_strtolower(trim($brand));
+            if ($value === '' || isset($result[$value]) || ! isset($dictionary[$value])) {
+                continue;
+            }
+
+            $result[$value] = $dictionary[$value];
+        }
+
+        return $result;
+    }
+
+    /** @return list<string> */
+    private function defaultAdminBrands(): array
+    {
+        return [
+            'cnssl',
+            'certum',
+            'gogetssl',
+            'positive',
+            'keeptrust',
+            'rapid',
+            'geotrust',
+            'digicert',
+            'ssltrus',
+        ];
+    }
+
+    /** @return list<string> */
+    private function defaultUserBrands(): array
+    {
+        return [
+            'cnssl',
+            'certum',
+            'gogetssl',
+            'positive',
+            'keeptrust',
+            'ssltrus',
+            'rapid',
+            'geotrust',
+            'digicert',
+        ];
     }
 }

@@ -1,12 +1,10 @@
 {
-  "Version": "6.0.0",
-  "Title": "SSL",
   "StorageNameSpace": "",
   "FixedHeader": true,
   "HiddenSideBar": false,
   "MultiTagsCache": true,
   "KeepAlive": true,
-  "Layout": "double",
+  "Layout": "vertical",
   "Theme": "light",
   "DarkMode": false,
   "OverallStyle": "light",
@@ -25,21 +23,5 @@
   "ResponsiveStorageNameSpace": "responsive-",
   "MenuSearchHistory": 6,
   "BaseUrlApi": "/api",
-  "Brands": [
-    "cnssl",
-    "certum",
-    "gogetssl",
-    "positive",
-    "keeptrust",
-    "ssltrus",
-    "rapid",
-    "geotrust",
-    "digicert"
-  ],
-  "DnsTools": [
-    "https://dns-tools-cn.cnssl.com",
-    "https://dns-tools-us.cnssl.com"
-  ],
-  "Beian": "豫ICP备123456789号",
   "Acme": true
 }

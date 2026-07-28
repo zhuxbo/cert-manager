@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\PlatformConfigService;
 use App\Services\Plugin\PluginManager;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * 公开元信息端点
@@ -23,13 +26,14 @@ use Illuminate\Http\Response;
  *   "data": {
  *     "channels": { "admin": bool, "user": bool, "api": bool, "deploy": bool },
  *     "plugins":  [ { "name": string, "version": string|null }, ... ],
- *     "version":  string  // config('version.version')
+ *     "version":  string, // config('version.version')
+ *     "platform": object  // 当前 admin/user 的公开站点配置
  *   }
  * }
  */
 class MetaController extends Controller
 {
-    public function index(PluginManager $plugins): never
+    public function index(Request $request, PluginManager $plugins, PlatformConfigService $platformConfig): never
     {
         $installed = $plugins->getInstalledPlugins();
 
@@ -48,6 +52,7 @@ class MetaController extends Controller
                 $installed,
             )),
             'version' => (string) config('version.version', 'unknown'),
+            'platform' => $platformConfig->get($this->channelParam($request)),
         ]);
     }
 
@@ -75,5 +80,31 @@ class MetaController extends Controller
             'Content-Type' => 'application/yaml; charset=utf-8',
             'Cache-Control' => 'public, max-age=300',
         ]);
+    }
+
+    /** 公开端点参数不可信：channel[]=x 等数组形态回落默认，避免匿名可触发的类型异常 */
+    private function channelParam(Request $request): string
+    {
+        $channel = $request->query('channel', 'user');
+
+        return is_string($channel) ? $channel : 'user';
+    }
+
+    public function siteImage(string $filename): StreamedResponse
+    {
+        $path = "site/$filename";
+        if (! Storage::disk('public')->exists($path)) {
+            abort(404);
+        }
+
+        $headers = [
+            'Cache-Control' => 'public, max-age=31536000, immutable',
+            'X-Content-Type-Options' => 'nosniff',
+        ];
+        if (str_ends_with($filename, '.svg')) {
+            $headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+        }
+
+        return Storage::disk('public')->response($path, null, $headers);
     }
 }

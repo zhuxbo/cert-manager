@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\Contact;
 use App\Models\Order;
@@ -9,6 +10,7 @@ use App\Models\ProductPrice;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Api\Api;
 use Illuminate\Support\Carbon;
 use Tests\Traits\ActsAsUser;
@@ -96,6 +98,49 @@ test('获取订单列表-按状态筛选', function () {
         ->toBe('active');
 });
 
+test('获取订单列表-按证书到期区间过滤默认活动中状态集并升序排列', function () {
+    $user = User::factory()->create();
+    $product = Product::factory()->create();
+    $certs = [
+        [3, 'cancelled'],
+        [6, 'active'],
+        [2, 'active'],
+        [10, 'failed'],
+    ];
+    $orders = collect($certs)->map(function (array $certData) use ($user, $product) {
+        [$days, $status] = $certData;
+        $order = Order::factory()->create([
+            'user_id' => $user->id,
+            'product_id' => $product->id,
+        ]);
+        $cert = Cert::factory()->create([
+            'order_id' => $order->id,
+            'status' => $status,
+            'expires_at' => now()->addDays($days),
+        ]);
+        $order->update(['latest_cert_id' => $cert->id]);
+
+        return $order;
+    });
+    $query = http_build_query([
+        'expires_at' => [
+            now()->startOfDay()->format('Y-m-d\TH:i:s.v\Z'),
+            now()->addDays(6)->endOfDay()->format('Y-m-d\TH:i:s.v\Z'),
+        ],
+        'sort_prop' => 'expires_at',
+        'sort_order' => 'asc',
+    ]);
+
+    $response = $this->actingAsUser($user)
+        ->getJson("/api/order?$query")
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    // cancelled（3 天后到期）在区间内但不属于默认活动中状态集，不得出现
+    expect(collect($response->json('data.items'))->pluck('id')->all())
+        ->toBe([$orders[2]->id, $orders[1]->id]);
+});
+
 test('获取订单详情', function () {
     $user = User::factory()->create();
     $product = Product::factory()->create();
@@ -107,6 +152,13 @@ test('获取订单详情', function () {
         'order_id' => $order->id,
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
+    AutoDeployReport::create([
+        'order_id' => $order->id,
+        'cert_id' => $cert->id,
+        'status' => 'success',
+        'deployed_at' => '2026-01-15 08:30:00',
+        'ip' => '203.0.113.8',
+    ]);
 
     $response = $this->actingAsUser($user)
         ->getJson("/api/order/$order->id")
@@ -119,7 +171,9 @@ test('获取订单详情', function () {
         ->and((string) $response->json('data.product_id'))
         ->toBe((string) $product->id)
         ->and((string) $response->json('data.latest_cert.id'))
-        ->toBe((string) $cert->id);
+        ->toBe((string) $cert->id)
+        ->and($response->json('data'))
+        ->not->toHaveKey('auto_deploy_reports');
 });
 
 test('获取订单详情-不能查看其他用户订单', function () {
@@ -230,6 +284,91 @@ test('续费订单', function () {
         ->toBe('unpaid');
 });
 
+test('不可添加且不可替换 SAN 产品续费按合并后的最终数量拒绝新增 SAN', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create([
+        'add_san' => 0,
+        'replace_san' => 0,
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addDays(15),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'alternative_names' => 'old.example.com',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson('/api/order/renew', [
+            'order_id' => $order->id,
+            'period' => 12,
+            'domains' => 'new.example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+        ])
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => '标准域名数量超过原证书',
+        ]);
+
+    expect($cert->fresh()->status)
+        ->toBe('active')
+        ->and(Order::withoutGlobalScopes()->where('user_id', $user->id)->count())
+        ->toBe(1);
+});
+
+test('不可添加且不可替换 SAN 产品续费允许继承原 SAN', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create([
+        'add_san' => 0,
+        'replace_san' => 0,
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addDays(15),
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'alternative_names' => 'old.example.com',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->mockSdk();
+
+    $response = $this->actingAsUser($user)
+        ->postJson('/api/order/renew', [
+            'order_id' => $order->id,
+            'period' => 12,
+            'domains' => 'old.example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $newOrder = Order::withoutGlobalScopes()
+        ->with('latestCert')
+        ->find($response->json('data.order_id'));
+
+    expect($cert->fresh()->status)
+        ->toBe('renewed')
+        ->and($newOrder->latestCert->alternative_names)
+        ->toBe('old.example.com')
+        ->and($newOrder->latestCert->standard_count)
+        ->toBe(1)
+        ->and($newOrder->latestCert->wildcard_count)
+        ->toBe(0);
+});
+
 test('重签订单', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create();
@@ -272,6 +411,184 @@ test('重签订单', function () {
         ->toBe('unpaid');
 });
 
+test('不可添加 SAN 产品重签按订单已购数量拒绝超额 SAN', function (
+    array $orderCounts,
+    array $certCounts,
+    string $domains,
+    string $expectedMessage
+) {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create([
+        'add_san' => 0,
+        'replace_san' => 1,
+    ]);
+    $order = Order::factory()->create(array_merge([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ], $orderCounts));
+    $cert = Cert::factory()->active()->create(array_merge([
+        'order_id' => $order->id,
+        'alternative_names' => $domains,
+    ], $certCounts));
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson('/api/order/reissue', [
+            'order_id' => $order->id,
+            'domains' => $domains,
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+        ])
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => $expectedMessage,
+        ]);
+
+    expect($cert->fresh()->status)
+        ->toBe('active')
+        ->and(Cert::where('order_id', $order->id)->count())
+        ->toBe(1);
+})->with([
+    '标准 SAN' => [
+        ['purchased_standard_count' => 1, 'purchased_wildcard_count' => 0],
+        ['standard_count' => 2, 'wildcard_count' => 0],
+        'one.example.com,two.example.com',
+        '标准域名数量超过订单已购数量',
+    ],
+    '通配符 SAN' => [
+        ['purchased_standard_count' => 1, 'purchased_wildcard_count' => 1],
+        ['standard_count' => 1, 'wildcard_count' => 2],
+        'example.com,*.one.example.com,*.two.example.com',
+        '通配符域名数量超过订单已购数量',
+    ],
+]);
+
+test('不可添加 SAN 产品重签允许恢复到订单已购 SAN 数量', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create([
+        'add_san' => 0,
+        'replace_san' => 1,
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'purchased_standard_count' => 2,
+        'purchased_wildcard_count' => 0,
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'alternative_names' => 'one.example.com',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $response = $this->actingAsUser($user)
+        ->postJson('/api/order/reissue', [
+            'order_id' => $order->id,
+            'domains' => 'one.example.com,two.example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $newCert = Cert::withoutGlobalScopes()->find($order->fresh()->latest_cert_id);
+
+    expect((string) $response->json('data.order_id'))
+        ->toBe((string) $order->id)
+        ->and($cert->fresh()->status)
+        ->toBe('reissued')
+        ->and($newCert->standard_count)
+        ->toBe(2)
+        ->and($newCert->wildcard_count)
+        ->toBe(0);
+});
+
+test('不可替换且不可添加 SAN 产品按合并后的最终数量校验重签 SAN', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create([
+        'add_san' => 0,
+        'replace_san' => 0,
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'purchased_standard_count' => 2,
+        'purchased_wildcard_count' => 0,
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'alternative_names' => 'old-one.example.com,old-two.example.com',
+        'standard_count' => 2,
+        'wildcard_count' => 0,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->postJson('/api/order/reissue', [
+            'order_id' => $order->id,
+            'domains' => 'new-one.example.com,new-two.example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+        ])
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => '标准域名数量超过订单已购数量',
+        ]);
+
+    expect($cert->fresh()->status)
+        ->toBe('active')
+        ->and(Cert::where('order_id', $order->id)->count())
+        ->toBe(1);
+});
+
+test('不可替换 SAN 产品合并后按完整域名集合扣除赠送根域名', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $product = Product::factory()->create([
+        'add_san' => 0,
+        'replace_san' => 0,
+        'gift_root_domain' => 1,
+    ]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'purchased_standard_count' => 1,
+        'purchased_wildcard_count' => 0,
+    ]);
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'alternative_names' => 'example.com',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $response = $this->actingAsUser($user)
+        ->postJson('/api/order/reissue', [
+            'order_id' => $order->id,
+            'domains' => 'www.example.com',
+            'validation_method' => 'txt',
+            'csr_generate' => 1,
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $newCert = Cert::withoutGlobalScopes()->find($order->fresh()->latest_cert_id);
+
+    expect((string) $response->json('data.order_id'))
+        ->toBe((string) $order->id)
+        ->and($newCert->alternative_names)
+        ->toContain('example.com')
+        ->toContain('www.example.com')
+        ->and($newCert->standard_count)
+        ->toBe(1)
+        ->and($newCert->wildcard_count)
+        ->toBe(0);
+});
+
 test('批量获取订单详情', function () {
     $user = User::factory()->create();
     $product = Product::factory()->create();
@@ -286,6 +603,12 @@ test('批量获取订单详情', function () {
             'order_id' => $order->id,
         ]);
         $order->update(['latest_cert_id' => $cert->id]);
+        AutoDeployReport::create([
+            'order_id' => $order->id,
+            'cert_id' => $cert->id,
+            'status' => 'success',
+            'ip' => "203.0.113.{$i}",
+        ]);
         $orders[] = $order;
     }
 
@@ -321,6 +644,8 @@ test('批量获取订单详情', function () {
     foreach ($orders as $item) {
         expect($returnedIds)->toContain((string) $item->id);
     }
+
+    expect($response->json('data.items.0'))->not->toHaveKey('auto_deploy_reports');
 });
 
 test('批量获取订单详情-全为其他用户订单返回不存在', function () {
@@ -771,4 +1096,55 @@ test('标记已续费-不能标记其他用户的订单（UserScope 越权拒绝
 
     // 越权未生效：他人订单仍 active
     expect($otherCert->fresh()->status)->toBe('active');
+});
+
+// sendActive() 测试：路由由 GET 收紧为 POST，email 随之从 query 移到 body
+test('用户发送激活邮件-email 从请求体读取', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$order] = createUserActiveOrder($user, $product);
+
+    $captured = null;
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldReceive('dispatch')->once()
+        ->andReturnUsing(function ($intent) use (&$captured) {
+            $captured = $intent;
+        });
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/send-active/$order->id", ['email' => 'mine@example.com'])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    expect($captured)->not->toBeNull()
+        ->and($captured->notifiableId)->toBe($user->id)
+        ->and($captured->context['order_id'])->toBe($order->id)
+        ->and($captured->context['email'])->toBe('mine@example.com');
+});
+
+test('用户发送激活邮件-他人订单被 UserScope 隔离且不发通知', function () {
+    $user = $this->createTestUser();
+    $otherUser = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$otherOrder] = createUserActiveOrder($otherUser, $product);
+
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/send-active/$otherOrder->id", ['email' => 'mine@example.com'])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+});
+
+test('用户发送激活邮件-旧 GET 入口已下线（副作用端点不挂 GET）', function () {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create();
+    [$order] = createUserActiveOrder($user, $product);
+
+    $this->actingAsUser($user)
+        ->getJson("/api/order/send-active/$order->id")
+        ->assertStatus(405);
 });

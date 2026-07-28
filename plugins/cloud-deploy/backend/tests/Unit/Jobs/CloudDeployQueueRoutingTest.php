@@ -16,7 +16,7 @@ use Tests\TestCase;
 uses(TestCase::class, RefreshDatabase::class);
 
 /**
- * 不变量 pin（CLAUDE.md「系统架构约定」队列约定）：
+ * 不变量 pin（skills/backend/core.md 队列约定）：
  * ② 所有 Job dispatch 必须显式 ->onQueue(config('queue.names.tasks'))——生产 supervisor 仅监听 tasks,notifications，
  *    漏写 onQueue 的 Job 落 default 永无人消费（SubmitDocumentJob 曾踩此坑）。
  * ③ 事务内 dispatch 必须 ->afterCommit()——after_commit=false 下事务内 dispatch 会立即入队，

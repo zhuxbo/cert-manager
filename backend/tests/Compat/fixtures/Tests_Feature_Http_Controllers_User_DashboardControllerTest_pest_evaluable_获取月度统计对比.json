@@ -12,14 +12,20 @@
                 "data": {
                     "current_month": {
                         "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "consumption": "integer"
                     },
                     "last_month": {
                         "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "consumption": "integer"
                     },
                     "growth": {
                         "orders": "integer",
+                        "cancelled_orders": "integer",
+                        "net_orders": "integer",
                         "consumption": "integer"
                     }
                 }

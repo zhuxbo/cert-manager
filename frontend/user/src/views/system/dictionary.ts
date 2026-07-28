@@ -1,39 +1,17 @@
 import { getConfig } from "@/config";
+import { normalizeBrandOptions } from "@shared/utils";
 
 /**
  * 系统相关字典数据
  */
 
-// 品牌选项
-export const brandOptionsAll = [
-  { label: "Cnssl", value: "cnssl" },
-  { label: "Certum", value: "certum" },
-  { label: "GoGetSSL", value: "gogetssl" },
-  { label: "Positive", value: "positive" },
-  { label: "锐安信", value: "ssltrus" },
-  { label: "环安信", value: "keeptrust" },
-  { label: "Rapid", value: "rapid" },
-  { label: "GeoTrust", value: "geotrust" },
-  { label: "Sectigo", value: "sectigo" },
-  { label: "Alpha", value: "alpha" },
-  { label: "GlobalSign", value: "globalsign" },
-  { label: "DigiCert", value: "digicert" },
-  { label: "TrustAsia", value: "trustasia" },
-  { label: "沃通", value: "wotrus" },
-  { label: "上海CA", value: "sheca" },
-  { label: "CFCA", value: "cfca" }
-];
+// 全部品牌负责统一显示，活动品牌负责用户端筛选
+export const brandOptionsAll = normalizeBrandOptions(getConfig("AllBrands"));
+export const brandOptions = normalizeBrandOptions(getConfig("Brands"));
 
 // 品牌标签映射（小写 → 显示名）
 export const brandLabels: { [key: string]: string } = Object.fromEntries(
-  brandOptionsAll.map(b => [b.value, b.label])
-);
-
-// 品牌配置 默认配置
-const brandConfig = (getConfig("Brands") as string[]) || ["certum"];
-
-export const brandOptions = brandOptionsAll.filter(brand =>
-  brandConfig.includes(brand.value)
+  brandOptionsAll.map(brand => [brand.value, brand.label])
 );
 
 // CA 选项（委托创建按 CA 选择，后端经 ca_map 派生 prefix）

@@ -42,7 +42,6 @@ declare global {
   }
 
   interface PlatformConfigs {
-    Version?: string;
     Title?: string;
     StorageNameSpace?: string;
     FixedHeader?: boolean;
@@ -70,9 +69,15 @@ declare global {
     ResponsiveStorageNameSpace?: string;
     MenuSearchHistory?: number;
     BaseUrlApi?: string;
-    Brands?: string[];
+    AllBrands?: Array<{ label: string; value: string }>;
+    Brands?: Array<{ label: string; value: string }>;
     DnsTools?: string[];
     Beian?: string;
+    CopyStart?: string | number;
+    Favicon?: string;
+    Logo?: string;
+    LogoExpanded?: string;
+    Qrcode?: string;
   }
 }
 

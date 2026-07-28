@@ -93,6 +93,50 @@ dataset('core_seeders', [
                 'secretId' => '',
                 'secretKey' => '',
             ]);
+            $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
+            expect($dnsTools?->value)->toBe([
+                'https://dns-tools-cn.cnssl.com',
+                'https://dns-tools-us.cnssl.com',
+            ]);
+            $expandedLogo = Setting::where('group_id', $siteGroup->id)->where('key', 'logoExpanded')->first();
+            expect($expandedLogo?->type)->toBe('image')
+                ->and($expandedLogo?->value)->toBe('');
+            $favicon = Setting::where('group_id', $siteGroup->id)->where('key', 'favicon')->first();
+            expect($favicon?->type)->toBe('image')
+                ->and($favicon?->value)->toBe('')
+                ->and($favicon?->weight)->toBe(3);
+
+            $brandGroup = SettingGroup::where('name', 'brand')->first();
+            expect($brandGroup?->description)->toBeNull();
+            expect(Setting::getValue('brand', 'all'))->toBe([
+                'cnssl' => 'Cnssl',
+                'certum' => 'Certum',
+                'gogetssl' => 'GoGetSSL',
+                'positive' => 'Positive',
+                'keeptrust' => '环安信',
+                'rapid' => 'Rapid',
+                'geotrust' => 'GeoTrust',
+                'digicert' => 'DigiCert',
+                'ssltrus' => '锐安信',
+            ]);
+            expect(Setting::getValue('brand', 'admin'))->toBe([
+                'cnssl', 'certum', 'gogetssl', 'positive', 'keeptrust',
+                'rapid', 'geotrust', 'digicert', 'ssltrus',
+            ]);
+            expect(Setting::getValue('brand', 'user'))->toBe([
+                'cnssl', 'certum', 'gogetssl', 'positive', 'keeptrust',
+                'ssltrus', 'rapid', 'geotrust', 'digicert',
+            ]);
+            expect($brandGroup?->settings()->where('key', 'all')->value('description'))->toBe('全部品牌');
+            expect($brandGroup?->settings()->where('key', 'admin')->value('description'))->toBe('管理端品牌选项');
+            expect($brandGroup?->settings()->where('key', 'user')->value('description'))->toBe('用户端品牌选项');
+            expect((int) $brandGroup?->settings()->where('key', 'admin')->value('weight'))->toBe(1);
+            expect((int) $brandGroup?->settings()->where('key', 'user')->value('weight'))->toBe(2);
+            expect((int) $brandGroup?->settings()->where('key', 'all')->value('weight'))->toBe(3);
+
+            $callbackGroup = SettingGroup::where('name', 'callback')->first();
+            $defaultCallback = $callbackGroup?->settings()->where('key', 'default')->first();
+            expect($defaultCallback?->value)->toMatchArray(['sources' => 'default']);
         },
         function (): void {
             $siteGroup = SettingGroup::firstOrCreate(
@@ -110,6 +154,32 @@ dataset('core_seeders', [
                 'description' => '自定义委托',
                 'weight' => 99,
             ]);
+            Setting::create([
+                'group_id' => $siteGroup->id,
+                'key' => 'dnsTools',
+                'type' => 'array',
+                'value' => ['custom' => 'https://dns.example.com'],
+                'description' => '自定义 DNS 工具',
+                'weight' => 6,
+            ]);
+
+            $callbackGroup = SettingGroup::firstOrCreate(
+                ['name' => 'callback'],
+                ['title' => '回调设置', 'description' => null, 'weight' => 3]
+            );
+            Setting::create([
+                'group_id' => $callbackGroup->id,
+                'key' => 'default',
+                'type' => 'array',
+                'value' => [
+                    'sources' => '',
+                    'token' => '',
+                    'id_field' => 'id',
+                    'allowed_ips' => '',
+                ],
+                'description' => '自定义默认回调',
+                'weight' => 1,
+            ]);
         },
         function (): void {
             $siteGroup = SettingGroup::where('name', 'site')->first();
@@ -124,6 +194,17 @@ dataset('core_seeders', [
             expect($delegation->value)->toBe(['proxyZone' => 'custom.zone', 'secretId' => 'id123', 'secretKey' => 'key456']);
             expect((string) $delegation->description)->toBe('自定义委托');
             expect((int) $delegation->weight)->toBe(99);
+            $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
+            expect($dnsTools?->value)->toBe(['custom' => 'https://dns.example.com']);
+
+            $callbackGroup = SettingGroup::where('name', 'callback')->first();
+            $defaultCallback = $callbackGroup?->settings()->where('key', 'default')->first();
+            expect($defaultCallback?->value)->toBe([
+                'sources' => '',
+                'token' => '',
+                'id_field' => 'id',
+                'allowed_ips' => '',
+            ]);
         },
         function (): array {
             $siteGroup = SettingGroup::where('name', 'site')->first();
@@ -156,7 +237,7 @@ dataset('core_seeders', [
             expect(NotificationTemplate::where('code', 'cert_expire')->first())->not->toBeNull();
             expect(NotificationTemplate::where('code', 'auto_renew_failed')->first())->not->toBeNull();
             expect(NotificationTemplate::where('code', 'balance_forecast')->first())->not->toBeNull();
-            expect(NotificationTemplate::where('code', 'delegation_invalid')->first())->not->toBeNull();
+            expect(NotificationTemplate::where('code', 'delegation_invalid')->first())->toBeNull();
         },
         function (): void {
             // 用户自定义已存在的模板（修改内容），seeder 再跑不应覆盖
