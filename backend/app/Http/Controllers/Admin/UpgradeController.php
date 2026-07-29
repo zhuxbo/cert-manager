@@ -293,45 +293,6 @@ class UpgradeController extends BaseController
     }
 
     /**
-     * opcache 重置
-     *
-     * 升级期切代码后由管理员调用：
-     * 1. 临时 ini_set('opcache.validate_timestamps', '1')，让 fpm worker 命中文件 mtime 重编
-     * 2. 调 opcache_reset() 清 SHM 缓存
-     *
-     * opcache 扩展未加载时返回 status=skipped；调用方据此决定是否走宝塔 php_reload 兜底。
-     */
-    public function opcacheReset(): void
-    {
-        if (! function_exists('opcache_reset')) {
-            $this->success([
-                'status' => 'skipped',
-                'reason' => 'opcache_extension_not_loaded',
-            ]);
-        } else {
-            @ini_set('opcache.validate_timestamps', '1');
-            $ok = opcache_reset();
-
-            $opcacheStatus = null;
-            if (function_exists('opcache_get_status')) {
-                // false 参数省略 scripts，避免大数组返回
-                $status = opcache_get_status(false);
-                if (is_array($status)) {
-                    $opcacheStatus = array_intersect_key(
-                        $status,
-                        array_flip(['opcache_enabled', 'cache_full'])
-                    );
-                }
-            }
-
-            $this->success([
-                'status' => $ok ? 'ok' : 'failed',
-                'opcache_status' => $opcacheStatus,
-            ]);
-        }
-    }
-
-    /**
      * 升级 freeze 内部 smoke test
      *
      * 由 upgrade.sh / 后台覆盖式升级流程在切完代码 / migrate 后、unfreeze 前调用：

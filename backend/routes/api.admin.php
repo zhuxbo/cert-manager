@@ -297,7 +297,6 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('channel', [UpgradeController::class, 'setChannel']);
         Route::post('freeze', [UpgradeController::class, 'freeze']);
         Route::post('unfreeze', [UpgradeController::class, 'unfreeze']);
-        Route::post('opcache-reset', [UpgradeController::class, 'opcacheReset']);
         Route::post('smoke', [UpgradeController::class, 'smoke']);
         Route::get('binary-health', [UpgradeController::class, 'binaryHealth']);
     });

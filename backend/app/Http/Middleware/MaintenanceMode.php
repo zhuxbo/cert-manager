@@ -35,7 +35,7 @@ class MaintenanceMode
         // 公开元信息端点（与 health 同级公共可读，freeze 期前端仍能消费）
         'api/meta',
 
-        // 升级管理本身——freeze/unfreeze/status/smoke/opcache-reset 等都必须在 freeze 期可调
+        // 升级管理本身——freeze/unfreeze/status/smoke 等都必须在 freeze 期可调
         'api/admin/upgrade/*',
 
         // admin 会话保活——freeze 期 admin 仍能登入观察升级进度

@@ -6,6 +6,7 @@ use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\ArchiveGuard;
 use App\Services\Upgrade\VersionManager;
+use App\Support\Opcache;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
@@ -1249,13 +1250,20 @@ class PluginManager
         try {
             Artisan::call('route:clear');
             Artisan::call('config:clear');
-
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-            }
         } catch (\Exception $e) {
             Log::warning("[Plugin] 清理缓存部分失败: {$this->safeError($e)}");
         }
+
+        // opcache 与 route/config 分开记账：opcache.restrict_api 受限时只是字节码缓存清不了，
+        // route/config 其实都成功了，合并成一条"清理缓存部分失败"会把排障带偏。
+        // 但分开 ≠ 不记：这里是 FPM 进程内、少数能真清掉线上字节码的位置，清不成必须留痕，
+        // 否则 restrict_api 的机器上更新插件后字节码没换、全系统零痕迹。
+        $opcache = app(Opcache::class);
+        $result = $opcache->reset();
+        if ($result['status'] !== Opcache::OK) {
+            Log::notice("[Plugin] opcache: {$result['status']}", $result);
+        }
+        $opcache->reportFailure($result, 'plugin lifecycle clearCaches');
     }
 
     protected function report(string $stage, string $message): void
