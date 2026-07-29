@@ -1811,7 +1811,10 @@ perform_upgrade() {
     # 覆盖有边界：锁随 storage 移动（见下方 mv / 恢复）——此刻到 storage 恢复的[切代码窗]内锁离开规范路径、
     # isFrozen()=false，该窗由 storage 缺失致 app 无法 bootstrap（请求 500）兜底挡写；freeze 的 HTTP-503
     # 实际自 storage 恢复起才有效，正好罩住其后的 migrate/seed 数据危险窗。
-    "$PHP_CMD" artisan upgrade:freeze --ttl=7200 || true
+    # 带上版本：两个字段仅记录用（无消费方），但升级卡住时人工看 upgrade.lock 能直接读出
+    # 这是从哪个版本升到哪个版本——web 路径（UpgradeService::performUpgradeWithStatus）本就带
+    "$PHP_CMD" artisan upgrade:freeze --ttl=7200 \
+        --from="$(get_current_version)" --to="$target_version" || true
     # freeze 已点火：失败/中断路径据此打印恢复 runbook（unfreeze→up→queue:restart）
     FREEZE_FIRED=1
 
