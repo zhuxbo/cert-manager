@@ -355,7 +355,7 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 `upgrade.sh` 是 `set -e`：freeze 点火后、unfreeze 前任一危险步骤失败/中断即退出。**数据侧已自动兜底**（P0-2 包U）：
 
 - **storage 自动还原**：切代码窗内把活的 `backend/storage`（含 `storage/databak` 全部本地 DB 备份）`mv` 到安装目录同文件系统的 `.upgrade-preserve-$$`；失败退出 / `Ctrl-C` / `SSH 断连`（SIGINT/TERM/HUP）均由 `cleanup` trap **先把 storage 移回原位再清理**——storage 与 databak 不丢。保留目录在持久盘（非 `/tmp`），故即便 `SIGKILL`/断电（trap 跑不了）数据也存活在 `.upgrade-preserve-*/storage`。
-- **自定义适配器 / 前端静态资源自动还原**：`cleanup` 删 preserve 前先 `_restore_preserved_extras` 把 `api_adapters`（自定义 Order/Acme 源）与 `frontend_config`（user 的 `logo.svg`、新版 `qrcode.svg`、旧版 `qrcode.png`、登录配图 `login.svg` 回落资源）副本还原到原位——中断落在「rm 旧代码 ~ 恢复保留文件」窗内时它们是唯一在线副本（原件已删），不再被连同 preserve 静默销毁；还原失败则保留 preserve 供人工恢复。二维码占位图不由升级包交付；admin 统一回落 user Logo；`platform-config.json` 不再备份或恢复，由升级包直接更新。
+- **自定义适配器 / 前端静态资源自动还原**：正常恢复步骤以 `_restore_preserved_extras consume` 把 `api_adapters`（自定义 Order/Acme 源）与 `frontend_config`（user 的 `logo.svg`、新版 `qrcode.svg`、旧版 `qrcode.png`、登录配图 `login.svg` 回落资源）复制回原位，并在每项成功后消费对应 preserve 副本，成功 EXIT cleanup 不再重复覆盖或误报中断（消费失败只告警不中止升级，残留副本交 cleanup 统一清理）。若中断落在「rm 旧代码 ~ 恢复保留文件」窗内，`cleanup` 删除 preserve 前仍以默认守卫模式还原这些唯一在线副本；还原失败则保留 preserve 供人工恢复。二维码占位图不由升级包交付；admin 统一回落 user Logo；`platform-config.json` 不再备份或恢复，由升级包直接更新。
 
 二维码占位图不进入升级包的原因：旧安装可能只有 `qrcode.png`，新安装只有 `qrcode.svg`；升级包若强制交付 SVG，会改变旧安装的静态资源边界并掩盖兼容路径。升级时应原样保留安装目录已有的两种候选文件，用户端在后台未上传二维码时先请求 SVG，404/加载失败再回落 PNG。完整安装包只需携带新版 SVG。
 

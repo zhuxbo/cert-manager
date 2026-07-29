@@ -997,35 +997,391 @@ _bt_php_ver_compact() {
     echo "$full" | awk -F. '{print $1$2}'
 }
 
-# 重启 PHP-FPM
-# 用法：bt_reload_php_fpm <php_ver_compact>
+# 列出指定宝塔 PHP 版本的真实 FPM PID。
+# 不使用 pgrep 命令行文本，避免其他 PHP 版本或探测命令自身造成误判。
+_bt_php_fpm_process_pids() {
+    local php_ver="$1"
+    local proc_root="${BT_PROC_ROOT:-/proc}"
+    local expected="/www/server/php/$php_ver/sbin/php-fpm"
+    local proc_exe resolved pid
+
+    for proc_exe in "$proc_root"/[0-9]*/exe; do
+        [ -L "$proc_exe" ] || continue
+        resolved=$(readlink "$proc_exe" 2>/dev/null) || continue
+        # Linux 在已删除的可执行文件后追加 " (deleted)"。
+        resolved="${resolved% (deleted)}"
+        [ "$resolved" = "$expected" ] || continue
+        pid="${proc_exe%/exe}"
+        printf '%s\n' "${pid##*/}"
+    done
+    return 0
+}
+
+# 判定该 PID 是否为 FPM master。
+# 不用「parent 不在同版本 PID 集合内」推断：master 死后 worker 被 reparent 到 1，同样满足该条件，
+# 会把孤儿 worker 误认成 master（孤儿仍持有继承的 listen fd，能应答健康探活）→ 代际 + 探活双证据
+# 同时被绕过、输出假成功。改判 cmdline：master 恒为 "php-fpm: master process (...)"，worker 为
+# "php-fpm: pool <name>"。版本归属仍由 exe 锚定（_bt_php_fpm_process_pids），cmdline 只区分角色。
+_bt_php_fpm_pid_is_master() {
+    local pid="$1"
+    local proc_root="${BT_PROC_ROOT:-/proc}"
+    # 整块包 2>/dev/null：重定向失败的报错由 shell 自己打印，写成 `tr < f 2>/dev/null` 时
+    # `< f` 先于 stderr 重定向生效，进程在 reload 期间不断退出会把裸报错刷进升级日志。
+    { tr '\0' ' ' <"$proc_root/$pid/cmdline" | grep -qF 'master process'; } 2>/dev/null
+}
+
+# 输出 worker 身份（PID:starttime）。PID 可能复用，加入 /proc/<pid>/stat starttime 才能准确比较代际。
+_bt_php_fpm_worker_identities() {
+    local php_ver="$1"
+    local proc_root="${BT_PROC_ROOT:-/proc}"
+    local pids pid stat_line stat_tail start_time
+    pids="$(_bt_php_fpm_process_pids "$php_ver")"
+
+    for pid in $pids; do
+        _bt_php_fpm_pid_is_master "$pid" && continue
+        stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || continue
+        # 去掉可能含空格或右括号的 "(comm)"：用 ##（贪婪）匹配到最后一个 ") "，
+        # 否则 comm 内含 ") " 时会少剥字段、starttime 错位成 0，代际比较退化为纯 PID 比较。
+        # 余下第 20 字段对应原始 stat 第 22 字段 starttime。
+        stat_tail="${stat_line##*) }"
+        start_time=$(printf '%s\n' "$stat_tail" | awk '{ print $20 }')
+        [ -n "$start_time" ] && printf '%s:%s\n' "$pid" "$start_time"
+    done
+    return 0
+}
+
+# 输出同版本 FPM 的 master PID（正常只有一个）。
+_bt_php_fpm_master_pids() {
+    local php_ver="$1"
+    local pid
+    for pid in $(_bt_php_fpm_process_pids "$php_ver"); do
+        _bt_php_fpm_pid_is_master "$pid" && printf '%s\n' "$pid"
+    done
+    return 0
+}
+
+# 判定一次探活响应是否可信（纯函数，无 IO —— 与 curl 调用分离便于表驱动回归覆盖）。
+# 三重收紧，缺一不可：
+#   HTTP 码 ∈ {200,503}：503 是 freeze 期健康入口的正常返回，其余码说明没走到应用层；
+#   content-type 为 application/json：挡住 Laravel 预渲染维护页 / Nginx 错误页这类 HTML；
+#   body 同时含 status/freeze/checks：挡住"是 JSON 但不是本项目"的异站响应（同机多站点时真实存在）。
+# 返回：0=可信，1=不可信。
+_bt_php_fpm_probe_response_ok() {
+    local code="$1" content_type="$2" body="$3"
+    case "$code" in
+        200 | 503) ;;
+        *) return 1 ;;
+    esac
+    case "$content_type" in
+        application/json*) ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$body" | grep -qF '"status"' || return 1
+    printf '%s' "$body" | grep -qF '"freeze"' || return 1
+    printf '%s' "$body" | grep -qF '"checks"' || return 1
+    return 0
+}
+
+# 通过本站 Nginx vhost 请求公开 /api/health。
+# 200/503 均可：这里只验证请求确实经过 FPM 并返回本项目 JSON，不把业务健康度当 reload 结果。
+_bt_php_fpm_http_probe() {
+    local domain="$1"
+    [ -n "$domain" ] || return 1
+    case "$domain" in
+        *[!A-Za-z0-9.-]*) return 1 ;;
+    esac
+    command -v curl >/dev/null 2>&1 || return 1
+
+    local scheme port result meta body code content_type
+    for scheme in https http; do
+        if [ "$scheme" = "https" ]; then
+            port=443
+        else
+            port=80
+        fi
+        result=$(curl -ksS --noproxy '*' \
+            --connect-timeout 2 --max-time 5 \
+            --resolve "$domain:$port:127.0.0.1" \
+            -H 'Accept: application/json' \
+            -w $'\n__FPM_PROBE__%{http_code}|%{content_type}' \
+            "$scheme://$domain/api/health" 2>/dev/null) || continue
+        meta=$(printf '%s\n' "$result" | tail -1)
+        body=$(printf '%s\n' "$result" | sed '$d')
+        case "$meta" in
+            __FPM_PROBE__*) ;;
+            *) continue ;;
+        esac
+        meta="${meta#__FPM_PROBE__}"
+        code="${meta%%|*}"
+        content_type="${meta#*|}"
+        _bt_php_fpm_probe_response_ok "$code" "$content_type" "$body" && return 0
+    done
+    return 1
+}
+
+# 发出一次 PHP-FPM reload。通道优先级：本机 init 脚本 > systemctl > 宝塔 API。
+# 结果写入 BT_FPM_RELOAD_CHANNEL（通道名）与 BT_FPM_RELOAD_DETAIL（失败原因 / 宝塔原始响应）。
+#
+# 为什么宝塔 API 排在最后（实测于宝塔面板 class/system.py::ServiceAdmin）：
+#   1. 它执行 `/etc/init.d/php-fpm-XX reload` 后并不看该命令退出码，而是轮询
+#      `check_service_status` → `public.is_php_fpm_process_exists`；判否时会**再补发最多 6 次
+#      `systemctl reload php-fpm-XX`**，返回失败前还会重复执行一次原命令。即「只发一次 reload」
+#      在 API 通道上不成立，额外重载会在等待窗口内反复翻新 worker 代际，干扰代际观测。
+#   2. 判否即返回 `{"status": false, "msg": "php-fpm-XX服务启动失败"}`。实测该判活在 reload 期间
+#      **间歇性假阴**：php-fpm 以 --daemonize 启动，reload 时 master execvp 后再 fork 脱离、PID 必换，
+#      而面板的 psutil 先取 pids() 快照再逐个查 exe，正好可能落在「旧 master 已走、新 master 未进
+#      快照」的窗口里。窗口宽度与机器相关（实测某台约半数失败，另一些 10/10 正常）。故不能作为
+#      成败权威——它与 reload 是否真的成功没有因果关系。
+# 本机 init 脚本则是单次 `kill -USR2 $(cat php-fpm.pid)`，退出码可信，且不需要 BT API key。
+_bt_php_fpm_send_reload() {
+    local php_ver="$1"
+    local init_script="${BT_PHP_FPM_INIT_DIR:-/etc/init.d}/php-fpm-$php_ver"
+    local out masters pid signal_failed
+    BT_FPM_RELOAD_CHANNEL=""
+    BT_FPM_RELOAD_DETAIL=""
+
+    # 首选：对本机已识别出的 master 直接 kill -USR2。这是唯一退出码真正代表「信号已送达目标进程」
+    # 的通道——宝塔 init 脚本的 reload 分支以 `echo " done"` 收尾，`kill` 失败（pid 文件残留指向
+    # 已消失的进程等）它照样 exit 0，rc 不能证明信号送达；systemctl / API 同理更间接。
+    masters="$(_bt_php_fpm_master_pids "$php_ver")"
+    if [ -n "$masters" ]; then
+        BT_FPM_RELOAD_CHANNEL="signal"
+        signal_failed=0
+        for pid in $masters; do
+            kill -USR2 "$pid" 2>/dev/null || signal_failed=1
+        done
+        if [ "$signal_failed" -eq 0 ]; then
+            BT_FPM_RELOAD_DETAIL="kill -USR2 → master ${masters}"
+            return 0
+        fi
+        BT_FPM_RELOAD_DETAIL="kill -USR2 失败（master=${masters}）"
+        return 1
+    fi
+
+    if [ -x "$init_script" ]; then
+        BT_FPM_RELOAD_CHANNEL="init.d"
+        if out=$("$init_script" reload 2>&1); then
+            return 0
+        fi
+        BT_FPM_RELOAD_DETAIL="$init_script reload 失败: $out"
+        return 1
+    fi
+
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "php-fpm-$php_ver" 2>/dev/null; then
+        BT_FPM_RELOAD_CHANNEL="systemctl"
+        if out=$(systemctl reload "php-fpm-$php_ver" 2>&1); then
+            return 0
+        fi
+        BT_FPM_RELOAD_DETAIL="systemctl reload php-fpm-$php_ver 失败: $out"
+        return 1
+    fi
+
+    if declare -f _bt_api_post >/dev/null 2>&1; then
+        BT_FPM_RELOAD_CHANNEL="bt-api"
+        if out=$(_bt_api_post "/system?action=ServiceAdmin" \
+            "--data-urlencode 'name=php-fpm-$php_ver' --data-urlencode 'type=reload'"); then
+            BT_FPM_RELOAD_DETAIL="宝塔原始响应: $out"
+            # 宝塔的 status 不作为成败判据（见上），只要请求送达就交给本机证据判定。
+            return 0
+        fi
+        BT_FPM_RELOAD_DETAIL="BT API ServiceAdmin 调用失败"
+        return 1
+    fi
+
+    BT_FPM_RELOAD_CHANNEL="none"
+    BT_FPM_RELOAD_DETAIL="未找到可用的 reload 通道（无 ${init_script}、无 systemctl 服务、无 BT API）"
+    return 1
+}
+
+# 重载 PHP-FPM 并以本机可观测证据确认完成
+# 用法：bt_reload_php_fpm <php_ver_compact> [site_domain]
+# 成功判据（全部由本机直接观测，不采信宝塔自陈）：
+#   ① reload 已成功发出（本机命令退出码 0 / API 请求送达）
+#   ② reload 前记录的旧 worker 代际全部退出，且 master 存在
+#   ③ reload 后本站 /api/health 经 Nginx → FPM → Laravel 返回本项目 JSON
+#      —— 仅在能确定站点域名时执行；取不到域名时跳过并降级告警，不据此判失败
 # return 0 成功；1 失败
 bt_reload_php_fpm() {
     local php_ver="$1"
+    local site_domain="${2:-}"
 
     if [ -z "$php_ver" ]; then
         log_error "bt_reload_php_fpm 缺少 php_ver"
         return 1
     fi
 
-    log_step "BT 重启 PHP-FPM $php_ver"
+    log_step "重载 PHP-FPM $php_ver"
 
-    local resp
-    resp=$(_bt_api_post "/system?action=ServiceAdmin" \
-        "--data-urlencode 'name=php-fpm-$php_ver' --data-urlencode 'type=reload'") || {
-        log_warning "BT API ServiceAdmin 调用失败"
-        return 1
-    }
+    # reload 前记录 master 身份。宝塔的 php-fpm 以 --daemonize 启动，reload 时 master 按原始 argv
+    # execvp 自身、再 fork 脱离，**master PID 会变**（实测日志：663089 → 663093 → 663096 …）。
+    # master 换代只可能由 reload 造成，是比 worker 代际更强的因果证据：它不受 pm.process_idle_timeout
+    # 影响，且在 ondemand 空闲池（0 worker、无从建立代际基线）下同样成立。
+    # 注：并非所有部署都会换 PID（非 daemonize / systemd 托管时可能原地保留），故只作为充分条件，
+    # 不作必要条件——未换代时仍回落 worker 代际判定。
+    local old_masters
+    old_masters="$(_bt_php_fpm_master_pids "$php_ver")"
 
-    local status
-    status="$(_bt_json_get "$resp" "status")"
-    if [ "$status" = "true" ]; then
-        log_success "PHP-FPM $php_ver 已重启"
-        return 0
+    # reload 前记录 worker 代际。完成条件是这些旧 worker 全部退出，而非“进程连续存在 N 秒”。
+    local old_workers old_count=0 identity baseline_synthetic=0 baseline_started=0
+    old_workers="$(_bt_php_fpm_worker_identities "$php_ver")"
+    for identity in $old_workers; do
+        old_count=$((old_count + 1))
+    done
+    # ondemand 空闲池可能没有 worker，无法比较代际。先通过本站健康入口生成一个旧 worker，
+    # 再记录其 PID:starttime；reload 后等待这个明确身份退出，避免靠固定时间猜测。
+    if [ "$old_count" -eq 0 ] && [ -n "$site_domain" ]; then
+        baseline_synthetic=1
+        log_info "PHP-FPM $php_ver 为 ondemand 空闲态，调用站点健康入口建立 worker 代际基线"
+        if _bt_php_fpm_http_probe "$site_domain"; then
+            # 年龄从**探活成功后**起算：合成 worker 诞生于探活末尾，而探活先 https 后 http
+            # （各 --max-time 5），站点无 443 时起点前置会白吃掉数秒预算、误报证据不足。
+            baseline_started=$SECONDS
+            old_workers="$(_bt_php_fpm_worker_identities "$php_ver")"
+            old_count=0
+            for identity in $old_workers; do
+                old_count=$((old_count + 1))
+            done
+            if [ "$old_count" -gt 0 ]; then
+                log_info "PHP-FPM $php_ver 为 ondemand 空闲态，已建立 ${old_count} 个旧 worker 代际基线"
+            else
+                log_warning "站点健康入口可用，但未观察到 PHP-FPM worker，无法建立代际基线"
+            fi
+        else
+            log_warning "站点健康入口探测失败，无法为 ondemand PHP-FPM 建立 worker 代际基线"
+        fi
     fi
 
-    log_warning "BT ServiceAdmin 失败"
-    log_info "原始响应: $resp"
+    if ! _bt_php_fpm_send_reload "$php_ver"; then
+        log_warning "PHP-FPM $php_ver reload 未能发出（通道 ${BT_FPM_RELOAD_CHANNEL:-未知}）"
+        [ -n "$BT_FPM_RELOAD_DETAIL" ] && log_info "$BT_FPM_RELOAD_DETAIL"
+        return 1
+    fi
+    log_info "已通过 ${BT_FPM_RELOAD_CHANNEL} 通道发出 PHP-FPM $php_ver reload"
+    [ "$BT_FPM_RELOAD_CHANNEL" = "bt-api" ] && [ -n "$BT_FPM_RELOAD_DETAIL" ] && log_info "$BT_FPM_RELOAD_DETAIL"
+
+    # timeout 只是故障上限，不是固定等待时长；一旦本机证据齐备立即返回。
+    local timeout="${BT_PHP_FPM_WAIT_TIMEOUT:-30}"
+    local interval="${BT_PHP_FPM_WAIT_INTERVAL:-2}"
+    case "$timeout" in
+        '' | *[!0-9]*) timeout=30 ;;
+    esac
+    case "$interval" in
+        '' | *[!0-9]* | 0) interval=2 ;;
+    esac
+
+    # 合成基线的因果窗口：真 reload 立刻杀空闲 worker，远快于 idle 回收。
+    local causal_window="${BT_PHP_FPM_CAUSAL_WINDOW:-$interval}"
+    case "$causal_window" in
+        '' | *[!0-9]*) causal_window="$interval" ;;
+    esac
+    # 基线年龄上限，取 pm.process_idle_timeout 常见默认值 10 秒的安全余量。
+    local baseline_max_age="${BT_PHP_FPM_BASELINE_MAX_AGE:-6}" baseline_age=0
+    case "$baseline_max_age" in
+        '' | *[!0-9]*) baseline_max_age=6 ;;
+    esac
+
+    local elapsed=0
+    local current_workers current_count remaining old_identity current_identity found
+    local master_state health_state generation_complete current_masters master_changed
+    local current_master old_master
+    log_info "确认 PHP-FPM $php_ver 完成换代（最长 ${timeout} 秒）"
+
+    while :; do
+        current_workers="$(_bt_php_fpm_worker_identities "$php_ver")"
+        current_count=0
+        for identity in $current_workers; do
+            current_count=$((current_count + 1))
+        done
+
+        remaining=0
+        for old_identity in $old_workers; do
+            found=0
+            for current_identity in $current_workers; do
+                if [ "$old_identity" = "$current_identity" ]; then
+                    found=1
+                    break
+                fi
+            done
+            if [ "$found" -eq 1 ]; then
+                remaining=$((remaining + 1))
+            fi
+        done
+
+        current_masters="$(_bt_php_fpm_master_pids "$php_ver")"
+        # 换代判据必须是「出现了一个不在旧集合里的**新** master」，不能用集合整体不等：
+        # 后者把「master 消失」「多 master 收缩」也算成换代——旧集合为空时等待期冒出一个 master
+        # （此时必然走 rc 不可信的 init.d/API 通道）、或双 master 退掉一个，都会被记成 reload 成功。
+        # 同理要求 old_masters 非空：没有旧身份可比时，"出现 master" 不构成任何因果证据。
+        master_changed=0
+        if [ -n "$old_masters" ]; then
+            for current_master in $current_masters; do
+                found=0
+                for old_master in $old_masters; do
+                    [ "$current_master" = "$old_master" ] && found=1 && break
+                done
+                [ "$found" -eq 0 ] && master_changed=1 && break
+            done
+        fi
+
+        master_state="缺失"
+        health_state="未检查"
+        generation_complete=0
+        if [ -n "$current_masters" ]; then
+            master_state="正常"
+            if [ "$master_changed" -eq 1 ]; then
+                # 强因果证据：master 换代只可能由 reload 造成（不受 idle 回收影响），
+                # ondemand 空闲池建不起 worker 基线时这也是唯一可用证据。
+                generation_complete=1
+            elif [ "$old_count" -gt 0 ] && [ "$remaining" -eq 0 ]; then
+                generation_complete=1
+                # 因果绑定：合成基线（探活刚拉起的空闲 worker）会被 pm.process_idle_timeout（常见
+                # 默认 10s）在等待窗口内无条件回收——若只看「旧代际消失」，一次**根本没发生的 reload**
+                # 也能靠时间流逝凑齐该条件。真 reload 会立刻杀掉空闲 worker，故对合成基线额外要求
+                # 退出发生在 reload 后一个采样间隔内；超出即判定证据不足，不得宣告成功。
+                # 两道窗口都要过：`elapsed` 从 reload 起算，而合成 worker 的 idle 计时其实从**基线
+                # 探活**那一刻就开始了（探活先 https 后 http，站点无 SSL 时可先耗掉数秒），只看
+                # elapsed 会让实际存活时长悄悄逼近 pm.process_idle_timeout。故再加一道基线年龄闸。
+                baseline_age=$((SECONDS - baseline_started))
+                if [ "$baseline_synthetic" -eq 1 ] &&
+                    { [ "$elapsed" -gt "$causal_window" ] || [ "$baseline_age" -gt "$baseline_max_age" ]; }; then
+                    log_warning "PHP-FPM $php_ver 合成基线 worker 在 reload 后 ${elapsed} 秒、建立后 ${baseline_age} 秒才退出（窗口 ${causal_window}/${baseline_max_age} 秒），且 master 未换代"
+                    log_warning "无法排除空闲回收所致，不能据此确认本次 reload 已生效"
+                    [ -n "$BT_FPM_RELOAD_DETAIL" ] && log_info "$BT_FPM_RELOAD_DETAIL"
+                    return 1
+                fi
+            fi
+            if [ "$generation_complete" -eq 1 ]; then
+                local evidence="旧 worker 代际已退出"
+                # master 列表是多行输出，压成单行再进日志，避免升级日志被断行
+                [ "$master_changed" -eq 1 ] &&
+                    evidence="master 已换代（$(printf '%s' "$old_masters" | tr '\n' ',') → $(printf '%s' "$current_masters" | tr '\n' ',')）"
+                # 取不到站点域名时无法做链路二次确认。这是「测不了」而非「测failed」，
+                # 不能据此判失败——否则一次真实成功的 reload 会被拖满 timeout 再误报，
+                # 而此时站点仍停在维护态。降级为告警放行。
+                if [ -z "$site_domain" ]; then
+                    health_state="跳过（未取到站点域名）"
+                    log_warning "PHP-FPM $php_ver ${evidence}，但未取到站点域名，跳过健康入口二次确认"
+                    log_success "PHP-FPM $php_ver 重载完成（通道 ${BT_FPM_RELOAD_CHANNEL}，未做链路二次确认）"
+                    return 0
+                fi
+                if _bt_php_fpm_http_probe "$site_domain"; then
+                    health_state="可用"
+                    log_success "PHP-FPM $php_ver 重载完成：${evidence}、master 正常、站点健康入口可用"
+                    return 0
+                fi
+                health_state="不可用"
+            fi
+        fi
+
+        [ "$elapsed" -ge "$timeout" ] && break
+        log_info "等待 PHP-FPM $php_ver 完成重载：旧 worker 剩余 ${remaining}/${old_count}，当前 worker ${current_count}，master ${master_state}（换代 ${master_changed}），健康入口 ${health_state}（${elapsed}/${timeout} 秒）"
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+        [ "$elapsed" -gt "$timeout" ] && elapsed="$timeout"
+    done
+
+    log_warning "PHP-FPM $php_ver 在 ${timeout} 秒内未完成重载：仍有 ${remaining} 个旧 worker，master ${master_state}，健康入口 ${health_state}"
+    [ -n "$BT_FPM_RELOAD_DETAIL" ] && log_info "$BT_FPM_RELOAD_DETAIL"
     return 1
 }
 

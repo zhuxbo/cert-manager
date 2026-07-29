@@ -695,5 +695,8 @@ jobs:
       - name: upgrade queue worker 状态检测演练
         run: bash deploy/test/test-queue-worker-status.sh
 
+      - name: upgrade PHP-FPM 单次重载与动态等待演练
+        run: bash deploy/test/test-php-fpm-reload.sh
+
       - name: upgrade 入口残留升级状态处置演练
         run: bash deploy/test/test-upgrade-stale-status.sh

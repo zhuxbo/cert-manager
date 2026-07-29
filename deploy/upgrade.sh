@@ -205,14 +205,19 @@ _restore_preserved_storage() {
     return "$failed"
 }
 
-# 还原 preserve 中的 api_adapters / frontend_config 副本到原位（幂等 cp，最佳努力）。
+# 还原 preserve 中的 api_adapters / frontend_config 副本到原位。
 # 与 _restore_preserved_storage 分离：storage/vendor 是 mv 的唯一副本（数据级），这两类是 cp 副本——
 # 但原件已被步骤 7 `rm -rf backend/app` / `rm frontend/{admin,user}` 删除，中断落在「rm 原件 ~ 步骤 9
 # 恢复保留文件」窗内时它们成为唯一在线副本（备份 zip 虽含之，但 rollback 自动选最新=绿灯重跑后生成的
-# 无适配器备份，救不回）。故 cleanup 删 preserve 前先经此还原；成功态则幂等重复无害。
+# 无适配器备份，救不回）。故 cleanup 删 preserve 前先经此还原。
+# 参数 consume：正常步骤 9 成功复制后消费对应副本，使成功 EXIT cleanup no-op；默认守卫模式保留副本，
+# 供中断 cleanup 完成还原后统一删除整个 PRESERVE_DIR。
 # 返回：0=全部就位或无副本可还原；1=有副本 cp 失败（调用方须保留 PRESERVE_DIR、不得删）。
+# **消费（rm）失败不计入返回码**：此时 cp 已成功、数据面已正确，纯清理动作没有资格把一次正确的升级
+# 打断在步骤 9（那会触发恢复 runbook 并让站点滞留维护态）。只具名告警，残留副本交 cleanup 统一删。
 _restore_preserved_extras() {
     [ -n "$PRESERVE_DIR" ] && [ -d "$PRESERVE_DIR" ] || return 0
+    local mode="${1:-guard}"
     local failed=0
     # 自定义 API 适配器：按 bucket 还原到 Services/<X>/Api（与步骤 6 保留 / 步骤 9 还原对称）
     local spec bucket rel bucket_dir api_adapter_dir
@@ -224,7 +229,13 @@ _restore_preserved_extras() {
         api_adapter_dir="$INSTALL_DIR/backend/app/$rel"
         mkdir -p "$api_adapter_dir" 2>/dev/null || true
         if cp -r "$bucket_dir"/* "$api_adapter_dir/" 2>/dev/null; then
-            log_warning "已还原中断升级遗留的自定义 API 适配器：$bucket"
+            if [ "$mode" = "consume" ]; then
+                log_info "已恢复 $bucket 自定义 API 适配器"
+                rm -rf "$bucket_dir" 2>/dev/null ||
+                    log_warning "自定义 API 适配器副本清理失败（不影响已恢复内容）：$bucket_dir"
+            else
+                log_warning "已还原中断升级遗留的自定义 API 适配器：$bucket"
+            fi
         else
             log_error "自定义 API 适配器还原失败：$bucket_dir → $api_adapter_dir"
             failed=1
@@ -233,11 +244,23 @@ _restore_preserved_extras() {
     # 前端静态回落资源（logo / 新旧 qrcode）；platform-config 由升级包更新，不再保留。
     if [ -d "$PRESERVE_DIR/frontend_config" ]; then
         local file
+        [ "$mode" = "consume" ] && log_info "恢复前端静态资源..."
         for file in logo.svg qrcode.svg qrcode.png login.svg; do
             [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] || continue
             mkdir -p "$INSTALL_DIR/frontend/user" 2>/dev/null || true
-            cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file" 2>/dev/null || failed=1
+            if cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file" 2>/dev/null; then
+                if [ "$mode" = "consume" ]; then
+                    rm -f "$PRESERVE_DIR/frontend_config/user_$file" 2>/dev/null ||
+                        log_warning "前端静态资源副本清理失败（不影响已恢复内容）：user_$file"
+                fi
+            else
+                log_error "前端静态资源还原失败：user_$file → $INSTALL_DIR/frontend/user/$file"
+                failed=1
+            fi
         done
+        if [ "$mode" = "consume" ]; then
+            rmdir "$PRESERVE_DIR/frontend_config" 2>/dev/null || true
+        fi
     fi
     return "$failed"
 }
@@ -667,6 +690,55 @@ detect_install() {
     fi
 }
 
+# 按 server 根 root 精确反查当前安装目录对应的宝塔 Nginx vhost。
+_find_bt_vhost_for_install_dir() {
+    local install_dir_norm="${1%/}"
+    local vhost_dir="${BT_NGINX_VHOST_DIR:-/www/server/panel/vhost/nginx}"
+    local vhost
+    [ -d "$vhost_dir" ] || return 1
+    for vhost in "$vhost_dir"/*.conf; do
+        [ -f "$vhost" ] || continue
+        if awk -v dir="$install_dir_norm" '
+            /^[[:space:]]*root[[:space:]]+/ {
+                line = $0
+                sub(/^[[:space:]]*root[[:space:]]+/, "", line)
+                sub(/[[:space:]]*;.*$/, "", line)
+                sub(/\/$/, "", line)
+                if (line == dir) { found = 1; exit }
+            }
+            END { exit (found ? 0 : 1) }
+        ' "$vhost"; then
+            printf '%s\n' "$vhost"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 从 vhost 提取首个可用于本机 curl --resolve 的普通域名；取不到时回落配置文件名。
+_bt_site_domain_from_vhost() {
+    local vhost="$1"
+    local domain
+    domain=$(awk '
+        /^[[:space:]]*server_name[[:space:]]+/ {
+            for (i = 2; i <= NF; i++) {
+                name = $i
+                sub(/;$/, "", name)
+                if (name != "_" && name !~ /^\*/ && name ~ /^[A-Za-z0-9.-]+$/) {
+                    print name
+                    exit
+                }
+            }
+        }
+    ' "$vhost" 2>/dev/null)
+    if [ -n "$domain" ]; then
+        printf '%s\n' "$domain"
+    else
+        domain="${vhost##*/}"
+        printf '%s\n' "${domain%.conf}"
+    fi
+}
+
 # 探测 PHP CLI 绝对路径（与 install.sh 选中版本对齐）
 # 优先级：env PHP_CMD > BT vhost 反查 > 系统单版本探测
 # 多版本但 vhost 反查失败 → 报错，要求显式 export PHP_CMD（不瞎猜）
@@ -687,31 +759,13 @@ detect_php_cmd() {
     local install_dir_norm="${INSTALL_DIR%/}"
 
     # 1. 反查 BT vhost：扫站点 nginx 配置，匹配 root 指向 $INSTALL_DIR 的站点，提取 enable-php-XX.conf
-    # 用 awk 字符串比较避免 INSTALL_DIR 中的 . 在正则中错配
-    if [ -d "/www/server/panel/vhost/nginx" ]; then
-        local matched_vhost=""
-        for vhost in /www/server/panel/vhost/nginx/*.conf; do
-            [ -f "$vhost" ] || continue
-            if awk -v dir="$install_dir_norm" '
-                /^[[:space:]]*root[[:space:]]+/ {
-                    line = $0
-                    sub(/^[[:space:]]*root[[:space:]]+/, "", line)
-                    sub(/[[:space:]]*;.*$/, "", line)
-                    sub(/\/$/, "", line)
-                    if (line == dir) { found = 1; exit }
-                }
-                END { exit (found ? 0 : 1) }
-            ' "$vhost"; then
-                matched_vhost="$vhost"
-                break
-            fi
-        done
-
-        if [ -n "$matched_vhost" ]; then
-            found_ver=$(grep -oE 'enable-php-[0-9]+' "$matched_vhost" | head -1 | grep -oE '[0-9]+$')
-            if [ -n "$found_ver" ]; then
-                log_info "从 BT vhost $(basename "$matched_vhost") 识别 PHP 版本: $(_php_pretty_version "$found_ver")"
-            fi
+    # helper 内用 awk 字符串比较，避免 INSTALL_DIR 中的 . 在正则中错配。
+    local matched_vhost=""
+    matched_vhost=$(_find_bt_vhost_for_install_dir "$install_dir_norm" 2>/dev/null) || true
+    if [ -n "$matched_vhost" ]; then
+        found_ver=$(grep -oE 'enable-php-[0-9]+' "$matched_vhost" | head -1 | grep -oE '[0-9]+$')
+        if [ -n "$found_ver" ]; then
+            log_info "从 BT vhost $(basename "$matched_vhost") 识别 PHP 版本: $(_php_pretty_version "$found_ver")"
         fi
     fi
 
@@ -1197,7 +1251,7 @@ _php_env_try_bt_fix() {
 
     # 此处不再 bt_reload_php_fpm：升级流程全程 CLI（重新校验、artisan migrate、composer install 等都是新启 PHP-CLI 进程，
     # 直接读 ini 文件，不依赖 PHP-FPM reload）。bt-deps.sh::auto_install_ext 内部已用 systemctl restart 兜底 FPM；
-    # 升级末尾步骤 15a 会做一次 BT API reload 给 web 入口生效（届时 FPM 已稳定，不撞 systemctl 余波）。
+    # 升级末尾（权限修正后、unfreeze 之前）会做一次 BT API reload 给 web 入口生效（届时 FPM 已稳定，不撞 systemctl 余波）。
     return 0
 }
 
@@ -1667,6 +1721,31 @@ _need_composer_install() {
     return 1
 }
 
+# 在 PHP-FPM reload 前完成最终权限修正，避免新 master / worker 在文件树仍变动时加载代码。
+_finalize_install_permissions() {
+    log_step "确认文件权限..."
+
+    # 宝塔模式：设置整个安装目录的权限
+    chown -R www:www "$INSTALL_DIR" 2>/dev/null || true
+    # 确保关键目录可写
+    chmod -R 775 "$INSTALL_DIR/backend/storage" 2>/dev/null || true
+    chmod -R 775 "$INSTALL_DIR/backups" 2>/dev/null || true
+    if [ -f "$INSTALL_DIR/version.json" ]; then
+        chmod 664 "$INSTALL_DIR/version.json" 2>/dev/null || true
+    fi
+    # .env 文件（让 www 可读，用于升级时备份）
+    if [ -f "$INSTALL_DIR/backend/.env" ]; then
+        chown www:www "$INSTALL_DIR/backend/.env" 2>/dev/null || true
+        chmod 600 "$INSTALL_DIR/backend/.env" 2>/dev/null || true
+    fi
+
+    # .env 文件敏感信息保护（root 和 web 用户可读）
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        chmod 640 "$INSTALL_DIR/.env" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # 执行升级
 perform_upgrade() {
     local target_version="$1"
@@ -1910,27 +1989,12 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
 
     # frontend/web 已在原地保留，无需恢复
 
-    # 恢复前端静态回落资源
-    if [ -d "$PRESERVE_DIR/frontend_config" ]; then
-        log_info "恢复前端静态资源..."
-        # user
-        for file in logo.svg qrcode.svg qrcode.png login.svg; do
-            [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] && cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file"
-        done
+    # 恢复前端静态回落资源与自定义 API 适配器。正常成功后消费对应 preserve 副本，
+    # 使 EXIT cleanup 只兜底真正尚未恢复的项目，不重复覆盖或误报“中断升级遗留”。
+    if ! _restore_preserved_extras consume; then
+        log_error "保留文件恢复失败，交 cleanup 守卫重试并保留副本"
+        exit 1
     fi
-
-    # 恢复自定义 API 适配器（按 bucket 还原到对应 Services/<X>/Api 目录）
-    for spec in "order:Services/Order/Api" "acme:Services/Acme/Api"; do
-        local bucket="${spec%%:*}"
-        local rel="${spec#*:}"
-        local bucket_dir="$PRESERVE_DIR/api_adapters/$bucket"
-        [ -d "$bucket_dir" ] && [ "$(ls -A "$bucket_dir" 2>/dev/null)" ] || continue
-
-        local api_adapter_dir="$INSTALL_DIR/backend/app/$rel"
-        mkdir -p "$api_adapter_dir"
-        cp -r "$bucket_dir"/* "$api_adapter_dir/"
-        log_info "已恢复 $bucket 自定义 API 适配器"
-    done
 
     # 9.1 预先修复权限（在执行 artisan 命令前）
     log_step "预设权限..."
@@ -2125,6 +2189,38 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         log_warning "部分校验未通过，请检查"
     fi
 
+    # 先完成文件权限，再在 freeze + 维护态内 reload FPM。避免站点恢复流量后，旧 worker
+    # 一边处理请求、一边退出并加载刚替换的代码；宝塔短时返回失败时由 bt_reload_php_fpm
+    # 动态等待本机进程稳定，不重复发送 reload。
+    _finalize_install_permissions
+
+    log_step "重载 PHP-FPM..."
+    local php_ver_compact site_vhost site_domain
+    php_ver_compact=$(echo "$PHP_CMD" | sed -nE 's|^/www/server/php/([0-9]+)/bin/php$|\1|p')
+    site_vhost=$(_find_bt_vhost_for_install_dir "$INSTALL_DIR" 2>/dev/null) || true
+    site_domain=""
+    [ -n "$site_vhost" ] && site_domain=$(_bt_site_domain_from_vhost "$site_vhost")
+    if [ -z "$php_ver_compact" ]; then
+        log_info "非宝塔 PHP 路径，跳过自动 reload PHP-FPM"
+        log_info "（如需清 opcache 加载新代码，请手工重启对应版本 PHP-FPM）"
+    else
+        if ! declare -f bt_reload_php_fpm >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/bt-automate.sh" ]; then
+            # shellcheck source=scripts/bt-automate.sh
+            source "$SCRIPT_DIR/bt-automate.sh"
+        fi
+        if declare -f bt_reload_php_fpm >/dev/null 2>&1; then
+            # 不再用 BT API key 门控 reload：主通道是本机 /etc/init.d/php-fpm-XX reload（单次
+            # kill -USR2，退出码可信、无需 key），API 只是最后兜底。此处尽力解析 key 供兜底通道用，
+            # 解析失败不阻断——否则没有 key 的机器会完全不 reload，opcache.validate_timestamps=0
+            # 时升级后站点将持续跑旧代码。
+            { [ -n "$BT_KEY" ] || bt_resolve_key 2>/dev/null; } || true
+            bt_reload_php_fpm "$php_ver_compact" "$site_domain" || log_warning "PHP-FPM reload 失败，可手工到面板 → 软件商店 → PHP-FPM → 重载"
+        else
+            log_warning "未能加载 bt-automate.sh，跳过 PHP-FPM 自动 reload"
+            log_info "（opcache validate_timestamps 开启时新代码约 2 秒内自动加载；如需立即生效请手工重启 PHP-FPM）"
+        fi
+    fi
+
     # unfreeze 必须严格先于 artisan up：up 唤醒被暂停的 worker 去 pop job，
     # 若 freeze 仍在则 SkipWhenUpgradeFrozen 的 release(60) 会开始烧 job attempts。
     # 「smoke」= 上方本地完整性校验（非需 admin 鉴权 + FPM 在线的 HTTP /upgrade/smoke）。
@@ -2134,8 +2230,9 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     log_step "退出维护模式..."
     cd "$INSTALL_DIR/backend"
     "$PHP_CMD" artisan up
-    # 升级实质已完成（storage 已回原位、库已迁移、服务已恢复）：此后尾部步骤（queue:restart /
-    # FPM reload / nginx reload）失败均非致命，不得再打恢复 runbook。必须落在 up 与 queue:restart 之间。
+    # 升级实质已完成（storage 已回原位、库已迁移、FPM 已完成 reload 处置、服务已恢复）：
+    # 此后 queue:restart / cron-supervisor 修复 / nginx reload 失败均非致命，不得再打恢复 runbook。
+    # 必须落在 up 与 queue:restart 之间。
     UPGRADE_DONE=1
 
     # 14b. 重启队列 worker（让常驻 worker 跑完当前 job 后退出，supervisor 自动拉起新进程加载新代码）
@@ -2151,44 +2248,11 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     # 非阻断：在 supervisor PHP 路径修复 / 重建完成后，检查本站 worker 真实进程。
     check_queue_worker_status
 
-    # 15a. 重载 PHP-FPM 清 opcache，加载新代码
-    # 仅宝塔环境（PHP_CMD 形如 /www/server/php/83/bin/php）；其他环境提示手工重启
-    # 独立于 update_jobs_php_path：那里 BT_KEY 不可用会提前 return 不 source；这里自己再尝试一次
-    log_step "重载 PHP-FPM..."
-    local php_ver_compact
-    php_ver_compact=$(echo "$PHP_CMD" | sed -nE 's|^/www/server/php/([0-9]+)/bin/php$|\1|p')
-    if [ -z "$php_ver_compact" ]; then
-        log_info "非宝塔 PHP 路径，跳过自动 reload PHP-FPM"
-        log_info "（如需清 opcache 加载新代码，请手工重启对应版本 PHP-FPM）"
-    else
-        if ! declare -f bt_reload_php_fpm >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/bt-automate.sh" ]; then
-            # shellcheck source=scripts/bt-automate.sh
-            source "$SCRIPT_DIR/bt-automate.sh"
-        fi
-        if declare -f bt_reload_php_fpm >/dev/null 2>&1 &&
-            { [ -n "$BT_KEY" ] || bt_resolve_key 2>/dev/null; } &&
-            bt_verify_api_key 2>/dev/null; then
-            bt_reload_php_fpm "$php_ver_compact" || log_warning "PHP-FPM reload 失败，可手工到面板 → 软件商店 → PHP-FPM → 重载"
-        else
-            log_info "BT API 不可用，跳过 PHP-FPM 自动 reload"
-            log_info "（opcache validate_timestamps 开启时新代码约 2 秒内自动加载；如需立即生效请手工重启 PHP-FPM）"
-        fi
-    fi
-
-    # 最终权限检查
-    log_step "确认文件权限..."
-
-    # 宝塔模式：设置整个安装目录的权限
-    chown -R www:www "$INSTALL_DIR" 2>/dev/null || true
-    # 确保关键目录可写
-    chmod -R 775 "$INSTALL_DIR/backend/storage" 2>/dev/null || true
-    chmod -R 775 "$INSTALL_DIR/backups" 2>/dev/null || true
-    [ -f "$INSTALL_DIR/version.json" ] && chmod 664 "$INSTALL_DIR/version.json"
-    # .env 文件（让 www 可读，用于升级时备份）
-    [ -f "$INSTALL_DIR/backend/.env" ] && chown www:www "$INSTALL_DIR/backend/.env" && chmod 600 "$INSTALL_DIR/backend/.env"
-
-    # .env 文件敏感信息保护（root 和 web 用户可读）
-    [ -f "$INSTALL_DIR/.env" ] && chmod 640 "$INSTALL_DIR/.env"
+    # 运行时可写目录属主收尾：主权限修正已前移到 reload 之前（见上），但其后的 unfreeze / up /
+    # queue:restart 等仍以 root 运行，会在这些目录下新建 root 属主文件——file 缓存驱动下
+    # queue:restart 新建的 framework/cache/data/xx/yy 二级目录（0755）会让 www 之后无法在其中
+    # 写入，daily 日志跨日新建、bootstrap/cache 的 *.php 重生成同理。
+    chown -R www:www "$INSTALL_DIR/backend/storage" "$INSTALL_DIR/backend/bootstrap/cache" 2>/dev/null || true
 
     # 重启服务以加载新配置
     # 宝塔环境：reload Nginx 以加载更新后的 manager.conf
