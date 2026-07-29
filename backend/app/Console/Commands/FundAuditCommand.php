@@ -106,7 +106,7 @@ class FundAuditCommand extends Command
             // admin 目标解析单一源（Admin::resolveAlertTarget，原 4 份内联之一）。
             ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 
-            if (! $admin?->email) {
+            if (! $admin || ! $targetEmail) {
                 $this->warn('未找到管理员邮箱，跳过邮件告警（已落 Log::error）');
 
                 return;

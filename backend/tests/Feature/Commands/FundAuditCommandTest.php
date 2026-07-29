@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\Admin;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\User;
 use App\Services\FundAudit\FundInvariants;
 use App\Services\Notification\DTOs\NotificationIntent;
@@ -45,8 +47,14 @@ test('无违反 → 命令成功 + 不发邮件', function () {
 });
 
 test('有 L1 违反 → 命令成功 + NotificationCenter dispatch 被调', function () {
-    // 必须有 admin 才能 dispatch（否则命令走 "未找到管理员邮箱" 分支）
-    Admin::factory()->create(['email' => 'admin@example.com']);
+    // site.adminEmail 是运维别名，Admin 登录邮箱为空；Admin 仅作为通知归属。
+    $admin = Admin::factory()->create(['email' => null]);
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点', 'weight' => 1]);
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'adminEmail'],
+        ['type' => 'string', 'value' => 'ops-alias@example.com', 'weight' => 0]
+    );
+    Setting::clearGroupCache($group->id);
 
     $user = User::factory()->withBalance('100.00')->create();
 
@@ -71,10 +79,12 @@ test('有 L1 违反 → 命令成功 + NotificationCenter dispatch 被调', func
     // 期望 NotificationCenter::dispatch 被调一次，code = finance_audit
     $this->notificationCenter->shouldReceive('dispatch')
         ->once()
-        ->with(Mockery::on(function ($intent) {
+        ->with(Mockery::on(function ($intent) use ($admin) {
             return $intent instanceof NotificationIntent
                 && $intent->code === 'finance_audit'
                 && $intent->notifiableType === 'admin'
+                && $intent->notifiableId === $admin->id
+                && ($intent->context['admin_email'] ?? null) === 'ops-alias@example.com'
                 && ($intent->context['violation_count'] ?? 0) === 1
                 && isset($intent->context['violations'][0]['layer'])
                 && $intent->context['violations'][0]['layer'] === 'L1';

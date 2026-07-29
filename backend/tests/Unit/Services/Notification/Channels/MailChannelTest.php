@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Services\Notification\Channels\MailChannel;
@@ -8,6 +9,12 @@ use Illuminate\Database\Eloquent\Model;
 
 afterEach(function () {
     Mockery::close();
+});
+
+test('Admin 登录邮箱为空时仍允许专用 Builder 使用 site.adminEmail', function () {
+    $admin = new Admin(['email' => null]);
+
+    expect((new MailChannel)->shouldSend($admin, 'system_alert'))->toBeTrue();
 });
 
 function createMockNotification(array $data = [], ?Model $notifiable = null, ?NotificationTemplate $template = null): Notification

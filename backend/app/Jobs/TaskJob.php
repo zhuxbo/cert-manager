@@ -287,7 +287,7 @@ class TaskJob implements ShouldQueue
         // admin 目标解析单一源（Admin::resolveAlertTarget，原 4 份内联之一）。
         ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 
-        if (! $admin?->email) {
+        if (! $admin || ! $targetEmail) {
             return;
         }
 

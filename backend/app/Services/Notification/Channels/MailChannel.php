@@ -2,6 +2,7 @@
 
 namespace App\Services\Notification\Channels;
 
+use App\Models\Admin;
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
 use App\Models\User;
@@ -134,6 +135,12 @@ class MailChannel implements ChannelInterface
 
     public function shouldSend(Model $notifiable, string $code): bool
     {
+        // Admin 专用 Builder 从 intent.context.admin_email 读取实际收件地址；
+        // 这里不能用登录账号邮箱提前拦截 site.adminEmail 指向的运维别名。
+        if ($notifiable instanceof Admin) {
+            return true;
+        }
+
         if (empty($notifiable->email)) {
             return false;
         }
