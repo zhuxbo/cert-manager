@@ -6,12 +6,15 @@ namespace App\Services\Order\Traits;
 
 use App\Http\Middleware\DynamicCors;
 use App\Models\Order;
+use App\Models\Product;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
+use App\Services\Notification\Exceptions\TransientBuildException;
 use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 use ZipArchive;
 
 trait ActionFileTrait
@@ -23,55 +26,80 @@ trait ActionFileTrait
      */
     public function download(int|string|array $orderIds, string $type = 'all'): void
     {
-        $type = in_array($type, ['all', 'apache', 'nginx', 'pem', 'iis', 'tomcat', 'txt']) ? $type : 'all';
-        $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
-        $orderIds = array_map('intval', $orderIds);
+        $archive = $this->buildDownloadArchive($orderIds, $type);
+        try {
+            $this->downFlow($archive['zipPath'], $archive['tempDir']);
+        } finally {
+            File::deleteDirectory($archive['tempDir']);
+        }
+    }
 
-        $orders = Order::with(['latestCert'])
+    /**
+     * 构建证书下载归档，不输出响应也不退出进程；调用方负责成功结果的 tempDir 生命周期。
+     *
+     * @return array{zipPath:string,tempDir:string,downloadName:string}
+     */
+    public function buildDownloadArchive(int|string|array $orderIds, string $type = 'all'): array
+    {
+        $orderIds = is_array($orderIds) ? $orderIds : explode(',', (string) $orderIds);
+        $orderIds = array_values(array_unique(array_filter(array_map('intval', $orderIds))));
+
+        $orders = Order::with(['latestCert', 'product'])
             ->whereHas('latestCert', fn ($query) => $query->where('status', 'active'))
             ->whereIn('id', $orderIds)
             ->get();
 
-        // 如果中间证书不存在，则过滤掉
-        $orders = $orders->filter(function ($order) {
-            return ! empty($order->latestCert->intermediate_cert);
-        });
-
-        // 如果为空则退出 因为在下载流程中 不能用 error 返回
         if ($orders->isEmpty()) {
-            exit;
+            $this->error('没有可下载的证书');
         }
 
-        $random = sprintf('%04x%04x', mt_rand(0, 0xFFFF), mt_rand(0, 0xFFFF));
-        $tempDir = storage_path('temp-certs/'.$random);
+        $this->validateDownloadType($orders->pluck('product.product_type')->all(), $type);
 
-        mkdir($tempDir, 0755, true);
+        // SSL 等存量产品继续沿用“缺中间链则过滤”策略；S/MIME 必须进入打包层明确失败，
+        // 防止 mixed batch 静默返回部分成功包。
+        $orders = $orders->filter(fn (Order $order): bool => $order->product->product_type === Product::TYPE_SMIME
+            || ! empty($order->latestCert->intermediate_cert));
+        if ($orders->isEmpty()) {
+            $this->error('没有可下载的证书');
+        }
 
-        // 建包相位 try/finally：mkdir 之后若 addCertToZip 抛异常（如 SM2 openssl 缺失 / PFX 生成失败），
-        // downFlow 不会被调用、其内部 exit 前的 deleteDirectory 也跑不到，含私钥的 tempDir 会泄漏。
-        // finally 删除残留 tempDir。正常路径 downFlow 内已删 + exit（exit 不执行 finally）；
-        // readfile 中途客户端断连致脚本中止的泄漏由 PurgeCommand mtime>1h 扫兜住（exit/中止均不跑 finally）。
+        $tempDir = $this->makeArchiveRootDir();
+        $zip = $this->makeDownloadZip();
+        $suffix = $type === 'all' ? '' : '_'.$type;
+        $downloadName = count($orders) === 1
+            ? $this->safeCertificateName((string) $orders->first()->latestCert->common_name, $orders->first()->latestCert->id).$suffix.'.zip'
+            : 'certs-'.count($orders).'-'.basename($tempDir).$suffix.'.zip';
+        $zipPath = $tempDir.'/'.$downloadName;
+
         try {
-            $zip = new ZipArchive;
-            $suffix = $type == 'all' ? '' : '_'.$type;
-            $filename = count($orders) == 1
-                ? str_replace('*', 'STAR', $orders[0]->latestCert->common_name).$suffix.'.zip'
-                : 'certs-'.count($orders).'-'.$random.$suffix.'.zip';
-
-            $zip->open($tempDir.'/'.$filename, ZipArchive::CREATE);
-
-            $commonNames = [];
-            foreach ($orders as $order) {
-                $this->addCertToZip($order, $zip, $tempDir, $commonNames, $type);
-                $commonNames[] = $order->latestCert->common_name;
+            if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+                throw new TransientBuildException('创建证书压缩包失败');
             }
 
-            $zip->close();
+            $archiveNames = [];
+            foreach ($orders as $order) {
+                $archiveNames[] = $this->addCertToZip($order, $zip, $tempDir, $archiveNames, $type);
+            }
 
-            $this->downFlow($tempDir.'/'.$filename, $tempDir);
-        } finally {
+            if ($zip->close() !== true) {
+                throw new TransientBuildException('写入证书压缩包失败');
+            }
+        } catch (Throwable $exception) {
+            try {
+                $zip->close();
+            } catch (Throwable) {
+                // 清理优先，原异常保留。
+            }
             File::deleteDirectory($tempDir);
+
+            throw $exception;
         }
+
+        return [
+            'zipPath' => $zipPath,
+            'tempDir' => $tempDir,
+            'downloadName' => $downloadName,
+        ];
     }
 
     /**
@@ -109,6 +137,8 @@ trait ActionFileTrait
 
     /**
      * 添加证书文件到zip
+     *
+     * @param  list<string>  $domains
      */
     protected function addCertToZip(
         Order $order,
@@ -116,15 +146,24 @@ trait ActionFileTrait
         string $tempDir,
         array $domains = [],
         string $type = 'all'
-    ): void {
+    ): string {
         $commonName = $order->latestCert->common_name ?? '';
         $cert = $order->latestCert->cert ?? '';
         $privateKey = $order->latestCert->private_key ?? '';
         $intermediateCert = $order->latestCert->intermediate_cert ?? '';
 
-        $certName = str_replace('*', 'STAR', $commonName);
-        $random = sprintf('%04x%04x', mt_rand(0, 0xFFFF), mt_rand(0, 0xFFFF));
-        $certPath = in_array($commonName, $domains) ? $certName.'-'.$random.'/' : $certName.'/';
+        $uniqueId = $order->latestCert->id ?? $order->id ?? bin2hex(random_bytes(4));
+        $certName = $this->safeCertificateName($commonName, $uniqueId);
+        $archiveName = $this->uniqueArchiveName($certName, $uniqueId, $domains);
+        $certPath = $archiveName.'/';
+
+        if (($order->product->product_type ?? null) === Product::TYPE_SMIME) {
+            $this->addSmimeCertToZip($order, $zip, $tempDir, $certPath, $certName, $type);
+
+            return $archiveName;
+        }
+
+        $workDir = $this->makeCertificateWorkDir($tempDir);
 
         // 国密双证书：按 encryption_alg 判定（与前端 isSM2 / Deploy gate 同口径），国密证书一律只出
         // nginx 国密包，绝不走下方普通格式分支 —— 普通分支的 openssl_x509_check_private_key / PKCS12 不支持
@@ -133,7 +172,7 @@ trait ActionFileTrait
         if (strtolower((string) ($order->latestCert->encryption_alg ?? '')) === 'sm2') {
             $this->addSm2CertToZip($zip, $certPath, $certName, $commonName, $cert, $privateKey, $intermediateCert, $order->latestCert->enc_cert ?? '', $order->latestCert->enc_key ?? '', $order->latestCert->enc_key2 ?? '');
 
-            return;
+            return $archiveName;
         }
 
         $password = '123456';
@@ -190,13 +229,20 @@ trait ActionFileTrait
             }
 
             if ($openssl !== null) {
-                $pfx = $tempDir.'/temp.pfx';
-                $certFile = $tempDir.'/temp.crt';
-                $keyFile = $tempDir.'/temp.key';
-                $chainFile = $tempDir.'/temp.chain';
-                file_put_contents($certFile, $cert);
-                file_put_contents($keyFile, $privateKey);
-                file_put_contents($chainFile, $intermediateCert);
+                $pfx = $workDir.'/temp.pfx';
+                $certFile = $workDir.'/temp.crt';
+                $keyFile = $workDir.'/temp.key';
+                $chainFile = $workDir.'/temp.chain';
+                foreach ([
+                    $certFile => $cert,
+                    $keyFile => $privateKey,
+                    $chainFile => $intermediateCert,
+                ] as $path => $contents) {
+                    $this->writeTemporaryFile($path, $contents);
+                }
+                if (! chmod($keyFile, 0600)) {
+                    throw new TransientBuildException('设置证书私钥权限失败');
+                }
 
                 // 显式 PBE-SHA1-3DES + HMAC-SHA1 生成 PFX，兼容 Windows Server 2008+ 全系列。
                 // PHP openssl_pkcs12_export 在 OpenSSL 3.x 默认 AES-256/PBKDF2-SHA256，老 Windows 报"密码错误"无法导入。
@@ -238,7 +284,7 @@ trait ActionFileTrait
                     }
 
                     if (($type == 'all' || $type == 'tomcat') && $keytool !== null) {
-                        $jks = $tempDir.'/temp.jks';
+                        $jks = $workDir.'/temp.jks';
                         $cmd = escapeshellarg($keytool).' -importkeystore -srckeystore '.escapeshellarg($pfx)." -srcstoretype PKCS12 -srcstorepass $password -deststoretype jks -deststorepass $password -destkeystore ".escapeshellarg($jks);
 
                         // 捕获 stderr（不再 > /dev/null 丢弃）+ 检查返回码/文件：keytool 环境异常时
@@ -287,11 +333,12 @@ trait ActionFileTrait
                 }
 
                 if ($openssl !== null) {
-                    $key = $tempDir.'/'.$certName.'.key';
-                    $keyFile = fopen($key, 'w', true);
-                    fwrite($keyFile, $privateKey);
-                    fclose($keyFile);
-                    $rsaKey = $tempDir.'/'.$certName.'-rsa.key';
+                    $key = $workDir.'/private.key';
+                    $this->writeTemporaryFile($key, $privateKey);
+                    if (! chmod($key, 0600)) {
+                        throw new TransientBuildException('设置 RSA 私钥临时文件失败');
+                    }
+                    $rsaKey = $workDir.'/private-rsa.key';
 
                     // 首先尝试使用 -traditional 参数
                     $cmd = escapeshellarg($openssl).' pkcs8 -in '.escapeshellarg($key).' -out '.escapeshellarg($rsaKey).' -nocrypt -traditional';
@@ -316,6 +363,417 @@ trait ActionFileTrait
                 }
             }
         }
+
+        return $archiveName;
+    }
+
+    /**
+     * @param  list<string>  $usedNames
+     */
+    protected function uniqueArchiveName(string $certName, int|string $uniqueId, array $usedNames): string
+    {
+        if (! in_array($certName, $usedNames, true)) {
+            return $certName;
+        }
+
+        $candidate = $certName.'-'.$uniqueId;
+        $collision = 2;
+        while (in_array($candidate, $usedNames, true)) {
+            $candidate = $certName.'-'.$uniqueId.'-'.$collision;
+            $collision++;
+        }
+
+        return $candidate;
+    }
+
+    /**
+     * 为单张证书创建独占工作目录。ZipArchive::addFile 会延迟读取源文件，
+     * 因此目录必须保留到整个 ZIP close 后再由顶层统一清理。
+     */
+    protected function makeCertificateWorkDir(string $tempDir): string
+    {
+        $workDir = $tempDir.'/work-'.bin2hex(random_bytes(8));
+        try {
+            File::ensureDirectoryExists($workDir, 0700);
+        } catch (Throwable $exception) {
+            throw new TransientBuildException('创建证书工作目录失败', 0, $exception);
+        }
+        if (! chmod($workDir, 0700)) {
+            throw new TransientBuildException('设置证书工作目录权限失败');
+        }
+
+        return $workDir;
+    }
+
+    /**
+     * 创建下载归档根临时目录；128 位随机名、0700 权限，碰撞时重新取名。
+     */
+    protected function makeArchiveRootDir(): string
+    {
+        $baseDir = storage_path('temp-certs');
+        try {
+            File::ensureDirectoryExists($baseDir, 0700);
+        } catch (Throwable $exception) {
+            throw new TransientBuildException('创建证书临时目录失败', 0, $exception);
+        }
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $tempDir = $baseDir.'/'.$this->makeArchiveToken();
+            if (@mkdir($tempDir, 0700)) {
+                return $tempDir;
+            }
+            if (is_dir($tempDir)) {
+                continue;
+            }
+
+            throw new TransientBuildException('创建证书临时目录失败');
+        }
+
+        throw new TransientBuildException('创建证书临时目录失败');
+    }
+
+    protected function makeArchiveToken(): string
+    {
+        return bin2hex(random_bytes(16));
+    }
+
+    protected function makeDownloadZip(): ZipArchive
+    {
+        return new ZipArchive;
+    }
+
+    protected function safeCertificateName(string $name, int|string $uniqueId): string
+    {
+        $safe = str_replace('*', 'STAR', $name);
+        $safe = preg_replace('/[\x00-\x1F\x7F<>:"\/\\\\|?*]+/u', '-', $safe) ?? '';
+        $safe = preg_replace('/(?:^|[.])[.]+(?:$|[.])/', '-', $safe) ?? '';
+        $safe = trim($safe, ". \t\n\r\0\x0B-");
+
+        return $safe !== '' ? $safe : 'certificate-'.$uniqueId;
+    }
+
+    /**
+     * @param  list<string|null>  $productTypes
+     */
+    protected function validateDownloadType(array $productTypes, string $type): void
+    {
+        $knownTypes = ['all', 'apache', 'nginx', 'pem', 'iis', 'tomcat', 'txt', 'pfx'];
+        if (! in_array($type, $knownTypes, true)) {
+            $this->error('不支持的证书下载格式');
+        }
+
+        $hasSmime = in_array(Product::TYPE_SMIME, $productTypes, true);
+        $hasOther = collect($productTypes)->contains(fn (?string $productType): bool => $productType !== Product::TYPE_SMIME);
+
+        if ($hasSmime && ! $hasOther && ! in_array($type, ['all', 'pem', 'pfx'], true)) {
+            $this->error('S/MIME 仅支持 PEM 或 PFX 下载格式');
+        }
+        if ($hasOther && $type === 'pfx') {
+            $this->error('当前产品集合不支持该下载格式');
+        }
+        if ($hasSmime && $hasOther && ! in_array($type, ['all', 'pem'], true)) {
+            $this->error('混合产品仅支持 all 或 pem 下载格式');
+        }
+    }
+
+    /**
+     * 生成 S/MIME PFX 六位导入密码：排除易混字符，并保证至少含一个字母和一个数字。
+     */
+    protected function generateSmimePfxPassword(): string
+    {
+        $letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+        $digits = '23456789';
+        $all = $letters.$digits;
+
+        $characters = [
+            $letters[random_int(0, strlen($letters) - 1)],
+            $digits[random_int(0, strlen($digits) - 1)],
+        ];
+        while (count($characters) < 6) {
+            $characters[] = $all[random_int(0, strlen($all) - 1)];
+        }
+
+        for ($i = count($characters) - 1; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$characters[$i], $characters[$j]] = [$characters[$j], $characters[$i]];
+        }
+
+        return implode('', $characters);
+    }
+
+    /**
+     * 将单张 S/MIME 证书按 PEM/PFX 两种格式写入归档。
+     */
+    protected function addSmimeCertToZip(
+        Order $order,
+        ZipArchive $zip,
+        string $tempDir,
+        string $certPath,
+        string $certName,
+        string $type,
+        #[\SensitiveParameter] ?string $password = null
+    ): ?string {
+        $certificate = (string) ($order->latestCert->cert ?? '');
+        $intermediate = (string) ($order->latestCert->intermediate_cert ?? '');
+        $privateKey = (string) ($order->latestCert->private_key ?? '');
+        $commonName = (string) ($order->latestCert->common_name ?? '');
+
+        if ($certificate === '' || $intermediate === '') {
+            $this->error('S/MIME 证书或中间证书不存在，无法生成证书包');
+        }
+        $keyMatched = $privateKey !== '' && openssl_x509_check_private_key($certificate, $privateKey);
+        if (! $keyMatched) {
+            $this->error('S/MIME 证书私钥不存在或不匹配，无法生成 PFX');
+        }
+
+        if ($type === 'all' || $type === 'pem') {
+            if ($zip->addFromString($certPath.'pem/'.$certName.'.pem', $certificate.PHP_EOL.$intermediate) !== true
+                || $zip->addFromString($certPath.'pem/'.$certName.'.key', $privateKey) !== true) {
+                throw new TransientBuildException('写入 S/MIME PEM 失败');
+            }
+        }
+
+        if ($type === 'pem') {
+            return null;
+        }
+
+        $password ??= $this->generateSmimePfxPassword();
+        $workDir = $this->makeCertificateWorkDir($tempDir);
+        $certificateFile = $workDir.'/certificate.pem';
+        $privateKeyFile = $workDir.'/private.key';
+        $chainFile = $workDir.'/chain.pem';
+        $pfxFile = $workDir.'/certificate.pfx';
+
+        foreach ([
+            $certificateFile => $certificate,
+            $privateKeyFile => $privateKey,
+            $chainFile => $intermediate,
+        ] as $path => $contents) {
+            $this->writeTemporaryFile($path, $contents);
+        }
+        if (! chmod($privateKeyFile, 0600)) {
+            throw new TransientBuildException('设置 S/MIME 私钥权限失败');
+        }
+
+        try {
+            $openssl = app(BinaryLocator::class)->openssl();
+        } catch (BinaryNotFoundException $exception) {
+            Log::warning('OpenSSL 不可用，无法生成 S/MIME PFX', [
+                'diagnose' => $exception->diagnose(),
+                'common_name' => $commonName,
+            ]);
+            $this->error('OpenSSL 不可用，无法生成 S/MIME PFX');
+        }
+
+        $command = [
+            $openssl,
+            'pkcs12',
+            '-export',
+            '-inkey',
+            $privateKeyFile,
+            '-in',
+            $certificateFile,
+            '-certfile',
+            $chainFile,
+            '-out',
+            $pfxFile,
+            '-name',
+            $commonName,
+            '-passout',
+            'stdin',
+            '-keypbe',
+            'PBE-SHA1-3DES',
+            '-certpbe',
+            'PBE-SHA1-3DES',
+            '-macalg',
+            'SHA1',
+        ];
+        $result = $this->runProcess($command, $password);
+        $diagnostic = $this->sanitizeProcessDiagnostic($result['stderr'], $password);
+        $outputMissing = ! is_file($pfxFile) || filesize($pfxFile) === 0;
+        if ($result['exitCode'] !== 0 || $outputMissing) {
+            Log::error('S/MIME PFX 生成失败', [
+                'returnCode' => $result['exitCode'],
+                'common_name' => $commonName,
+                'diagnose' => $diagnostic,
+            ]);
+            if ($outputMissing && $result['exitCode'] === 0
+                || $this->isTransientOpenSslIoFailure($result['stderr'])) {
+                throw new TransientBuildException('S/MIME PFX 临时文件写入失败');
+            }
+            $this->error('S/MIME PFX 生成失败，请联系管理员');
+        }
+
+        if (! $zip->addFile($pfxFile, $certPath.'pfx/'.$certName.'.pfx')
+            || ! $zip->addFromString($certPath.'pfx/password.txt', $password.PHP_EOL)) {
+            throw new TransientBuildException('写入 S/MIME PFX 失败');
+        }
+
+        return $password;
+    }
+
+    /**
+     * 完整写入含私钥的临时文件；短写会继续，零进展或关闭/刷新失败按瞬态 IO 处理。
+     */
+    protected function writeTemporaryFile(string $path, #[\SensitiveParameter] string $contents): void
+    {
+        $stream = @fopen($path, 'wb');
+        if ($stream === false) {
+            throw new TransientBuildException('打开证书临时文件失败');
+        }
+
+        $exception = null;
+        try {
+            $this->writeStreamFully($stream, $contents);
+            if (! @fflush($stream)) {
+                throw new TransientBuildException('刷新证书临时文件失败');
+            }
+        } catch (Throwable $caught) {
+            $exception = $caught;
+        }
+        $closed = @fclose($stream);
+
+        if ($exception instanceof TransientBuildException) {
+            throw $exception;
+        }
+        if ($exception !== null) {
+            throw new TransientBuildException('写入证书临时文件失败', 0, $exception);
+        }
+        if (! $closed) {
+            throw new TransientBuildException('关闭证书临时文件失败');
+        }
+    }
+
+    /**
+     * @param  resource  $stream
+     */
+    protected function writeStreamFully($stream, #[\SensitiveParameter] string $contents): void
+    {
+        $length = strlen($contents);
+        $offset = 0;
+        while ($offset < $length) {
+            $written = $this->writeTemporaryChunk($stream, substr($contents, $offset));
+            if ($written === false || $written <= 0 || $written > $length - $offset) {
+                throw new TransientBuildException('证书临时文件写入不完整');
+            }
+            $offset += $written;
+        }
+
+        if ($offset !== $length) {
+            throw new TransientBuildException('证书临时文件写入不完整');
+        }
+    }
+
+    /**
+     * @param  resource  $stream
+     */
+    protected function writeTemporaryChunk($stream, #[\SensitiveParameter] string $contents): int|false
+    {
+        return @fwrite($stream, $contents);
+    }
+
+    /**
+     * 以参数数组直接启动进程，密码仅写入 stdin，不经过 shell、argv 或环境变量。
+     *
+     * @param  list<string>  $command
+     * @return array{exitCode:int,stdout:string,stderr:string}
+     */
+    protected function runProcess(array $command, #[\SensitiveParameter] string $stdin): array
+    {
+        $descriptorSpec = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $pipes = [];
+        $process = @proc_open($command, $descriptorSpec, $pipes, null, null, ['bypass_shell' => true]);
+        if (! is_resource($process)) {
+            throw new TransientBuildException('启动 OpenSSL 进程失败');
+        }
+
+        try {
+            $this->writeStreamFully($pipes[0], $stdin.PHP_EOL);
+            if (! @fclose($pipes[0])) {
+                throw new TransientBuildException('关闭 OpenSSL 密码管道失败');
+            }
+            unset($pipes[0]);
+
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
+            $stdout = '';
+            $stderr = '';
+            $deadline = microtime(true) + 60;
+            do {
+                $stdoutChunk = stream_get_contents($pipes[1]);
+                $stderrChunk = stream_get_contents($pipes[2]);
+                if ($stdoutChunk === false || $stderrChunk === false) {
+                    throw new TransientBuildException('读取 OpenSSL 进程输出失败');
+                }
+                $stdout .= $stdoutChunk;
+                $stderr .= $stderrChunk;
+
+                $status = proc_get_status($process);
+                if (! $status['running']) {
+                    break;
+                }
+                if (microtime(true) >= $deadline) {
+                    proc_terminate($process);
+                    throw new TransientBuildException('OpenSSL 进程执行超时');
+                }
+                usleep(10_000);
+            } while (true);
+
+            $stdoutChunk = stream_get_contents($pipes[1]);
+            $stderrChunk = stream_get_contents($pipes[2]);
+            if ($stdoutChunk === false || $stderrChunk === false) {
+                throw new TransientBuildException('读取 OpenSSL 进程输出失败');
+            }
+            $stdout .= $stdoutChunk;
+            $stderr .= $stderrChunk;
+            @fclose($pipes[1]);
+            @fclose($pipes[2]);
+            $pipes = [];
+
+            $closeCode = proc_close($process);
+            $exitCode = $status['exitcode'] >= 0 ? $status['exitcode'] : $closeCode;
+
+            return [
+                'exitCode' => $exitCode,
+                'stdout' => $stdout,
+                'stderr' => $stderr,
+            ];
+        } catch (Throwable $exception) {
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    @fclose($pipe);
+                }
+            }
+            if (is_resource($process)) {
+                @proc_terminate($process);
+                @proc_close($process);
+            }
+            if ($exception instanceof TransientBuildException) {
+                throw $exception;
+            }
+
+            throw new TransientBuildException('OpenSSL 进程通信失败', 0, $exception);
+        }
+    }
+
+    protected function sanitizeProcessDiagnostic(string $stderr, #[\SensitiveParameter] string $secret): string
+    {
+        $sanitized = str_replace($secret, '[REDACTED]', $stderr);
+        $lines = preg_split('/\R/u', trim($sanitized)) ?: [];
+
+        return implode("\n", array_slice($lines, -3));
+    }
+
+    protected function isTransientOpenSslIoFailure(string $stderr): bool
+    {
+        return preg_match(
+            '/no space left on device|disk quota exceeded|input\/output error|read-only file system|permission denied|error writing|failed to write|unable to write|broken pipe/i',
+            $stderr
+        ) === 1;
     }
 
     /**

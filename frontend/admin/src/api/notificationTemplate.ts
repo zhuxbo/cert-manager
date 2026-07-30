@@ -61,3 +61,12 @@ export function destroy(id: number) {
     `/notification-template/${id}`
   );
 }
+
+export function reset(ids: number[]) {
+  return http.post<BaseResponse<null>, { ids: number[] }>(
+    "/notification-template/reset",
+    {
+      data: { ids }
+    }
+  );
+}

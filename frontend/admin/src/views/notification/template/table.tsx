@@ -3,8 +3,19 @@ import dayjs from "dayjs";
 
 export function useNotificationTemplateTable() {
   const tableRef = ref();
+  const selectedIds = ref<number[]>([]);
+
+  const handleSelectionChange = (rows: Array<{ id: number }>) => {
+    selectedIds.value = rows.map(row => row.id);
+    tableRef.value?.setAdaptive();
+  };
 
   const tableColumns: TableColumnList = [
+    {
+      label: "勾选列",
+      type: "selection",
+      width: 55
+    },
     {
       label: "ID",
       prop: "id",
@@ -74,6 +85,8 @@ export function useNotificationTemplateTable() {
 
   return {
     tableRef,
+    selectedIds,
+    handleSelectionChange,
     tableColumns
   };
 }

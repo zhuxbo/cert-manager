@@ -87,7 +87,8 @@ class {Name}ServiceProvider extends ServiceProvider
 ### 数据库
 
 - 迁移文件放 `backend/migrations/`，ServiceProvider `boot()` 中调 `$this->loadMigrationsFrom("$basePath/backend/migrations")`，主系统 `php artisan migrate` 会自动包含
-- 插件 migration 创建通知模板时必须同时写 `variables` 元数据并与对应 Builder payload 字段一致；插件独占模板在 `down()` 删除，使“保留数据/完全清除”语义与卸载选项一致
+- 插件通知模板由 `backend/Seeders/NotificationTemplateSeeder.php` 管理：Seeder 实现 `ProvidesNotificationTemplateDefaults`，`run()` 仅补齐缺失模板且不得覆盖用户修改，`clear()` 按模板代码精准删除插件独占模板；模板 `variables` 元数据必须与对应 Builder payload 字段一致
+- 插件 migration 只负责表结构，不写入通知模板；完全清除插件数据时，由卸载流程在迁移重置后调用 Seeder 的 `clear()`
 - 表名建议加插件前缀（如 `{name}_logs`）避免冲突
 - 卸载时可选回滚迁移（`remove_data=true`）；完全清除必须用 `migrate:reset --path` 覆盖插件全部历史 batch，不能用只处理全局最后 batch 的单次 `migrate:rollback`
 - **插件表独立管理**：主系统 `db:structure --export` 通过 `--path=database/migrations` 排除插件迁移，`structure.json` 仅包含主系统表

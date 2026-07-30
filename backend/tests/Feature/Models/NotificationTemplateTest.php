@@ -162,6 +162,28 @@ test('user_created 模板 variables 不含 site_url（由 UserCreatedNotificatio
         ->and($template->variables)->not->toContain('site_url');
 });
 
+test('主系统模板只声明 Builder 实际读取的测试输入参数', function () {
+    $variables = collect((new NotificationTemplateSeeder)->notificationTemplateDefaults())
+        ->mapWithKeys(fn (array $template): array => [$template['code'] => $template['variables']])
+        ->all();
+
+    expect($variables)->toBe([
+        'cert_issued' => ['order_id', 'email'],
+        'cert_expire' => ['email'],
+        'acme_expire' => ['email'],
+        'cert_renew_stalled' => ['email'],
+        'cert_renew_cancelled' => ['email', 'common_name', 'expires_at', 'order_id', 'product_type'],
+        'cert_revoked' => ['email', 'common_name', 'expires_at', 'order_id', 'is_successor', 'product_type'],
+        'security' => ['event'],
+        'user_created' => ['username', 'password'],
+        'auto_renew_failed' => ['common_name', 'action', 'reason'],
+        'balance_forecast' => ['available', 'required', 'shortfall', 'certificates'],
+        'task_failed' => ['task_id', 'error_message'],
+        'finance_audit' => ['violation_count', 'violations', 'detected_at'],
+        'system_alert' => ['category', 'title', 'message'],
+    ]);
+});
+
 test('模板关联通知', function () {
     $template = NotificationTemplate::factory()->create([
         'code' => 'test_relation',

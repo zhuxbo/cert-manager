@@ -17,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # 1. 系统依赖（PHP 扩展编译所需 + 常用工具）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git unzip default-mysql-client jq \
+        git unzip default-mysql-client jq default-jre-headless \
         libicu-dev libzip-dev libonig-dev libxml2-dev \
         libpng-dev libjpeg-dev libfreetype6-dev \
     && rm -rf /var/lib/apt/lists/*

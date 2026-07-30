@@ -10,7 +10,7 @@ export interface SearchParams {
   status?: "" | 0 | 1;
 }
 
-export function useNotificationTemplate() {
+export function useNotificationTemplate(tableRef) {
   const search = ref<SearchParams>({
     name: "",
     code: "",
@@ -85,6 +85,26 @@ export function useNotificationTemplate() {
     });
   };
 
+  const handleResetTemplates = (ids: number[]) => {
+    if (ids.length === 0) return;
+
+    ElMessageBox.confirm(
+      `确定重置选中的 ${ids.length} 个模板吗？模板内容和状态将恢复为系统默认值。`,
+      "重置模板",
+      {
+        type: "warning",
+        confirmButtonText: "确定重置",
+        cancelButtonText: "取消"
+      }
+    ).then(() => {
+      templateApi.reset(ids).then(() => {
+        ElMessage.success("模板重置成功");
+        tableRef.value?.getTableRef()?.clearSelection();
+        onSearch();
+      });
+    });
+  };
+
   return {
     loading,
     search,
@@ -95,6 +115,7 @@ export function useNotificationTemplate() {
     onSearch,
     onReset,
     onCollapse,
-    handleDelete
+    handleDelete,
+    handleResetTemplates
   };
 }

@@ -17,6 +17,7 @@ use App\Models\Task;
 use App\Models\Transaction;
 use App\Services\Acme\Api\Api as AcmeApi;
 use App\Services\Delegation\AutoDcvTxtService;
+use App\Services\Notification\CertificateProductType;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Notification\SystemAlert;
@@ -626,6 +627,7 @@ class Action
 
         $user = $order->user;
         $cert = $order->latestCert;
+        $notificationProductType = $order->product->product_type;
 
         $cert->status == 'unpaid' && $this->error('订单未支付');
         $cert->status == 'pending' && $this->error('订单未提交');
@@ -722,7 +724,7 @@ class Action
         // 否则与 commitCancel(锁 sync,revalidate→order)/refundForSyncedCancel 反序，task 集合相交触发 InnoDB 死锁。
         // 经 TaskJob 调用时 TaskJob 已先持本 task 行锁（同事务 lockForUpdate 可重入），叠加后整体仍是 task→order，不反序。
         // 杀手场景：并发 cancel 在锁内退款并置 cancelled，本 sync 若用上游滞后的 active 覆盖会让已退款订单复活。
-        $this->runTaskMutationTransaction(function () use ($orderId, $order, $cert, $user, $data, $suppressCallback) {
+        $this->runTaskMutationTransaction(function () use ($orderId, $order, $cert, $user, $data, $suppressCallback, $notificationProductType) {
             // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
             Task::lockForMutation($orderId, ['commit', 'sync', 'revalidate'])->get();
 
@@ -754,7 +756,10 @@ class Action
             $hasStatusChanged = isset($data['status']) && $data['status'] !== $lockedStatus;
 
             // 证书签发后发送通知邮件
-            if ($hasStatusChanged && $data['status'] === 'active' && $user->email) {
+            if ($hasStatusChanged
+                && $data['status'] === 'active'
+                && $user->email
+                && in_array($notificationProductType, [Product::TYPE_SSL, Product::TYPE_SMIME], true)) {
                 app(NotificationCenter::class)->dispatch(new NotificationIntent(
                     'cert_issued',
                     'user',
@@ -777,8 +782,8 @@ class Action
                 $this->dispatchRenewCancelledNotification($order, $cert);
             }
 
-            // 上游同步为终态 revoked：证书被 CA 吊销（域名验证撤销 / 合规问题 / 主动吊销），立即失去信任、
-            // 浏览器拦截访问。吊销是独立于续费的重大服务中断事件，对所有 revoked（含 plain new）发一次性
+            // 上游同步为终态 revoked：证书被 CA 吊销后立即失去信任，可能影响网站访问、身份验证、签名或
+            // 加密业务。吊销是独立于续费的重大服务中断事件，对所有 revoked（含 plain new）发一次性
             // 通知告知用户；若被吊销的是续费/重签接替单（last_cert_id 非空），前驱证书亦脱离三重监控，文案
             // 附带说明。与 cancelled 分支按 status 值天然互斥；防重同样靠 hasStatusChanged（二次 sync 终态
             // 守卫 unset data.status → hasStatusChanged=false → 不再派发），须与本分支同处终态守卫之后。
@@ -1361,15 +1366,22 @@ class Action
     /**
      * 接替单取消一次性通知（cert_renew_cancelled，renew+reissue 对称）。
      *
-     * 携密纪律：context 仅白名单标量（前驱域名 / 到期日 / 订单号 / 动作类型中文文案），绝不 toArray 整包；
+     * 携密纪律：context 仅白名单标量（前驱标识 / 到期日 / 订单号 / 动作类型中文文案 / 产品类型），绝不 toArray 整包；
      * 收件人 = 订单所属 user。前驱终态不再变动，故取消现场直接读值塞入、Builder 事件驱动无需重查。
      */
     private function dispatchRenewCancelledNotification(Order $order, Cert $cert): void
     {
-        $predecessor = Cert::where('id', $cert->last_cert_id)->first();
+        $predecessor = Cert::with('order.product')->where('id', $cert->last_cert_id)->first();
         if (! $predecessor) {
             return;
         }
+        $predecessorOrder = $predecessor->order;
+        $predecessorProduct = $predecessorOrder instanceof Order
+            ? $predecessorOrder->getAttribute('product')
+            : null;
+        $productType = CertificateProductType::normalize(
+            $predecessorProduct instanceof Product ? $predecessorProduct->product_type : null
+        );
 
         app(NotificationCenter::class)->dispatch(new NotificationIntent(
             'cert_renew_cancelled',
@@ -1380,6 +1392,7 @@ class Action
                 'expires_at' => $predecessor->expires_at?->format('Y-m-d') ?? '',
                 'order_id' => (int) $order->id,
                 'action' => $cert->action === 'renew' ? '续费' : '重签',
+                'product_type' => $productType,
             ]
         ));
     }
@@ -1387,16 +1400,23 @@ class Action
     /**
      * 证书吊销一次性通知（cert_revoked，Order sync 直写 revoked 终态时触发）。
      *
-     * 吊销是独立于续费的重大服务中断事件：被吊销证书立即失去 CA 信任、浏览器拦截访问，用户须知悉并按需
+     * 吊销是独立于续费的重大服务中断事件：被吊销证书立即失去 CA 信任，可能影响网站访问、身份验证、签名
+     * 或加密业务，用户须知悉并按需
      * 重新申请。对所有 revoked（含 plain new）派发，主体为被吊销证书自身（common_name / expires_at 取
      * 外层 $cert）；is_successor 标记被吊销的是否续费/重签接替单（last_cert_id 非空），为 true 时前驱亦
      * 脱离 cert_expire / AutoRenew / cert_renew_stalled 三重监控，供模板文案分支。
      *
-     * 携密纪律：context 仅白名单标量（被吊销证书域名 / 到期日 / 订单号 / 接替单标志），绝不 toArray 整包；
+     * 携密纪律：context 仅白名单标量（被吊销证书标识 / 到期日 / 订单号 / 接替单标志 / 产品类型），绝不 toArray 整包；
      * 收件人 = 订单所属 user。吊销终态不再变动，故派发现场直接读值塞入、Builder 事件驱动无需重查。
      */
     private function dispatchRevokedNotification(Order $order, Cert $cert): void
     {
+        $order->loadMissing('product');
+        $product = $order->getAttribute('product');
+        $productType = CertificateProductType::normalize(
+            $product instanceof Product ? $product->product_type : null
+        );
+
         app(NotificationCenter::class)->dispatch(new NotificationIntent(
             'cert_revoked',
             'user',
@@ -1406,6 +1426,7 @@ class Action
                 'expires_at' => $cert->expires_at?->format('Y-m-d') ?? '',
                 'order_id' => (int) $order->id,
                 'is_successor' => (bool) $cert->last_cert_id,
+                'product_type' => $productType,
             ]
         ));
     }

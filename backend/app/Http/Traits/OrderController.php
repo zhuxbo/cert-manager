@@ -6,6 +6,7 @@ use App\Http\Requests\Order\GetIdsRequest;
 use App\Models\DeployToken;
 use App\Models\DomainValidationRecord;
 use App\Models\Order;
+use App\Models\Product;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
@@ -139,9 +140,12 @@ trait OrderController
     public function sendActive(int $id): void
     {
         $email = (string) request()->string('email', '')->trim();
-        $order = Order::with('user:id,email')->find($id);
-        if (! $order) {
+        $order = Order::with(['user:id,email', 'product:id,product_type', 'latestCert:id,order_id,status'])->find($id);
+        if (! $order || $order->latestCert?->status !== 'active') {
             $this->error('订单或用户不存在');
+        }
+        if (! in_array($order->product->product_type, [Product::TYPE_SSL, Product::TYPE_SMIME], true)) {
+            $this->error('代码签名和文档签名不发送签发通知');
         }
 
         $targetEmail = $email ?: $order->user->email;

@@ -773,6 +773,22 @@ test('管理员发送激活邮件：订单不存在返回错误且不发通知',
         ->assertJson(['code' => 0]);
 });
 
+test('管理员不能为 CodeSign 或 DocSign 手工发送系统签发通知', function (string $productType) {
+    $this->product->update(['product_type' => $productType]);
+    [$order] = createOrderWithCert('active');
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/order/send-active/$order->id")
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => '代码签名和文档签名不发送签发通知',
+        ]);
+})->with([Product::TYPE_CODESIGN, Product::TYPE_DOCSIGN]);
+
 test('管理员发送激活邮件：旧 GET 入口已下线（副作用端点不挂 GET）', function () {
     [$order] = createOrderWithCert('active');
 

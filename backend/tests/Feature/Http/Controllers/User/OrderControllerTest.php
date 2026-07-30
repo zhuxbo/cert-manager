@@ -1139,6 +1139,23 @@ test('用户发送激活邮件-他人订单被 UserScope 隔离且不发通知',
         ->assertJson(['code' => 0]);
 });
 
+test('用户不能为 CodeSign 或 DocSign 手工发送系统签发通知', function (string $productType) {
+    $user = $this->createTestUser();
+    $product = Product::factory()->create(['product_type' => $productType]);
+    [$order] = createUserActiveOrder($user, $product);
+    $mockCenter = Mockery::mock(NotificationCenter::class);
+    $mockCenter->shouldNotReceive('dispatch');
+    $this->app->instance(NotificationCenter::class, $mockCenter);
+
+    $this->actingAsUser($user)
+        ->postJson("/api/order/send-active/$order->id")
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => '代码签名和文档签名不发送签发通知',
+        ]);
+})->with([Product::TYPE_CODESIGN, Product::TYPE_DOCSIGN]);
+
 test('用户发送激活邮件-旧 GET 入口已下线（副作用端点不挂 GET）', function () {
     $user = $this->createTestUser();
     $product = Product::factory()->create();

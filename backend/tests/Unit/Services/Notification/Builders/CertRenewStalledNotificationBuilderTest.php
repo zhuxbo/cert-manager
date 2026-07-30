@@ -2,6 +2,8 @@
 
 use App\Models\Cert;
 use App\Models\NotificationTemplate;
+use App\Models\Order;
+use App\Models\Product;
 use App\Models\User;
 use App\Services\Notification\Builders\CertRenewStalledNotificationBuilder;
 use App\Services\Notification\DTOs\NotificationIntent;
@@ -20,17 +22,29 @@ afterEach(function () {
 });
 
 /**
- * 造一个「前驱证书」mock（预载接替 nextCert）：build 只读 nextCert / expires_at / common_name。
+ * 造一个「前驱证书」mock（预载后续证书 nextCert 与订单产品）。
  */
-function stalledMockPredecessor(string $successorStatus, string $domain, $expiresAt = null): Cert&MockInterface
-{
+function stalledMockPredecessor(
+    string $successorStatus,
+    string $domain,
+    $expiresAt = null,
+    mixed $productType = Product::TYPE_SSL,
+    bool $productExists = true
+): Cert&MockInterface {
     $successor = Mockery::mock(Cert::class)->makePartial();
     $successor->shouldReceive('getAttribute')->with('status')->andReturn($successorStatus);
+
+    $product = Mockery::mock(Product::class)->makePartial();
+    $product->shouldReceive('getAttribute')->with('product_type')->andReturn($productType);
+
+    $order = Mockery::mock(Order::class)->makePartial();
+    $order->shouldReceive('getAttribute')->with('product')->andReturn($productExists ? $product : null);
 
     $predecessor = Mockery::mock(Cert::class)->makePartial();
     $predecessor->shouldReceive('getAttribute')->with('nextCert')->andReturn($successor);
     $predecessor->shouldReceive('getAttribute')->with('expires_at')->andReturn($expiresAt ?? now()->addDays(6));
     $predecessor->shouldReceive('getAttribute')->with('common_name')->andReturn($domain);
+    $predecessor->shouldReceive('getAttribute')->with('order')->andReturn($order);
 
     return $predecessor;
 }
@@ -139,6 +153,62 @@ test('site_url/site_name 由 Builder 从系统设置注入，不进 context/vari
         ->and($result->data['username'])->toBe('testuser')
         ->and($result->data['_meta']['subject'])->toContain('证书续期停滞提醒')
         ->and($result->data['_meta']['is_html'])->toBeTrue();
+});
+
+test('混合产品类型逐项展示且非 SSL 签发提示不使用域名验证措辞', function () {
+    $predecessors = new Collection([
+        stalledMockPredecessor('processing', 'www.example.com', productType: Product::TYPE_SSL),
+        stalledMockPredecessor('processing', 'mail@example.com', productType: Product::TYPE_SMIME),
+        stalledMockPredecessor('processing', 'Example Software', productType: Product::TYPE_CODESIGN),
+        stalledMockPredecessor('processing', 'Example Document', productType: Product::TYPE_DOCSIGN),
+    ]);
+    $builder = buildStalledPartialBuilder($predecessors);
+    $intent = new NotificationIntent('cert_renew_stalled', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, stalledMockUser());
+    $certificates = collect($result->data['certificates'])->keyBy('domain');
+
+    expect($certificates['www.example.com']['product_type_label'])->toBe('SSL')
+        ->and($certificates['www.example.com']['action_hint'])->toContain('域名验证/审核')
+        ->and($certificates['mail@example.com']['product_type_label'])->toBe('S/MIME')
+        ->and($certificates['mail@example.com']['action_hint'])->toContain('身份验证或签名材料审核')
+        ->and($certificates['mail@example.com']['action_hint'])->not->toContain('域名')
+        ->and($certificates['Example Software']['product_type_label'])->toBe('代码签名')
+        ->and($certificates['Example Document']['product_type_label'])->toBe('文档签名')
+        ->and($result->data['has_ssl_certificate'])->toBeTrue();
+});
+
+test('产品类型为空或未知时回落为 SSL', function (mixed $productType) {
+    $builder = buildStalledPartialBuilder(new Collection([
+        stalledMockPredecessor('unpaid', 'fallback.example.com', productType: $productType),
+    ]));
+    $intent = new NotificationIntent('cert_renew_stalled', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, stalledMockUser());
+
+    expect($result->data['certificates'][0]['product_type'])->toBe(Product::TYPE_SSL)
+        ->and($result->data['certificates'][0]['product_type_label'])->toBe('SSL')
+        ->and($result->data['has_ssl_certificate'])->toBeTrue();
+})->with([
+    '空值' => null,
+    '未知值' => 'unknown',
+]);
+
+test('订单关联产品已删除时回落为 SSL 且仍生成停滞提醒', function () {
+    $builder = buildStalledPartialBuilder(new Collection([
+        stalledMockPredecessor(
+            'unpaid',
+            'orphan.example.com',
+            productExists: false
+        ),
+    ]));
+    $intent = new NotificationIntent('cert_renew_stalled', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, stalledMockUser());
+
+    expect($result)->not->toBeNull()
+        ->and($result->data['certificates'][0]['product_type'])->toBe(Product::TYPE_SSL)
+        ->and($result->data['certificates'][0]['product_type_label'])->toBe('SSL');
 });
 
 // ── 测试 18：三件套 + 强制发（不入偏好表钉死） ──────────────────────────────────

@@ -62,7 +62,11 @@
               <Select />
             </el-icon>
           </td>
-          <td class="content">签发证书</td>
+          <td class="content">下载证书</td>
+        </tr>
+        <tr v-if="cert.status === 'active'">
+          <td class="label" />
+          <td class="content"><SmimeInstall /></td>
         </tr>
       </tbody>
     </table>
@@ -74,6 +78,7 @@ import { computed, inject, onMounted, ref } from "vue";
 import { statusType, status } from "@/views/order/dictionary";
 import Operate from "./operate.vue";
 import SmimeValidation from "./validation.vue";
+import SmimeInstall from "./install.vue";
 import Documents from "../documents.vue";
 import DocumentUpload from "../documentUpload.vue";
 import { ElButton } from "element-plus";

@@ -1063,12 +1063,13 @@ test('[通知①] reissue processing（issued_at=null）取消 → 派发恰一�
         ->and($intent->notifiableType)->toBe('user')
         ->and($intent->notifiableId)->toBe($this->user->id);
 
-    // context 严格白名单：恰 4 键，无 toArray 整包泄漏（无 email/user_id/csr/private_key 等外键）
-    expect(array_keys($intent->context))->toEqualCanonicalizing(['common_name', 'expires_at', 'order_id', 'action']);
+    // context 严格白名单：恰 5 键，无 toArray 整包泄漏（无 email/user_id/csr/private_key 等外键）
+    expect(array_keys($intent->context))->toEqualCanonicalizing(['common_name', 'expires_at', 'order_id', 'action', 'product_type']);
     expect($intent->context['common_name'])->toBe('pred-reissue.example.com')
         ->and($intent->context['expires_at'])->toBe(now()->addDays(90)->format('Y-m-d'))
         ->and($intent->context['order_id'])->toBe($order->id)
-        ->and($intent->context['action'])->toBe('重签');
+        ->and($intent->context['action'])->toBe('重签')
+        ->and($intent->context['product_type'])->toBe(Product::TYPE_SSL);
 });
 
 test('[通知②] renew cancelLocked（有前驱）取消 → 对称派发一次 cert_renew_cancelled + action=续费', function () {
@@ -1076,6 +1077,8 @@ test('[通知②] renew cancelLocked（有前驱）取消 → 对称派发一次
     test()->product->update(['refund_period' => 30]);
 
     [$renewOrder, $sourceCert, $renewCert] = makeRenewCancelling();
+    $sourceProduct = Product::factory()->create(['product_type' => Product::TYPE_SMIME]);
+    Order::whereKey($sourceCert->order_id)->update(['product_id' => $sourceProduct->id]);
     Transaction::create([
         'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $renewOrder->id,
         'amount' => '-100.00', 'standard_count' => 1, 'wildcard_count' => 0,
@@ -1091,10 +1094,34 @@ test('[通知②] renew cancelLocked（有前驱）取消 → 对称派发一次
     $intents = renewCancelledIntents($captured);
     expect($intents)->toHaveCount(1);
     expect($intents[0]->notifiableId)->toBe($this->user->id);
-    expect(array_keys($intents[0]->context))->toEqualCanonicalizing(['common_name', 'expires_at', 'order_id', 'action']);
+    expect(array_keys($intents[0]->context))->toEqualCanonicalizing(['common_name', 'expires_at', 'order_id', 'action', 'product_type']);
     expect($intents[0]->context['common_name'])->toBe('pred-renew.example.com')
         ->and($intents[0]->context['action'])->toBe('续费')
-        ->and($intents[0]->context['order_id'])->toBe($renewOrder->id);
+        ->and($intents[0]->context['order_id'])->toBe($renewOrder->id)
+        ->and($intents[0]->context['product_type'])->toBe(Product::TYPE_SMIME);
+});
+
+test('[通知②a] 前驱订单产品已删除时取消仍成功且通知类型回落 SSL', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    [$renewOrder, $sourceCert, $renewCert] = makeRenewCancelling();
+    $deletedProduct = Product::factory()->create(['product_type' => Product::TYPE_SMIME]);
+    Order::whereKey($sourceCert->order_id)->update(['product_id' => $deletedProduct->id]);
+    $deletedProduct->delete();
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $renewOrder->id,
+        'amount' => '-100.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
+
+    $captured = captureRenewCancelledDispatch();
+    mockCancelApi('success');
+    expectOrderApiSuccess(fn () => $this->service->cancel($renewOrder->id));
+
+    expect($renewCert->fresh()->status)->toBe('cancelled');
+    $intents = renewCancelledIntents($captured);
+    expect($intents)->toHaveCount(1)
+        ->and($intents[0]->context['product_type'])->toBe(Product::TYPE_SSL);
 });
 
 test('[通知③] plain new（last_cert_id=null，无前驱）取消 → 不派发 cert_renew_cancelled', function () {

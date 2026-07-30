@@ -6,6 +6,7 @@ use App\Http\Requests\NotificationTemplate\GetIdsRequest;
 use App\Http\Requests\NotificationTemplate\StoreRequest;
 use App\Http\Requests\NotificationTemplate\UpdateRequest;
 use App\Models\NotificationTemplate;
+use App\Services\Notification\NotificationTemplateResetService;
 use Illuminate\Http\Request;
 
 class NotificationTemplateController extends BaseController
@@ -93,6 +94,12 @@ class NotificationTemplateController extends BaseController
     public function batchDestroy(GetIdsRequest $request): void
     {
         NotificationTemplate::whereIn('id', $request->validated('ids'))->delete();
+        $this->success();
+    }
+
+    public function reset(GetIdsRequest $request, NotificationTemplateResetService $service): void
+    {
+        $service->reset($request->validated('ids'));
         $this->success();
     }
 }

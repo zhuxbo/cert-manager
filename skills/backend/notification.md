@@ -46,34 +46,43 @@
 
 ## 续期停滞孤儿提醒（cert_renew_stalled，P0-1 包 X）
 
-续费/重签把前驱证书终态化（renewed/reissued）后，接替证书长期卡在非 active 停滞态、前驱即将到期。`cert_expire` 对 renewed/reissued 前驱抑制、`AutoRenewCommand` 因 active 前置不再处理 → 本提醒是唯一止血。检测形态源与「证书为轴前驱侧扫描」见 `skills/backend/auto-renew.md`；此处记通知三件套侧。
+续费/重签把前驱证书终态化（renewed/reissued）后，后续证书长期卡在非 active 停滞态、前驱即将到期。`cert_expire` 对 renewed/reissued 前驱抑制、`AutoRenewCommand` 因 active 前置不再处理 → 本提醒是唯一止血。检测形态源与「证书为轴前驱侧扫描」见 `skills/backend/auto-renew.md`；此处记通知三件套侧。
 
-- **三件套**：`config/notification.builders['cert_renew_stalled' => CertRenewStalledNotificationBuilder]` + seeder 模板（`variables: [username,email,certificates]`，`site_url/site_name` 由 Builder 从系统设置注入）+ 专用 Builder。`ExpireCommand` 派发侧经 `StalledRenewalQuery::forDispatch()` 取 distinct `order.user_id` 逐 user `dispatch('cert_renew_stalled')`（additive 分支，既有 active 到期查询一字不改、零回归）。
+- **三件套**：`config/notification.builders['cert_renew_stalled' => CertRenewStalledNotificationBuilder]` + seeder 模板（`variables: [email]`，仅保留测试发送可覆盖的收件邮箱；`username/certificates/site_url/site_name` 由 Builder 查询或注入）+ 专用 Builder。每个 `certificates[]` 从前驱 `order.product` 注入归一化后的 `product_type` / `product_type_label`；`ExpireCommand` 派发侧经 `StalledRenewalQuery::forDispatch()` 取 distinct `order.user_id` 逐 user `dispatch('cert_renew_stalled')`（additive 分支，既有 active 到期查询一字不改、零回归）。
 - **强制发（不入 `user_default_preferences`）**：涉及服务中断风险，穿透用户可能已关的常规到期偏好。机制是**隐式**——`User::allowsNotification($code)` 对 notification_settings 里**缺席**的 code 返回默认 `true`，故不把该 code 铺进用户偏好 UI = 永远不写入 settings = 恒发（同 `balance_forecast`/`auto_renew_failed` 范式）。
 - **双侧同源（防「派发了 user、Builder 重查为空 → 静默漏发」）**：派发侧 `forDispatch`（前驱 expires_at 离散节点窗口 14/7/3/1）与重查侧 `forUser`（连续 14 天超集窗口，防 NotificationJob 异步延迟跨窗漏发）共用 `StalledRenewalQuery` 单一形态；`SUCCESSOR_STALLED_STATUSES` 5 态常量 `public`，Builder 重查后对预载 `nextCert` 再判一次停滞态白名单（复用同一真相源、禁手写第二份清单，兜「主查询通过后 nextCert 预载前」毫秒级 race）。
 - **5 态可行动文案**（`actionHint`，模板只渲染不做逻辑）：`unpaid` 中性化（未扣费、不硬承诺去支付，避免与 O4 自动清理冲突）；`pending`/`processing`/`approving` 已扣费（勿重复支付）；`failed` 指「重新购买」（failed/renewed/reissued 三态均进不了 renew/reissue gate、唯一动作是另开新单）。携密不入库（仅域名/日期/停滞标签/文案）。
 
-## 接替单取消一次性提醒（cert_renew_cancelled）
+## 续签订单取消一次性提醒（cert_renew_cancelled）
 
-续费/重签接替单在已提交上游（processing/approving，含已签发 active）状态被取消后，前驱证书（renewed/reissued 终态）就此脱离 `cert_expire` / `AutoRenew` / `cert_renew_stalled` 三重监控——原证书物理上仍在有效期服役、却不再收到任何到期/续期提醒。本一次性通知是唯一止血：告知用户接替单已取消、原证书不再受续期监控，如需继续使用请手动续期。触发形态源（`cancelLocked` 非恢复分支，或启用 `autoRefundOnSync` 后 `refundForSyncedCancel` 终结续费单；均要求有前驱）见 `skills/backend/order-fund.md`；此处记通知三件套侧。
+续费/重签订单在已提交上游（processing/approving，含已签发 active）状态被取消后，前驱证书（renewed/reissued 终态）就此脱离 `cert_expire` / `AutoRenew` / `cert_renew_stalled` 三重监控——原证书物理上仍在有效期服役、却不再收到任何到期/续期提醒。本一次性通知是唯一止血：告知用户续签订单已取消、原证书不再受续期监控，如需继续使用请手动续期。触发形态源（`cancelLocked` 非恢复分支，或启用 `autoRefundOnSync` 后 `refundForSyncedCancel` 终结续费单；均要求有前驱）见 `skills/backend/order-fund.md`；此处记通知三件套侧。
 
-- **三件套**：`config/notification.builders['cert_renew_cancelled' => CertRenewCancelledNotificationBuilder]` + seeder 模板（`variables: [username,email,common_name,expires_at,order_id,action]`，`site_url/site_name` 由 Builder 从系统设置注入）+ 专用 Builder。
-- **一次性事件驱动（≠ cert_renew_stalled 周期重查）**：数据在取消发生时即确定、前驱处终态不再变动，Builder 直接读派发点 context 白名单标量、不重查 DB（cert_renew_stalled 走 `StalledRenewalQuery` 周期重查，是因停滞态随时间演进）。
-- **触发点完整**：`Action::cancelLocked` 非恢复分支对有前驱的 renew + reissue **对称派发**（`action` 文案「续费」/「重签」）；启用 `autoRefundOnSync` 后，`refundForSyncedCancel` 对有前驱的 renew 同样派发。两条路径均由 `NotificationCenter` afterCommit 投递；plain new（`last_cert_id=null`、无前驱）不派。
+- **三件套**：`config/notification.builders['cert_renew_cancelled' => CertRenewCancelledNotificationBuilder]` + seeder 模板（`variables: [email,common_name,expires_at,order_id,product_type]`；`username/product_type_label/site_url/site_name` 由 Builder 注入）+ 专用 Builder。
+- **一次性事件驱动（≠ cert_renew_stalled 周期重查）**：数据在取消发生时即确定、前驱处终态不再变动，派发点从前驱 `order.product` 取得 `product_type`，Builder 只读包含该字段的 context 白名单标量、不重查 DB（cert_renew_stalled 走 `StalledRenewalQuery` 周期重查，是因停滞态随时间演进）。
+- **触发点完整**：`Action::cancelLocked` 非恢复分支对有前驱的 renew + reissue **对称派发**；启用 `autoRefundOnSync` 后，`refundForSyncedCancel` 对有前驱的 renew 同样派发。两条路径均由 `NotificationCenter` afterCommit 投递；plain new（`last_cert_id=null`、无前驱）不派。
 - **强制发（不入 `user_default_preferences`）**：涉及服务连续性风险，穿透用户可能已关的常规到期偏好；机制同 cert_renew_stalled——code 不铺进用户偏好 UI = 永不写入 settings = `User::allowsNotification` 对缺席 code 恒返回默认 `true` 恒发（与 cert_renew_stalled 成对）。
-- **携密白名单**：派发点仅白名单塞入 4 标量（前驱域名 `common_name` / 到期日 `expires_at` / 订单号 `order_id` / 动作类型 `action`），专用 Builder 逐键取用、**绝不整包直通 `$intent->context`**；config 注册专用 Builder、不回落 `DefaultNotificationBuilder`（Default 直通红线见「携密 / 附件安全」段）。
+- **携密白名单**：派发点提供前驱标识 `common_name` / 到期日 `expires_at` / 订单号 `order_id` / 前驱产品类型 `product_type`；专用 Builder 只逐键取用这些业务标量及可选 `email`，**绝不整包直通 `$intent->context`**。config 注册专用 Builder、不回落 `DefaultNotificationBuilder`（Default 直通红线见「携密 / 附件安全」段）。
 
 ## 证书吊销一次性提醒（cert_revoked）
 
-Order sync 发现上游把证书同步为 `revoked` 终态（证书被 CA 吊销：域名验证撤销 / 合规问题 / 主动吊销）时触发。被吊销证书立即失去 CA 信任、浏览器拦截访问，用户须知悉并按需重新申请。原 sync 通用写回落 revoked 仅触发 callback + deleteTask、**零通知**（可见性洞）；本通知补齐。触发形态源（`Order/Action::sync` 通用写回分支，锁内终态守卫之后、与 `cert_renew_cancelled` 分支并列）见 `skills/backend/order-fund.md`；此处记通知三件套侧。
+Order sync 发现上游把证书同步为 `revoked` 终态时触发。被吊销证书立即失去 CA 信任：SSL 可能导致浏览器拦截 HTTPS，其他类型可能影响身份验证、签名或加密业务，用户须知悉并按需重新申请。原 sync 通用写回落 revoked 仅触发 callback + deleteTask、**零通知**（可见性洞）；本通知补齐。触发形态源（`Order/Action::sync` 通用写回分支，锁内终态守卫之后、与 `cert_renew_cancelled` 分支并列）见 `skills/backend/order-fund.md`；此处记通知三件套侧。
 
-- **三件套**：`config/notification.builders['cert_revoked' => CertRevokedNotificationBuilder]` + seeder 模板（`variables: [username,email,common_name,expires_at,order_id,is_successor]`，`site_url/site_name` 由 Builder 从系统设置注入）+ 专用 Builder。派发经 `Action::dispatchRevokedNotification`。
-- **吊销事件本位（宽口径 P2）**：对**所有** revoked（含 plain new）派发——吊销是独立于续费的重大服务中断事件，plain new 证书被吊销时用户同样须知悉。主体为**被吊销证书自身**（`common_name`/`expires_at` 取写回目标 `$cert`，≠ cert_renew_cancelled 取前驱）；`is_successor`（`(bool) $cert->last_cert_id`）标记被吊销的是否续费/重签接替单，为 true 时前驱亦脱离 `cert_expire`/`AutoRenew`/`cert_renew_stalled` 三重监控 → 模板 `@if($is_successor)` 附带「原证书亦不再受监控、请手动续期」文案（只影响文案、不影响是否发）。
+- **三件套**：`config/notification.builders['cert_revoked' => CertRevokedNotificationBuilder]` + seeder 模板（`variables: [email,common_name,expires_at,order_id,is_successor,product_type]`；`username/product_type_label/site_url/site_name` 由 Builder 注入）+ 专用 Builder。派发经 `Action::dispatchRevokedNotification`。
+- **吊销事件本位（宽口径 P2）**：对**所有** revoked（含 plain new）派发——吊销是独立于续费的重大服务中断事件，plain new 证书被吊销时用户同样须知悉。主体为**被吊销证书自身**（`common_name`/`expires_at` 取写回目标 `$cert`，`product_type` 取该证书当前订单产品，≠ cert_renew_cancelled 取前驱）；`is_successor`（`(bool) $cert->last_cert_id`）标记被吊销的是否续费/重签后续证书，为 true 时前驱亦脱离 `cert_expire`/`AutoRenew`/`cert_renew_stalled` 三重监控 → 模板 `@if($is_successor)` 附带「原证书亦不再受监控、请手动续期」文案（只影响文案、不影响是否发）。
 - **一次性事件驱动**：数据在吊销发生时即确定、终态不再变动，Builder 直接读派发点 context 白名单标量、不重查 DB（同 cert_renew_cancelled 范式）。
 - **强制发（不入 `user_default_preferences`）**：吊销属服务中断类事件，穿透用户可能已关的常规到期偏好；机制同 cert_renew_cancelled/cert_renew_stalled——code 不铺进用户偏好 = `User::allowsNotification` 对缺席 code 恒返回默认 `true` 恒发。
 - **防重靠 hasStatusChanged**：分支必须落在 `runTaskMutationTransaction` 闭包内、终态守卫之后——二次 force-sync 已 revoked 的订单，终态守卫 `unset($data['status'])` → `hasStatusChanged=false` → 不再派发（与 cert_renew_cancelled 同一防重路径，放守卫外会重复发）。与 cancelled 分支按 status 值天然互斥、不双发。revoked 从不进 `refundForSyncedCancel`（后者强制 cancelled），故通用写回单点覆盖全部 revoked。
-- **携密白名单**：仅 `common_name`/`expires_at`/`order_id`/`is_successor`（bool 结构标志）；专用 Builder 逐键取用、config 注册**不回落 `DefaultNotificationBuilder`**（Default 直通红线）。
-- **Acme 侧不适用**：ACME 无接替单前驱链、自身不直发证书（certbot 发），`Acme\Action` 落 revoked 不需本通知。**仅 Order 侧**。
+- **携密白名单**：仅 `common_name`/`expires_at`/`order_id`/`is_successor`（bool 结构标志）/`product_type`；专用 Builder 逐键取用、config 注册**不回落 `DefaultNotificationBuilder`**（Default 直通红线）。
+- **Acme 侧不适用**：ACME 无续签前驱链、自身不直发证书（certbot 发），`Acme\Action` 落 revoked 不需本通知。**仅 Order 侧**。
+
+## cert_issued 产品范围与 S/MIME 附件
+
+- **派发白名单**：系统 `cert_issued` 只允许 SSL、S/MIME。`Action::sync` 在锁内按订单产品类型决定是否派发；`send-active` 后端接口同样强制白名单。CodeSign/DocSign 不自动派发、不允许手工发送，Builder 对历史在途 Job 返回 `null` 安全跳过。
+- **产品类型展示**：`cert_issued` 单封标题展示 SSL 或 S/MIME；`cert_expire`、`cert_renew_stalled` 汇总逐行展示类型与证书标识；`cert_renew_cancelled`、`cert_revoked` 单封标题展示类型。支持 `ssl`、`smime`、`codesign`、`docsign`，历史 `null`、未知值和缺少新增模板变量的旧队列载荷均回落为 SSL。Seeder 一律 `firstOrCreate`，不覆盖管理员自定义模板。
+- **S/MIME 交付附件**：S/MIME 签发邮件与默认 `all` 下载共用打包层，ZIP 只包含 PEM（证书链 + 匹配私钥）和 PFX（3DES/SHA1 兼容策略）及 `password.txt`。PFX 密码为六位安全随机字母数字，排除易混字符并保证同时含字母、数字。
+- **PFX 密码仅随 ZIP 交付**：Builder 把同一密码写入 PFX 与 ZIP 内的 `password.txt`，邮件正文、主题及 `NotificationPayload::transient` 均不得包含该密码。OpenSSL 必须用参数数组 + `-passout stdin` 从管道取密码，禁放 shell、argv、环境变量，stderr 记录前须净化；密码也不得进入 `notifications.data` 或日志。
+- **错误分档与清理**：证书、链、私钥缺失或不匹配、OpenSSL 缺失/算法或输入确定性失败属于永久构建失败；mkdir、临时文件短写/刷新/关闭、OpenSSL 输出 ENOSPC、ZIP open/close 等 IO 失败抛 `TransientBuildException`。临时文件必须循环写满并校验完整字节数；每张证书使用独占 0700 工作目录，私钥文件 0600，所有路径由外层在成功发送、永久失败或重试前统一清理，异常路径先关闭 ZIP 再删除目录。
+- **默认模板仅首次创建**：签发模板正文使用产品无关文案；Seeder 不迁移或覆盖任何存量模板，管理员需要时可自行采用新默认内容。
 
 ## NotificationJob 失败重试分档（M4）
 

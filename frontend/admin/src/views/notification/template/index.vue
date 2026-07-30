@@ -11,7 +11,8 @@ defineOptions({
   name: "NotificationTemplate"
 });
 
-const { tableRef, tableColumns } = useNotificationTemplateTable();
+const { tableRef, selectedIds, handleSelectionChange, tableColumns } =
+  useNotificationTemplateTable();
 
 const {
   loading,
@@ -23,8 +24,9 @@ const {
   onSearch,
   onReset,
   onCollapse,
-  handleDelete
-} = useNotificationTemplate();
+  handleDelete,
+  handleResetTemplates
+} = useNotificationTemplate(tableRef);
 
 const { searchColumns } = useNotificationTemplateSearch();
 
@@ -68,6 +70,13 @@ onMounted(() => {
     <PureTableBar title="通知模板" :columns="tableColumns" @refresh="onSearch">
       <template #buttons>
         <el-button type="primary" @click="openCreate">新增模板</el-button>
+        <el-button
+          type="warning"
+          :disabled="selectedIds.length === 0"
+          @click="handleResetTemplates(selectedIds)"
+        >
+          重置模板
+        </el-button>
       </template>
       <template v-slot="{ size, dynamicColumns }">
         <pure-table
@@ -86,6 +95,7 @@ onMounted(() => {
             background: 'var(--el-fill-color-light)',
             color: 'var(--el-text-color-primary)'
           }"
+          @selection-change="handleSelectionChange"
           @page-size-change="handleSizeChange"
           @page-current-change="handleCurrentChange"
         >

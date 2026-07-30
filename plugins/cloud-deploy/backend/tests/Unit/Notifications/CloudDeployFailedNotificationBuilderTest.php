@@ -6,6 +6,7 @@ use App\Services\Notification\DTOs\NotificationIntent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Plugins\CloudDeploy\Notifications\CloudDeployFailedNotificationBuilder;
+use Plugins\CloudDeploy\Seeders\NotificationTemplateSeeder;
 use Tests\TestCase;
 
 uses(TestCase::class, RefreshDatabase::class);
@@ -36,8 +37,9 @@ test('Builder 白名单：误塞的 error/AK 不进 payload，仅 4 字段 + is_
     expect(array_keys($payload->data))->not->toContain('last_error');
 });
 
-test('迁移种入 cloud_deploy_failed 模板：启用且声明 Builder 提供的四个变量', function () {
-    // RefreshDatabase 已跑全部迁移（含本插件迁移），模板应已种入
+test('Seeder 种入 cloud_deploy_failed 模板：启用且声明 Builder 提供的四个变量', function () {
+    app(NotificationTemplateSeeder::class)->run();
+
     $row = DB::table('notification_templates')->where('code', 'cloud_deploy_failed')->first();
     expect($row)->not->toBeNull();
     expect((int) $row->status)->toBe(1);

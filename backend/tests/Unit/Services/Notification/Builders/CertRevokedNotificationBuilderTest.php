@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\NotificationTemplate;
+use App\Models\Product;
 use App\Models\User;
 use App\Services\Notification\Builders\CertRevokedNotificationBuilder;
 use App\Services\Notification\DTOs\NotificationIntent;
@@ -60,6 +61,7 @@ test('build：$data 白名单键齐 + 值正确 + site 由 Builder 注入 + 绝�
         'expires_at' => '2026-09-30',
         'order_id' => 8899,
         'is_successor' => true,
+        'product_type' => Product::TYPE_CODESIGN,
         'email' => 'user@example.com',
         'private_key' => '-----BEGIN PRIVATE KEY-----SECRET-----END PRIVATE KEY-----',
     ]);
@@ -71,19 +73,21 @@ test('build：$data 白名单键齐 + 值正确 + site 由 Builder 注入 + 绝�
         ->and($result->data['expires_at'])->toBe('2026-09-30')
         ->and($result->data['order_id'])->toBe(8899)
         ->and($result->data['is_successor'])->toBeTrue()
+        ->and($result->data['product_type'])->toBe(Product::TYPE_CODESIGN)
+        ->and($result->data['product_type_label'])->toBe('代码签名')
         ->and($result->data['username'])->toBe('testuser')
         ->and($result->data['email'])->toBe('user@example.com');
 
     // site 由 Builder 从系统设置注入（不依赖 context/variables）
     expect($result->data['site_url'])->toBe('https://ssl.test/')
         ->and($result->data['site_name'])->toBe('SSL证书管理系统')
-        ->and($result->data['_meta']['subject'])->toContain('证书吊销提醒')
+        ->and($result->data['_meta']['subject'])->toContain('代码签名 证书吊销提醒')
         ->and($result->data['_meta']['is_html'])->toBeTrue();
 
     // $data 键严格白名单：无 private_key 等敏感外键
     expect(array_keys($result->data))->toEqualCanonicalizing([
         'username', 'email', 'site_name', 'site_url',
-        'common_name', 'expires_at', 'order_id', 'is_successor', 'subject', '_meta',
+        'common_name', 'expires_at', 'order_id', 'is_successor', 'product_type', 'product_type_label', 'subject', '_meta',
     ]);
     expect($result->data)->not->toHaveKey('private_key');
 
@@ -103,8 +107,35 @@ test('is_successor 缺省回落 false（防文案分支误判）', function () {
 
     $result = $builder->build($intent, revokedMockUser());
 
-    expect($result->data['is_successor'])->toBeFalse();
+    expect($result->data['is_successor'])->toBeFalse()
+        ->and($result->data['product_type'])->toBe(Product::TYPE_SSL)
+        ->and($result->data['product_type_label'])->toBe('SSL');
 });
+
+test('四类产品均展示对应类型且空值或未知值回落 SSL', function (mixed $productType, string $expectedType, string $expectedLabel) {
+    preloadRevokedSite();
+    $builder = new CertRevokedNotificationBuilder;
+    $intent = new NotificationIntent('cert_revoked', 'user', 1, [
+        'common_name' => 'identifier',
+        'expires_at' => '2026-10-01',
+        'order_id' => 1,
+        'product_type' => $productType,
+        'email' => 'user@example.com',
+    ]);
+
+    $result = $builder->build($intent, revokedMockUser());
+
+    expect($result->data['product_type'])->toBe($expectedType)
+        ->and($result->data['product_type_label'])->toBe($expectedLabel)
+        ->and($result->data['_meta']['subject'])->toContain("{$expectedLabel} 证书");
+})->with([
+    'SSL' => [Product::TYPE_SSL, Product::TYPE_SSL, 'SSL'],
+    'S/MIME' => [Product::TYPE_SMIME, Product::TYPE_SMIME, 'S/MIME'],
+    '代码签名' => [Product::TYPE_CODESIGN, Product::TYPE_CODESIGN, '代码签名'],
+    '文档签名' => [Product::TYPE_DOCSIGN, Product::TYPE_DOCSIGN, '文档签名'],
+    '空值' => [null, Product::TYPE_SSL, 'SSL'],
+    '未知值' => ['unknown', Product::TYPE_SSL, 'SSL'],
+]);
 
 test('三件套 + 强制发：config builder 命中 + 不入偏好 + allowsNotification 默认 true + seeder 幂等', function () {
     // ① config builders 命中新 code（缺则端到端回落 DefaultBuilder、白名单失效直通 context）
@@ -125,7 +156,15 @@ test('三件套 + 强制发：config builder 命中 + 不入偏好 + allowsNotif
     (new NotificationTemplateSeeder)->run();
     $templates = NotificationTemplate::where('code', 'cert_revoked')->get();
     expect($templates)->toHaveCount(1)
-        ->and($templates->first()->status)->toBe(1);
+        ->and($templates->first()->status)->toBe(1)
+        ->and($templates->first()->variables)->toBe([
+            'email',
+            'common_name',
+            'expires_at',
+            'order_id',
+            'is_successor',
+            'product_type',
+        ]);
 
     // ⑤ 模板含性质说明段（不受常规到期提醒偏好控制）+ is_successor 分支文案段（前驱脱监控）
     expect($templates->first()->content)

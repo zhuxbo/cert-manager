@@ -6,6 +6,7 @@ use App\Models\Order;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Order\Action;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
@@ -108,10 +109,7 @@ function makePfxTempDir(): string
 
 function cleanupDir(string $dir): void
 {
-    foreach (glob($dir.'/*') ?: [] as $f) {
-        @unlink($f);
-    }
-    @rmdir($dir);
+    File::deleteDirectory($dir);
 }
 
 /** 跳过条件：BinaryLocator 拒绝 LibreSSL（本机 macOS），无真 OpenSSL CLI 则跳过算法断言。 */
@@ -121,6 +119,15 @@ function skipIfNoRealOpenssl(TestCase $test): void
         app(BinaryLocator::class)->openssl();
     } catch (BinaryNotFoundException $e) {
         $test->markTestSkipped('需要真 OpenSSL CLI（BinaryLocator 拒 LibreSSL）：'.$e->getMessage());
+    }
+}
+
+function realKeytoolOrSkip(TestCase $test): string
+{
+    try {
+        return app(BinaryLocator::class)->keytool();
+    } catch (BinaryNotFoundException $e) {
+        $test->markTestSkipped('明确未安装可用 keytool：'.$e->getMessage());
     }
 }
 
@@ -151,10 +158,174 @@ function buildCertZip(Order $order, string $tempDir, string $zipPath, string $ty
     $zip->close();
 }
 
+/**
+ * 在同一 ZipArchive 中连续加入多张证书，真实覆盖 ZipArchive::addFile 延迟读取语义。
+ *
+ * @param  list<Order>  $orders
+ */
+function buildMultipleCertZip(array $orders, string $tempDir, string $zipPath, string $type): void
+{
+    $zip = new ZipArchive;
+    expect($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE))->toBeTrue();
+    $reflect = new ReflectionMethod(Action::class, 'addCertToZip');
+    $domains = [];
+    foreach ($orders as $order) {
+        $archiveName = $reflect->invoke(app(Action::class), $order, $zip, $tempDir, $domains, $type);
+        $domains[] = $archiveName;
+    }
+    expect($zip->close())->toBeTrue();
+}
+
 // pbeWithSHA1And3-KeyTripleDES-CBC = 1.2.840.113549.1.12.1.3
 const OID_PBE_SHA1_3DES = '060a2a864886f70d010c0103';
 // aes-256-cbc = 2.16.840.1.101.3.4.1.42（OpenSSL 3.x PKCS12 默认 PBES2 用，老 Windows 无法导入）
 const OID_AES_256_CBC = '060960864801650304012a';
+
+test('同一批量 ZIP 的两张 PFX 各自保留证书和匹配私钥', function () {
+    skipIfNoRealOpenssl($this);
+
+    $first = makeMatchedOrder('first-smime@example.test');
+    $second = makeMatchedOrder('second-smime@example.test');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+
+    try {
+        buildMultipleCertZip([$first, $second], $tempDir, $zipPath, 'iis');
+
+        $firstPfx = entryFromZip(
+            $zipPath,
+            'first-smime@example.test/iis/first-smime@example.test.pfx'
+        );
+        $secondPfx = entryFromZip(
+            $zipPath,
+            'second-smime@example.test/iis/second-smime@example.test.pfx'
+        );
+        expect($firstPfx)->not->toBeNull()
+            ->and($secondPfx)->not->toBeNull();
+
+        $firstParsed = [];
+        $secondParsed = [];
+        expect(openssl_pkcs12_read($firstPfx, $firstParsed, '123456'))->toBeTrue()
+            ->and(openssl_pkcs12_read($secondPfx, $secondParsed, '123456'))->toBeTrue();
+
+        $firstSubject = openssl_x509_parse($firstParsed['cert'])['subject'];
+        $secondSubject = openssl_x509_parse($secondParsed['cert'])['subject'];
+        expect($firstSubject['CN'])->toBe('first-smime@example.test')
+            ->and($secondSubject['CN'])->toBe('second-smime@example.test')
+            ->and(openssl_x509_check_private_key($firstParsed['cert'], $firstParsed['pkey']))->toBeTrue()
+            ->and(openssl_x509_check_private_key($secondParsed['cert'], $secondParsed['pkey']))->toBeTrue();
+    } finally {
+        cleanupDir($tempDir);
+        @unlink($zipPath);
+    }
+});
+
+test('同一批量 ZIP 的不同长度 PFX 都可完整解析', function () {
+    skipIfNoRealOpenssl($this);
+
+    $short = makeMatchedOrder('a@example.test');
+    $long = makeMatchedOrder('longer-certificate-name@example.test');
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+
+    try {
+        buildMultipleCertZip([$short, $long], $tempDir, $zipPath, 'iis');
+
+        foreach ([
+            'a@example.test/iis/a@example.test.pfx',
+            'longer-certificate-name@example.test/iis/longer-certificate-name@example.test.pfx',
+        ] as $entry) {
+            $parsed = [];
+            expect(openssl_pkcs12_read(entryFromZip($zipPath, $entry), $parsed, '123456'))->toBeTrue()
+                ->and(openssl_x509_check_private_key($parsed['cert'], $parsed['pkey']))->toBeTrue();
+        }
+    } finally {
+        cleanupDir($tempDir);
+        @unlink($zipPath);
+    }
+});
+
+test('同名证书批量导出的 PFX 和 RSA 私钥不依赖 keytool 且不会复用临时文件', function () {
+    skipIfNoRealOpenssl($this);
+
+    $first = makeMatchedOrder('same@example.test');
+    $first->latestCert->id = 101;
+    $second = makeMatchedOrder('same@example.test');
+    $second->latestCert->id = 202;
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+
+    try {
+        buildMultipleCertZip([$first, $second], $tempDir, $zipPath, 'all');
+
+        foreach ([
+            ['same@example.test', $first],
+            ['same@example.test-202', $second],
+        ] as [$directory, $order]) {
+            $pfx = entryFromZip($zipPath, "{$directory}/iis/same@example.test.pfx");
+            $rsaKey = entryFromZip($zipPath, "{$directory}/rsa_key/same@example.test-rsa.key");
+            $parsed = [];
+
+            expect($pfx)->not->toBeNull()
+                ->and(openssl_pkcs12_read($pfx, $parsed, '123456'))->toBeTrue()
+                ->and(openssl_x509_check_private_key($parsed['cert'], $parsed['pkey']))->toBeTrue()
+                ->and(openssl_x509_fingerprint($parsed['cert'], 'sha256'))
+                ->toBe(openssl_x509_fingerprint($order->latestCert->cert, 'sha256'))
+                ->and($rsaKey)->not->toBeNull()
+                ->and(openssl_x509_check_private_key($order->latestCert->cert, $rsaKey))->toBeTrue();
+        }
+    } finally {
+        cleanupDir($tempDir);
+        @unlink($zipPath);
+    }
+});
+
+test('同名证书批量导出的 JKS 不会复用临时文件且证书逐张对应', function () {
+    skipIfNoRealOpenssl($this);
+    $keytool = realKeytoolOrSkip($this);
+
+    $first = makeMatchedOrder('same@example.test');
+    $first->latestCert->id = 101;
+    $second = makeMatchedOrder('same@example.test');
+    $second->latestCert->id = 202;
+    $tempDir = makePfxTempDir();
+    $zipPath = tempnam(sys_get_temp_dir(), 'pfxzip');
+
+    try {
+        buildMultipleCertZip([$first, $second], $tempDir, $zipPath, 'all');
+
+        $firstJks = entryFromZip($zipPath, 'same@example.test/tomcat/same@example.test.jks');
+        $secondJks = entryFromZip($zipPath, 'same@example.test-202/tomcat/same@example.test.jks');
+        expect($firstJks)->not->toBeNull()
+            ->and($secondJks)->not->toBeNull()
+            ->and($firstJks)->not->toBe($secondJks);
+
+        foreach ([
+            ['first', $firstJks, $first],
+            ['second', $secondJks, $second],
+        ] as [$prefix, $jksContents, $order]) {
+            $jksPath = $tempDir."/$prefix.jks";
+            $exportedCertPath = $tempDir."/$prefix.pem";
+            file_put_contents($jksPath, $jksContents);
+            $command = escapeshellarg($keytool)
+                .' -exportcert -rfc'
+                .' -alias '.escapeshellarg('same@example.test')
+                .' -keystore '.escapeshellarg($jksPath)
+                .' -storepass 123456'
+                .' -file '.escapeshellarg($exportedCertPath);
+            $output = [];
+            @exec("$command 2>&1", $output, $returnCode);
+
+            expect($returnCode)->toBe(0)
+                ->and(is_file($exportedCertPath))->toBeTrue()
+                ->and(openssl_x509_fingerprint(file_get_contents($exportedCertPath), 'sha256'))
+                ->toBe(openssl_x509_fingerprint($order->latestCert->cert, 'sha256'));
+        }
+    } finally {
+        cleanupDir($tempDir);
+        @unlink($zipPath);
+    }
+});
 
 test('IIS PFX 用 PBE-SHA1-3DES 加密以兼容老 Windows，绝不退回 AES-256', function () {
     skipIfNoRealOpenssl($this);
