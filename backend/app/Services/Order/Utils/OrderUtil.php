@@ -244,7 +244,7 @@ class OrderUtil
      * `field=` PEM 直出两条，TypeError 不在其列），下游按网络错误无限重试。豁免后畸形取值
      * 照常走进签发链路、由 CSR 解析报出业务错误（200 + code=0），失败可见且可分类。
      */
-    private const PRESERVE_STRING_KEYS = ['csr', 'private_key'];
+    private const PRESERVE_STRING_KEYS = ['csr', 'private_key', 'registration_number'];
 
     /**
      * 转换数组中的数值字符串为数值

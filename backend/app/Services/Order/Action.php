@@ -110,12 +110,12 @@ class Action
         // 按 code（api_id）去重，后出现的覆盖前面的
         $unique = [];
         foreach ($allProducts as $item) {
-            $unique[$item['code']] = $item;
+            $code = $item['code'] ?? '';
+            $item['code'] = $code;
+            $unique[$code] = $item;
         }
 
-        $products = ['code' => 1, 'data' => array_values($unique)];
-
-        foreach ($products['data'] as $item) {
+        foreach ($unique as $item) {
             // resilient（cron）：单产品校验失败不中断整来源——收集 msg + Log::warning + continue
             // （反模式16：ApiResponseException::getMessage() 恒空，取 getApiResponse()['msg']）
             if ($resilient) {
@@ -634,11 +634,6 @@ class Action
 
         if ($force) {
             $result = $this->api->get($orderId);
-
-            // 这些订单状态可以强制更新 但状态不能改变, cancelling 可以改变
-            if (in_array($cert->status, ['cancelled', 'revoked', 'renewed', 'reissued', 'failed'])) {
-                unset($result['data']['status']);
-            }
         } else {
             if (! in_array($cert->status, ['processing', 'approving', 'active'])) {
                 $this->error('只有订单状态为待验证、待批准、已签发才能同步');
@@ -1386,11 +1381,11 @@ class Action
         app(NotificationCenter::class)->dispatch(new NotificationIntent(
             'cert_renew_cancelled',
             'user',
-            (int) $order->user_id,
+            $order->user_id,
             [
-                'common_name' => (string) $predecessor->common_name,
+                'common_name' => $predecessor->common_name,
                 'expires_at' => $predecessor->expires_at?->format('Y-m-d') ?? '',
-                'order_id' => (int) $order->id,
+                'order_id' => $order->id,
                 'action' => $cert->action === 'renew' ? '续费' : '重签',
                 'product_type' => $productType,
             ]
@@ -1420,11 +1415,11 @@ class Action
         app(NotificationCenter::class)->dispatch(new NotificationIntent(
             'cert_revoked',
             'user',
-            (int) $order->user_id,
+            $order->user_id,
             [
-                'common_name' => (string) $cert->common_name,
+                'common_name' => $cert->common_name,
                 'expires_at' => $cert->expires_at?->format('Y-m-d') ?? '',
-                'order_id' => (int) $order->id,
+                'order_id' => $order->id,
                 'is_successor' => (bool) $cert->last_cert_id,
                 'product_type' => $productType,
             ]

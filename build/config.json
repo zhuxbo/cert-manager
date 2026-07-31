@@ -77,7 +77,6 @@
         "backend/public/install-assets/",
         "frontend/easy/",
         "frontend/user/logo.svg",
-        "frontend/user/qrcode.svg",
         "frontend/user/qrcode.png",
         "manifest.json"
       ]

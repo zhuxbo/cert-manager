@@ -241,11 +241,11 @@ _restore_preserved_extras() {
             failed=1
         fi
     done
-    # 前端静态回落资源（logo / 新旧 qrcode）；platform-config 由升级包更新，不再保留。
+    # 前端静态回落资源（logo / qrcode / login）；platform-config 由升级包更新，不再保留。
     if [ -d "$PRESERVE_DIR/frontend_config" ]; then
         local file
         [ "$mode" = "consume" ] && log_info "恢复前端静态资源..."
-        for file in logo.svg qrcode.svg qrcode.png login.svg; do
+        for file in logo.svg qrcode.png login.svg; do
             [ -f "$PRESERVE_DIR/frontend_config/user_$file" ] || continue
             mkdir -p "$INSTALL_DIR/frontend/user" 2>/dev/null || true
             if cp "$PRESERVE_DIR/frontend_config/user_$file" "$INSTALL_DIR/frontend/user/$file" 2>/dev/null; then
@@ -1859,8 +1859,8 @@ perform_upgrade() {
     # frontend/web 不移动，在清理旧代码时跳过（避免脚本中断导致丢失）
     # 只保留前端静态回落资源；platform-config.json 随升级包更新。
     mkdir -p "$PRESERVE_DIR/frontend_config"
-    # user: logo.svg、登录配图 login.svg，以及新版 qrcode.svg / 旧版 qrcode.png
-    for file in logo.svg qrcode.svg qrcode.png login.svg; do
+    # user: logo.svg、qrcode.png 和登录配图 login.svg
+    for file in logo.svg qrcode.png login.svg; do
         [ -f "$INSTALL_DIR/frontend/user/$file" ] && cp "$INSTALL_DIR/frontend/user/$file" "$PRESERVE_DIR/frontend_config/user_$file"
     done
     # 保留自定义 API 适配器（Order/Api 和 Acme/Api 对称扫描；按 bucket 归档避免重名冲突）

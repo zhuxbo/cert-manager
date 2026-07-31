@@ -5,6 +5,7 @@ use App\Services\Delegation\CnameDelegationService;
 use App\Services\Order\AutoRenewService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 use Tests\Traits\CreatesTestData;
 
@@ -17,6 +18,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
+    Carbon::setTestNow();
     Mockery::close();
 });
 
@@ -81,7 +83,7 @@ test('will auto renew execute returns false when product disabled', function () 
     $product = $this->createTestProduct(['status' => 0, 'renew' => 1]); // 产品禁用
     $order = $this->createTestOrder($user, $product, [
         'auto_renew' => true,
-        'period_till' => now()->addDays(30),
+        'period_till' => now()->addDays(10),
     ]);
     $this->createTestCert($order, [
         'channel' => 'api',
@@ -99,7 +101,7 @@ test('will auto renew execute returns false when product not renewable', functio
     $product = $this->createTestProduct(['status' => 1, 'renew' => 0]); // 不支持续费
     $order = $this->createTestOrder($user, $product, [
         'auto_renew' => true,
-        'period_till' => now()->addDays(30),
+        'period_till' => now()->addDays(10),
     ]);
     $this->createTestCert($order, [
         'channel' => 'api',
@@ -149,6 +151,7 @@ test('will auto renew execute returns true when order days remaining within thre
 });
 
 test('will auto renew execute boundary 15 days returns true', function () {
+    Carbon::setTestNow('2026-07-31 12:00:00');
     $user = $this->createTestUser(['auto_settings' => ['auto_renew' => true, 'auto_reissue' => false]]);
     $product = $this->createTestProduct(['status' => 1, 'renew' => 1]);
     $order = $this->createTestOrder($user, $product, [
@@ -164,6 +167,7 @@ test('will auto renew execute boundary 15 days returns true', function () {
     $result = $this->service->willAutoRenewExecute($order, $user);
 
     expect($result)->toBeTrue(); // 等于15天应该返回true（走续费）
+    Carbon::setTestNow();
 });
 
 test('will auto renew execute boundary 16 days returns false', function () {
@@ -314,6 +318,7 @@ test('will auto reissue execute returns true when order days remaining exceeds t
 });
 
 test('will auto reissue execute boundary 15 days returns false', function () {
+    Carbon::setTestNow('2026-07-31 12:00:00');
     $user = $this->createTestUser(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
     $product = $this->createTestProduct(['status' => 1]);
     $order = $this->createTestOrder($user, $product, [
@@ -329,6 +334,53 @@ test('will auto reissue execute boundary 15 days returns false', function () {
     $result = $this->service->willAutoReissueExecute($order, $user);
 
     expect($result)->toBeFalse(); // 等于15天应该返回false（走续费）
+    Carbon::setTestNow();
+});
+
+test('will auto renew execute treats an expired period as renewable', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_renew' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'renew' => 1]);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_renew' => true,
+        'period_till' => now()->subDays(30),
+    ]);
+    $order->refresh();
+
+    expect($this->service->willAutoRenewExecute($order, $user))->toBeTrue();
+});
+
+test('will auto reissue execute rejects an expired period', function () {
+    $user = $this->createTestUser(['auto_settings' => ['auto_reissue' => true]]);
+    $product = $this->createTestProduct(['status' => 1, 'reissue' => 1]);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_reissue' => true,
+        'period_till' => now()->subDays(30),
+    ]);
+    $order->refresh();
+
+    expect($this->service->willAutoReissueExecute($order, $user))->toBeFalse();
+});
+
+test('will auto actions honor normalized user defaults when settings are absent', function () {
+    $user = $this->createTestUser(['auto_settings' => []]);
+    $product = $this->createTestProduct([
+        'status' => 1,
+        'renew' => 1,
+        'reissue' => 1,
+    ]);
+    $order = $this->createTestOrder($user, $product, [
+        'auto_renew' => null,
+        'auto_reissue' => null,
+        'period_till' => now()->addDays(30),
+    ]);
+    $order->refresh();
+    $user->auto_settings = [];
+    $order->auto_renew = null;
+    $order->auto_reissue = null;
+
+    expect($this->service->willAutoRenewExecute($order, $user))->toBeFalse()
+        ->and($this->service->willAutoReissueExecute($order, $user))->toBeTrue()
+        ->and($this->service->isAutoRenewEnabled($order, $user))->toBeFalse();
 });
 
 test('will auto reissue execute boundary 16 days returns true', function () {
@@ -643,6 +695,33 @@ test('check delegation validity skips empty domains', function () {
 
     // 所有域名都是空的，应该返回 true（没有需要验证的）
     expect($result)->toBeTrue();
+});
+
+test('check delegation validity trims entries and continues after empty domains', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_pki-validation',
+    ]);
+    $mockService = Mockery::mock(CnameDelegationService::class);
+    $mockService->shouldReceive('findDelegation')
+        ->once()
+        ->with($user->id, 'example.com', 'sectigo')
+        ->andReturn($delegation);
+    $mockService->shouldReceive('checkAndUpdateValidity')
+        ->once()
+        ->with($delegation)
+        ->andReturnTrue();
+
+    $service = new AutoRenewService($mockService);
+
+    expect(
+        $service->checkDelegationValidity(
+            $user->id,
+            '  ,  example.com  ',
+            'sectigo'
+        )
+    )->toBeTrue();
 });
 
 // ==================== isAutoRenewEnabled ====================

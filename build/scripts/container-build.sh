@@ -170,12 +170,12 @@ if [ "$BUILD_ADMIN" = "true" ] || [ "$BUILD_USER" = "true" ]; then
         fi
     fi
 
-    # 覆盖 qrcode.svg（如果 custom 中存在，仅 user）
-    if [ -f "$CUSTOM_DIR/qrcode.svg" ]; then
+    # 覆盖 qrcode.png（如果 custom 中存在，仅 user）
+    if [ -f "$CUSTOM_DIR/qrcode.png" ]; then
         if [ "$BUILD_USER" = "true" ] && [ -d "$WORKSPACE_DIR/frontend/user/public" ]; then
-            log_info "使用自定义 qrcode.svg 覆盖..."
-            cp "$CUSTOM_DIR/qrcode.svg" "$WORKSPACE_DIR/frontend/user/public/qrcode.svg"
-            log_success "已覆盖 user qrcode.svg"
+            log_info "使用自定义 qrcode.png 覆盖..."
+            cp "$CUSTOM_DIR/qrcode.png" "$WORKSPACE_DIR/frontend/user/public/qrcode.png"
+            log_success "已覆盖 user qrcode.png"
         fi
     fi
 

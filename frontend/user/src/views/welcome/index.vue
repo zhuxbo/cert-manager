@@ -7,11 +7,7 @@ import { getAssetsData, getOrdersData, getTrendData } from "@/api/dashboard";
 import PieChart from "@shared/components/Charts/PieChart.vue";
 import LineChart from "@shared/components/Charts/LineChart.vue";
 import { getPluginWidgets } from "@shared/utils/plugin-loader";
-import {
-  defaultQrcodePath,
-  resolveSiteQrcode,
-  resolveSiteQrcodeAfterError
-} from "@shared/utils";
+import { defaultQrcodePath, resolveSiteQrcode } from "@shared/utils";
 import { useLazyVisible } from "@shared/hooks";
 import { brandLabels } from "@/views/system/dictionary";
 import { topUpDialogStore } from "@/store/modules/topUp";
@@ -62,13 +58,6 @@ const qrcodeUrl = ref(
     defaultQrcodePath(import.meta.env.BASE_URL)
   )
 );
-const handleQrcodeLoadError = () => {
-  qrcodeUrl.value = resolveSiteQrcodeAfterError(
-    configuredQrcode,
-    qrcodeUrl.value,
-    defaultQrcodePath(import.meta.env.BASE_URL, "png")
-  );
-};
 
 // 格式化金额
 const formatCurrency = (amount: number): string => {
@@ -365,7 +354,6 @@ useLazyVisible(chartsSentinel, fetchChartsData);
               alt="二维码"
               class="w-24 h-24 rounded-sm block cursor-pointer hover:opacity-80! transition-opacity! duration-200!"
               title="点击放大"
-              @error="handleQrcodeLoadError"
               @click="openQRModal"
             />
           </div>
@@ -669,7 +657,6 @@ useLazyVisible(chartsSentinel, fetchChartsData);
             :src="qrcodeUrl"
             alt="二维码"
             class="w-64 h-64 rounded-lg"
-            @error="handleQrcodeLoadError"
             @click.stop
           />
         </div>

@@ -303,7 +303,6 @@ test_a8() {
     printf 'ORDER-ADAPTER' >"$PRESERVE_DIR/api_adapters/order/MyOrderApi.php"
     printf 'ACME-ADAPTER' >"$PRESERVE_DIR/api_adapters/acme/MyAcmeApi.php"
     printf 'LOGO' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
-    printf 'SVG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.svg"
     printf 'PNG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.png"
     printf 'LOGIN' >"$PRESERVE_DIR/frontend_config/user_login.svg"
     local rc
@@ -314,7 +313,6 @@ test_a8() {
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Order/Api/MyOrderApi.php" 2>/dev/null || true)" = "ORDER-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Acme/Api/MyAcmeApi.php" 2>/dev/null || true)" = "ACME-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg" 2>/dev/null || true)" = "LOGO" ] || ok=0
-    [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.svg" 2>/dev/null || true)" = "SVG-QR" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.png" 2>/dev/null || true)" = "PNG-QR" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/login.svg" 2>/dev/null || true)" = "LOGIN" ] || ok=0
     if [ "$ok" -eq 1 ]; then
@@ -726,16 +724,20 @@ else
     fail "C storage/app 运行数据缺少三层打包排除"
 fi
 
-QRCODE_SVG="$ROOT/frontend/user/public/qrcode.svg"
+QRCODE_PNG="$ROOT/frontend/user/public/qrcode.png"
+QRCODE_PNG_HEADER="$(od -An -tx1 -N24 "$QRCODE_PNG" 2>/dev/null | tr -d ' \n')"
 if [ -f "$ROOT/frontend/user/public/logo.svg" ] &&
-    [ -f "$QRCODE_SVG" ] &&
-    [ ! -e "$ROOT/frontend/user/public/qrcode.png" ] &&
-    [ "$(wc -c <"$QRCODE_SVG")" -le 2048 ] &&
-    grep -qF '"frontend/user/qrcode.svg"' "$BUILD_CONFIG" &&
-    grep -qF '"frontend/user/qrcode.png"' "$BUILD_CONFIG"; then
-    pass "C 完整包使用轻量 SVG，升级包不交付二维码并保留安装目录的新旧回落资源"
+    [ -f "$QRCODE_PNG" ] &&
+    [ "$QRCODE_PNG_HEADER" = "89504e470d0a1a0a0000000d494844520000019000000190" ] &&
+    [ ! -e "$ROOT/frontend/user/public/qrcode.svg" ] &&
+    ! grep -qF '"frontend/user/qrcode.svg"' "$BUILD_CONFIG" &&
+    grep -qF '"frontend/user/qrcode.png"' "$BUILD_CONFIG" &&
+    grep -qF '$CUSTOM_DIR/qrcode.png' "$CONTAINER_BUILD" &&
+    grep -qF '$WORKSPACE_DIR/frontend/user/public/qrcode.png' "$CONTAINER_BUILD" &&
+    ! grep -qF 'qrcode.svg' "$CONTAINER_BUILD"; then
+    pass "C 完整包和定制构建使用 400x400 PNG，升级包不交付二维码并仅保护 PNG"
 else
-    fail "C 默认 SVG 缺失/过大、仍携带默认 PNG，或升级包未排除新旧二维码"
+    fail "C 默认/定制构建 PNG 错误、仍携带 SVG，或升级包未排除 PNG"
 fi
 
 LOGIN_SVG="$ROOT/frontend/user/public/login.svg"

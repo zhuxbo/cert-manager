@@ -39,6 +39,19 @@ test('inspect 只读取嵌套 plugin.json 元数据', function () {
     expect($meta)->toBe(['name' => 'demo-plugin', 'version' => '1.2.3']);
 });
 
+test('inspect 接受在线安装支持的双层包装目录', function () {
+    $zip = makeInspectorZip([
+        'release-bundle/demo-plugin/plugin.json' => json_encode([
+            'name' => 'demo-plugin',
+            'version' => '1.2.3',
+        ]),
+    ]);
+
+    $meta = app(PluginZipInspector::class)->inspect($zip);
+
+    expect($meta)->toBe(['name' => 'demo-plugin', 'version' => '1.2.3']);
+});
+
 test('inspect 拒绝非法 ZIP 路径且不残留临时解压目录', function () {
     $zip = makeInspectorZip([
         '../evil.txt' => 'evil',

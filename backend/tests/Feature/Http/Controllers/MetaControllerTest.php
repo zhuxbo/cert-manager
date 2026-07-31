@@ -346,7 +346,7 @@ test('平台设置缺失时返回与现有静态配置一致的默认值', funct
         ->assertJsonPath('data.platform.Favicon', '')
         ->assertJsonPath('data.platform.Logo', '/logo.svg')
         ->assertJsonPath('data.platform.LogoExpanded', '')
-        ->assertJsonPath('data.platform.Qrcode', '/qrcode.svg')
+        ->assertJsonPath('data.platform.Qrcode', '/qrcode.png')
         ->assertJsonPath('data.platform.LoginImage', '');
     expect($response->json('data.platform.AllBrands'))->toBeArray()->toBeEmpty()
         ->and($response->json('data.platform.Brands'))->toBeArray()->toBeEmpty()

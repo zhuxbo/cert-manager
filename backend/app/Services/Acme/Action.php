@@ -81,7 +81,6 @@ class Action
             return $this->commitOrder($locked);
         });
 
-        $acme->makeVisible('eab_hmac');
         $this->success([
             'order_id' => $acme->id,
             'eab_kid' => $acme->eab_kid,
@@ -98,9 +97,7 @@ class Action
      */
     public function batchPay(array $acmeIds): void
     {
-        $acmeIds = array_map('intval', $acmeIds);
-
-        $maxUpstream = (int) config('batch.max_upstream');
+        $maxUpstream = config('batch.max_upstream');
         count($acmeIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         $payableIds = Acme::whereIn('id', $acmeIds)
@@ -157,8 +154,6 @@ class Action
      */
     public function batchCommit(array $acmeIds): void
     {
-        $acmeIds = array_map('intval', $acmeIds);
-
         $ids = Acme::whereIn('id', $acmeIds)
             ->where('status', Acme::STATUS_PENDING)
             ->pluck('id')
@@ -181,8 +176,6 @@ class Action
      */
     public function batchSync(array $acmeIds): void
     {
-        $acmeIds = array_map('intval', $acmeIds);
-
         $ids = Acme::whereIn('id', $acmeIds)
             ->whereIn('status', [Acme::STATUS_ACTIVE, Acme::STATUS_CANCELLING])
             ->whereNotNull('api_id')
@@ -208,9 +201,7 @@ class Action
      */
     public function batchCommitCancel(array $acmeIds): void
     {
-        $acmeIds = array_map('intval', $acmeIds);
-
-        $maxUpstream = (int) config('batch.max_upstream');
+        $maxUpstream = config('batch.max_upstream');
         count($acmeIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         $ids = Acme::whereIn('id', $acmeIds)
@@ -250,9 +241,7 @@ class Action
      */
     public function batchRevokeCancel(array $acmeIds): void
     {
-        $acmeIds = array_map('intval', $acmeIds);
-
-        $maxUpstream = (int) config('batch.max_upstream');
+        $maxUpstream = config('batch.max_upstream');
         count($acmeIds) > $maxUpstream && $this->error("订单数量不能超过{$maxUpstream}");
 
         $ids = Acme::whereIn('id', $acmeIds)
@@ -309,7 +298,6 @@ class Action
             return $this->commitOrder($locked);
         });
 
-        $acme->makeVisible('eab_hmac');
         $this->success([
             'order_id' => $acme->id,
             'eab_kid' => $acme->eab_kid,
@@ -330,7 +318,6 @@ class Action
             return $this->commitOrder($acme);
         });
 
-        $acme->makeVisible('eab_hmac');
         $this->success([
             'order_id' => $acme->id,
             'eab_kid' => $acme->eab_kid,
@@ -788,11 +775,8 @@ class Action
     private function resolveDomainCounts(Product $product): array
     {
         $standardMax = (int) ($product->standard_max ?? 0);
-        $wildcardMax = (int) ($product->wildcard_max ?? 0);
+        $wildcardMax = $product->wildcard_max;
 
-        if ($standardMax >= 1 && $wildcardMax === 0) {
-            return [1, 0];
-        }
         if ($standardMax === 0 && $wildcardMax >= 1) {
             return [0, 1];
         }
@@ -809,7 +793,7 @@ class Action
      */
     public function syncDirectoryUrl(Acme $acme): ?string
     {
-        $ca = $this->normalizeCa((string) ($acme->product->ca ?? ''));
+        $ca = $this->normalizeCa($acme->product->ca ?? '');
         if ($ca === '') {
             return null;
         }
@@ -944,13 +928,13 @@ class Action
         $data = [
             'contact_email' => $acme->contact_email,
             'product_code' => $product->code,
-            'period' => (int) $acme->period,
-            'plus' => (int) $acme->plus,
+            'period' => $acme->period,
+            'plus' => $acme->plus,
             'refer_id' => $acme->refer_id,
         ];
 
         try {
-            $result = (new Api)->new($data, (string) $product->source);
+            $result = (new Api)->new($data, $product->source);
         } catch (ApiResponseException $e) {
             throw $e;
         } catch (\Throwable $e) {

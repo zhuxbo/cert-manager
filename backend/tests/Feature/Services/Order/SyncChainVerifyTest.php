@@ -3,6 +3,7 @@
 use App\Models\Admin;
 use App\Models\Cert;
 use App\Models\Chain;
+use App\Models\Order;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Notification\NotificationCenter;
@@ -11,6 +12,7 @@ use App\Services\Order\Api\Api;
 use App\Services\Order\Utils\ChainVerifier;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Tests\Traits\CreatesTestData;
 use Tests\Traits\GeneratesCertChains;
 
@@ -57,6 +59,8 @@ function bindChainAlertCenter(): object
         public int $systemAlertCount = 0;
 
         public ?string $lastReason = null;
+
+        public ?array $lastContext = null;
     };
 
     $mock = Mockery::mock(NotificationCenter::class);
@@ -64,6 +68,7 @@ function bindChainAlertCenter(): object
         if ($intent->code === 'system_alert') {
             $state->systemAlertCount++;
             $state->lastReason = $intent->context['details']['reason'] ?? null;
+            $state->lastContext = $intent->context;
         }
     });
     app()->instance(NotificationCenter::class, $mock);
@@ -88,6 +93,7 @@ test('sync 收坏链 → chains 无该 issuer、raw active、模型 approving、
     Cache::flush();
     setupChainAlertAdmin();
     $state = bindChainAlertCenter();
+    Log::spy();
 
     // 坏链：leaf 由 CA-A 签发，intermediate 为同 CN 不同密钥的 CA-B（签名必不过）
     $sharedCn = 'Shared Bad CA '.bin2hex(random_bytes(4));
@@ -131,7 +137,25 @@ test('sync 收坏链 → chains 无该 issuer、raw active、模型 approving、
 
     // 告警派发一次，reason=chain_verify_failed
     expect($state->systemAlertCount)->toBe(1)
-        ->and($state->lastReason)->toBe('chain_verify_failed');
+        ->and($state->lastReason)->toBe('chain_verify_failed')
+        ->and($state->lastContext)->toBe([
+            'category' => 'chain_verify',
+            'title' => '证书链签名校验失败（坏链已拒写）',
+            'message' => "订单 #{$certA->order_id} 上游返回的中间证书未签发叶证书，已拒绝写入 chains，订单将转 approving 等待重新同步。",
+            'details' => [
+                'order_id' => $certA->order_id,
+                'issuer' => $sharedCn,
+                'reason' => 'chain_verify_failed',
+            ],
+            'admin_email' => 'ops@corp.example',
+        ]);
+    Log::shouldHaveReceived('error')->once()->with(
+        '证书链签名校验失败：中间证书未签发叶证书，拒写 chains',
+        Mockery::on(fn (array $context): bool => $context['order_id'] === $certA->order_id
+            && $context['issuer'] === $sharedCn
+            && is_string($context['openssl_output'])
+            && $context['openssl_output'] !== '')
+    );
 
     // 第二单同 issuer 坏链 → SystemAlert dedup（固定指纹）→ 不再发
     $certB = $makeCert('ca-bad-002');
@@ -184,6 +208,7 @@ test('sync openssl 不可用（unverifiable）→ 链照写 fail-open + 告警',
     Cache::flush();
     setupChainAlertAdmin();
     $state = bindChainAlertCenter();
+    Log::spy();
 
     $chain = $this->makeRsaChain('failopen.example.com');
 
@@ -217,5 +242,39 @@ test('sync openssl 不可用（unverifiable）→ 链照写 fail-open + 告警',
 
     // 告警派发，reason=openssl_unavailable
     expect($state->systemAlertCount)->toBe(1)
-        ->and($state->lastReason)->toBe('openssl_unavailable');
+        ->and($state->lastReason)->toBe('openssl_unavailable')
+        ->and($state->lastContext)->toBe([
+            'category' => 'chain_verify',
+            'title' => '证书链签名校验无法执行（已放行写链）',
+            'message' => "订单 #{$cert->order_id} 的证书链签名校验无法执行（openssl 不可用或输出异常），已按 fail-open 放行写入 chains。"
+                .'故障期间新写入的证书链建议人工复核（Admin 链管理）。',
+            'details' => [
+                'order_id' => $cert->order_id,
+                'issuer' => $chain['issuer'],
+                'reason' => 'openssl_unavailable',
+            ],
+            'admin_email' => 'ops@corp.example',
+        ]);
+    Log::shouldHaveReceived('error')->once()->with(
+        '证书链签名校验无法执行（openssl 不可用或输出不可解析），已 fail-open 放行写链',
+        [
+            'order_id' => $cert->order_id,
+            'issuer' => $chain['issuer'],
+            'openssl_output' => 'mock: openssl 不可用',
+        ]
+    );
 });
+
+test('证书链门禁任一必需字段为空时不调用验签器', function (array $data) {
+    $verifier = Mockery::mock(ChainVerifier::class);
+    $verifier->shouldNotReceive('verifyIssued');
+    app()->instance(ChainVerifier::class, $verifier);
+
+    $order = new Order(['id' => 123]);
+    $method = new ReflectionMethod(Action::class, 'guardIntermediateChain');
+    $method->invokeArgs(app(Action::class), [$order, &$data]);
+})->with([
+    '缺 leaf' => [['cert' => '', 'intermediate_cert' => 'ca', 'issuer' => 'issuer']],
+    '缺 intermediate' => [['cert' => 'leaf', 'intermediate_cert' => '', 'issuer' => 'issuer']],
+    '缺 issuer' => [['cert' => 'leaf', 'intermediate_cert' => 'ca', 'issuer' => '']],
+]);

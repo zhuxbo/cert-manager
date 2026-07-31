@@ -4,6 +4,7 @@ use App\Exceptions\ApiResponseException;
 use App\Models\Admin;
 use App\Models\Callback;
 use App\Models\Cert;
+use App\Models\DomainValidationRecord;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
@@ -17,6 +18,7 @@ use App\Traits\RunsTaskMutationTransaction;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
@@ -1106,6 +1108,7 @@ test('[通知②a] 前驱订单产品已删除时取消仍成功且通知类型�
     test()->product->update(['refund_period' => 30]);
 
     [$renewOrder, $sourceCert, $renewCert] = makeRenewCancelling();
+    $sourceCert->update(['expires_at' => null]);
     $deletedProduct = Product::factory()->create(['product_type' => Product::TYPE_SMIME]);
     Order::whereKey($sourceCert->order_id)->update(['product_id' => $deletedProduct->id]);
     $deletedProduct->delete();
@@ -1121,6 +1124,7 @@ test('[通知②a] 前驱订单产品已删除时取消仍成功且通知类型�
     expect($renewCert->fresh()->status)->toBe('cancelled');
     $intents = renewCancelledIntents($captured);
     expect($intents)->toHaveCount(1)
+        ->and($intents[0]->context['expires_at'])->toBe('')
         ->and($intents[0]->context['product_type'])->toBe(Product::TYPE_SSL);
 });
 
@@ -1807,6 +1811,51 @@ test('reissue 双开物理底线：last_cert_id UNIQUE 槽位被占死 → Cert:
     expect($prevCert->fresh()->status)->toBe('active');
 });
 
+test('reissue 成功精确迁移前驱、订单组织、新证书和验证节奏', function () {
+    Queue::fake();
+    [$order, $previous] = makeBLockSourceOrder();
+    DomainValidationRecord::create(['order_id' => $order->id]);
+    $order->update(['organization' => ['name' => 'Existing Reissue Ltd', 'country' => 'CN']]);
+    $params = bLockParams($order, $previous, 'reissue');
+
+    $response = expectOrderApiSuccess(fn () => $this->service->reissue($params));
+
+    $order->refresh();
+    $current = $order->latestCert;
+    expect($response['data'])->toBe(['order_id' => $order->id])
+        ->and($previous->fresh()->status)->toBe('reissued')
+        ->and($order->organization)->toBe(['name' => 'Existing Reissue Ltd', 'country' => 'CN'])
+        ->and($current->only(['order_id', 'last_cert_id', 'action', 'status']))->toBe([
+            'order_id' => $order->id,
+            'last_cert_id' => $previous->id,
+            'action' => 'reissue',
+            'status' => 'unpaid',
+        ])
+        ->and((string) $current->amount)->toBe('0.00')
+        ->and(DomainValidationRecord::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
+test('reissue 禁用产品在一分钱增购边界精确拒绝且不改变前驱', function () {
+    Queue::fake();
+    [$order, $previous, $product] = makeBLockSourceOrder();
+    $product->update(['status' => 0]);
+    ProductPrice::where('product_id', $product->id)->update([
+        'alternative_standard_price' => '0.01',
+    ]);
+    $params = bLockParams($order, $previous, 'reissue');
+    $params['domains'] .= ',added.example.com';
+
+    expectOrderApiError(
+        fn () => $this->service->reissue($params),
+        '此订单重签不能增加域名个数',
+    );
+
+    expect($previous->fresh()->status)->toBe('active')
+        ->and($order->fresh()->latest_cert_id)->toBe($previous->id)
+        ->and(Cert::where('order_id', $order->id)->count())->toBe(1)
+        ->and(Transaction::where('transaction_id', $order->id)->exists())->toBeFalse();
+});
+
 // 注：reissue 的 re-read 守卫（latest_cert_id 锁内重读 != 基线 → 订单已重签）无干净同连接 seam——
 // initParams 内 filterParamsField→getProductType 有一次无锁 Order::find（首个 plain orders 查询），
 // DB::listen 会在 last_cert_id 捕获前命中它使基线同步推进、注入空过。
@@ -1828,3 +1877,23 @@ test('new/reissue checkDuplicate 保留：同参 10s 内二次提交报参数重
     // 第二次同参：checkDuplicate 拦截
     expectOrderApiError(fn () => $this->service->reissue($params), '参数重复');
 });
+
+test('订单入口重复提交精确返回 10 秒提示', function (string $method, string $actionLabel) {
+    $params = ['duplicate-probe' => $method];
+    Cache::put($method.'_'.md5(json_encode([$params])), time(), 10);
+
+    try {
+        $this->service->{$method}($params);
+        test()->fail('重复提交应在参数校验前被拒绝');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse())->toMatchArray([
+            'code' => 0,
+            'msg' => "参数重复，请在 10 秒后再提交{$actionLabel}",
+        ]);
+    }
+})->with([
+    'new' => ['new', '申请'],
+    'batchNew' => ['batchNew', '批量申请'],
+    'renew' => ['renew', '续费'],
+    'reissue' => ['reissue', '重签'],
+]);

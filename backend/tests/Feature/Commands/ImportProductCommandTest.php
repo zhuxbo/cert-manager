@@ -134,12 +134,23 @@ test('⑤ 人工路径 resilient=false 遇脏产品仍抛（回归保护）', fu
         ->and($action->getImportIssues())->toBe([]); // 人工路径不收集
 });
 
-test('⑥ 本地 name/weight 不被上游覆盖', function () {
+test('⑥ 本地 name/remark/weight 不被上游覆盖且 delegation 验证方式被保留', function () {
     $product = Product::factory()->create([
-        'source' => 'test', 'api_id' => 'P1', 'name' => '本地名', 'weight' => 5,
+        'source' => 'test',
+        'api_id' => 'P1',
+        'name' => '本地名',
+        'remark' => '本地备注',
+        'weight' => 5,
+        'validation_methods' => ['dns', 'delegation'],
     ]);
     bindImportApi(fn ($source) => ['code' => 1, 'data' => [
-        ['code' => 'P1', 'name' => '上游名', 'weight' => 99],
+        [
+            'code' => 'P1',
+            'name' => '上游名',
+            'remark' => '上游备注',
+            'weight' => 99,
+            'validation_methods' => ['email'],
+        ],
     ]]);
     importCaptureCenter();
 
@@ -147,7 +158,55 @@ test('⑥ 本地 name/weight 不被上游覆盖', function () {
 
     $fresh = $product->fresh();
     expect($fresh->name)->toBe('本地名')
-        ->and($fresh->weight)->toBe(5);
+        ->and($fresh->remark)->toBe('本地备注')
+        ->and($fresh->weight)->toBe(5)
+        ->and($fresh->validation_methods)->toBe(['email', 'delegation']);
+});
+
+test('更新导入过滤 null 字段并保留本地值', function () {
+    $product = Product::factory()->create([
+        'source' => 'test',
+        'api_id' => 'P1',
+        'brand' => 'sectigo',
+        'status' => 1,
+    ]);
+    bindImportApi(fn ($source) => ['code' => 1, 'data' => [[
+        'code' => 'P1',
+        'brand' => null,
+        'status' => null,
+    ]]]);
+    importCaptureCenter();
+
+    $this->artisan('schedule:import-product')->assertSuccessful();
+
+    expect($product->fresh()->brand)->toBe('sectigo')
+        ->and($product->fresh()->status)->toBe(1);
+});
+
+test('resilient Action 每轮开始会清空上一轮产品错误', function () {
+    $mock = Mockery::mock(Api::class);
+    $mock->shouldReceive('getProducts')
+        ->twice()
+        ->with('test', '', '')
+        ->andReturn(
+            ['code' => 1, 'data' => [['code' => '']]],
+            ['code' => 1, 'data' => [['code' => 'P1', 'weight' => 8]]],
+        );
+    app()->instance(Api::class, $mock);
+
+    $product = Product::factory()->create([
+        'source' => 'test',
+        'api_id' => 'P1',
+        'weight' => 0,
+    ]);
+    $action = app(Action::class);
+
+    $action->importProduct('test', '', '', 'update', true);
+    expect($action->getImportIssues())->toBe(['产品 code 不能为空']);
+
+    $action->importProduct('test', '', '', 'update', true);
+    expect($action->getImportIssues())->toBe([])
+        ->and($product->fresh()->weight)->toBe(8);
 });
 
 test('⑦ 同样失败次日不重发（指纹）、零失败日清键', function () {

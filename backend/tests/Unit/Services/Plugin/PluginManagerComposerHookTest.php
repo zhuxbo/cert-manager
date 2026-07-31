@@ -44,14 +44,16 @@ function makeManagerWithRunner(PluginComposerRunner $runner): array
 /**
  * 造一个插件 zip（含 plugin.json，可选 backend/composer.json），返回 zip 路径。
  */
-function makePluginZip(string $name, bool $withComposer): string
+function makePluginZip(string $name, bool $withComposer, array $manifest = [], ?string $wrapper = null): string
 {
     $zipPath = sys_get_temp_dir().'/pmch-zip-'.uniqid().'.zip';
     $zip = new ZipArchive;
     $zip->open($zipPath, ZipArchive::CREATE);
-    $zip->addFromString("$name/plugin.json", json_encode(['name' => $name, 'version' => '1.0.0']));
+    $prefix = $wrapper === null ? $name : "$wrapper/$name";
+    $manifest = array_merge(['name' => $name, 'version' => '1.0.0'], $manifest);
+    $zip->addFromString("$prefix/plugin.json", json_encode($manifest));
     if ($withComposer) {
-        $zip->addFromString("$name/backend/composer.json", json_encode(['require' => ['php' => '^8.3']]));
+        $zip->addFromString("$prefix/backend/composer.json", json_encode(['require' => ['php' => '^8.3']]));
     }
     $zip->close();
 
@@ -130,6 +132,110 @@ test('installFromZip 命中"已安装"时不误删既有插件目录', function 
 
     // 既有目录及其内容不能被清理（$applied 守卫：本次未落地，不删他人目录）
     expect(is_file("$existing/keep.txt"))->toBeTrue();
+});
+
+test('installFromZip 与在线安装一致校验插件包 requires', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldNotReceive('install');
+
+    [$manager] = makeManagerWithRunner($runner);
+    $reflection = new ReflectionClass($manager);
+    $versionManager = Mockery::mock(VersionManager::class);
+    $versionManager->shouldReceive('getVersionString')->once()->andReturn('0.6.2');
+    $reflection->getProperty('versionManager')->setValue($manager, $versionManager);
+
+    $zip = makePluginZip(
+        'requires-plugin',
+        withComposer: false,
+        manifest: ['requires' => '>=0.6.3'],
+    );
+
+    expect(fn () => $manager->installFromZip($zip))
+        ->toThrow(RuntimeException::class, '请先升级系统');
+});
+
+test('installFromZip 使用与在线安装一致的解压校验进度阶段', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('pluginHasComposer')->andReturn(false);
+    $runner->shouldNotReceive('install');
+
+    [$manager] = makeManagerWithRunner($runner);
+    $stages = [];
+    $manager = $manager->withProgressReporter(function (string $stage) use (&$stages): void {
+        $stages[] = $stage;
+    });
+
+    $manager->installFromZip(makePluginZip('progress-plugin', withComposer: false));
+
+    expect($stages)->toContain('extracting', 'validating', 'applying');
+});
+
+test('installFromZip 接受与在线安装相同的双层包装目录', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('pluginHasComposer')->andReturn(false);
+    $runner->shouldNotReceive('install');
+
+    [$manager, , $pluginsPath] = makeManagerWithRunner($runner);
+
+    $result = $manager->installFromZip(
+        makePluginZip('wrapped-plugin', withComposer: false, wrapper: 'release-bundle'),
+    );
+
+    expect($result['name'])->toBe('wrapped-plugin')
+        ->and(is_file("$pluginsPath/wrapped-plugin/plugin.json"))->toBeTrue();
+});
+
+test('install 在线路径通过共享的插件包安装流程正常落地', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('pluginHasComposer')->andReturn(false);
+    $runner->shouldNotReceive('install');
+
+    $versionManager = Mockery::mock(VersionManager::class);
+    $versionManager->shouldReceive('getVersionString')->twice()->andReturn('1.0.0');
+    $zip = makePluginZip(
+        'online-plugin',
+        withComposer: false,
+        manifest: ['requires' => '>=0.6.3'],
+    );
+
+    $manager = new class($versionManager, $runner, $zip) extends PluginManager
+    {
+        public function __construct($versionManager, $runner, private string $zip)
+        {
+            parent::__construct($versionManager, $runner);
+        }
+
+        protected function fetchRemoteReleases(string $baseUrl): array
+        {
+            return [[
+                'tag_name' => 'v1.0.0',
+                'requires' => '>=0.6.3',
+                'assets' => [[
+                    'name' => 'online-plugin-plugin-1.0.0.zip',
+                    'browser_download_url' => 'https://example.com/online-plugin.zip',
+                ]],
+            ]];
+        }
+
+        protected function downloadPlugin(string $url, string $savePath): void
+        {
+            copy($this->zip, $savePath);
+        }
+    };
+
+    $pluginsPath = sys_get_temp_dir().'/pmch-plugins-'.uniqid();
+    $downloadPath = sys_get_temp_dir().'/pmch-dl-'.uniqid();
+    mkdir($pluginsPath, 0755, true);
+    mkdir($downloadPath, 0755, true);
+
+    $reflection = new ReflectionClass(PluginManager::class);
+    $reflection->getProperty('pluginsPath')->setValue($manager, $pluginsPath);
+    $reflection->getProperty('downloadPath')->setValue($manager, $downloadPath);
+
+    $result = $manager->install('online-plugin', 'https://example.com/plugins/online-plugin');
+
+    expect($result['version'])->toBe('1.0.0')
+        ->and(is_file("$pluginsPath/online-plugin/plugin.json"))->toBeTrue();
 });
 
 // ==================== installPluginComposerDeps（install 路径共用）跳过 / 触发 ====================

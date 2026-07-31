@@ -40,6 +40,15 @@ test('active 自动签发通知仅派发 SSL 和 S/MIME', function (string $prod
     app(Action::class)->sync($order->id, true);
 
     expect($dispatched)->toHaveCount($expectedCount);
+    if ($expectedCount === 1) {
+        expect($dispatched[0]->code)->toBe('cert_issued')
+            ->and($dispatched[0]->notifiableType)->toBe('user')
+            ->and($dispatched[0]->notifiableId)->toBe($user->id)
+            ->and($dispatched[0]->context)->toBe([
+                'order_id' => $order->id,
+                'email' => "$productType@example.test",
+            ]);
+    }
 })->with([
     'SSL' => [Product::TYPE_SSL, 1],
     'S/MIME' => [Product::TYPE_SMIME, 1],
