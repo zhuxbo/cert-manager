@@ -291,10 +291,16 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 **触发场景**：
 
-- **改了上述 5 个 class 中任一文件 → 必须主动跑 `composer test:mutate` 自检**（最重要的触发点，开发者自我把关）
-- 正式版（main 通道）release 前必跑（`/remote-release` 命令的 §3.0 步骤）
+- **改了上述 6 个 class 中任一文件** → `derive-scope.sh` 自动输出
+  `MUTATION_REQUIRED=yes` 和本次变化类；普通 finish-check 只 mutation 这些目标
+- plan 要求检查列表外的类 → 调用 `derive-scope.sh --mutation-target-class <FQCN>`；
+  脚本将其合并、去重并生成受证据绑定的 run/verify 参数
+- 正式版（main 通道）release 前必须对当前 main fingerprint 跑全部 6 个核心类；
+  `build/release.sh` 在创建 tag 前硬校验证据，缺失即拒绝发布
 - **预发布版（dev 通道）不跑**（试错性质，门禁仅在正式版生效）
-- **CI 不跑**（避免 PR 等待 5-7 min，且 release 前已有人工门禁兜底）
+- **CI 不跑**（完整门禁成本高且正式发布前已有本机硬门禁；首次精确六片完整样本完成前不承诺固定时长）
+- 开发机器不配置定时或夜间 mutation
+- mutation 分片通过 `run-isolated-mutation.sh` 使用独立的 MySQL 8.4 `tmpfs` 实例，不共用开发库；临时库只放宽崩溃耐久性，不关闭 InnoDB/事务/外键/唯一索引
 
 **门槛**：
 
@@ -308,48 +314,47 @@ baseline 不是终点，而是逐步提升的安全网。演进发生在四个�
 
 | 时机                             | 触发者                    | 操作                                                                                                                                                              |
 | -------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A) 补了测试**                  | 改资金代码的 PR 作者      | 本机 `composer test:mutate` 看 MSI；如果升高 ≥ 2%，单独 commit 调高 `min_msi`（最多 = `floor(实测 - 2)`，留 2% 缓冲）                                             |
-| **B) release 前发现自然升高**    | 跑 `/remote-release` 的人 | 跑完看分数高于 baseline ≥ 3%，先 commit 调高 baseline 再走发布流程                                                                                                |
-| **C) 范围扩展**                  | 决策加新核心 class 的人   | 在 `backend/scripts/test-mutate.sh` 加新 `--class=...`，重跑出新 baseline，整体调整 `min_msi`                                                                     |
+| **A) 补了测试**                  | 改资金代码的 PR 作者      | 按 `derive-scope.sh` 输出跑本次目标 mutation；目标子集 MSI 只用于确认本次断言强度，**不能与全量 baseline 比较或据此改门槛**                                       |
+| **B) release 前发现自然升高**    | 跑 `/remote-release` 的人 | 全量分数高于 baseline ≥ 3% 时记为后续独立维护；调整 baseline 后源码 fingerprint 已变化，必须重新跑完整 mutation，不能复用本次发布证据                             |
+| **C) 范围扩展**                  | 决策加新核心 class 的人   | 在 `skills/mutation-shards.json` 增加精确 class/path 分片及依赖，重跑完整 mutation 建立新 baseline，整体调整 `min_msi`                                            |
 | **D) 退步（MSI 跌破 baseline）** | 发现退步的人              | **禁止下调 baseline**——必须先补测试让 MSI 回升；除非该 untested mutation 已评估无害（如不可达分支），此时应在源码加 `// pest-mutate-ignore` 标记，而非动 baseline |
 
 **长期阶段路线**：
 
-| 阶段               | min_msi 目标 | 实测  | 重点                                                                                   |
-| ------------------ | ------------ | ----- | -------------------------------------------------------------------------------------- |
-| 第一阶段（已完成） | 77           | 80.12 | 6 class baseline 落地                                                                  |
-| 第二阶段（已完成） | 88           | 90.96 | FundInvariants 加 message 弱断言 + 加入 AutoRenewService                               |
-| 第三阶段           | 93+          | —     | 消化剩余 15 个 untested（多为 ConcatSwitchSides 等价突变，性价比低）或扩范围到退费明细 |
+| 阶段             | min_msi 目标 | 实测  | 重点                                                                                   |
+| ---------------- | ------------ | ----- | -------------------------------------------------------------------------------------- |
+| 第一阶段（历史） | 77           | 80.12 | 旧 class 过滤范围，不能作为当前六个精确文件的完成样本                                  |
+| 第二阶段（暂定） | 88           | 90.96 | `min_msi=88` 暂作质量下限；历史实测不能作为当前六片加权 baseline                       |
+| 第三阶段         | 93+          | —     | 消化剩余 15 个 untested（多为 ConcatSwitchSides 等价突变，性价比低）或扩范围到退费明细 |
 
-**首次跑出 baseline**：
+**首次跑出精确 baseline**：
 
-> 容器内 pcov 默认 `enabled=0`；直接跑下面的 `./vendor/bin/pest --mutate` 前需临时开 pcov（`printf 'pcov.enabled=1\npcov.directory=%s\n' "$(pwd)" >"$PHP_INI_DIR/conf.d/zzz-pcov-mutate.ini"`，跑完删掉），宿主机用 xdebug 则 `XDEBUG_MODE=coverage` 即生效。日常重算基线直接 `composer test:mutate`（脚本已自动处理 pcov）。
+由根目录的分片编排器运行，不直接拼接多个 `--class`：
 
 ```bash
-cd backend
-XDEBUG_MODE=coverage ./vendor/bin/pest --mutate \
-    --class='App\Models\Fund' \
-    --class='App\Models\Transaction' \
-    --class='App\Services\Acme\Action' \
-    --class='App\Services\Order\Action' \
-    --class='App\Services\Order\AutoRenewService' \
-    --class='App\Services\FundAudit\FundInvariants' \
-    --covered-only --parallel
-# 看 Score: X%，把 floor(X - 3) 写到 tests/.mutation-baseline.json 的 min_msi
+python3 skills/scripts/mutation-shards.py run
+# 看 aggregate，确认六片均完成后再评估 baseline；调整 baseline 会使当前正式 gate 证据失效
 ```
 
 **日常使用**：
 
 ```bash
-cd backend
-composer test:mutate                  # 跑全量门禁（按 baseline 门槛）
-composer test:mutate -- --bail        # 遇到第一个 untested 立即停（debug 用）
-composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
+# 正式分片：结果可进入分片证据缓存
+python3 skills/scripts/mutation-shards.py run
+MUTATE_TARGET_CLASSES='App\Models\Fund' \
+  python3 skills/scripts/mutation-shards.py run
+
+# 开发期快速诊断：只跑指定测试文件实际覆盖到的目标行
+python3 skills/scripts/mutation-shards.py probe \
+  --shard acme-action \
+  --test-path backend/tests/Unit/Services/Acme/ActionTest.php
 ```
+
+编排器以单文件分片完整运行并缓存证据，最终按 mutant 数加权比较 `min_msi`。`probe --test-path` 会显著缩短开发期覆盖基线，但只生成指定测试文件覆盖行的 mutation，输出固定标记 `PROBE_ONLY_PARTIAL`，其分数、mutant 数和结果都不能充当完整分片或发布证据。Pest 会按局部基线耗时推导 mutant 超时预算；若局部文件过大、过滤测试组超过该预算，probe 会将任何 `timeout` 标成 `PROBE_ONLY_INVALID` 并失败，禁止把 Pest 显示的 timeout 100% 当作测试强度。此时应拆用更聚焦的测试文件，或省略 `--test-path` 改跑全量基线 probe。底层诊断不得把 `--bail` 结果写入缓存，因为它会同时改变前置 PHPUnit 基线且可能留下 `pending>0`。
 
 **依赖（dev 容器已内置，开箱即跑）**：
 
-- 开发容器（`docker/php/Dockerfile`）已装 **jq + pcov**，`composer test:mutate` 容器内直接跑、无需手动安装。pcov 默认 `pcov.enabled=0`（不拖慢普通 `make test`）；`backend/scripts/test-mutate.sh` 跑变异时临时写 `conf.d/zzz-pcov-mutate.ini` 开启（含 paratest 各 worker——worker 是独立进程，env/`-d` 不生效，只能走 conf.d），结束 `trap` 复原。
+- 开发容器（`docker/php/Dockerfile`）已装 **jq + pcov**。pcov 默认 `pcov.enabled=0`（不拖慢普通 `make test`）；`backend/scripts/test-mutate.sh` 跑变异时创建独立临时 INI 扫描目录并通过 `PHP_INI_SCAN_DIR` 传给 paratest worker，结束由 `trap` 删除，不写共享 `conf.d`。
 - 容器内必锁测试库：`docker compose exec -T -e DB_DATABASE=ssl_manager_test app composer test:mutate`（否则 RefreshDatabase 清开发库）。
 - **宿主机直跑**才需自备 coverage driver（xdebug/pcov）+ jq；本机无 php/composer 时一律走容器。
 
@@ -359,9 +364,9 @@ composer test:mutate -- --class='App\Models\Fund'   # 仅跑某个 class
 
 **为什么不入 CI**：
 
-- 全量 5-7 min（用 `--covered-only` 优化后），单跑某个 class 约 6 min
-- PR path-filter 触发会让改资金代码的 PR 等额外 5-7 min
-- release 前门禁是关键时刻，本地跑足够保证质量；开发者改资金代码时主动跑做第一道把关
+- 旧 3 小时 17 分样本扩展到 11 个文件且未完成，不能作为精确六片预算；Fund 精确完整分片当前约 9 分钟，另外五片仍待完整采样
+- 普通开发按 diff 只跑实际目标，避免无关类拖长反馈；CI 不重复承担高成本全量
+- main 正式发布前由本机证据硬门禁跑全部 6 类，`build/release.sh` 在 tag 前再次校验
 
 ---
 

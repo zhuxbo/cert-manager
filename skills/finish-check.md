@@ -8,6 +8,91 @@
 
 ---
 
+## 0. 执行协议：先稳定源码，再并行只读门禁
+
+finish-check 的并行单位是**有明确输入和资源锁的只读门禁**，不是任意命令。所有会写源码的动作（ESLint/Prettier/Stylelint `--fix`/`--write`、shfmt `-w`、Pint 修复）必须在冻结前串行完成；冻结后只能跑 check/test/build/package。任何命令改变源码，执行器会把该结果标记为 stale，退出码 86。
+
+先建立本次运行目录并冻结源码：
+
+```bash
+FINISH_RUN=".superpowers/finish-check-runs/$(date +%Y%m%d-%H%M)-<简短主题>"
+python3 skills/scripts/finish-check-exec.py freeze --run-dir "$FINISH_RUN"
+```
+
+冻结 fingerprint 覆盖 HEAD、暂存区、工作树、文件模式以及未跟踪非忽略文件。后续机械门禁统一通过执行器运行，示例：
+
+```bash
+python3 skills/scripts/finish-check-exec.py run \
+  --run-dir "$FINISH_RUN" --gate make-test
+```
+
+受版本控制的 `skills/finish-check-gates.json` 绑定 gate 名、规范命令、最低资源锁和允许传入的环境变量。注册 gate 必须用 `--gate` 执行；`--name ... -- <command>` 只用于 reviewer 临时诊断记账，不能满足最终 `verify`，也不能冒充同名注册 gate。
+
+执行器为每条命令保存起止时间、退出码、锁等待时长、实际执行时长、起止 fingerprint 和完整日志到运行目录。账本只保存脱敏命令模板、命令 hash、环境变量名及键值 hash，不保存环境变量值；自定义 `sh/bash -c` 的整段 shell payload 一律不展示。运行目录为 0700，状态、账本和日志为 0600。注册 gate 会清除 manifest 受控变量及所有 `MUTATE_*` / `MUTATION_*` 的宿主环境继承，仅接受显式 `--env`；命令等待锁后会重新校验 fingerprint，执行期间 fingerprint 漂移，即使原命令退出 0 也不能作为证据。
+
+资源规则：
+
+| 资源锁                      | 使用范围                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------ |
+| `source`                    | 执行器自动加共享锁；源码写入只允许发生在 freeze 前                                         |
+| `backend-runtime:exclusive` | Laravel 测试、PHPStan、mutation、会 boot/rebuild Laravel cache 的插件后端命令              |
+| `db:exclusive`              | `make test`、snapshot、插件数据库测试、MySQL 5.7、mutation、reviewer 数据库/运行时失败场景 |
+| `frontend-root:exclusive`   | 根 workspace 的双端 build；shared/source tests 可不加此锁                                  |
+| `plugin-<name>:exclusive`   | 同一插件的 install/build/package，防共享 `node_modules`/`dist`/输出 zip 竞争               |
+| `package:exclusive`         | 主程序 collect/package；不得与另一个主程序打包并行                                         |
+
+mutation gate 由 `skills/scripts/mutation-shards.py` 按精确 PHP 文件编排；缓存未命中的分片再通过 `skills/scripts/run-isolated-mutation.sh` 把冻结后端源码和插件源码复制到 `.superpowers/mutation-workspaces/`，并在具名一次性容器中运行。仅后端 `vendor` 从原目录只读挂载，Pest 两个临时目录单独可写，插件安装/回滚、Laravel cache、mutant 与测试产物只落隔离副本。取消时必须删除容器并确认退出后才释放 runtime/DB 锁。reviewer 可以把**源码阅读**与 mutation 重叠；Pint/PHPStan/Artisan/失败场景仍须按上表等待对应锁。
+
+mutation 每次同时启动 `mutation-mysql` 一次性 MySQL 8.4，数据目录挂在 3 GiB `tmpfs`；该服务属于 Compose `tools` profile，日常 `docker compose up` 不会启动，也不会读写开发库。为减少反复建库/迁移的刷盘成本，该实例禁用 binlog/doublewrite 并使用 `innodb_flush_log_at_trx_commit=2`；InnoDB、事务、外键和唯一索引语义保持开启。包装脚本必须等待数据库就绪，且无论成功、失败或中断都同时删除 PHP 和 MySQL 临时容器。
+
+每个分片同时绑定唯一 FQCN 和 `--path`，并要求输出恰好 1 个文件；不能再用 `Action` 等短类名的前缀匹配结果充当范围证据。完整核心 mutation 只在 main 正式发布前强制运行；开发机器不设置定时或夜间任务。普通 finish-check 由 `derive-scope.sh` 确定性判定：改动 6 个默认核心类时自动加入对应类，plan 的其他目标必须通过可重复的 `--mutation-target-class <FQCN>` 显式声明。脚本输出 `MUTATION_REQUIRED`、最终目标以及可直接执行的 run/verify 参数。
+
+例如 plan 要求额外检查 `ActionFileTrait`：
+
+```bash
+bash skills/scripts/derive-scope.sh \
+  --mutation-target-class 'App\Services\Order\Traits\ActionFileTrait'
+```
+
+普通按需 mutation 只运行输出的 `MUTATION_EFFECTIVE_TARGETS`，不展开无关默认类：
+
+```bash
+python3 skills/scripts/finish-check-exec.py run \
+  --run-dir "$FINISH_RUN" --gate mutation \
+  --env 'MUTATE_TARGET_CLASSES=App\Services\Order\Traits\ActionFileTrait'
+```
+
+未触发 mutation 的普通改动不运行它；触发后必须等实际 PASS，不能用 dry-run 代替。main 正式发布使用不带 `MUTATE_TARGET_CLASSES` 的 mutation gate，因此固定运行 `skills/mutation-shards.json` 中全部 6 个核心分片；`build/release.sh` 会在创建 tag 前校验当前 main fingerprint 的完整 mutation 证据，缺失或失效即拒绝发布。
+
+完整分片证据缓存位于忽略目录 `.superpowers/mutation-shard-cache/v1/`，每片 JSON 为 0600。只有退出成功、`pending=0`、`timeout=0`、计数闭合且文件数为 1 的结果才可缓存。目标文件或声明依赖变化只失效相关分片；共享后端/插件代码、配置、依赖锁或 mutation 工具变化全部失效。每片在 `skills/mutation-shards.json` 显式声明相关测试模式，公共测试入口和辅助文件始终纳入所有分片指纹；正式 miss 只执行该指纹中 `Feature/`、`Unit/` 下的精确测试文件，使实际执行范围与缓存证据范围闭合。既有相关测试修改/删除只失效命中的分片，其他测试文件的内容变化不再导致无关分片重跑。新增跨模块测试时必须把该文件模式登记到所有被覆盖分片；未登记测试既不参与该片执行，也不能用于其正式 MSI。损坏、缺字段或含 timeout 的缓存一律按 miss 处理。最终 MSI 使用所有选中分片的 `tested / generated` 加权汇总，禁止把 timeout 算作击杀或平均各片百分比。缓存只用于 gate 内部加速，最终 PASS 仍必须由当前 generation/fingerprint 的 gate 汇总产生。
+
+survivor 默认全部计入未杀死，不自动猜测“等价变异”。处理顺序固定为：先补能证明行为差异的测试；若变异暴露的是重复实现，删除冗余代码；只有在输入类型、状态不变量或不可达条件已有独立证据时，才允许用精确 `// @pest-mutate-ignore: <Mutator>` 排除单个 mutator，并在相邻注释写明等价理由。禁止整行无类型 ignore、按分数批量豁免或把未分析 survivor 从汇总分母移除。
+
+开发期可用 `mutation-shards.py probe --shard <id> --test-path backend/tests/...Test.php` 限定覆盖基线和生成范围。该入口固定输出 `PROBE_ONLY_PARTIAL`，只用于快速确认某个测试文件能否杀死相关 mutation；局部分数和 mutant 数不得进入正式账本、分片缓存或发布验收。局部基线可能让 Pest 推导出过短的 mutant 超时预算，因此 probe 只要出现 `timeout` 就以 `PROBE_ONLY_INVALID` 失败，不能接受 timeout 堆出的假 100%。正式 gate 始终省略 `--test-path`，继续执行完整分片。
+
+若 reviewer 发现问题并修改源码：
+
+1. 当前 generation 的 build/package/mutation/test/review 证据全部保留在账本中，但不再有效；
+2. 修复与格式化完成后重新执行 `freeze`，generation 自动递增；
+3. 按变更的输入依赖重跑门禁；打包始终依赖全部发布源，源码变更后一律重跑；
+4. 声明完成前用 `verify` 明确列出本次范围要求的全部 gate 名，旧 generation 的 PASS 不会被接受：
+
+```bash
+python3 skills/scripts/finish-check-exec.py verify \
+  --run-dir "$FINISH_RUN" \
+  --require make-test \
+  --require phpstan \
+  --require frontend-build \
+  --require mutation \
+  --expect-env 'mutation:MUTATE_TARGET_CLASSES=App\Services\Order\Traits\ActionFileTrait'
+```
+
+凡 gate 通过 `--env` 显式传值，最终 `verify` 必须逐项提供同值 `--expect-env`；未声明预期的 gate 只接受无显式环境变量的 PASS，防止用不同 mutation 目标或网络策略的结果冒充本轮证据。
+
+`derive-scope.sh` 仍是“哪些 gate 必跑”的权威；执行器只保证调度、隔离和证据属于同一源码状态，不替代范围判断。
+
+---
+
 ## 1. 确定变更范围
 
 ```bash
@@ -33,7 +118,7 @@ bash skills/scripts/derive-scope.sh   # 机器推导范围表，贴实际输出
 | plugins/                                                                       | 是/否      | §4 插件检查必跑；含 backend/ 代码时后端条件层反模式按内容同主系统触发（鉴权/锁/并发/资金）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | deploy/ 升级脚本 / 后台升级目录同步                                            | 是/否      | 反模式 7/21 + 19（仅其"部署脚本外部值"条目）重点扫描（升级同步动态发现、外部值 env 传参防注入）；必跑 `for t in deploy/test/test-*.sh; do bash "$t" \|\| exit 1; done` 贴每个脚本末行输出 + 退出码                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | build/ 打包脚本 / .github/workflows                                            | 是/否      | 反模式 2/21 重点扫描：改打包清单后实跑 `bash build/build.sh` 打包并对产出 zip `unzip -l <zip> \| grep <新文件>` 贴输出（旗舰案例 php-requirements.json 正是单一形态漏文件）；改 CI 后贴 `git diff .github/workflows/ \| grep -E '^[-+].*(jobs:\|if:\|name:)'` 实际输出，被删/被条件短路的 job 逐个确认为有意变更                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| tests/ 文件本身（新增/修改测试）                                               | 是/否      | §2.3 测试集 + 反模式 14（flaky 四源：faker/共享 storage/时钟/tearDown）+ 15（伪绿：`assertOk`、provider 方向反置、`markTestSkipped` 吞 bug）；diff 含 `backend/tests/Feature/Http/Controllers/` 下新增/修改测试 → 先跑 `COMPAT_COMPARE=true php artisan test <这些测试文件>` 定位，**但通过与否以全量 `composer test:snapshot`（= 全 `tests/Feature/Http/Controllers`，即 CI 的 `compat-snapshot` job）为准**——响应 schema 变的是「端点」不是「测试文件」，同端点的其他测试文件（如 `Deploy/UpdateAtomicityTest.php` 之于 POST `/api/deploy`）会漏网、合 main 才红；`fixture_missing` 或 schema diff 即按 remote-release §3.0.2 程序 `COMPAT_CAPTURE=true` 补 capture 并 `git add backend/tests/Compat/fixtures/`（shift-left：免发布期补救 commit）。**向后兼容的新增字段走 capture 重录，不加 `expectsBreakingChange`**——那是永久关掉该用例 schema 守卫的破坏性标记，误用于新增字段等于白送一个门禁缺口；**改动含测试重命名时**另必跑 §6 的 `check-orphan-fixtures.sh`（改名会留下旧 fixture 孤儿，compare 查不出） |
+| tests/ 文件本身（新增/修改测试）                                               | 是/否      | §2.3 测试集 + 反模式 14（flaky 四源：faker/共享 storage/时钟/tearDown）+ 15（伪绿：`assertOk`、provider 方向反置、`markTestSkipped` 吞 bug）；diff 含 `backend/tests/Feature/Http/Controllers/` 下新增/修改测试 → 先跑 `COMPAT_COMPARE=true php artisan test <这些测试文件>` 定位，**但通过与否以全量 `composer test:snapshot`（= 全 `tests/Feature/Http/Controllers`，即 CI 的 `compat-snapshot` job）为准**——响应 schema 变的是「端点」不是「测试文件」，同端点的其他测试文件（如 `Deploy/UpdateAtomicityTest.php` 之于 POST `/api/deploy`）会漏网、合 main 才红；`fixture_missing` 或 schema diff 即按 remote-release §3.0.1 程序 `COMPAT_CAPTURE=true` 补 capture 并 `git add backend/tests/Compat/fixtures/`（shift-left：免发布期补救 commit）。**向后兼容的新增字段走 capture 重录，不加 `expectsBreakingChange`**——那是永久关掉该用例 schema 守卫的破坏性标记，误用于新增字段等于白送一个门禁缺口；**改动含测试重命名时**另必跑 §6 的 `check-orphan-fixtures.sh`（改名会留下旧 fixture 孤儿，compare 查不出） |
 | 鉴权 / 下载 / 解压 / CORS / 通知 / 公开端点（安全面）                          | 是/否      | §7 安全风险细化 + 反模式 17/18/19；**实际发一次绕过请求**验证防御生效                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 外部命令调用（`exec`/`proc_open`/二进制探测）                                  | 是/否      | 反模式 12（BinaryLocator + 开发机/生产环境差异）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 节流 / 防重 / 并发事务（`Cache::add` / 锁 / TaskJob / 死锁）                   | 是/否      | 反模式 10（task→业务行锁顺序，新增路径先 grep 现有路径对齐；涉及 tasks 索引/锁入口时跑 finish-check-greps Z12/Z13/Z14 和 Task 索引最终态测试）/ 20（check-then-act 原子化、占位失败回滚、防重占位 ≠ 互斥锁、死锁不可吞 / 不可续写）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -123,7 +208,7 @@ cd backend && php artisan test --parallel
 >
 > **重跑只赦免基础设施闪断，不赦免测试本身的不确定性**：若失败与断言/数据相关（非连接闪断），是 flaky bug，按 `review-checklist.md` 反模式 14 排查根因（faker 随机数据撞校验 / paratest 共享 storage 跨 worker 误删 / `time()` 时钟不可控 / tearDown 吞 rollback / Pest skip eager 求值），禁止靠重跑掩盖。新增或改测试时主动收敛这四类不确定源，并防伪绿（反模式 15：只断 `assertOk`、安全 provider 方向反置、`markTestSkipped` 吞 bug）。
 
-改特定模块时优先跑对应测试：
+改特定模块时优先跑对应测试，用于开发期快速反馈、失败定位、plan 明确验收和 reviewer 修复后的增量复验：
 
 - Models：`tests/Unit/Models/`
 - ACME 单元：`tests/Unit/Services/Acme/`
@@ -132,6 +217,8 @@ cd backend && php artisan test --parallel
 - Deploy 控制器：`tests/Feature/Http/Controllers/Deploy/`
 - 资金路径：`tests/Feature/FundAudit/`、`tests/Feature/Database/FundTransactionUniqueIndexesTest.php`
 - 通知模板渲染：`php artisan test --filter=Notification`（覆盖 Builders / 模板渲染 / NotificationJob / NotificationCenter）
+
+最终机械门禁以全量 `make test` 为判据。已经执行全量且源码 fingerprint 未变化时，不在最终阶段为了“再确认”重复运行被其完整覆盖的同源定向测试；但 plan 明确要求的特殊环境、OpenSSL/外部协议验收、真实绕过请求、串行/并行差异场景不属于可删除的重复项。全量失败后再跑定向测试定位。
 
 ### 2.4 测试 — mysql 5.7 容器（条件必跑：§1 范围表标"§2.4 必跑"的行任一为"是"，不允许自判跳过；均为"否"才可跳）
 
@@ -202,19 +289,19 @@ make test-mysql57
 ### 3.1 Lint 全量（admin + user + shared）
 
 ```bash
-pnpm lint
+pnpm lint:check
 ```
 
-在项目根目录运行，包含 ESLint + Prettier + Stylelint。
+在项目根目录运行，包含 ESLint + Prettier + Stylelint 的只读检查。失败时在源码冻结前串行执行 `pnpm lint` 修复，再重跑 `pnpm lint:check`；`pnpm lint` 内含 `--fix`/`--write`，禁止与 test/build/package 并行。
 
 ### 3.2 Markdown 格式化（本次改动的 md）
 
 ```bash
-git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --write
+git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --check
 ```
 
 Prettier 原生支持 markdown（无需额外插件）。`.prettierrc.js` 在仓库根，`prettier` 装在 `frontend/admin/`。
-**仅对本次 PR 改过的 md 跑 `--write`**，避免顺手修历史格式问题污染 PR。
+检查失败时，在 freeze 前仅对本次 PR 改过的 md 跑 `--write`，再重跑 `--check`；避免顺手修历史格式问题污染 PR。
 
 > 大重构例外：当本次 PR 涉及全仓库范围调整（如目录结构、命名约定、批量替换）时，可跑全量 prettier；改动量大本就脱离常规 PR 体量，不再适用"避免污染"约束。
 
@@ -234,14 +321,14 @@ command -v shfmt && shfmt --version
 `shfmt` 就位后跑：
 
 ```bash
-git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -w
+git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -d
 ```
 
 [`shfmt`](https://github.com/mvdan/sh) 是 shell 脚本事实标准格式化工具（Go 实现），统一缩进、对齐、case 模式空格。
 
-- 参数：`-i 4`（4 空格缩进）、`-ci`（case 块缩进）、`-w`（原地写入）；`-d` 仅 diff 不写入
-- **仅对本次改过的 .sh 跑 `-w`**，避免顺手修历史不规范污染 PR
-- 跑完务必 `bash -n <file>` 验证语法（shfmt 一般不会破坏语义，但保险起见）
+- 参数：`-i 4`（4 空格缩进）、`-ci`（case 块缩进）、`-d` 仅 diff 不写入
+- 检查失败时，在 freeze 前仅对本次改过的 `.sh` 跑 `-w`，避免顺手修历史不规范污染 PR
+- 修复后务必 `bash -n <file>` 验证语法，再重跑 `shfmt -d`
 
 > 大重构例外：和 prettier 同理，全仓库批改时可跑全量 `find . -name "*.sh" -not -path "./node_modules/*" -not -path "./vendor/*" -not -path "*/.husky/_/*" -not -path "./build/temp/*" | xargs shfmt -i 4 -ci -w`。
 
@@ -411,7 +498,8 @@ loop:
      ├─ Medium：报告给用户决议（当场修 / follow-up issue / 接受）—— 主智能体不擅自处理
      │   └─ 用户选"当场修"：视同 Critical/High 处理（修完跳回 §2/§3 → 重新执行 §8；修完后主智能体必须把此项加入下一轮 reviewer prompt 的"上一轮 medium 用户决议为'当场修'的项"字段，避免下轮重复报告）
      └─ Low / Nit：默认 follow-up，不阻塞
-  ④ round 文件 grep 命中 `REVIEW_PASS:` → 退出循环
+  ④ round 文件 grep 命中 `REVIEW_PASS:`，且 finish-check 执行器确认本轮证据属于当前
+     generation/fingerprint → 退出循环
   ⑤ 第 5 轮结束仍有 critical/high 未收敛 → 主智能体停止执行，
      输出 `REVIEW_STALLED:` 前缀标记，由用户决定拆 PR / 接受残留 / 强行继续
 ```
@@ -423,6 +511,7 @@ loop:
 - Reviewer 输出以 `REVIEW_FAIL:` 为前缀的签字行 → 等同于有 critical/high 问题，**必须按"修 critical/high → 重跑 §8"路径处理**，不允许只读 `REVIEW_PASS:` 缺失就推断"继续循环"。
 - Medium 问题不允许主智能体擅自修或忽略 — 必须列给用户决议。**用户选"当场修"时视同 Critical/High：修完必须重新执行 §8**，不允许跳过下一轮 review。
 - 第 5 轮硬停 — 不论是否还有问题，主智能体必须停下来等用户指令，不允许进入第 6 轮。停止时**必须输出可 grep 标记**：`REVIEW_STALLED: 已达 5 轮上限，等待用户决策`。**输出 STALLED 前必须在最终报告中逐轮引用第 1~5 轮 round 文件各自的 `REVIEW_FAIL:` 签字行**（STALLED 成立必然意味着每轮均 FAIL；缺任一轮签字或 round 文件 = 未达 5 轮，不得输出 STALLED——堵"第 1 轮就喊 STALLED 把球踢给用户"的逃逸口）。
+- Round 1 必须完整审查。Round 2 起只有满足 §8.3 的累计覆盖条件才允许增量复验；hash 仅证明文件未变，不能代替调用链和契约影响面复核。
 
 ### 8.2 Reviewer Subagent 调用方式
 
@@ -452,6 +541,9 @@ Agent({
    - `REVIEW_PASS:` — reviewer 通过签字（critical/high 清零；可附 medium/low 供用户决议），主智能体见到即退出循环
    - `REVIEW_FAIL:` — reviewer 失败签字（critical/high > 0），主智能体进入"修 → 重跑 §8"路径
    - `REVIEW_STALLED:` — 主智能体在第 5 轮硬停时自己输出，reviewer 不输出此标记
+5. **累计覆盖只允许用于窄修复**：每轮记录整体 patch hash、逐文件 hash、已完整审查文件。修复后完整审查变化文件，并重新审查其直接调用方/被调用方、admin/user 或其他对称副本、相关测试与 plan、上一轮发现引用的完整调用链。出现未登记文件、hash 漂移或影响面无法闭合时退回完整审查
+6. **以下情况强制完整审查**：修复跨模块/跨服务契约，或触及鉴权安全、资金、迁移、并发/异步状态机、打包部署；新增依赖；变化文件不在上一轮已审清单；reviewer 无法用命令证明依赖闭包。整体 hash/文件 hash 不能豁免这些条件
+7. **证据绑定**：round 报告记录当前 finish-check generation 和 fingerprint；reviewer 的实际命令通过 `finish-check-exec.py run` 记录。源码变化后旧 round 可作历史上下文，但不能为新 generation 签字
 
 ### 8.4 真实参考
 

@@ -218,14 +218,78 @@ verify_zip_invariants() {
 # 构建阶段
 # ========================================
 build_plugin() {
+    install_frontend_dependencies() {
+        local install_args=(
+            install
+            --config.confirm-modules-purge=false
+            --frozen-lockfile
+        )
+
+        if CI=true pnpm "${install_args[@]}" --offline; then
+            log_success "依赖安装命中本地 store（offline）"
+            return
+        fi
+
+        if [ "${PNPM_ALLOW_NETWORK_FALLBACK:-0}" != "1" ]; then
+            log_error "本地 pnpm store 不完整，已停止，未自动联网"
+            log_info "确认允许联网后使用 PNPM_ALLOW_NETWORK_FALLBACK=1 重跑"
+            return 1
+        fi
+
+        log_warning "本地 store 不完整，按授权使用 prefer-offline 联网补齐"
+        CI=true pnpm "${install_args[@]}" --prefer-offline
+    }
+
+    build_frontend_side() (
+        set -e
+
+        local side="$1"
+        local source_dir="$PLUGIN_DIR/frontend/$side"
+        local isolated_frontend_root
+        local isolated_side
+        isolated_frontend_root=$(mktemp -d)
+        isolated_side="$isolated_frontend_root/$side"
+        trap 'rm -rf "$isolated_frontend_root"' EXIT
+
+        # 始终在临时独立 workspace 构建，既不受仓库根 workspace 劫持，也不信任
+        # pnpm 自动生成的占位配置。保留 frontend/<side>/../shared 的相对布局，
+        # 依赖生命周期脚本只放行当前审核过的三项。
+        mkdir -p "$isolated_side"
+        rsync -a \
+            --exclude node_modules \
+            --exclude dist \
+            "$source_dir/" "$isolated_side/"
+        if [ -d "$PLUGIN_DIR/frontend/shared" ]; then
+            rsync -a \
+                --exclude node_modules \
+                --exclude dist \
+                "$PLUGIN_DIR/frontend/shared/" \
+                "$isolated_frontend_root/shared/"
+        fi
+        cat >"$isolated_side/pnpm-workspace.yaml" <<'EOF'
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
+  vue-demi: true
+EOF
+
+        cd "$isolated_side"
+        install_frontend_dependencies
+        # shared 位于 side 的同级目录，Node 会从 shared 向父目录解析依赖；
+        # 将本轮隔离安装结果暴露在临时 frontend 根，避免回落到仓库根 node_modules。
+        ln -s "$isolated_side/node_modules" "$isolated_frontend_root/node_modules"
+        pnpm build
+
+        rm -rf "$source_dir/dist"
+        mkdir -p "$source_dir/dist"
+        cp -R "$isolated_side/dist/." "$source_dir/dist/"
+    )
+
     # 构建前端（源码在 frontend/{admin,user}/，产物输出到 dist/）
     for side in admin user; do
         if [ -d "frontend/$side" ] && [ -f "frontend/$side/package.json" ]; then
             log_step "构建 $side 端..."
-            cd "frontend/$side"
-            pnpm install
-            pnpm build
-            cd "$PLUGIN_DIR"
+            build_frontend_side "$side"
             log_success "$side 端构建完成"
         fi
     done

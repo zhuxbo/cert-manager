@@ -26,7 +26,7 @@ build/
 
 1. 提交代码并推送
 2. 构建并发布到远程服务器：`./build/release.sh <版本号>`
-   - 正式版在 main 分支发布时自动创建/更新 tag 并 push
+   - 正式版先按 `skills/remote-release.md` 在当前 main fingerprint 完成全部 6 个精确 mutation 分片的加权汇总；可复用有效分片缓存，但 `release.sh` 只接受当前 fingerprint 的汇总 gate 证据，验证后才创建/更新 tag 并 push
    - 测试版无需 tag
 
 ---
@@ -281,11 +281,12 @@ GitHub Release 仅用于代码存档，实际部署使用自建 release 服务�
 git add . && git commit -m "feat: 功能描述" && git push
 
 # 2. 远程发布（构建 + 打包 + 部署到服务器）
-# 正式版在 main 分支上会自动创建/更新 tag 并 push
+# 正式版须先按 skills/remote-release.md 生成 main-release-<版本号> 完整 mutation 证据
+# 证据有效后，脚本才会在 main 分支创建/更新 tag 并 push
 ./build/release.sh <版本号>
 ```
 
-- **正式版**（不含 `-`）：在 main 分支发布时，脚本自动创建/更新 `v{版本号}` tag 并 push，无需手动操作
+- **正式版**（不含 `-`）：必须先完成当前 main fingerprint 的全部 6 类 mutation；脚本在 tag 前硬校验 `.superpowers/finish-check-runs/main-release-<版本号>`，通过后自动创建/更新 `v{版本号}` tag 并 push
 - **测试版**（含 `-`）：无需 tag，直接发布
 
 ### Tag 命名规范

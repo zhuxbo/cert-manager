@@ -26,20 +26,24 @@
 # 改判规则（单向棘轮）：脚本判"是"的行不得改判"否"（降级须附一行理由，reviewer 抽查）；
 # "否"/"人工"行可由人工升级为"是"。
 #
-# 用法：bash skills/scripts/derive-scope.sh [--base <ref>]
-#   默认           git diff HEAD + git diff --cached + untracked 合并去重
-#   --base <ref>   git diff <ref>（对历史 ref 推导/自测，如 --base origin/main）
+# 用法：bash skills/scripts/derive-scope.sh [--base <ref>] [--mutation-target-class <FQCN>]...
+#   默认                            git diff HEAD + git diff --cached + untracked 合并去重
+#   --base <ref>                    git diff <ref>（对历史 ref 推导/自测，如 --base origin/main）
+#   --mutation-target-class <FQCN>  plan 明确要求的额外 mutation 目标，可重复
 set -uo pipefail
 
 usage() {
     cat <<'EOF'
-用法: bash skills/scripts/derive-scope.sh [--base <ref>]
-  默认           diff 范围 = git diff HEAD + git diff --cached + untracked 合并去重
-  --base <ref>   diff 范围 = git diff <ref>（如 --base origin/main、--base HEAD~5）
+用法: bash skills/scripts/derive-scope.sh [--base <ref>] [--mutation-target-class <FQCN>]...
+  默认                            diff 范围 = git diff HEAD + git diff --cached + untracked 合并去重
+  --base <ref>                    diff 范围 = git diff <ref>（如 --base origin/main、--base HEAD~5）
+  --mutation-target-class <FQCN>  plan 明确要求的额外 mutation 目标，可重复
 EOF
 }
 
 BASE_REF=""
+MUTATION_PLAN_TARGETS=()
+MUTATION_CLASS_RE='^[A-Z][A-Za-z0-9_]*(\\[A-Z][A-Za-z0-9_]*)+$'
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --base)
@@ -48,6 +52,18 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             BASE_REF="$2"
+            shift 2
+            ;;
+        --mutation-target-class)
+            if [[ $# -lt 2 || -z "${2:-}" ]]; then
+                echo "错误: --mutation-target-class 需要一个 FQCN 参数" >&2
+                exit 1
+            fi
+            if [[ ! "$2" =~ $MUTATION_CLASS_RE ]]; then
+                echo "错误: 无效 mutation FQCN '$2'" >&2
+                exit 1
+            fi
+            MUTATION_PLAN_TARGETS+=("$2")
             shift 2
             ;;
         -h | --help)
@@ -106,6 +122,62 @@ if [[ -n "$CHANGED_FILES" ]]; then
 else
     FILE_COUNT=0
 fi
+
+# ---------- mutation 目标判定 ----------
+# 普通 finish-check 只运行本次实际变化/plan 声明的目标；main 正式发布不传
+# MUTATE_TARGET_CLASSES，固定运行 test-mutate.sh 内的全部核心默认类。
+MUTATION_CORE_MAPPINGS=(
+    'backend/app/Models/Fund.php|App\Models\Fund'
+    'backend/app/Models/Transaction.php|App\Models\Transaction'
+    'backend/app/Services/Acme/Action.php|App\Services\Acme\Action'
+    'backend/app/Services/Order/Action.php|App\Services\Order\Action'
+    'backend/app/Services/Order/AutoRenewService.php|App\Services\Order\AutoRenewService'
+    'backend/app/Services/FundAudit/FundInvariants.php|App\Services\FundAudit\FundInvariants'
+)
+MUTATION_AUTO_TARGETS=()
+for mapping in "${MUTATION_CORE_MAPPINGS[@]}"; do
+    file="${mapping%%|*}"
+    class="${mapping#*|}"
+    if grep -Fxq "$file" <<<"$CHANGED_FILES"; then
+        MUTATION_AUTO_TARGETS+=("$class")
+    fi
+done
+
+MUTATION_EFFECTIVE_TARGETS=()
+append_unique_mutation_target() {
+    local candidate="$1"
+    local existing
+    for existing in ${MUTATION_EFFECTIVE_TARGETS[@]+"${MUTATION_EFFECTIVE_TARGETS[@]}"}; do
+        [[ "$existing" == "$candidate" ]] && return
+    done
+    MUTATION_EFFECTIVE_TARGETS+=("$candidate")
+}
+for class in ${MUTATION_AUTO_TARGETS[@]+"${MUTATION_AUTO_TARGETS[@]}"}; do
+    [[ -n "$class" ]] && append_unique_mutation_target "$class"
+done
+for class in ${MUTATION_PLAN_TARGETS[@]+"${MUTATION_PLAN_TARGETS[@]}"}; do
+    [[ -n "$class" ]] && append_unique_mutation_target "$class"
+done
+
+join_mutation_targets() {
+    local joined=""
+    local value
+    for value in "$@"; do
+        [[ -n "$joined" ]] && joined+=","
+        joined+="$value"
+    done
+    printf '%s' "$joined"
+}
+
+MUTATION_AUTO_CSV="$(
+    join_mutation_targets ${MUTATION_AUTO_TARGETS[@]+"${MUTATION_AUTO_TARGETS[@]}"}
+)"
+MUTATION_PLAN_CSV="$(
+    join_mutation_targets ${MUTATION_PLAN_TARGETS[@]+"${MUTATION_PLAN_TARGETS[@]}"}
+)"
+MUTATION_EFFECTIVE_CSV="$(
+    join_mutation_targets ${MUTATION_EFFECTIVE_TARGETS[@]+"${MUTATION_EFFECTIVE_TARGETS[@]}"}
+)"
 
 # + 新增行（仅 .php），输出格式: 文件路径<TAB>行内容
 ADDED_PHP="$(awk '
@@ -340,6 +412,24 @@ else
 fi
 echo ""
 echo "改判规则（单向棘轮）：脚本判\"是\"的行不得改判\"否\"（降级须附一行理由，reviewer 抽查）；\"否\"/\"人工\"行可人工升级为\"是\"。"
+echo ""
+echo "## Mutation 判定"
+echo ""
+if [[ -n "$MUTATION_EFFECTIVE_CSV" ]]; then
+    echo "MUTATION_REQUIRED=yes"
+else
+    echo "MUTATION_REQUIRED=no"
+fi
+echo "MUTATION_AUTO_TARGETS=${MUTATION_AUTO_CSV:-（无）}"
+echo "MUTATION_PLAN_TARGETS=${MUTATION_PLAN_CSV:-（无）}"
+echo "MUTATION_EFFECTIVE_TARGETS=${MUTATION_EFFECTIVE_CSV:-（无）}"
+if [[ -n "$MUTATION_EFFECTIVE_CSV" ]]; then
+    echo "MUTATION_RUN=python3 skills/scripts/finish-check-exec.py run --run-dir \"\$FINISH_RUN\" --gate mutation --env 'MUTATE_TARGET_CLASSES=$MUTATION_EFFECTIVE_CSV'"
+    echo "MUTATION_VERIFY_ARGS=--require mutation --expect-env 'mutation:MUTATE_TARGET_CLASSES=$MUTATION_EFFECTIVE_CSV'"
+else
+    echo "MUTATION_RUN=（不运行）"
+    echo "MUTATION_VERIFY_ARGS=（无）"
+fi
 echo ""
 echo "规则 ${n} 行 / 是 ${YES_COUNT} / 否 ${NO_COUNT} / 人工 ${MANUAL_COUNT} / 变更文件 ${FILE_COUNT} / 残差 ${RESIDUAL_COUNT}"
 exit 0

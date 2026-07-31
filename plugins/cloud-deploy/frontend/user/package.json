@@ -10,6 +10,7 @@
     "dayjs": "^1.11.13"
   },
   "devDependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
     "@vitejs/plugin-vue": "^6.0.7",
     "@vitejs/plugin-vue-jsx": "^5.1.5",
     "element-plus": "^2.9.0",

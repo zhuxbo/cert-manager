@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "shards": [
+    {
+      "id": "fund",
+      "class": "App\\Models\\Fund",
+      "path": "backend/app/Models/Fund.php",
+      "dependencies": ["transaction"],
+      "test_patterns": [
+        "backend/tests/**/*Fund*Test.php",
+        "backend/tests/**/*Transaction*Test.php",
+        "backend/tests/**/*AtomicityTest.php",
+        "backend/tests/Feature/Models/StatusTransitionTest.php",
+        "backend/tests/Feature/FundAudit/**/*.php",
+        "backend/tests/Feature/Commands/PurgeCommandTest.php",
+        "backend/tests/Feature/Commands/SweepOrphanOrdersCommandTest.php",
+        "backend/tests/Feature/Commands/UserDataCommandTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/DashboardControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/FundControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/User/FundControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/User/TopUpControllerTest.php"
+      ]
+    },
+    {
+      "id": "transaction",
+      "class": "App\\Models\\Transaction",
+      "path": "backend/app/Models/Transaction.php",
+      "dependencies": [],
+      "test_patterns": [
+        "backend/tests/**/*Transaction*Test.php",
+        "backend/tests/Feature/Models/FundCasTest.php",
+        "backend/tests/Feature/Models/StatusTransitionTest.php",
+        "backend/tests/Feature/Http/Controllers/V2/ApiControllerFundFlowTest.php",
+        "backend/tests/Feature/Commands/SweepOrphanOrdersCommandTest.php",
+        "backend/tests/Feature/Commands/UserDataCommandTest.php",
+        "backend/tests/Feature/Commands/AutoRenewAtomicityTest.php",
+        "backend/tests/Feature/FundAudit/FundInvariantsTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/DashboardControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/FundControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/OrderControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/Deploy/UpdateAtomicityTest.php",
+        "backend/tests/Feature/Http/Controllers/User/DashboardControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/User/OrderControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/User/TopUpControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/V1/ApiControllerCommitResilienceTest.php",
+        "backend/tests/Feature/Http/Controllers/V1/ApiControllerSyncTimeoutTest.php",
+        "backend/tests/Feature/Http/Controllers/V2/ApiControllerCommitResilienceTest.php",
+        "backend/tests/Feature/Http/Controllers/V2/ApiControllerSyncTimeoutTest.php",
+        "backend/tests/Feature/Services/Order/SyncedCancelRefundTest.php",
+        "backend/tests/Unit/Jobs/TaskJobTest.php",
+        "backend/tests/Unit/Services/Acme/ActionResponseTest.php",
+        "backend/tests/Unit/Services/Acme/ActionTest.php",
+        "backend/tests/Unit/Services/Order/ActionResponseTest.php",
+        "backend/tests/Unit/Services/Order/ActionTest.php"
+      ]
+    },
+    {
+      "id": "acme-action",
+      "class": "App\\Services\\Acme\\Action",
+      "path": "backend/app/Services/Acme/Action.php",
+      "dependencies": ["transaction"],
+      "test_patterns": [
+        "backend/tests/**/*Acme*Test.php",
+        "backend/tests/Feature/Services/Concurrency/CommitCancelMutexTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/TaskControllerTest.php",
+        "backend/tests/Feature/Services/Order/CreateTaskDispatchTest.php",
+        "backend/tests/Unit/Jobs/TaskJobTest.php",
+        "backend/tests/Unit/Services/UserScopeIsolationTest.php"
+      ]
+    },
+    {
+      "id": "order-action",
+      "class": "App\\Services\\Order\\Action",
+      "path": "backend/app/Services/Order/Action.php",
+      "dependencies": ["transaction"],
+      "test_patterns": [
+        "backend/tests/**/*Order*Test.php",
+        "backend/tests/Feature/Services/Order/**/*.php",
+        "backend/tests/Unit/Services/Order/**/*.php",
+        "backend/tests/Feature/Documents/DocumentSubmitTest.php",
+        "backend/tests/Feature/Http/Controllers/Callback/CallbackControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/V1/ApiController*Test.php",
+        "backend/tests/Feature/Http/Controllers/V2/ApiController*Test.php",
+        "backend/tests/Feature/Commands/AutoRenewCommandTest.php",
+        "backend/tests/Feature/Commands/ImportProductCommandTest.php",
+        "backend/tests/Feature/Commands/PurgeCommandTest.php",
+        "backend/tests/Feature/Http/Controllers/Admin/ProductControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/User/DashboardControllerTest.php",
+        "backend/tests/Feature/Services/Concurrency/CommitCancelMutexTest.php",
+        "backend/tests/Feature/Services/Product/ProductCostWritePathTest.php",
+        "backend/tests/Unit/Services/UserScopeIsolationTest.php"
+      ]
+    },
+    {
+      "id": "auto-renew",
+      "class": "App\\Services\\Order\\AutoRenewService",
+      "path": "backend/app/Services/Order/AutoRenewService.php",
+      "dependencies": [],
+      "test_patterns": [
+        "backend/tests/**/*AutoRenew*Test.php",
+        "backend/tests/Unit/Services/Notification/Builders/CertExpireNotificationBuilderTest.php"
+      ]
+    },
+    {
+      "id": "fund-invariants",
+      "class": "App\\Services\\FundAudit\\FundInvariants",
+      "path": "backend/app/Services/FundAudit/FundInvariants.php",
+      "dependencies": ["fund", "transaction"],
+      "test_patterns": [
+        "backend/tests/Feature/FundAudit/**/*.php",
+        "backend/tests/Feature/Commands/FundAuditCommandTest.php"
+      ]
+    }
+  ]
+}
