@@ -64,9 +64,9 @@ test('generate sm2 csr（真实走 gmOpenssl，靠系统 OpenSSL 3.0+ 原生 SM2
     expect($result)->toHaveKey('csr');
     expect($result)->toHaveKey('private_key');
     expect($result['csr'])->toContain('BEGIN CERTIFICATE REQUEST');
-    // SM2 私钥为 EC 格式，已剥离 ecparam 附带的 PARAMETERS 块（部分国密 nginx 只认纯私钥块）
+    // SM2 私钥已剥离 ecparam 附带的 EC/SM2 PARAMETERS 块（部分国密 nginx 只认纯私钥块）
     expect($result['private_key'])->toContain('PRIVATE KEY');
-    expect($result['private_key'])->not->toContain('EC PARAMETERS');
+    expect($result['private_key'])->not->toContain('PARAMETERS');
 
     // 回归守卫：SM2 CSR 的 SubjectPublicKeyInfo 必须是标准 id-ecPublicKey 编码（RFC 5480 / OpenSSL 3），
     // 而非非标准的 dual-sm2（algorithm 字段填 sm2 曲线 OID）编码 —— 后者会被国密 CA（如 Keeptrust）
@@ -74,6 +74,26 @@ test('generate sm2 csr（真实走 gmOpenssl，靠系统 OpenSSL 3.0+ 原生 SM2
     // dual-sm2 编码的 algorithm 用 sm2 曲线 OID、不含此串，故以此区分、钉死走系统 OpenSSL 3 的标准编码。
     $der = base64_decode((string) preg_replace('/-----[^-]+-----|\s/', '', $result['csr']));
     expect(str_contains($der, hex2bin('2a8648ce3d0201')))->toBeTrue();
+});
+
+test('generate sm2 csr 使用 UTF-8 保留中文 Subject', function () {
+    $result = CsrUtil::generate([
+        'domains' => 'sm2.example.com',
+        'encryption' => ['alg' => 'sm2'],
+        'organization' => [
+            'name' => '测试公司',
+            'country' => 'CN',
+            'state' => '上海',
+            'city' => '上海',
+        ],
+    ]);
+
+    $subject = openssl_csr_get_subject($result['csr'], false);
+
+    expect($subject)->toBeArray()
+        ->and($subject['organizationName'])->toBe('测试公司')
+        ->and($subject['stateOrProvinceName'])->toBe('上海')
+        ->and($subject['localityName'])->toBe('上海');
 });
 
 test('generate sm2 临时文件 finally 清理，私钥不留盘', function () {

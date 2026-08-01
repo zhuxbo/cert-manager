@@ -129,6 +129,7 @@ class CsrUtil
                 .' -key '.escapeshellarg($keyFile)
                 .' -out '.escapeshellarg($csrFile)
                 .' -sm3 -sigopt distid:1234567812345678'
+                .' -utf8'
                 .' -subj '.escapeshellarg($subject);
             @exec($csrCmd.' 2>&1', $csrOut, $csrCode);
             ($csrCode !== 0 || ! is_file($csrFile)) && self::error('SM2 CSR 生成失败');
@@ -137,9 +138,9 @@ class CsrUtil
             $key = file_get_contents($keyFile);
             (! $csr || ! $key) && self::error('SM2 CSR/私钥读取失败');
 
-            // 剥离 ecparam -genkey 附带的 EC PARAMETERS 块，只留纯 EC PRIVATE KEY（自含曲线 OID）；
+            // 剥离 ecparam -genkey 附带的 EC/SM2 PARAMETERS 块，只留纯私钥块（自含曲线 OID）；
             // 部分国密 nginx 只认纯私钥块。CSR 已用含 params 的 key 生成，剥离不影响。
-            $key = preg_replace('/-----BEGIN EC PARAMETERS-----.*?-----END EC PARAMETERS-----\s*/s', '', $key) ?? $key;
+            $key = preg_replace('/-----BEGIN (?:EC|SM2) PARAMETERS-----.*?-----END (?:EC|SM2) PARAMETERS-----\s*/s', '', $key) ?? $key;
 
             return [
                 'csr' => str_replace("\r\n", "\n", trim($csr)),
