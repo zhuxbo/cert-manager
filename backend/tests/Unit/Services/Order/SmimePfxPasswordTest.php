@@ -97,6 +97,8 @@ test('OpenSSL stdin 密码在异常 trace 中由 PHP 引擎隐藏', function () 
         }
     };
     $action->secret = $secret;
+    $previousIgnoreArgs = ini_get('zend.exception_ignore_args');
+    ini_set('zend.exception_ignore_args', '0');
 
     try {
         $action->failWhileWritingPassword();
@@ -116,5 +118,9 @@ test('OpenSSL stdin 密码在异常 trace 中由 PHP 引擎隐藏', function () 
         expect(implode("\n", $traceStrings))->not->toContain($secret)
             ->and($runProcessFrame)->not->toBeNull()
             ->and($runProcessFrame['args'][1] ?? null)->toBeInstanceOf(SensitiveParameterValue::class);
+    } finally {
+        if ($previousIgnoreArgs !== false) {
+            ini_set('zend.exception_ignore_args', $previousIgnoreArgs);
+        }
     }
 });
