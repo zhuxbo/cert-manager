@@ -60,7 +60,7 @@ function bindCapturingCenter(): object
 // ⑦ 写端接线：admin_email = site.adminEmail ?: admin->email（镜像 FundAuditCommand:119）
 test('⑦ 写端接线：site.adminEmail 非 Admin 邮箱时，intent 携带 admin_email === adminEmail', function () {
     // fixture 显式错开：adminEmail 是运维分发别名，Admin 登录邮箱不同
-    Admin::factory()->create(['email' => 'login-admin@corp.example']);
+    Admin::factory()->create(['email' => null]);
     setAdminEmailSetting('ops-alias@corp.example');
 
     $state = bindCapturingCenter();
@@ -80,6 +80,7 @@ test('⑦ 写端接线：site.adminEmail 非 Admin 邮箱时，intent 携带 adm
 });
 
 test('⑦ 写端接线：未配置 adminEmail 时 admin_email 回落 admin->email', function () {
+    Admin::factory()->create(['email' => null]);
     $admin = Admin::factory()->create(['email' => 'only-admin@corp.example']);
     setAdminEmailSetting(null);
 

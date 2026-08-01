@@ -226,15 +226,17 @@ test('convertNumericValues 保持 csr / private_key 为字符串（任意层级�
         ->and($result['params']['period'])->toBe(12);
 });
 
-test('convertNumericValues 跳过超长纯数字字符串', function () {
+test('convertNumericValues 保持 registration_number 为字符串', function () {
     $result = OrderUtil::convertNumericValues([
-        'registration_number' => '123715004950202802',
-        'short_number' => '123456',
+        'organization' => [
+            'registration_number' => '10444698',
+        ],
+        'short_number' => '10444698',
         'fifteen_digits' => '123456789012345',
         'sixteen_digits' => '1234567890123456',
     ]);
-    expect($result['registration_number'])->toBe('123715004950202802')
-        ->and($result['short_number'])->toBe(123456)
+    expect($result['organization']['registration_number'])->toBe('10444698')
+        ->and($result['short_number'])->toBe(10444698)
         ->and($result['fifteen_digits'])->toBe(123456789012345)
         ->and($result['sixteen_digits'])->toBe('1234567890123456');
 });

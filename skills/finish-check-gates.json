@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "gates": {
+    "make-test": {
+      "command": ["make", "test"],
+      "locks": ["backend-runtime:exclusive", "db:exclusive"]
+    },
+    "pint": {
+      "command": [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "app",
+        "./vendor/bin/pint",
+        "--test"
+      ],
+      "locks": ["backend-runtime:exclusive"]
+    },
+    "phpstan": {
+      "command": [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "app",
+        "./vendor/bin/phpstan",
+        "analyse",
+        "--level=5",
+        "--memory-limit=2G"
+      ],
+      "locks": ["backend-runtime:exclusive"]
+    },
+    "frontend-lint": {
+      "command": ["pnpm", "lint:check"],
+      "locks": ["frontend-root:shared"]
+    },
+    "frontend-tests": {
+      "command": ["pnpm", "test:shared"],
+      "locks": ["frontend-root:shared"]
+    },
+    "frontend-build": {
+      "command": ["pnpm", "build"],
+      "locks": ["frontend-root:exclusive"]
+    },
+    "executor-tests": {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "skills/scripts/tests/test_finish_check_exec.py",
+        "skills/scripts/tests/test_derive_scope_mutation.py",
+        "skills/scripts/tests/test_mutation_shards.py",
+        "skills/scripts/tests/test_mutate_targets.py",
+        "skills/scripts/tests/test_release_plugin_isolation.py",
+        "skills/scripts/tests/test_release_mutation_guard.py",
+        "-v"
+      ],
+      "locks": []
+    },
+    "agent-guards": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -euo pipefail\nmake check-agent-config\nbash skills/scripts/check-review-checklist-staleness.sh\nbash skills/scripts/finish-check-greps.sh\nbash skills/scripts/check-orphan-fixtures.sh"
+      ],
+      "locks": []
+    },
+    "compat-snapshot": {
+      "command": [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "-e",
+        "DB_DATABASE=ssl_manager_test",
+        "app",
+        "composer",
+        "test:snapshot"
+      ],
+      "locks": ["backend-runtime:exclusive", "db:exclusive"]
+    },
+    "mysql57": {
+      "command": ["make", "test-mysql57"],
+      "locks": ["backend-runtime:exclusive", "db:exclusive"]
+    },
+    "deploy-tests": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -euo pipefail\nfor test_script in deploy/test/test-*.sh; do bash \"$test_script\"; done"
+      ],
+      "locks": []
+    },
+    "plugin-backend-tests": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -euo pipefail\nfor suite in ../plugins/easy/backend/tests ../plugins/notice/backend/tests ../plugins/invoice/backend/tests ../plugins/cloud-deploy/backend/tests; do\n  docker compose exec -T -e DB_DATABASE=ssl_manager_test app php artisan test \"$suite\"\ndone"
+      ],
+      "locks": ["backend-runtime:exclusive", "db:exclusive"]
+    },
+    "plugin-cloud-deploy-package": {
+      "command": [
+        "bash",
+        "plugins/release-plugin.sh",
+        "cloud-deploy",
+        "--version",
+        "0.0.0-finish-check",
+        "--build-only"
+      ],
+      "locks": ["plugin-cloud-deploy:exclusive"],
+      "allowed_env": ["PNPM_ALLOW_NETWORK_FALLBACK"]
+    },
+    "plugin-invoice-package": {
+      "command": [
+        "bash",
+        "plugins/release-plugin.sh",
+        "invoice",
+        "--version",
+        "0.0.0-finish-check",
+        "--build-only"
+      ],
+      "locks": ["plugin-invoice:exclusive"],
+      "allowed_env": ["PNPM_ALLOW_NETWORK_FALLBACK"]
+    },
+    "main-package": {
+      "command": [
+        "bash",
+        "build/build.sh",
+        "--version",
+        "0.0.0-finish-check",
+        "--channel",
+        "dev",
+        "--package"
+      ],
+      "locks": ["package:exclusive"]
+    },
+    "package-invariants": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -euo pipefail\nfor archive in build/temp/packages/ssl-manager-{full,upgrade,script}-0.0.0-finish-check.zip; do\n  test -s \"$archive\"\n  unzip -tq \"$archive\"\ndone\nif unzip -l build/temp/packages/ssl-manager-full-0.0.0-finish-check.zip | grep -Eq 'backend/storage/app/'; then exit 1; fi\necho PACKAGE_INVARIANTS_PASS"
+      ],
+      "locks": ["package:shared"]
+    },
+    "script-checks": {
+      "command": [
+        "bash",
+        "-lc",
+        "set -euo pipefail\ngit diff --check\nbash -n backend/scripts/test-mutate.sh build/release.sh plugins/release-plugin.sh skills/scripts/check-review-checklist-staleness.sh skills/scripts/derive-scope.sh skills/scripts/run-isolated-mutation.sh\nshfmt -d -i 4 -ci backend/scripts/test-mutate.sh build/release.sh plugins/release-plugin.sh skills/scripts/check-review-checklist-staleness.sh skills/scripts/derive-scope.sh skills/scripts/run-isolated-mutation.sh\nfrontend/admin/node_modules/.bin/prettier --check skills/finish-check.md skills/review-checklist.md skills/backend/core.md skills/ops/build-release.md skills/remote-release.md\nPYTHONPYCACHEPREFIX=/tmp/ssl-manager-finish-check-pycache python3 -m py_compile skills/scripts/finish-check-exec.py skills/scripts/mutation-shards.py skills/scripts/tests/test_derive_scope_mutation.py skills/scripts/tests/test_finish_check_exec.py skills/scripts/tests/test_mutation_shards.py skills/scripts/tests/test_mutate_targets.py skills/scripts/tests/test_release_plugin_isolation.py skills/scripts/tests/test_release_mutation_guard.py\npython3 -m json.tool skills/finish-check-gates.json >/dev/null\npython3 -m json.tool skills/mutation-shards.json >/dev/null"
+      ],
+      "locks": []
+    },
+    "mutation": {
+      "command": ["python3", "skills/scripts/mutation-shards.py", "run"],
+      "locks": ["backend-runtime:exclusive", "db:exclusive"],
+      "allowed_env": [
+        "MUTATE_TARGET_CLASSES",
+        "MUTATION_KEEP_WORKSPACE"
+      ]
+    }
+  }
+}

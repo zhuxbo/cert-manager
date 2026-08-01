@@ -2,14 +2,15 @@
 
 namespace Database\Seeders;
 
+use App\Contracts\ProvidesNotificationTemplateDefaults;
 use App\Models\NotificationTemplate;
 use Illuminate\Database\Seeder;
 
-class NotificationTemplateSeeder extends Seeder
+class NotificationTemplateSeeder extends Seeder implements ProvidesNotificationTemplateDefaults
 {
-    public function run(): void
+    public function notificationTemplateDefaults(): array
     {
-        $templates = [
+        return [
             // 证书签发通知
             [
                 'code' => 'cert_issued',
@@ -23,34 +24,35 @@ class NotificationTemplateSeeder extends Seeder
                 'code' => 'cert_expire',
                 'name' => '证书到期提醒',
                 'content' => $this->getOrderExpireHtml(),
-                'variables' => ['user_id', 'email'],
+                'variables' => ['email'],
                 'example' => null,
             ],
-            // ACME 订阅到期提醒（订阅到期 ≠ 证书到期：到期后 certbot 无法继续自动签发/续签）
+            // ACME 订阅到期提醒（订阅到期 ≠ 证书到期：到期后 certbot 无法继续自动续签）
             [
                 'code' => 'acme_expire',
                 'name' => 'ACME 订阅到期提醒',
                 'content' => $this->getAcmeExpireHtml(),
-                // site_url 不列入：由 AcmeExpireNotificationBuilder 从系统设置注入，测试发送无需手填
-                'variables' => ['username', 'email', 'subscriptions'],
+                // username/subscriptions/site_url 由 Builder 读取用户与订阅数据后生成，测试发送只允许覆盖收件邮箱。
+                'variables' => ['email'],
                 'example' => null,
             ],
-            // 续期停滞孤儿提醒（续费/重签把前驱证书终态化后，接替证书长期卡在非 active 停滞态、前驱即将到期）。
+            // 续期停滞孤儿提醒（续费/重签把前驱证书终态化后，后续证书长期卡在非 active 停滞态、前驱即将到期）。
             // site_url/site_name 不列入：由 CertRenewStalledNotificationBuilder 从系统设置注入。
             [
                 'code' => 'cert_renew_stalled',
                 'name' => '证书续期停滞提醒',
                 'content' => $this->getCertRenewStalledHtml(),
-                'variables' => ['username', 'email', 'certificates'],
+                // username/certificates/site_url/site_name 均由 Builder 查询或注入。
+                'variables' => ['email'],
                 'example' => null,
             ],
-            // 接替单取消一次性通知（续费/重签接替单在非恢复态取消后，原证书脱离续期监控）。
+            // 续签订单取消一次性通知（续费/重签订单在非恢复态取消后，原证书脱离续期监控）。
             // site_url/site_name 不列入：由 CertRenewCancelledNotificationBuilder 从系统设置注入。
             [
                 'code' => 'cert_renew_cancelled',
-                'name' => '证书接替单取消提醒',
+                'name' => '证书续签取消提醒',
                 'content' => $this->getCertRenewCancelledHtml(),
-                'variables' => ['username', 'email', 'common_name', 'expires_at', 'order_id', 'action'],
+                'variables' => ['email', 'common_name', 'expires_at', 'order_id', 'product_type'],
                 'example' => null,
             ],
             // 证书吊销一次性通知（Order sync 直写 revoked 终态：证书被 CA 吊销、立即失去信任）。
@@ -59,7 +61,7 @@ class NotificationTemplateSeeder extends Seeder
                 'code' => 'cert_revoked',
                 'name' => '证书吊销提醒',
                 'content' => $this->getCertRevokedHtml(),
-                'variables' => ['username', 'email', 'common_name', 'expires_at', 'order_id', 'is_successor'],
+                'variables' => ['email', 'common_name', 'expires_at', 'order_id', 'is_successor', 'product_type'],
                 'example' => null,
             ],
             // 安全通知
@@ -67,7 +69,7 @@ class NotificationTemplateSeeder extends Seeder
                 'code' => 'security',
                 'name' => '安全通知',
                 'content' => '您好 {{ $username }}，您的账号发生安全变更：{{ $event }}，如非本人操作请及时处理。',
-                'variables' => ['username', 'event'],
+                'variables' => ['event'],
                 'example' => '您好 test，您的密码已修改，如非本人操作请及时处理。',
             ],
             // 用户创建通知
@@ -144,7 +146,11 @@ class NotificationTemplateSeeder extends Seeder
                 'example' => null,
             ],
         ];
+    }
 
+    public function run(): void
+    {
+        $templates = $this->notificationTemplateDefaults();
         foreach ($templates as $template) {
             // finance_audit：旧版本 code 为 finance_audit_alert，已由迁移改名为 finance_audit。
             // 用 updateOrCreate 按 code 匹配，避免重复 seed 产生重复行；
@@ -196,7 +202,7 @@ class NotificationTemplateSeeder extends Seeder
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SSL 证书已签发</title>
+    <title>{{ $product_type_label ?? 'SSL' }} 证书已签发</title>
     <style>
         /* 基础重置 */
         body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
@@ -225,7 +231,7 @@ class NotificationTemplateSeeder extends Seeder
 <body style="margin: 0; padding: 0; background-color: #f4f6f8;">
 
     <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
-        您申请的 {{ $domain }} 证书已成功签发{{ ($has_attachment ?? true) ? '，请查收附件' : '' }}。
+        您申请的 {{ $product_type_label ?? 'SSL' }} 证书 {{ $domain }} 已成功签发{{ ($has_attachment ?? true) ? '，请查收附件' : '' }}。
     </div>
 
     <center style="width: 100%; background-color: #f4f6f8;">
@@ -243,7 +249,7 @@ class NotificationTemplateSeeder extends Seeder
                             <td class="content-cell mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 
                                 <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
-                                    ✅ {{ ($product_type ?? 'ssl') === 'smime' ? 'S/MIME' : (($product_type ?? 'ssl') === 'codesign' ? '代码签名' : 'SSL') }} 证书已成功签发
+                                    ✅ {{ $product_type_label ?? 'SSL' }} 证书已成功签发
                                 </h1>
 
                                 <p style="margin: 0 0 20px 0; font-size: 16px; line-height: 26px; color: #555555;">
@@ -251,7 +257,7 @@ class NotificationTemplateSeeder extends Seeder
                                 </p>
 
                                 <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 26px; color: #555555;">
-                                    您在 <a href="{{ $site_url }}" style="color: #10b981; text-decoration: none; font-weight: 600;">{{ $site_name }}</a> 申请的 SSL 证书审核通过，现已正式签发。
+                                    您在 <a href="{{ $site_url }}" style="color: #10b981; text-decoration: none; font-weight: 600;">{{ $site_name }}</a> 申请的证书审核通过，现已正式签发。
                                 </p>
 
                                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom: 24px;">
@@ -259,7 +265,7 @@ class NotificationTemplateSeeder extends Seeder
                                         <td class="card-info" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 20px;">
                                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                                                 <tr>
-                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">证书域名</td>
+                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">证书标识</td>
                                                 </tr>
                                                 <tr>
                                                     <td class="highlight-text" style="padding-bottom: 16px; font-size: 18px; font-weight: 600; color: #333333; font-family: monospace;">{{ $domain }}</td>
@@ -325,7 +331,7 @@ HTML;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SSL 证书到期提醒</title>
+    <title>证书到期提醒</title>
     <style>
         /* 基础重置 */
         body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
@@ -363,7 +369,7 @@ HTML;
 <body style="margin: 0; padding: 0; background-color: #f4f6f8;">
 
     <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
-        您的 SSL 证书即将到期，请尽快处理。
+        您的证书即将到期，请尽快处理。
     </div>
 
     <center style="width: 100%; background-color: #f4f6f8;">
@@ -381,7 +387,7 @@ HTML;
                             <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 
                                 <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
-                                    ⚠️ SSL 证书到期提醒
+                                    ⚠️ 证书到期提醒
                                 </h1>
 
                                 <p style="margin: 0 0 15px 0; font-size: 16px; line-height: 26px; color: #555555;">
@@ -389,14 +395,15 @@ HTML;
                                 </p>
 
                                 <p style="margin: 0 0 25px 0; font-size: 15px; line-height: 26px; color: #555555;">
-                                    您的下列证书即将到期，为了不影响网站的正常访问和数据安全，请您尽快检查以下证书的 “自动重签/续费” 以及 “域名委托” 设置，或联系我们完成续期。
+                                    您的下列证书即将到期。请尽快检查续期安排或联系我们处理，避免证书到期影响对应业务。
                                 </p>
 
                                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="data-table" style="margin-bottom: 24px; border-collapse: collapse; width: 100%;">
                                     <thead>
                                         <tr style="background-color: #fffbeb;">
                                             <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">序号</th>
-                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">域名</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">证书类型</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">证书标识</th>
                                             <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">到期时间</th>
                                             <th align="center" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">剩余</th>
                                         </tr>
@@ -407,6 +414,9 @@ HTML;
                                         <tr>
                                             <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #666666;">
                                                 {{ $index + 1 }}
+                                            </td>
+                                            <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; font-weight: 600; color: #333333; font-family: monospace;">
+                                                {{ $cert['product_type_label'] ?? 'SSL' }}
                                             </td>
                                             <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; font-weight: 600; color: #333333; font-family: monospace;">
                                                 {{ $cert['domain'] }}
@@ -430,7 +440,11 @@ HTML;
                                 <div class="warning-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 30px;">
                                     <p class="warning-text" style="margin: 0; font-size: 14px; line-height: 22px; color: #92400e;">
                                         <strong>重要提示：</strong><br>
-                                        证书到期后，浏览器将拦截访问并显示"不安全"警告，严重影响用户信任。
+                                        @if($has_ssl_certificate ?? true)
+                                            SSL 证书到期后，浏览器可能拦截 HTTPS 访问并显示“不安全”警告。
+                                        @else
+                                            证书到期后将不再具备有效信任状态，可能影响身份验证、签名或加密业务。
+                                        @endif
                                     </p>
                                 </div>
 
@@ -438,7 +452,7 @@ HTML;
                                     <tr>
                                         <td align="center">
                                             <a href="{{ $site_url }}" style="background-color:#f59e0b; border-radius:4px; color:#ffffff; display:inline-block; font-family:sans-serif; font-size:16px; font-weight:bold; line-height:44px; text-align:center; text-decoration:none; width:200px; -webkit-text-size-adjust:none;">
-                                                立即续期
+                                                查看证书
                                             </a>
                                         </td>
                                     </tr>
@@ -512,7 +526,7 @@ HTML;
 <body style="margin: 0; padding: 0; background-color: #f4f6f8;">
 
     <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
-        您的 ACME 订阅即将到期，到期后自动签发/续签将中断。
+        您的 ACME 订阅即将到期，到期后自动续签将中断。
     </div>
 
     <center style="width: 100%; background-color: #f4f6f8;">
@@ -538,7 +552,7 @@ HTML;
                                 </p>
 
                                 <p style="margin: 0 0 25px 0; font-size: 15px; line-height: 26px; color: #555555;">
-                                    您的下列 ACME 订阅即将到期。<strong>订阅到期后，ACME 客户端（如 certbot）将无法继续自动签发/续签证书</strong>；已签发的证书会在其各自有效期到期后失效。请及时续订 ACME 订阅，避免自动化链路中断。
+                                    您的下列 ACME 订阅即将到期。<strong>订阅到期后，ACME 客户端（如 certbot）将无法继续自动续签证书</strong>；已签发的证书会在其各自有效期到期后失效。请及时续订 ACME 订阅，避免自动化链路中断。
                                 </p>
 
                                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="data-table" style="margin-bottom: 24px; border-collapse: collapse; width: 100%;">
@@ -704,7 +718,8 @@ HTML;
                                     <thead>
                                         <tr style="background-color: #fffbeb;">
                                             <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">序号</th>
-                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">域名</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">证书类型</th>
+                                            <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">证书标识</th>
                                             <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">到期时间</th>
                                             <th align="center" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">剩余</th>
                                             <th align="left" style="padding: 12px 10px; border-bottom: 2px solid #fcd34d; font-size: 13px; font-weight: 600; color: #92400e; text-transform: uppercase;">状态与处理建议</th>
@@ -716,6 +731,9 @@ HTML;
                                         <tr>
                                             <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #666666; vertical-align: top;">
                                                 {{ $index + 1 }}
+                                            </td>
+                                            <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; font-weight: 600; color: #333333; font-family: monospace; vertical-align: top;">
+                                                {{ $cert['product_type_label'] ?? 'SSL' }}
                                             </td>
                                             <td align="left" style="padding: 12px 10px; border-bottom: 1px solid #eeeeee; font-size: 14px; font-weight: 600; color: #333333; font-family: monospace; vertical-align: top;">
                                                 {{ $cert['domain'] }}
@@ -742,7 +760,12 @@ HTML;
                                 <div class="warning-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 30px;">
                                     <p class="warning-text" style="margin: 0; font-size: 14px; line-height: 22px; color: #92400e;">
                                         <strong>重要提示：</strong><br>
-                                        原证书到期后，浏览器将拦截访问并显示“不安全”警告。若已扣费的订单长时间未完成，请勿重复下单/支付，直接联系客服核实。
+                                        @if($has_ssl_certificate ?? true)
+                                            SSL 证书到期后，浏览器可能拦截 HTTPS 访问并显示“不安全”警告。
+                                        @else
+                                            证书到期后将不再具备有效信任状态，可能影响身份验证、签名或加密业务。
+                                        @endif
+                                        若已扣费的订单长时间未完成，请勿重复下单/支付，直接联系客服核实。
                                     </p>
                                 </div>
 
@@ -793,7 +816,7 @@ HTML;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>证书接替单取消提醒</title>
+    <title>{{ $product_type_label ?? 'SSL' }} 证书续签取消提醒</title>
     <style>
         body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
         table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
@@ -824,7 +847,7 @@ HTML;
 <body style="margin: 0; padding: 0; background-color: #f4f6f8;">
 
     <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
-        您的证书{{ $action }}接替订单已取消，原证书不再受自动续期监控，如需继续使用请手动续期。
+        您的 {{ $product_type_label ?? 'SSL' }} 证书续签订单已取消，原证书不再受续期监控，如需继续使用请手动续期。
     </div>
 
     <center style="width: 100%; background-color: #f4f6f8;">
@@ -842,7 +865,7 @@ HTML;
                             <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 
                                 <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
-                                    ⚠️ 证书接替单取消提醒
+                                    ⚠️ {{ $product_type_label ?? 'SSL' }} 证书续签取消提醒
                                 </h1>
 
                                 <p style="margin: 0 0 15px 0; font-size: 16px; line-height: 26px; color: #555555;">
@@ -851,12 +874,12 @@ HTML;
 
                                 <div class="notice-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 24px;">
                                     <p class="notice-text" style="margin: 0; font-size: 14px; line-height: 22px; color: #92400e;">
-                                        这是一封<strong>接替单取消重要提醒</strong>：因涉及服务连续性风险，本提醒不受常规到期提醒偏好控制。
+                                        这是一封<strong>证书续签取消重要提醒</strong>：因涉及服务连续性风险，本提醒不受常规到期提醒偏好控制。
                                     </p>
                                 </div>
 
                                 <p style="margin: 0 0 20px 0; font-size: 15px; line-height: 26px; color: #555555;">
-                                    您的证书<strong>{{ $action }}</strong>接替订单（订单号 {{ $order_id }}）已取消。原证书目前物理上仍在有效期内，但<strong>已不再受自动续期、到期提醒与续期停滞监控</strong>。如需继续使用该域名的证书服务，请在到期前<strong>手动重新发起续期</strong>。
+                                    您的 {{ $product_type_label ?? 'SSL' }} 证书续签订单（订单号 {{ $order_id }}）已取消。原证书目前仍在有效期内，但<strong>已不再受自动续期、到期提醒与续期停滞监控</strong>。如需继续使用该证书，请在到期前<strong>手动重新发起续期</strong>。
                                 </p>
 
                                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom: 24px;">
@@ -864,7 +887,7 @@ HTML;
                                         <td class="card-info" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 20px;">
                                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                                                 <tr>
-                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">原证书域名</td>
+                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">原证书标识</td>
                                                 </tr>
                                                 <tr>
                                                     <td class="highlight-text" style="padding-bottom: 16px; font-size: 18px; font-weight: 600; color: #333333; font-family: monospace;">{{ $common_name }}</td>
@@ -883,7 +906,12 @@ HTML;
                                 <div class="warning-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 30px;">
                                     <p class="warning-text" style="margin: 0; font-size: 14px; line-height: 22px; color: #92400e;">
                                         <strong>重要提示：</strong><br>
-                                        原证书到期后，浏览器将拦截访问并显示“不安全”警告。由于该证书已脱离自动续期监控，系统不会再就其到期向您发送提醒，请务必自行安排手动续期。
+                                        @if(($product_type ?? 'ssl') === 'ssl')
+                                            原 SSL 证书到期后，浏览器可能拦截 HTTPS 访问并显示“不安全”警告。
+                                        @else
+                                            原证书到期后将不再具备有效信任状态，可能影响身份验证、签名或加密业务。
+                                        @endif
+                                        由于该证书已脱离自动续期监控，系统不会再就其到期向您发送提醒，请务必自行安排手动续期。
                                     </p>
                                 </div>
 
@@ -934,7 +962,7 @@ HTML;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>证书吊销提醒</title>
+    <title>{{ $product_type_label ?? 'SSL' }} 证书吊销提醒</title>
     <style>
         body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
         table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
@@ -967,7 +995,7 @@ HTML;
 <body style="margin: 0; padding: 0; background-color: #f4f6f8;">
 
     <div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">
-        您的证书 {{ $common_name }} 已被证书颁发机构吊销，将立即失去信任、浏览器拦截访问。
+        您的 {{ $product_type_label ?? 'SSL' }} 证书 {{ $common_name }} 已被证书颁发机构吊销。
     </div>
 
     <center style="width: 100%; background-color: #f4f6f8;">
@@ -985,7 +1013,7 @@ HTML;
                             <td class="mobile-padding" style="padding: 40px 40px 30px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 
                                 <h1 style="margin: 0 0 20px 0; font-size: 22px; line-height: 30px; color: #333333; font-weight: 700;">
-                                    ⛔ 证书吊销提醒
+                                    ⛔ {{ $product_type_label ?? 'SSL' }} 证书吊销提醒
                                 </h1>
 
                                 <p style="margin: 0 0 15px 0; font-size: 16px; line-height: 26px; color: #555555;">
@@ -999,13 +1027,18 @@ HTML;
                                 </div>
 
                                 <p style="margin: 0 0 20px 0; font-size: 15px; line-height: 26px; color: #555555;">
-                                    您的证书（订单号 {{ $order_id }}）已被证书颁发机构（CA）<strong>吊销</strong>。被吊销的证书将<strong>立即失去信任</strong>，浏览器会拦截访问并显示“不安全”警告。如仍需为该域名提供 HTTPS 服务，请尽快<strong>重新申请证书</strong>。
+                                    您的 {{ $product_type_label ?? 'SSL' }} 证书（订单号 {{ $order_id }}）已被证书颁发机构（CA）<strong>吊销</strong>，将<strong>立即失去信任</strong>。
+                                    @if(($product_type ?? 'ssl') === 'ssl')
+                                        浏览器可能拦截 HTTPS 访问并显示“不安全”警告。如仍需提供网站服务，请尽快<strong>重新申请证书</strong>。
+                                    @else
+                                        这可能影响身份验证、签名或加密业务。如仍需使用相关业务，请尽快<strong>重新申请证书</strong>。
+                                    @endif
                                 </p>
 
                                 @if($is_successor)
                                 <div class="successor-box" style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 0 4px 4px 0; margin-bottom: 24px;">
                                     <p class="successor-text" style="margin: 0; font-size: 14px; line-height: 22px; color: #92400e;">
-                                        <strong>请注意：</strong>被吊销的是一张续期/重签接替证书，原证书已因本次续期<strong>不再受自动续期、到期提醒与续期停滞监控</strong>。系统不会再就原证书到期向您发送提醒，请务必自行安排手动续期。
+                                        <strong>请注意：</strong>被吊销的是续签后签发的新证书，原证书已因本次续期<strong>不再受自动续期、到期提醒与续期停滞监控</strong>。系统不会再就原证书到期向您发送提醒，请务必自行安排手动续期。
                                     </p>
                                 </div>
                                 @endif
@@ -1015,7 +1048,7 @@ HTML;
                                         <td class="card-info" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 20px;">
                                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                                                 <tr>
-                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">被吊销证书域名</td>
+                                                    <td style="padding-bottom: 8px; font-size: 14px; color: #888888; font-family: sans-serif;">被吊销证书标识</td>
                                                 </tr>
                                                 <tr>
                                                     <td class="highlight-text" style="padding-bottom: 16px; font-size: 18px; font-weight: 600; color: #333333; font-family: monospace;">{{ $common_name }}</td>

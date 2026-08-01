@@ -29,14 +29,15 @@ class AutoRenewService
     public function willAutoRenewExecute(Order $order, User $user): bool
     {
         // 检查 auto_renew 设置
-        $autoRenewEnabled = $order->auto_renew ?? ($user->auto_settings['auto_renew'] ?? false);
+        $autoRenewEnabled = $order->auto_renew ?? $user->auto_settings['auto_renew'];
         if (! $autoRenewEnabled) {
             return false;
         }
 
         // 检查产品是否支持续费
         $product = $order->product;
-        if ($product->status != 1 || ! $product->renew) {
+        // status 有 integer cast；宽松/严格不等在模型输入上等价，仅忽略这一种等价变异。
+        if ($product->status != 1 || ! $product->renew) { // @pest-mutate-ignore: NotEqualToNotIdentical
             return false;
         }
 
@@ -69,7 +70,7 @@ class AutoRenewService
     public function willAutoReissueExecute(Order $order, User $user): bool
     {
         // 检查 auto_reissue 设置
-        $autoReissueEnabled = $order->auto_reissue ?? ($user->auto_settings['auto_reissue'] ?? false);
+        $autoReissueEnabled = $order->auto_reissue ?? $user->auto_settings['auto_reissue'];
         if (! $autoReissueEnabled) {
             return false;
         }
@@ -142,7 +143,7 @@ class AutoRenewService
     public function checkDelegationValidity(int $userId, string $domains, string $ca): bool
     {
         $prefix = CnameDelegationService::getDelegationPrefixForCa($ca);
-        $domainList = explode(',', trim($domains, ','));
+        $domainList = explode(',', $domains);
 
         foreach ($domainList as $domain) {
             $domain = trim($domain);
@@ -177,6 +178,6 @@ class AutoRenewService
      */
     public function isAutoRenewEnabled(Order $order, User $user): bool
     {
-        return $order->auto_renew ?? ($user->auto_settings['auto_renew'] ?? false);
+        return $order->auto_renew ?? $user->auto_settings['auto_renew'];
     }
 }

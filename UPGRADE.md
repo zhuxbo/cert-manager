@@ -62,7 +62,7 @@ rm /www/wwwroot/ssl-manager/backend/storage/framework/upgrade.lock
 4.  解压临时 + 校验包 + PHP 环境检测（不达标抛 PhpEnvironmentException 中断，引导用 upgrade.sh）
 5.  rsync 覆盖（保留 storage / .env / plugins / backups）
 6.  composer install --no-dev（仅 composer.* 变更时）+ 无条件 dump-autoload
-7.  opcache_reset（进程内）
+7.  opcache_reset（**CLI 子进程内**，清不到 PHP-FPM 的字节码缓存）
 8.  php artisan migrate --force
 9.  数据库结构校验 + 自动修复
 10. db:seed --force

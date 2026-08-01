@@ -380,6 +380,8 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - diff：<由主智能体填**精确可复跑的 diff 命令/ref 范围**（如 `git diff <base>..HEAD`；提交前场景填 `git diff` + `git diff --cached`），禁止只贴 --stat/文件名清单替代>
 - 主要功能背景：<由主智能体填，1-3 句话说明这次 PR 想解决什么>
 - 本轮报告写入：<由主智能体填 `.superpowers/reviews/<本次 run 目录>/round-<N>.md` 的路径；reviewer 必须把完整报告原样写入该文件，最终回复正文 = 同一报告>
+- finish-check 运行目录：<由主智能体填 `.superpowers/finish-check-runs/<本次 run>/`；reviewer 实跑命令须通过 `skills/scripts/finish-check-exec.py run` 写入同一账本>
+- 当前 generation / fingerprint：<由主智能体从运行目录 `state.json` 填；报告签字前再次核对，漂移即本轮无效>
 - 相关 plan 文档（无则填'无'）：<由主智能体填 `.superpowers/plans/<filename>.md` 的相对路径；reviewer 可选阅读以理解设计决策；本次改动确实无 plan 时显式填"无"，需补充上下文可附若干 commit SHA 供 reviewer 用 `git show` 翻历史。**收到"无"时 reviewer 必须反核**：跑 `ls .superpowers/plans/ .superpowers/*.md` 按本次 diff 涉及的模块/功能名匹配；发现疑似候选先打开核对内容——若 plan 描述的正是本次 diff 的改动（而非历史已完成功能的旧 plan），报 high（设计期清单被绕过）；报告留一行痕迹：`ls plans → 无匹配项` 或 `匹配到 <file>，核对为历史旧 plan，不对应本次 diff`>
 - 相关 spec/brainstorm 文档（如果有）：<由主智能体填 `.superpowers/specs/<filename>.md` 的路径；同上>
 
@@ -388,6 +390,7 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - 上一轮 medium 用户决议为'当场修'的项：<由主智能体填，同上格式；用户选 follow-up/接受 的不列>
 - 当前是第 N 轮 / 共 5 轮：<由主智能体填，如 "第 2 轮 / 共 5 轮"；临近第 5 轮除非 critical/high 否则应倾向 REVIEW_PASS>
 - 已修项不要**原样重复报告**，但每个标注"已修待复验"的项必须**复验是否真在运行路径生效**：读修复 commit 实际代码而非 commit message；鉴权/签名/限流类必须实际制造一次绕过请求（反模式 2/15）。复验不通过 → 按新 critical/high 报告，不受"已知问题"豁免；复验通过 → 在报告中标注，主智能体下一轮才可改填"已修，第 N 轮复验通过"真正豁免。主智能体的"已修"标注**不构成验证**——半修（声称修了实际没生效）正是 `76a2f58` 三处教训的根因
+- Round 1 必须完整审查。Round 2 起仅在 finish-check §8.3 累计覆盖条件成立时允许增量复验：记录整体/逐文件 hash，并完整审查变化文件及其直接调用方/被调用方、对称副本、相关测试/plan、上一轮发现调用链。安全、资金、迁移、并发/异步、打包部署、跨模块契约或依赖变化一律退回完整审查。hash 只能证明未变，不能证明语义影响面已覆盖
 
 ## 必查反模式清单
 读 `skills/review-checklist.md` "反模式分级" 章节 + 设计期清单，按本次改动确定本轮扫描范围（核心层 6 条必扫 + 条件层按改动目录触发）。当前项目特有反模式由该文件保持单一来源。
@@ -396,6 +399,8 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - 反模式 21 特别强调：改了 migrations / 数据库结构 → 不能只信 CI 绿 / migration 入表，必须**实跑 `migrate` 再 `db:structure --check`** 验证索引/列确已生效（`SHOW INDEX WHERE ?` 静默失败曾让索引"看似升级实则没建"）
 
 ## 必须实际跑(不只是静态推理!)
+以下命令必须通过 `python3 skills/scripts/finish-check-exec.py run --run-dir <finish-check 运行目录> --name reviewer-rN-<gate> [资源锁] -- <命令>` 执行并写入账本。Pint、PHPStan、Laravel 测试和运行时失败场景加 `--lock backend-runtime:exclusive`；数据库命令再加 `--lock db:exclusive`。mutation 运行期间只允许源码阅读与其重叠，PHP 命令等待锁，不得靠人工约定并行。
+
 0. **实跑"改动范围"给出的 diff 命令获取全文 patch**(非 --stat)，每条发现须引用 diff 中的具体 hunk(文件:行)；若按所给范围取不到全文 → 最后一行输出 `REVIEW_FAIL: diff 不可获取，无法审查`
 1. `cd backend && ./vendor/bin/pint --test`(PHP 格式)
 2. `cd backend && ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G`(静态分析)
@@ -421,12 +426,13 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - 第 5 项一行：`发了什么绕过请求 → 响应码/是否被拦`
 - 第 6 项一行：`抽查了哪 3-5 个复选框 → 各自结论`
 - plan 反核一行（plan 字段为"无"时）：`ls plans → 无匹配项` 或核对结论
+- finish-check 证据一行：`generation=<N> fingerprint=<sha256> → 与 state.json 及 reviewer 命令账本一致`
 
 回执行从简，不计入报告字数预算。**缺"证据回执"段 = 主智能体按 REVIEW_FAIL 处理退回重派。**
 
 ## 退出签字（必须 — 机器可 grep 前缀验证）
 
-完整报告（含证据回执与签字行）**必须原样写入"改动范围"段指定的 round 文件**，最终回复正文与文件内容一致。最后一行必须是下面两种之一，**前缀（含冒号）必须原样**，前缀后附回执字段与简短说明：
+完整报告（含证据回执与签字行）**必须原样写入"改动范围"段指定的 round 文件**，最终回复正文与文件内容一致。签字前重新计算源码 fingerprint；与任务字段或账本 generation 不一致时必须 `REVIEW_FAIL`，不得复用旧命令证据。最后一行必须是下面两种之一，**前缀（含冒号）必须原样**，前缀后附回执字段与简短说明：
 
 - critical/high 清零 → 最后一行写：
   `REVIEW_PASS: round=N findings=C0/H0/M_/L_ — critical/high 已清零（medium/low 列于上方供用户决议）`

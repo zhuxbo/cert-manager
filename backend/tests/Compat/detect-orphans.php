@@ -29,6 +29,9 @@ declare(strict_types=1);
 use Pest\Support\Str;
 
 require __DIR__.'/../../vendor/autoload.php';
+require_once __DIR__.'/OrphanFixtureMethod.php';
+
+use function Tests\Compat\withoutPestDatasetSuffix;
 
 $fixtureDir = __DIR__.'/fixtures';
 $testsRoot = dirname(__DIR__);          // .../backend/tests
@@ -113,11 +116,12 @@ foreach ($files as $file) {
 
     // 不剥 `__pest_evaluable_` 前缀：Str::evaluable() 的返回值本身就带这个前缀，
     // 两边必须同为完整方法名才能比对（剥掉会永不匹配、把所有 fixture 误判成孤儿）。
-    // 数据集用例：`<方法名>@dataset "key" with data (...)`，截到 @dataset 之前
-    $expected = $method;
-    if (($pos = strpos($expected, '@dataset')) !== false) {
-        $expected = substr($expected, 0, $pos);
-    }
+    // 数据集用例既可能是命名 dataset：
+    // `<方法名>@dataset "key" with data (...)`，
+    // 也可能是直接数组 dataset：
+    // `<方法名>@('value') with data ('value')`。
+    // 两种都截掉 Pest 追加的数据集后缀；测试名自身包含 @ 时不受影响。
+    $expected = withoutPestDatasetSuffix($method);
 
     if (! in_array($expected, evaluableNamesOf($phpPath, $evaluableCache), true)) {
         $orphans[] = [basename($file), '测试已删除或改名: '.$class.'::'.$expected];

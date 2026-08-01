@@ -191,6 +191,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
     RouteHelper::registerResourceRoutes('setting-group', SettingGroupController::class);
     RouteHelper::registerResourceRoutes('setting', SettingController::class);
     RouteHelper::registerResourceRoutes('notification-template', NotificationTemplateController::class);
+    Route::post('notification-template/reset', [NotificationTemplateController::class, 'reset']);
     Route::prefix('setting')->group(function () {
         Route::post('site-image/{kind}', [SettingController::class, 'uploadSiteImage'])
             ->where('kind', 'favicon|logo|logo-expanded|qrcode|login-image');
@@ -297,7 +298,6 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('channel', [UpgradeController::class, 'setChannel']);
         Route::post('freeze', [UpgradeController::class, 'freeze']);
         Route::post('unfreeze', [UpgradeController::class, 'unfreeze']);
-        Route::post('opcache-reset', [UpgradeController::class, 'opcacheReset']);
         Route::post('smoke', [UpgradeController::class, 'smoke']);
         Route::get('binary-health', [UpgradeController::class, 'binaryHealth']);
     });

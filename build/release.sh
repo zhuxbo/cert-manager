@@ -181,6 +181,30 @@ test_all_connections() {
 }
 
 # ========================================
+# 正式版 mutation 证据守卫
+# ========================================
+verify_main_mutation_evidence() {
+    local version="$1"
+    local run_dir="$PROJECT_ROOT/.superpowers/finish-check-runs/main-release-$version"
+
+    if ! (
+        cd "$PROJECT_ROOT"
+        python3 skills/scripts/finish-check-exec.py verify \
+            --run-dir "$run_dir" \
+            --require mutation
+    ); then
+        log_error "正式版缺少当前源码的完整 mutation PASS，拒绝发布"
+        log_info "请先执行："
+        log_info "  python3 skills/scripts/finish-check-exec.py freeze --run-dir \"$run_dir\""
+        log_info "  python3 skills/scripts/finish-check-exec.py run --run-dir \"$run_dir\" --gate mutation"
+        log_info "  python3 skills/scripts/finish-check-exec.py verify --run-dir \"$run_dir\" --require mutation"
+        return 1
+    fi
+
+    log_success "正式版完整 mutation 证据有效"
+}
+
+# ========================================
 # 远程更新 releases.json
 # ========================================
 update_releases_json_remote() {
@@ -547,6 +571,8 @@ main() {
             log_info "  远程: $remote_head"
             exit 1
         fi
+        # 必须在任何 tag/远端发布变更之前验证当前 main 源码的完整 mutation 证据。
+        verify_main_mutation_evidence "$version" || exit 1
         # 打版本 tag + 同步 latest tag 到当前提交
         ensure_tag "v$version"
         ensure_tag "latest"

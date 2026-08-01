@@ -8,9 +8,6 @@
     </el-button>
     <template #dropdown>
       <el-dropdown-menu>
-        <el-dropdown-item v-if="cert.status == 'active'" command="send">{{
-          "发送"
-        }}</el-dropdown-item>
         <el-dropdown-item v-if="cert.status == 'pending'" command="commit">{{
           "提交"
         }}</el-dropdown-item>
@@ -35,21 +32,10 @@
       ><Refresh />
     </el-icon>
   </el-button>
-  <el-dialog v-model="sendEmailDialog" title="发送邮件">
-    <el-form-item label="邮箱" :label-width="100">
-      <el-input v-model="email" autocomplete="off" />
-    </el-form-item>
-    <template #footer>
-      <span class="dialog-footer">
-        <el-button @click="sendEmailDialog = false">{{ "取消" }}</el-button>
-        <el-button type="primary" @click="send()">{{ "发送" }}</el-button>
-      </span>
-    </template>
-  </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, inject, reactive, computed } from "vue";
+import { inject, reactive, computed } from "vue";
 import { buildUUID } from "@pureadmin/utils";
 import router from "@/router";
 import { ElMessageBox } from "element-plus";
@@ -90,9 +76,6 @@ const orderOperate = (command: string) => {
     return;
   }
   switch (command) {
-    case "send":
-      sendEmailDialog.value = true;
-      break;
     case "commit":
       commit();
       break;
@@ -110,14 +93,6 @@ const orderOperate = (command: string) => {
   }
 };
 
-const email = ref(order?.user?.email);
-const sendEmailDialog = ref(false);
-const send = () => {
-  OrderApi.sendActive(order.id, email.value).then(() => {
-    sendEmailDialog.value = false;
-    message("发送成功", { type: "success" });
-  });
-};
 const commit = () => {
   OrderApi.commit(order.id).then(() => {
     message("提交成功", { type: "success" });

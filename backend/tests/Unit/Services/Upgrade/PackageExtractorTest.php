@@ -344,7 +344,7 @@ test('applyFrontendUpgrade 更新 platform config 且不保留 admin logo', func
     }
 });
 
-test('applyFrontendUpgrade 保留 user 的 Logo、新旧二维码和登录配图回落资源', function () {
+test('applyFrontendUpgrade 保留 user 的 Logo、PNG 二维码和登录配图回落资源', function () {
     $sourceDir = "$this->testDir/pkg/frontend/user";
     File::makeDirectory($sourceDir, 0755, true);
     File::put("$sourceDir/app.js", 'NEW-APP');
@@ -354,7 +354,7 @@ test('applyFrontendUpgrade 保留 user 的 Logo、新旧二维码和登录配图
     File::makeDirectory("$installDir/backend", 0755, true);
     File::makeDirectory($targetDir, 0755, true);
     File::put("$targetDir/logo.svg", 'OLD-LOGO');
-    File::put("$targetDir/qrcode.svg", 'SVG-QRCODE');
+    File::put("$targetDir/qrcode.svg", 'STALE-SVG-QRCODE');
     File::put("$targetDir/qrcode.png", 'PNG-QRCODE');
     File::put("$targetDir/login.svg", 'OLD-LOGIN');
 
@@ -366,35 +366,9 @@ test('applyFrontendUpgrade 保留 user 的 Logo、新旧二维码和登录配图
         $method->invoke($this->extractor, $sourceDir, 'user');
 
         expect(File::get("$targetDir/logo.svg"))->toBe('OLD-LOGO')
-            ->and(File::get("$targetDir/qrcode.svg"))->toBe('SVG-QRCODE')
             ->and(File::get("$targetDir/qrcode.png"))->toBe('PNG-QRCODE')
-            ->and(File::get("$targetDir/login.svg"))->toBe('OLD-LOGIN')
-            ->and(File::get("$targetDir/app.js"))->toBe('NEW-APP');
-    } finally {
-        app()->setBasePath($originalBase);
-    }
-});
-
-test('applyFrontendUpgrade 不向仅有旧 PNG 二维码的安装交付 SVG', function () {
-    $sourceDir = "$this->testDir/pkg/frontend/user";
-    File::makeDirectory($sourceDir, 0755, true);
-    File::put("$sourceDir/app.js", 'NEW-APP');
-
-    $installDir = "$this->testDir/install";
-    $targetDir = "$installDir/frontend/user";
-    File::makeDirectory("$installDir/backend", 0755, true);
-    File::makeDirectory($targetDir, 0755, true);
-    File::put("$targetDir/qrcode.png", 'OLD-QRCODE');
-
-    $originalBase = base_path();
-    app()->setBasePath("$installDir/backend");
-
-    try {
-        $method = (new ReflectionClass($this->extractor))->getMethod('applyFrontendUpgrade');
-        $method->invoke($this->extractor, $sourceDir, 'user');
-
-        expect(File::get("$targetDir/qrcode.png"))->toBe('OLD-QRCODE')
             ->and("$targetDir/qrcode.svg")->not->toBeFile()
+            ->and(File::get("$targetDir/login.svg"))->toBe('OLD-LOGIN')
             ->and(File::get("$targetDir/app.js"))->toBe('NEW-APP');
     } finally {
         app()->setBasePath($originalBase);

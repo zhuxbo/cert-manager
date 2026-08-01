@@ -1,9 +1,14 @@
 <?php
 
 use App\Jobs\NotificationJob;
+use App\Models\Cert;
+use App\Models\Chain;
 use App\Models\Notification;
 use App\Models\NotificationTemplate;
+use App\Models\Order;
+use App\Models\Product;
 use App\Models\User;
+use App\Services\Notification\Builders\CertIssuedNotificationBuilder;
 use App\Services\Notification\Builders\DefaultNotificationBuilder;
 use App\Services\Notification\Builders\NotificationBuilderInterface;
 use App\Services\Notification\Builders\UserCreatedNotificationBuilder;
@@ -53,6 +58,52 @@ class BuildFailsWithSecretInMessageBuilder implements NotificationBuilderInterfa
     public function build(NotificationIntent $intent, Model $notifiable): ?NotificationPayload
     {
         throw new RuntimeException('build fail: '.($intent->context['password'] ?? ''));
+    }
+}
+
+class SmimeEnospcNotificationBuilder extends CertIssuedNotificationBuilder
+{
+    public static ?string $capturedRoot = null;
+
+    protected function makeArchiveRootDir(): string
+    {
+        self::$capturedRoot = parent::makeArchiveRootDir();
+
+        return self::$capturedRoot;
+    }
+
+    protected function generateSmimePfxPassword(): string
+    {
+        return 'A2b3C4';
+    }
+
+    /**
+     * @param  list<string>  $command
+     * @return array{exitCode:int,stdout:string,stderr:string}
+     */
+    protected function runProcess(array $command, string $stdin): array
+    {
+        return [
+            'exitCode' => 1,
+            'stdout' => '',
+            'stderr' => "error writing output: No space left on device; secret=$stdin",
+        ];
+    }
+}
+
+class SmimeAlgorithmFailureNotificationBuilder extends SmimeEnospcNotificationBuilder
+{
+    /**
+     * @param  list<string>  $command
+     * @return array{exitCode:int,stdout:string,stderr:string}
+     */
+    protected function runProcess(array $command, string $stdin): array
+    {
+        return [
+            'exitCode' => 1,
+            'stdout' => '',
+            'stderr' => 'Error creating PKCS12 structure: unsupported algorithm PBE-SHA1-3DES',
+        ];
     }
 }
 
@@ -108,6 +159,39 @@ function createJobTemplate(array $overrides = []): NotificationTemplate
     ], $overrides));
 }
 
+function createJobSmimeOrder(User $user): Order
+{
+    $product = Product::factory()->create(['product_type' => Product::TYPE_SMIME]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+    $key = openssl_pkey_new([
+        'private_key_bits' => 2048,
+        'private_key_type' => OPENSSL_KEYTYPE_RSA,
+    ]);
+    openssl_pkey_export($key, $privateKey);
+    $csr = openssl_csr_new(['commonName' => 'enospc@example.test'], $key, ['digest_alg' => 'sha256']);
+    $certificate = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($certificate, $certificatePem);
+    $issuer = 'ENOSPC Test CA';
+    Chain::create([
+        'common_name' => $issuer,
+        'intermediate_cert' => $certificatePem,
+    ]);
+    app()->forgetInstance('cert.chainMap');
+    $cert = Cert::factory()->active()->create([
+        'order_id' => $order->id,
+        'common_name' => 'enospc@example.test',
+        'issuer' => $issuer,
+        'cert' => $certificatePem,
+        'private_key' => $privateKey,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    return $order->refresh();
+}
+
 test('handles notification successfully', function () {
     $user = createJobUser(['mobile' => '138'.uniqid()]);
     $template = createJobTemplate();
@@ -139,6 +223,75 @@ test('handles notification successfully', function () {
     // 验证发送结果
     expect($notification->data)->toHaveKey('result');
     expect($notification->data['result']['status'])->toBe(Notification::STATUS_SENT);
+});
+
+test('S/MIME OpenSSL 输出 ENOSPC 作为瞬态 build 失败 release 并清理且诊断不泄密', function () {
+    $user = createJobUser();
+    $order = createJobSmimeOrder($user);
+    $template = createJobTemplate();
+    SmimeEnospcNotificationBuilder::$capturedRoot = null;
+    Log::spy();
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldNotReceive('send');
+    });
+
+    $job = new NotificationJob(
+        'user',
+        $user->id,
+        $template->id,
+        'mail',
+        ['order_id' => $order->id],
+        SmimeEnospcNotificationBuilder::class
+    );
+    $job->withFakeQueueInteractions();
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertReleased();
+    $job->assertNotFailed();
+    expect($job->job->releaseDelay)->toBe(60)
+        ->and(SmimeEnospcNotificationBuilder::$capturedRoot)->not->toBeNull()
+        ->and(is_dir(SmimeEnospcNotificationBuilder::$capturedRoot))->toBeFalse()
+        ->and(Notification::where('notifiable_id', $user->id)->count())->toBe(0);
+
+    Log::shouldHaveReceived('error')
+        ->withArgs(function ($message, $context = []) {
+            $encoded = json_encode($context);
+
+            return $message === 'S/MIME PFX 生成失败'
+                && str_contains((string) ($context['diagnose'] ?? ''), '[REDACTED]')
+                && ! str_contains((string) $encoded, 'A2b3C4');
+        })
+        ->once();
+});
+
+test('S/MIME OpenSSL 算法确定性失败不 release 并清理后落永久失败', function () {
+    $user = createJobUser();
+    $order = createJobSmimeOrder($user);
+    $template = createJobTemplate();
+    SmimeEnospcNotificationBuilder::$capturedRoot = null;
+    $this->mock(MailChannel::class, function ($mock) {
+        $mock->shouldNotReceive('send');
+    });
+
+    $job = new NotificationJob(
+        'user',
+        $user->id,
+        $template->id,
+        'mail',
+        ['order_id' => $order->id],
+        SmimeAlgorithmFailureNotificationBuilder::class
+    );
+    $job->withFakeQueueInteractions();
+    $job->handle(app(NotificationRepository::class), app(ChannelManager::class));
+
+    $job->assertNotReleased();
+    $job->assertNotFailed();
+    expect(SmimeEnospcNotificationBuilder::$capturedRoot)->not->toBeNull()
+        ->and(is_dir(SmimeEnospcNotificationBuilder::$capturedRoot))->toBeFalse();
+
+    $notification = Notification::where('notifiable_id', $user->id)->firstOrFail();
+    expect($notification->status)->toBe(Notification::STATUS_FAILED)
+        ->and($notification->data['result']['message'])->toBe('通知内容生成失败');
 });
 
 test('skips when template not found', function () {

@@ -126,9 +126,13 @@ check_identifiers() {
         fi
 
         # 退化 2：文件路径类条目按 tracked 文件存在性兜底
-        # （文档常写相对 backend/ 的路径，如 tests/Feature/...，用 */ 通配前缀匹配）
+        # （文档常写相对 backend/ 的路径，如 tests/Feature/...，用 */ 通配前缀匹配）。
+        # finish-check 发生在提交前，必须同时接受工作树里的未跟踪新文件，不能把
+        # “尚未 git add”误报成路径腐烂。
         if [[ "$item" == *.* ]]; then
-            if [[ -n "$(git ls-files -- "$item" "*/$item" 2>/dev/null)" ]]; then
+            if [[ -e "$item" ]] ||
+                [[ -n "$(git ls-files --others --exclude-standard -- "$item" "*/$item" 2>/dev/null)" ]] ||
+                [[ -n "$(git ls-files -- "$item" "*/$item" 2>/dev/null)" ]]; then
                 continue
             fi
         fi

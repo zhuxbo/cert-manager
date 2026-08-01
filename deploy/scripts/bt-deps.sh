@@ -256,13 +256,13 @@ bt_install_so_via_api() {
         if echo "$resp" | grep -qi '<html'; then
             local title
             title=$(echo "$resp" | grep -oE '<title>[^<]+</title>' | sed -E 's|</?title>||g' | head -1)
-            log_info "  BT API 装扩展未成功（${title:-HTML 错误页}），将走 fallback"
+            log_info "BT API 装扩展未成功（${title:-HTML 错误页}），将走 fallback"
         else
-            log_info "  BT API 装扩展未成功: $(echo "$resp" | tr -d '\n\r' | head -c 200)，将走 fallback"
+            log_info "BT API 装扩展未成功: $(echo "$resp" | tr -d '\n\r' | head -c 200)，将走 fallback"
         fi
         return 1
     fi
-    log_info "  → BT 装扩展任务已入队: $ext"
+    log_info "→ BT 装扩展任务已入队: $ext"
 
     # 轮询验证就绪（最多 120s；BT 编译扩展可能慢）
     local i=0
@@ -395,7 +395,7 @@ auto_install_ext() {
         # 路径 3：.so 已存在但 ini 未启用（PHP 内置扩展如 calendar 常见）
         # 检测 extension_dir/<ext>.so 是否存在 → 写 cli + fpm 两份 ini → 验证生效
         if [ "$installed" = false ] && [ -n "$php_ext_dir" ] && [ -f "$php_ext_dir/${ext}.so" ]; then
-            log_info "  → 检测到 ${ext}.so 已编译于 ${php_ext_dir}，启用 ini"
+            log_info "→ 检测到 ${ext}.so 已编译于 ${php_ext_dir}，启用 ini"
             local ini_dir="/www/server/php/$PHP_VERSION/etc"
             for ini_file in "$ini_dir/php.ini" "$ini_dir/php-cli.ini"; do
                 if [ -f "$ini_file" ] && ! grep -qE "^[[:space:]]*extension[[:space:]]*=[[:space:]]*${ext}\.so" "$ini_file"; then
@@ -642,7 +642,7 @@ case "${1:-}" in
         for ini_file in "/www/server/php/$PHP_VERSION/etc/php.ini" "/www/server/php/$PHP_VERSION/etc/php-cli.ini" "/www/server/php/$PHP_VERSION/etc/php-fpm.ini"; do
             [ -f "$ini_file" ] || continue
             enable_functions_in_ini "$ini_file" "$functions_str"
-            log_info "  已更新: $(basename "$ini_file")"
+            log_info "已更新: $(basename "$ini_file")"
             updated_any=true
         done
         if [ "$updated_any" = false ]; then

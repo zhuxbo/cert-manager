@@ -6,6 +6,7 @@ use App\Exceptions\PhpEnvironmentException;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Composer\ComposerMirror;
+use App\Support\Opcache;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
@@ -23,7 +24,31 @@ class UpgradeService
         protected DatabaseStructureService $databaseStructureService,
         protected EnvironmentChecker $environmentChecker,
         protected ComposerMirror $mirror = new ComposerMirror,
+        protected Opcache $opcache = new Opcache,
     ) {}
+
+    /**
+     * 清理 OPcache 并记账
+     *
+     * 换代码后必须清，否则 opcache.validate_timestamps=0 的机器继续跑旧字节码。
+     * 但这一步永远不能中断升级：配了 opcache.restrict_api 时 PHP 会发 E_WARNING，
+     * 被 Laravel 转成 ErrorException——Opcache::reset() 已就地接住，此处只记录结果。
+     *
+     * 后台升级由 `UpgradeController::execute` spawn `artisan upgrade:run &`，**全程 CLI 子进程**，
+     * 清的是自己的字节码缓存、够不到 PHP-FPM。日志必须带这个限定，否则 `ok` 会被当成
+     * "线上字节码已换"——那正是本次要消灭的假成功信号。
+     */
+    private function resetOpcache(string $context): void
+    {
+        $result = $this->opcache->reset();
+        $scope = $this->opcache->isCli() ? '（cli-only，FPM 未受影响）' : '';
+
+        if ($result['status'] === Opcache::FAILED) {
+            Log::warning("$context opcache_reset 未生效{$scope}", $result);
+        } else {
+            Log::info("$context opcache: {$result['status']}{$scope}", $result);
+        }
+    }
 
     /**
      * 检查更新
@@ -203,9 +228,7 @@ class UpgradeService
             }
 
             // 步骤 9: 清理 opcache
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-            }
+            $this->resetOpcache('[Upgrade] 步骤 9');
 
             // 步骤 10: 运行迁移
             if (Config::get('upgrade.behavior.auto_migrate', true)) {
@@ -290,9 +313,7 @@ class UpgradeService
             }
 
             // 最终清理
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-            }
+            $this->resetOpcache('[Upgrade] 最终清理');
 
             Log::info("升级完成: $currentVersion -> $targetVersion");
             $statusManager->complete($currentVersion, $targetVersion, $structureCheckResult);
@@ -355,10 +376,7 @@ class UpgradeService
             $this->backupManager->restoreBackup($backupId);
 
             // 清理 opcache 以加载恢复的代码
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-                Log::info('[Rollback] opcache_reset called after restore');
-            }
+            $this->resetOpcache('[Rollback] 恢复备份后');
 
             // 清理并重建缓存（必须用全新子进程，原因见 performUpgradeWithStatus 同段注释）
             $clearResult = $this->runArtisanInSubprocess('optimize:clear', ['--except' => 'view']);
@@ -375,9 +393,7 @@ class UpgradeService
             }
 
             // 最终清理 opcache
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-            }
+            $this->resetOpcache('[Rollback] 最终清理');
 
             // 防御性解冻（rollback 自身不 freeze，此处清失败升级滞留的 freeze）——先于 up，语义同升级路径
             UpgradeFreezeLock::unfreeze();

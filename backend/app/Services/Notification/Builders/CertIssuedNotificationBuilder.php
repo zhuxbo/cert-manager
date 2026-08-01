@@ -4,7 +4,9 @@ namespace App\Services\Notification\Builders;
 
 use App\Bootstrap\ApiExceptions;
 use App\Models\Order;
+use App\Models\Product;
 use App\Models\User;
+use App\Services\Notification\CertificateProductType;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
 use App\Services\Notification\Exceptions\TransientBuildException;
@@ -19,7 +21,7 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
 {
     use ActionFileTrait;
 
-    public function build(NotificationIntent $intent, Model $notifiable): NotificationPayload
+    public function build(NotificationIntent $intent, Model $notifiable): ?NotificationPayload
     {
         if (! $notifiable instanceof User) {
             throw new RuntimeException('通知接收者必须为用户');
@@ -33,10 +35,21 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
         $order = Order::with(['user', 'product', 'latestCert'])
             ->whereHas('user')
             ->whereHas('product')
-            ->whereHas('latestCert', fn ($query) => $query->where('status', 'active'))
+            ->whereHas('latestCert')
             ->find($orderId);
 
         if (! $order) {
+            throw new RuntimeException('订单不存在');
+        }
+
+        $rawProductType = $order->product->getRawOriginal('product_type');
+        if (is_string($rawProductType)
+            && ! in_array($rawProductType, [Product::TYPE_SSL, Product::TYPE_SMIME], true)) {
+            return null;
+        }
+        $productType = CertificateProductType::normalize($rawProductType);
+        $productTypeLabel = CertificateProductType::label($productType);
+        if ($order->latestCert->status !== 'active') {
             throw new RuntimeException('订单不存在或未签发');
         }
 
@@ -48,17 +61,10 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
         $siteUrl = get_system_setting('site', 'url', '/');
         $siteName = get_system_setting('site', 'name', 'SSL证书管理系统');
 
-        // 获取产品类型，仅 SSL 证书需要生成附件
-        $productType = $order->product->product_type ?? 'ssl';
-        $hasAttachment = $productType === 'ssl';
+        $hasAttachment = in_array($productType, [Product::TYPE_SSL, Product::TYPE_SMIME], true);
 
-        // 根据产品类型生成邮件主题
         $commonName = $order->latestCert->common_name;
-        $subject = match ($productType) {
-            'smime' => "$commonName S/MIME 证书已签发 [$siteName]",
-            'codesign' => "$commonName 代码签名证书已签发 [$siteName]",
-            default => "$commonName 域名SSL证书已签发 [$siteName]",
-        };
+        $subject = "$commonName {$productTypeLabel} 证书已签发 [$siteName]";
 
         $data = [
             'username' => $notifiable->username,
@@ -69,6 +75,7 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
             'order_id' => $order->id,
             'email' => $email,
             'product_type' => $productType,
+            'product_type_label' => $productTypeLabel,
             'has_attachment' => $hasAttachment,
             'subject' => $subject,
             '_meta' => [
@@ -77,15 +84,16 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
             ],
         ];
 
-        // SSL 证书才生成 ZIP 附件
         if ($hasAttachment) {
-            $random = sprintf('%04x%04x', mt_rand(0, 0xFFFF), mt_rand(0, 0xFFFF));
-            $tempDir = storage_path('temp-certs/'.$random);
-            $attachmentPath = $tempDir.'/'.str_replace('*', 'STAR', $order->latestCert->common_name).'.zip';
+            $tempDir = $this->makeArchiveRootDir();
+            $certName = $this->safeCertificateName(
+                (string) $order->latestCert->common_name,
+                $order->latestCert->id
+            );
+            $attachmentPath = $tempDir.'/'.$certName.'.zip';
+            $zip = null;
 
             try {
-                mkdir($tempDir, 0755, true);
-
                 $zip = $this->makeZip();
                 // ZipArchive::open()/close() 返回 bool/错误码、不抛异常。磁盘满（block 耗尽）最常在
                 // close() 写盘期静默失败（addFromString 仅缓存在内存、close 才压缩刷盘）——不显式检查
@@ -93,15 +101,39 @@ class CertIssuedNotificationBuilder implements NotificationBuilderInterface
                 if ($zip->open($attachmentPath, ZipArchive::CREATE) !== true) {
                     throw new TransientBuildException('创建证书压缩包失败');
                 }
-                $this->addCertToZip($order, $zip, $tempDir);
+                if ($productType === Product::TYPE_SMIME) {
+                    $password = $this->addSmimeCertToZip(
+                        $order,
+                        $zip,
+                        $tempDir,
+                        $certName.'/',
+                        $certName,
+                        'all'
+                    );
+                    if ($password === null) {
+                        throw new RuntimeException('S/MIME PFX 密码生成失败');
+                    }
+                } else {
+                    $this->addCertToZip($order, $zip, $tempDir);
+                }
                 if ($zip->close() !== true) {
                     throw new TransientBuildException('写入证书压缩包失败');
                 }
             } catch (Throwable $e) {
+                if ($zip instanceof ZipArchive) {
+                    try {
+                        $zip->close();
+                    } catch (Throwable) {
+                        // 清理优先，原异常保留。
+                    }
+                }
                 File::deleteDirectory($tempDir);
                 app(ApiExceptions::class)->logException($e);
-                // IO 类失败一律归瞬态：inode 耗尽/盘满/临时 IO 异常，恢复后重跑 build 自愈。
-                throw new TransientBuildException('生成证书附件失败', 0, $e);
+                if ($e instanceof TransientBuildException) {
+                    throw $e;
+                }
+
+                throw $e;
             }
 
             $data['_meta']['attachments'] = [

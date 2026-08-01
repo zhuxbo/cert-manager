@@ -92,20 +92,26 @@ class Admin extends BaseModel implements AuthenticatableContract, JWTSubject
      * 解析运维告警投递目标（原 TaskJob/FundAuditCommand/SystemAlert 多份内联收敛为单一源，
      * 杜绝解析规则演进漏改致投错地址）。
      *
-     * 规则：site.adminEmail 优先 → Admin::where('email', adminEmail) → 回落 Admin::first()。
+     * 规则：site.adminEmail 优先；已配置时匹配同邮箱 Admin，未命中则回落任一 Admin 作为通知归属；
+     * 未配置时逐个查找邮箱非空的 Admin，找到第一条即可。
      * 零新增 Cache 依赖：get_system_setting 经 Setting 已「cache 故障回落 DB」，Admin 查询直读 DB；
      * 调用本方法不额外引入 cache 依赖。
      *
      * @return array{admin: ?Admin, email: ?string}
-     *                                              admin: 命中 adminEmail 的 Admin，或回落 Admin::first()（可能 null）——供 NotificationCenter 取 id；
-     *                                              email: adminEmail（配了别名即使无 Admin 记录也优先）?: admin?->email（可能 null）——投递地址。
+     *                                              admin: 配置邮箱命中的 Admin、任一归属 Admin，或首个邮箱非空的 Admin（可能 null）；
+     *                                              email: adminEmail（配了别名即使无 Admin 记录也优先）或选中 Admin 的邮箱（可能 null）。
      *                                              调用方按需判空。
      */
     public static function resolveAlertTarget(): array
     {
         $adminEmail = get_system_setting('site', 'adminEmail');
-        $admin = $adminEmail ? static::where('email', $adminEmail)->first() : null;
-        $admin ??= static::first();
+        if ($adminEmail) {
+            $admin = static::where('email', $adminEmail)->first() ?? static::first();
+        } else {
+            $admin = static::whereNotNull('email')
+                ->where('email', '<>', '')
+                ->first();
+        }
 
         return [
             'admin' => $admin,

@@ -73,12 +73,12 @@ class SystemAlert
         }
 
         // 2. 解析 admin（单一源 Admin::resolveAlertTarget，原 4 份内联之一）：
-        //    site.adminEmail → Admin::where('email') → Admin::first()；无 admin/邮箱 → 兜底 return false，不占键。
+        //    site.adminEmail 优先；未配置时查找首个邮箱非空的 Admin；无归属 Admin/目标邮箱则返回 false，不占键。
         //    写端接线：$targetEmail（= adminEmail ?: admin->email，由 resolveAlertTarget 返回）必须显式入 context
         //    的 admin_email（Builder 的 email 映射只是读端），site.adminEmail 为分发别名时防 MailChannel 投错登录邮箱。
         ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 
-        if (! $admin?->email) {
+        if (! $admin || ! $targetEmail) {
             Log::warning('[system_alert] 未找到管理员邮箱，跳过告警', [
                 'category' => $category,
                 'title' => $title,

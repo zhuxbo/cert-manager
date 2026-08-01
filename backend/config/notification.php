@@ -45,15 +45,15 @@ return [
         'balance_forecast' => BalanceForecastNotificationBuilder::class,
         'cert_issued' => CertIssuedNotificationBuilder::class,
         'cert_expire' => CertExpireNotificationBuilder::class,
-        // 续期停滞孤儿提醒（续费/重签把前驱终态化后接替卡停滞态、前驱即将到期）：专用 Builder 注入
-        // site.url、按接替状态映射文案；不入 user_default_preferences（强制发，穿透用户已关的到期提醒偏好）
+        // 续期停滞孤儿提醒（续费/重签把前驱终态化后，后续证书卡在停滞态、前驱即将到期）：专用 Builder
+        // 注入 site.url、按后续证书状态映射文案；不入 user_default_preferences（强制发）
         'cert_renew_stalled' => CertRenewStalledNotificationBuilder::class,
-        // 接替单取消一次性通知（续费/重签接替单在 processing/approving 等非恢复态取消后，前驱脱离
+        // 续签订单取消一次性通知（续费/重签订单在 processing/approving 等非恢复态取消后，前驱脱离
         // cert_expire/AutoRenew/cert_renew_stalled 三重监控）：事件驱动、专用 Builder 白名单构造域名/日期/
-        // 订单号/动作，不携密。不入 user_default_preferences（强制发，与 cert_renew_stalled 成对）
+        // 订单号/产品类型，不携密。不入 user_default_preferences（强制发，与 cert_renew_stalled 成对）
         'cert_renew_cancelled' => CertRenewCancelledNotificationBuilder::class,
         // 证书吊销一次性通知（Order sync 直写 revoked 终态：证书被 CA 吊销、立即失去信任）：事件驱动、
-        // 专用 Builder 白名单构造域名/日期/订单号/接替单标志，不携密。对所有 revoked（含 plain new）发；
+        // 专用 Builder 白名单构造域名/日期/订单号/续签订单标志，不携密。对所有 revoked（含 plain new）发；
         // 不入 user_default_preferences（强制发，吊销属服务中断类事件，穿透用户已关的到期偏好）
         'cert_revoked' => CertRevokedNotificationBuilder::class,
         // ACME 订阅到期提醒（订阅到期 ≠ 证书到期，专用 Builder 白名单字段、不带 eab_hmac）

@@ -67,6 +67,26 @@ services:
       timeout: 5s
       retries: 20
 
+  # mutation 专用的一次性数据库：只有显式指定 tools profile/服务时才启动，
+  # 不会加入日常 `docker compose up`。数据目录位于 tmpfs，容器销毁后不保留。
+  mutation-mysql:
+    image: mysql:8.4
+    profiles: ["tools"]
+    command:
+      - --character-set-server=utf8mb4
+      - --skip-log-bin
+      - --sync-binlog=0
+      - --innodb-flush-log-at-trx-commit=2
+      - --innodb-doublewrite=OFF
+      - --innodb-buffer-pool-size=512M
+      - --innodb-redo-log-capacity=128M
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: ssl_manager_test
+      TZ: Asia/Shanghai
+    tmpfs:
+      - /var/lib/mysql:size=3g,mode=1777
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped

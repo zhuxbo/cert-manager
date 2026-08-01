@@ -114,7 +114,7 @@ class Fund extends BaseModel
             }
 
             // 处理中订单2小时内不允许删除
-            if (strtotime($created_at) > strtotime('-2 hours')) {
+            if (strtotime($created_at) > now()->subHours(2)->timestamp) {
                 return false;
             }
 

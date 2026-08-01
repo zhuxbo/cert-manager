@@ -9,8 +9,7 @@ import {
   defaultQrcodePath,
   resolveSiteLoginImage,
   resolveSiteLogo,
-  resolveSiteQrcode,
-  resolveSiteQrcodeAfterError
+  resolveSiteQrcode
 } from "../src/utils/siteLogo.ts";
 
 test("未配置或默认哨兵值时回落调用方提供的默认资源", () => {
@@ -41,23 +40,22 @@ test("defaultLogoPath 按公开资源目录拼接", () => {
 });
 
 test("二维码默认哨兵值按用户端公开资源目录回落", () => {
-  assert.equal(defaultQrcodePath("/user/"), "/user/qrcode.svg");
-  assert.equal(defaultQrcodePath("/user"), "/user/qrcode.svg");
-  assert.equal(defaultQrcodePath(""), "/qrcode.svg");
-  assert.equal(defaultQrcodePath("/user/", "png"), "/user/qrcode.png");
+  assert.equal(defaultQrcodePath("/user/"), "/user/qrcode.png");
+  assert.equal(defaultQrcodePath("/user"), "/user/qrcode.png");
+  assert.equal(defaultQrcodePath(""), "/qrcode.png");
   assert.equal(
-    resolveSiteQrcode("/qrcode.png", "/user/qrcode.svg"),
-    "/user/qrcode.svg"
+    resolveSiteQrcode("/qrcode.png", "/user/qrcode.png"),
+    "/user/qrcode.png"
   );
   assert.equal(
-    resolveSiteQrcode("/qrcode.svg", "/user/qrcode.svg"),
-    "/user/qrcode.svg"
+    resolveSiteQrcode("/qrcode.svg", "/user/qrcode.png"),
+    "/user/qrcode.png"
   );
-  assert.equal(resolveSiteQrcode("", "/user/qrcode.svg"), "/user/qrcode.svg");
+  assert.equal(resolveSiteQrcode("", "/user/qrcode.png"), "/user/qrcode.png");
   assert.equal(
     resolveSiteQrcode(
       "/api/meta/site-image/qrcode-custom.png",
-      "/user/qrcode.svg"
+      "/user/qrcode.png"
     ),
     "/api/meta/site-image/qrcode-custom.png"
   );
@@ -81,38 +79,15 @@ test("登录配图未配置时回落默认 login.svg，已配置时保持上传�
   );
 });
 
-test("默认 SVG 加载失败时回落旧 PNG，但不替换后台上传地址", () => {
-  assert.equal(
-    resolveSiteQrcodeAfterError(
-      "/qrcode.svg",
-      "/user/qrcode.svg",
-      "/user/qrcode.png"
-    ),
-    "/user/qrcode.png"
-  );
-  assert.equal(
-    resolveSiteQrcodeAfterError("", "/user/qrcode.png", "/user/qrcode.png"),
-    "/user/qrcode.png"
-  );
-  assert.equal(
-    resolveSiteQrcodeAfterError(
-      "/api/meta/site-image/qrcode-custom.png",
-      "/api/meta/site-image/qrcode-custom.png",
-      "/user/qrcode.png"
-    ),
-    "/api/meta/site-image/qrcode-custom.png"
-  );
-});
-
-test("用户首页缩略图和弹窗都接入二维码加载失败回落", () => {
+test("用户首页直接使用单一 PNG 回落，不再注册 SVG 加载失败切换", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const dashboard = readFileSync(
     path.resolve(here, "../../user/src/views/welcome/index.vue"),
     "utf8"
   );
 
-  assert.match(dashboard, /resolveSiteQrcodeAfterError\(/);
-  assert.equal(dashboard.match(/@error="handleQrcodeLoadError"/g)?.length, 2);
+  assert.match(dashboard, /defaultQrcodePath\(import\.meta\.env\.BASE_URL\)/);
+  assert.doesNotMatch(dashboard, /handleQrcodeLoadError|qrcode\.svg/);
 });
 
 test("趋势周期请求失败时清空旧周期数据", () => {

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Support\Opcache;
 use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -20,7 +21,8 @@ class ClearAllCacheCommand extends Command
                             {--quick : 快速模式，不显示详细信息}
                             {--logs : 同时清除旧日志文件}
                             {--restart-queue : 清理完成后重启队列服务}
-                            {--without-composer : 跳过 Composer autoload 缓存清理}';
+                            {--without-composer : 跳过 Composer autoload 缓存清理}
+                            {--without-opcache : 跳过 OPcache 字节码缓存清理}';
 
     /**
      * The console command description.
@@ -38,6 +40,7 @@ class ClearAllCacheCommand extends Command
         $clearLogs = $this->option('logs');
         $restartQueue = $this->option('restart-queue');
         $skipComposer = $this->option('without-composer');
+        $skipOpcache = $this->option('without-opcache');
         if (! $quick) {
             $this->info('开始清除SSL证书管理系统所有缓存...');
             $this->newLine();
@@ -65,7 +68,15 @@ class ClearAllCacheCommand extends Command
             $this->warn('5. 已跳过 Composer autoload 缓存清理');
         }
 
-        // 6. 重启队列服务（可选）
+        // 6. 清除 OPcache 字节码缓存
+        if (! $skipOpcache) {
+            $this->clearOpcache($quick);
+        } elseif (! $quick) {
+            $this->newLine();
+            $this->warn('6. 已跳过 OPcache 字节码缓存清理');
+        }
+
+        // 7. 重启队列服务（可选）
         if ($restartQueue) {
             $this->restartQueueService($quick);
         }
@@ -303,6 +314,62 @@ class ClearAllCacheCommand extends Command
             if (! $quick) {
                 $this->error('✗ Composer命令不可用，跳过autoload缓存清除');
             }
+        }
+    }
+
+    /**
+     * 清除 OPcache 字节码缓存
+     *
+     * 只有跑在 PHP-FPM 里（后台「清除缓存」按钮走 Artisan::call，与 worker 同进程）
+     * 才真能清掉线上生效的字节码；命令行进程清的是自己的 OPcache，够不到 FPM。
+     * 后一种情况必须明说，不能报「清除成功」——那是假成功信号。
+     */
+    private function clearOpcache(bool $quick): void
+    {
+        if (! $quick) {
+            $this->newLine();
+            $this->info('6. 清除 OPcache 字节码缓存');
+            $this->info('============================================');
+        }
+
+        $opcache = app(Opcache::class);
+        $result = $opcache->reset();
+
+        if ($result['status'] === Opcache::OK) {
+            if ($opcache->isCli()) {
+                // quick 模式也提示：否则命令行用户会以为线上字节码已经换掉
+                $this->warn('⚠ 已清除当前命令行进程的 OPcache；PHP-FPM 的字节码缓存不受影响，需重载 PHP-FPM 才生效');
+            } elseif (! $quick) {
+                $this->line('✓ OPcache 字节码缓存清除成功');
+            }
+
+            return;
+        }
+
+        if ($result['status'] === Opcache::FAILED) {
+            $this->error($result['reason'] === 'reset_threw'
+                ? '✗ OPcache 清除失败：'.($result['message'] ?? 'opcache_reset() 抛出异常')
+                : '✗ OPcache 清除失败：opcache_reset() 返回 false');
+            $opcache->reportFailure($result, 'artisan cache:clear-all');
+
+            return;
+        }
+
+        if ($result['reason'] === 'api_restricted') {
+            $this->warn('⚠ 跳过 OPcache 清理：API 被 opcache.restrict_api 限制'.
+                ($result['message'] !== null ? "（{$result['message']}）" : ''));
+            $opcache->reportFailure($result, 'artisan cache:clear-all');
+
+            return;
+        }
+
+        if (! $quick) {
+            $reason = match ($result['reason']) {
+                'extension_not_loaded' => '未加载 OPcache 扩展',
+                'not_enabled' => "当前 SAPI（{$result['sapi']}）未启用 OPcache，无缓存可清",
+                default => (string) $result['reason'],
+            };
+            $this->line("- 跳过 OPcache 清理：$reason");
         }
     }
 

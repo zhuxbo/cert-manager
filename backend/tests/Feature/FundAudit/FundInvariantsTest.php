@@ -59,6 +59,9 @@ test('L1 反例：直接 UPDATE balance 制造账目偏离，invariant 报违反
     // 防 ConcatRemoveLeft/Right + RemoveArrayItem：layer 标识 + 描述关键词都要在
     expect($report['message'])->toContain('L1 账目恒等破');
     expect($report['message'])->toContain('个用户');
+    expect($report['message'])->toBe(
+        'L1 账目恒等破：1 个用户的 balance 与 transactions 累计存在偏离'
+    );
 
     // 清理：恢复 balance 让后续测试干净
     DB::table('users')->where('id', $user->id)->update(['balance' => '200.00']);
@@ -140,6 +143,9 @@ test('L3 反例（正向）：直接 INSERT funds.status=1 不写 transaction，
     // 防 L156 RemoveNot (反转 if (! empty($forward))) + ConcatRemove*
     expect($report['message'])->toContain('L3 状态-事件配对破');
     expect($report['message'])->toContain('缺失对应 transaction');
+    expect($report['message'])->toBe(
+        'L3 状态-事件配对破：1 条 fund 缺失对应 transaction'
+    );
 
     // 清理
     DB::table('funds')->where('id', $fundId)->delete();
@@ -171,6 +177,10 @@ test('L3 反例（反向）：fund 被违规删除留下孤儿 transaction，inv
     // 防 L161 RemoveNot (反转 if (! empty($reverse))) + ConcatRemove*
     expect($report['message'])->toContain('L3 状态-事件配对破');
     expect($report['message'])->toContain('缺失对应已完成');
+    expect($report['message'])->toBe(
+        'L3 状态-事件配对破：1 条资金 transaction '
+        .'缺失对应已完成/已退 fund（孤儿或状态未落地）'
+    );
 
     $reverseRow = collect($report['rows'])->firstWhere('direction', 'reverse');
     expect((int) $reverseRow['transaction_id'])->toBe($fund->id);
@@ -278,6 +288,9 @@ test('L4 反例：篡改 transaction.amount 制造金额错配，invariant 报�
     expect((int) $report['rows'][0]['fund_id'])->toBe($fund->id);
     expect($report['message'])->toContain('L4 金额配对破');
     expect($report['message'])->toContain('与对应 transaction');
+    expect($report['message'])->toBe(
+        'L4 金额配对破：1 条 fund 与对应 transaction 金额或符号不匹配'
+    );
 
     // 清理
     DB::table('transactions')->where('id', $tx->id)->update(['amount' => '50.00']);

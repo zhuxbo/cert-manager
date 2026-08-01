@@ -5,12 +5,9 @@ export const defaultLogoPath = (baseUrl: string): string => {
 };
 
 /** 由公开资源目录推导默认客服二维码地址。 */
-export const defaultQrcodePath = (
-  baseUrl: string,
-  extension: "svg" | "png" = "svg"
-): string => {
+export const defaultQrcodePath = (baseUrl: string): string => {
   const base = baseUrl || "/";
-  return `${base.endsWith("/") ? base : `${base}/`}qrcode.${extension}`;
+  return `${base.endsWith("/") ? base : `${base}/`}qrcode.png`;
 };
 
 /** 由公开资源目录推导默认登录配图地址（user 端 public/login.svg，可被升级保留）。 */
@@ -41,21 +38,10 @@ export const resolveSiteLogo = (
   return logo && logo !== "/logo.svg" ? logo : fallbackUrl;
 };
 
-/** 后台未配置或返回默认哨兵时，优先使用新版 SVG 占位图。 */
+/** 后台未配置或返回默认哨兵时，使用用户端 PNG 占位图。 */
 export const resolveSiteQrcode = (
   qrcode: string | null | undefined,
   fallbackUrl: string
 ): string => {
   return isDefaultQrcodeValue(qrcode) ? fallbackUrl : qrcode;
-};
-
-/** 默认 SVG 不存在时回落旧版 PNG；后台上传的自定义地址加载失败时不替换。 */
-export const resolveSiteQrcodeAfterError = (
-  qrcode: string | null | undefined,
-  currentUrl: string,
-  legacyFallbackUrl: string
-): string => {
-  return isDefaultQrcodeValue(qrcode) && currentUrl !== legacyFallbackUrl
-    ? legacyFallbackUrl
-    : currentUrl;
 };

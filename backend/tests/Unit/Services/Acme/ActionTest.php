@@ -31,6 +31,10 @@ beforeEach(function () {
     $this->service = app(Action::class);
 });
 
+afterEach(function () {
+    Carbon::setTestNow();
+});
+
 /**
  * 创建 Gateway 系统设置（ACME SDK 通过回落机制使用 ca.url/token）
  */
@@ -125,20 +129,45 @@ test('new creates unpaid order', function () {
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
     createAcmeProductPrice($product->id, $user);
 
-    $acme = createAcmeOrder($user, $product, ['remark' => 'test remark']);
+    $acme = createAcmeOrder($user, $product, [
+        'plus' => 0,
+        'refer_id' => 'acme-create-contract',
+        'contact_email' => 'acme-create@example.com',
+        'channel' => 'api',
+        'remark' => 'test remark',
+    ]);
 
-    expect($acme)->toBeInstanceOf(Acme::class);
-    expect($acme->exists)->toBeTrue();
-    expect($acme->status)->toBe(Acme::STATUS_UNPAID);
-    expect($acme->user_id)->toBe($user->id);
-    expect($acme->product_id)->toBe($product->id);
-    expect($acme->period)->toBe(12);
-    expect($acme->purchased_standard_count)->toBe(1);
-    expect($acme->purchased_wildcard_count)->toBe(0);
-    expect($acme->refer_id)->not->toBeNull();
-    expect(strlen($acme->refer_id))->toBe(32);
-    expect($acme->remark)->toBe('test remark');
-    expect($acme->brand)->toBe($product->brand);
+    expect($acme)->toBeInstanceOf(Acme::class)
+        ->and($acme->exists)->toBeTrue()
+        ->and($acme->only([
+            'user_id',
+            'product_id',
+            'brand',
+            'period',
+            'plus',
+            'purchased_standard_count',
+            'purchased_wildcard_count',
+            'refer_id',
+            'contact_email',
+            'amount',
+            'status',
+            'channel',
+            'remark',
+        ]))->toBe([
+            'user_id' => $user->id,
+            'product_id' => $product->id,
+            'brand' => $product->brand,
+            'period' => 12,
+            'plus' => 0,
+            'purchased_standard_count' => 1,
+            'purchased_wildcard_count' => 0,
+            'refer_id' => 'acme-create-contract',
+            'contact_email' => 'acme-create@example.com',
+            'amount' => '110.00',
+            'status' => Acme::STATUS_UNPAID,
+            'channel' => 'api',
+            'remark' => 'test remark',
+        ]);
 });
 
 test('new generates unique refer_id', function () {
@@ -201,6 +230,31 @@ test('new period 缺省且产品 periods 为空数组时报错（不再硬编码
     );
 });
 
+test('new 按产品域名额度精确区分单域名与单通配符', function (
+    int $standardMax,
+    int $wildcardMax,
+    int $expectedStandard,
+    int $expectedWildcard
+) {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct([
+        'product_type' => Product::TYPE_ACME,
+        'standard_max' => $standardMax,
+        'wildcard_max' => $wildcardMax,
+    ]);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+
+    expect($acme->purchased_standard_count)->toBe($expectedStandard)
+        ->and($acme->purchased_wildcard_count)->toBe($expectedWildcard);
+})->with([
+    '标准产品' => [1, 0, 1, 0],
+    '通配符产品' => [0, 1, 0, 1],
+    '混合额度按标准产品处理' => [1, 1, 1, 0],
+    '未配置额度按标准产品处理' => [0, 0, 1, 0],
+]);
+
 // ==================== pay ====================
 
 test('pay deducts balance and sets pending', function () {
@@ -220,13 +274,26 @@ test('pay deducts balance and sets pending', function () {
     // 验证交易记录
     $transaction = Transaction::where('transaction_id', $acme->id)
         ->where('type', Transaction::TYPE_ACME_ORDER)
-        ->first();
-    expect($transaction)->not->toBeNull();
-    expect($transaction->user_id)->toBe($user->id);
+        ->firstOrFail();
+    expect($transaction->only([
+        'user_id',
+        'type',
+        'transaction_id',
+        'amount',
+        'standard_count',
+        'wildcard_count',
+    ]))->toBe([
+        'user_id' => $user->id,
+        'type' => Transaction::TYPE_ACME_ORDER,
+        'transaction_id' => $acme->id,
+        'amount' => '-110.00',
+        'standard_count' => 1,
+        'wildcard_count' => 0,
+    ]);
 
     // 验证余额扣减
     $user->refresh();
-    expect((float) $user->balance)->toBeLessThan($initialBalance);
+    expect((float) $user->balance)->toBe($initialBalance - 110.0);
 });
 
 test('pay rejects non-unpaid order', function () {
@@ -296,8 +363,12 @@ test('commit 成功调用 API 转 active 返回 eab 数据', function () {
 
     $response = expectApiSuccess(fn () => $this->service->commit($acme->id));
 
-    expect($response['data']['eab_kid'])->toBe('kid-abc');
-    expect($response['data']['eab_hmac'])->toBe('hmac-xyz');
+    expect($response['data'])->toBe([
+        'order_id' => $acme->id,
+        'eab_kid' => 'kid-abc',
+        'eab_hmac' => 'hmac-xyz',
+        'directory_url' => 'https://acme.example.test/directory/',
+    ]);
 
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
@@ -332,15 +403,58 @@ test('commit 使用 acme.contact_email 作为 customer 传给 Gateway 并回写'
     expectApiSuccess(fn () => $this->service->commit($acme->id));
 
     // 请求体应把 acme.contact_email 作为 customer 发给上游（而非 user.email）
-    Http::assertSent(function ($request) {
-        $body = json_decode($request->body(), true);
-
-        return ($body['contact_email'] ?? null) === 'acme-buyer@example.com';
+    Http::assertSent(function ($request) use ($acme) {
+        return $request->url() === 'https://fake-gateway.test/api/v2/acme/new'
+            && $request->data() === [
+                'contact_email' => 'acme-buyer@example.com',
+                'product_code' => $acme->product->code,
+                'period' => 12,
+                'plus' => 1,
+                'refer_id' => $acme->refer_id,
+            ];
     });
 
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_ACTIVE)
         ->and($acme->contact_email)->toBe('acme-buyer@example.com');
+});
+
+test('commit 上游省略可选字段时精确写入本地默认值', function () {
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product, ['contact_email' => 'fallback@example.com']);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+
+    Carbon::setTestNow('2026-07-31 12:00:00');
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => ['order_id' => 'gw-minimal'],
+        ]),
+    ]);
+
+    expectApiSuccess(fn () => $this->service->commit($acme->id));
+
+    $acme->refresh();
+    expect($acme->only([
+        'api_id',
+        'vendor_id',
+        'contact_email',
+        'eab_kid',
+        'eab_hmac',
+        'status',
+    ]))->toBe([
+        'api_id' => 'gw-minimal',
+        'vendor_id' => null,
+        'contact_email' => 'fallback@example.com',
+        'eab_kid' => null,
+        'eab_hmac' => null,
+        'status' => Acme::STATUS_ACTIVE,
+    ])->and($acme->period_from->equalTo(now()))->toBeTrue()
+        ->and($acme->period_till->equalTo(now()->addMonths(12)))->toBeTrue();
 });
 
 test('commit acme.contact_email 缺失直接报错（不再 fallback 用户邮箱）', function () {
@@ -395,6 +509,7 @@ test('commit API 返回失败保持 pending', function () {
 
 test('commitCancel sets cancelling status for active order', function () {
     Queue::fake();
+    Carbon::setTestNow('2026-07-31 12:00:00');
 
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
@@ -418,11 +533,23 @@ test('commitCancel sets cancelling status for active order', function () {
     $task = Task::where('order_id', $acme->id)
         ->where('action', 'cancel_acme')
         ->where('status', 'executing')
-        ->first();
-    expect($task)->not->toBeNull();
-    expect($task->started_at)->toBeGreaterThan(now());
+        ->firstOrFail();
+    expect($task->only(['order_id', 'action', 'status', 'source']))->toBe([
+        'order_id' => $acme->id,
+        'action' => 'cancel_acme',
+        'status' => 'executing',
+        'source' => getControllerCategory(),
+    ])->and($task->started_at->equalTo(now()->addSeconds(120)))->toBeTrue();
 
-    Queue::assertPushed(TaskJob::class);
+    Queue::assertPushed(TaskJob::class, function (TaskJob $job) use ($task) {
+        $data = (new ReflectionProperty(TaskJob::class, 'data'))->getValue($job);
+
+        return $data === ['id' => $task->id]
+            && $job->afterCommit === true
+            && $job->queue === config('queue.names.tasks')
+            && $job->delay instanceof Carbon
+            && $job->delay->equalTo(now()->addSeconds(123));
+    });
 });
 
 test('commitCancel directly cancels pending order without api_id', function () {
@@ -801,6 +928,48 @@ test('sync 成功同步状态', function () {
     expect($acme->vendor_id)->toBe('v-new');
 });
 
+test('sync 从 active 写回上游取消类终态并记录取消时间', function (string $upstream) {
+    Carbon::setTestNow('2026-07-31 12:00:00');
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+    ]);
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => "gw-active-$upstream",
+        'cancelled_at' => null,
+    ]);
+
+    setupGatewaySettings();
+    Http::fake([
+        'fake-gateway.test/*' => Http::response([
+            'code' => 1,
+            'data' => [
+                'status' => $upstream,
+                'vendor_id' => "vendor-$upstream",
+                'contact_email' => "$upstream@example.test",
+                'period_from' => '2026-07-01 00:00:00',
+                'period_till' => '2027-07-01 00:00:00',
+            ],
+        ]),
+    ]);
+
+    $this->service->sync($acme->id, true);
+
+    $acme->refresh();
+    expect($acme->status)->toBe($upstream)
+        ->and($acme->cancelled_at?->toDateTimeString())->toBe('2026-07-31 12:00:00')
+        ->and($acme->vendor_id)->toBe("vendor-$upstream")
+        ->and($acme->contact_email)->toBe("$upstream@example.test")
+        ->and($acme->period_from?->toDateTimeString())->toBe('2026-07-01 00:00:00')
+        ->and($acme->period_till?->toDateTimeString())->toBe('2027-07-01 00:00:00');
+})->with([
+    Acme::STATUS_CANCELLED,
+    Acme::STATUS_REVOKED,
+]);
+
 test('B1-M1：本地 expired（ExpireCommand set-expired 后）sync 遇上游 active 不复活，但 period_till 仍被上游覆盖', function () {
     // 固化「expired 但 period_till 未来」滞留态：sync 终态守卫已含 STATUS_EXPIRED，只挡 status，
     // period_till 为非状态字段仍按上游覆盖（既有性质，B1 仅让 set-expired 可达，不扩展守卫）。
@@ -1002,6 +1171,7 @@ test('newAndCommit 一步完成 new+pay+commit', function () {
                 'vendor_id' => 'v-deploy',
                 'eab_kid' => 'kid-deploy',
                 'eab_hmac' => 'hmac-deploy',
+                'directory_url' => 'https://acme.example.test/directory/',
             ],
         ]),
     ]);
@@ -1015,8 +1185,13 @@ test('newAndCommit 一步完成 new+pay+commit', function () {
         'purchased_wildcard_count' => 0,
     ]));
 
-    expect($response['data']['status'])->toBe(Acme::STATUS_ACTIVE);
-    expect($response['data']['eab_kid'])->toBe('kid-deploy');
+    expect($response['data'])->toBe([
+        'order_id' => $response['data']['order_id'],
+        'eab_kid' => 'kid-deploy',
+        'eab_hmac' => 'hmac-deploy',
+        'status' => Acme::STATUS_ACTIVE,
+        'directory_url' => 'https://acme.example.test/directory/',
+    ]);
 
     $acme = Acme::find($response['data']['order_id']);
     expect($acme->status)->toBe(Acme::STATUS_ACTIVE);
@@ -1154,6 +1329,32 @@ test('newAndCommit 产品不存在报错', function () {
 
 // ==================== batchPay ====================
 
+test('批量上游入口仅在数量严格超过上限时拒绝', function (
+    string $method,
+    string $emptyMessage
+) {
+    config()->set('batch.max_upstream', 2);
+
+    expectApiError(
+        fn () => $this->service->{$method}([999_991, 999_992]),
+        $emptyMessage
+    );
+
+    try {
+        $this->service->{$method}([999_991, 999_992, 999_993]);
+        test()->fail('超过批量上限应被拒绝');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse())->toMatchArray([
+            'code' => 0,
+            'msg' => '订单数量不能超过2',
+        ]);
+    }
+})->with([
+    'batchPay' => ['batchPay', '没有可以支付的订单'],
+    'batchCommitCancel' => ['batchCommitCancel', '没有可以取消的订单'],
+    'batchRevokeCancel' => ['batchRevokeCancel', '没有可以撤回取消的订单'],
+]);
+
 test('batchPay 仅处理 unpaid 状态，非 unpaid 被过滤', function () {
     Queue::fake();
 
@@ -1173,9 +1374,11 @@ test('batchPay 仅处理 unpaid 状态，非 unpaid 被过滤', function () {
     }
 
     expect($res['code'])->toBe(1);
-    expect($res['data']['success_count'])->toBe(2);
-    expect($res['data']['commit_count'])->toBe(2);
-    expect($res['data']['errors'] ?? [])->toBe([]);
+    expect($res['data'])->toBe([
+        'success_count' => 2,
+        'commit_count' => 2,
+        'errors' => [],
+    ]);
     expect(Acme::find($unpaid1->id)->status)->toBe('pending');
     expect(Acme::find($unpaid2->id)->status)->toBe('pending');
     expect(Acme::find($pending->id)->status)->toBe('pending');
@@ -1218,7 +1421,10 @@ test('batchPay 单条失败不影响其他（记入 errors）', function () {
     expect($res['code'])->toBe(1);
     expect($res['data']['success_count'])->toBe(1);
     expect($res['data']['commit_count'])->toBe(1);
-    expect(count($res['data']['errors']))->toBe(1);
+    expect($res['data']['errors'])->toHaveCount(1);
+    expect(array_keys($res['data']['errors'][0]))->toBe(['id', 'msg']);
+    expect($res['data']['errors'][0]['id'])->toBeIn([$a1->id, $a2->id]);
+    expect($res['data']['errors'][0]['msg'])->toContain('余额不足');
     // 仅成功的那条自动创建 commit_acme Task
     expect(Task::where('action', 'commit_acme')->count())->toBe(1);
     Queue::assertPushed(TaskJob::class, 1);
@@ -1283,6 +1489,7 @@ test('batchCommit 无 pending 订单时报错', function () {
 
 test('createTasks 逐条幂等：跳过已存在 executing 的 id，仅为其余创建（对齐 Order createTask）', function () {
     Queue::fake();
+    Carbon::setTestNow('2026-07-31 12:00:00');
     $user = $this->createTestUser();
     $existing = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
     $fresh = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
@@ -1303,9 +1510,23 @@ test('createTasks 逐条幂等：跳过已存在 executing 的 id，仅为其余
 
     // existing 不重复创建（仍 1 条），fresh 新建 1 条
     expect(Task::where('order_id', $existing->id)->where('action', 'commit_acme')->where('status', 'executing')->count())->toBe(1);
-    expect(Task::where('order_id', $fresh->id)->where('action', 'commit_acme')->where('status', 'executing')->count())->toBe(1);
+    $task = Task::where('order_id', $fresh->id)->where('action', 'commit_acme')->firstOrFail();
+    expect($task->only(['order_id', 'action', 'status', 'source']))->toBe([
+        'order_id' => $fresh->id,
+        'action' => 'commit_acme',
+        'status' => 'executing',
+        'source' => getControllerCategory(),
+    ])->and($task->started_at->equalTo(now()))->toBeTrue();
+
     // 仅为 fresh dispatch 了 1 个 TaskJob
-    Queue::assertPushed(TaskJob::class, 1);
+    Queue::assertPushed(TaskJob::class, function (TaskJob $job) use ($task) {
+        $data = (new ReflectionProperty(TaskJob::class, 'data'))->getValue($job);
+
+        return $data === ['id' => $task->id]
+            && $job->afterCommit === true
+            && $job->queue === config('queue.names.tasks')
+            && $job->delay === null;
+    });
 });
 
 test('createTasks 延时任务 dispatch delay 比 started_at 多 3 秒缓冲（对齐 Order createTask）', function () {
@@ -1316,29 +1537,32 @@ test('createTasks 延时任务 dispatch delay 比 started_at 多 3 秒缓冲（�
     $acme = Acme::factory()->create(['user_id' => $user->id, 'status' => 'pending']);
 
     $delaySeconds = 300;
-    $before = now();
+    Carbon::setTestNow('2026-07-31 12:00:00');
 
     $method = new ReflectionMethod(Action::class, 'createTasks');
     $method->setAccessible(true);
     $method->invoke($this->service, [$acme->id], 'commit_acme', $delaySeconds);
 
     // task.started_at = now + delaySeconds
-    $task = Task::where('order_id', $acme->id)->where('action', 'commit_acme')->first();
-    expect($task)->not->toBeNull();
+    $task = Task::where('order_id', $acme->id)->where('action', 'commit_acme')->firstOrFail();
+    expect($task->only(['order_id', 'action', 'status', 'source']))->toBe([
+        'order_id' => $acme->id,
+        'action' => 'commit_acme',
+        'status' => 'executing',
+        'source' => getControllerCategory(),
+    ])->and($task->started_at->equalTo(now()->addSeconds($delaySeconds)))->toBeTrue();
 
-    Queue::assertPushed(TaskJob::class, function (TaskJob $job) use ($before, $delaySeconds) {
+    Queue::assertPushed(TaskJob::class, function (TaskJob $job) use ($task, $delaySeconds) {
         // dispatch delay 必须比 started_at（now+delaySeconds）再多 3 秒缓冲
-        $delay = $job->delay;
-        expect($delay)->toBeInstanceOf(Carbon::class);
-        if (! $delay instanceof Carbon) {
-            return false;
-        }
-        $expected = $before->copy()->addSeconds($delaySeconds + 3);
-        // 容忍执行耗时的 ±2 秒抖动；关键是 delay ≈ delaySeconds+3 而非 delaySeconds
-        expect(abs($delay->diffInSeconds($expected)))->toBeLessThanOrEqual(2);
+        $data = (new ReflectionProperty(TaskJob::class, 'data'))->getValue($job);
 
-        return true;
+        return $data === ['id' => $task->id]
+            && $job->afterCommit === true
+            && $job->queue === config('queue.names.tasks')
+            && $job->delay instanceof Carbon
+            && $job->delay->equalTo(now()->addSeconds($delaySeconds + 3));
     });
+
 });
 
 // ==================== batchSync ====================
@@ -1394,6 +1618,10 @@ test('batchCommitCancel 混合处理: unpaid/无 api_id pending 直接退费，�
     }
 
     expect($res['code'])->toBe(1);
+    expect($res['data'])->toBe([
+        'success_count' => 3,
+        'errors' => [],
+    ]);
     expect(Acme::find($unpaid->id)->status)->toBe('cancelled');
     expect(Acme::find($pendingNoApi->id)->status)->toBe('cancelled');
     expect(Acme::find($active->id)->status)->toBe('cancelling');
@@ -1420,7 +1648,10 @@ test('batchRevokeCancel 仅处理 cancelling 状态，回滚至 active 并删除
     }
 
     expect($res['code'])->toBe(1);
-    expect($res['data']['success_count'])->toBe(2);
+    expect($res['data'])->toBe([
+        'success_count' => 2,
+        'errors' => [],
+    ]);
     expect(Acme::find($c1->id)->status)->toBe('active');
     expect(Acme::find($c2->id)->status)->toBe('active');
     expect(Acme::find($active->id)->status)->toBe('active');

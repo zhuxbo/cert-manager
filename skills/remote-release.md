@@ -32,26 +32,15 @@ bash build/release.sh <版本号>
 
 完成后保留在当前分支，无需额外动作。
 
-> **不需要跑 §3.0 的本机门禁**（变异测试 + 模拟 main CI）。预发布版本就是用来试错的，门禁仅在正式版（main 通道）启用 — 见 §3.0。
+> **不需要跑 §3.0 的 main CI 模拟或 §3.2 的完整 mutation**。预发布版本就是用来试错的，正式门禁仅在 main 通道启用。
 
 ### 3. 正式版（main 通道）
 
-#### 3.0 创建 dev → main PR **之前**：两道本机门禁
+#### 3.0 创建 dev → main PR **之前**：本机模拟 main CI
 
-正式版仅 main 通道发布。在执行 §3.1 创建 dev → main PR **之前**，本机必须过下面两道门禁——它们都是 **CI 在 PR 阶段不跑、合并到 main 才跑（或根本不在 CI）** 的检查，只有本机提前跑才能在合并前发现、避免 main 变红。
+正式版仅 main 通道发布。在执行 §3.1 创建 dev → main PR **之前**，本机先补跑 PR 阶段缺失的 main-only 检查，避免合并后 main 才变红。
 
-##### 3.0.1 资金核心变异测试（CI 不跑）
-
-验证资金核心代码（Acme/Order Action + Fund/Transaction Model + FundAudit）的测试质量没退步：
-
-```
-cd backend && composer test:mutate
-```
-
-- MSI 必须 ≥ `tests/.mutation-baseline.json` 的 `min_msi`；不达标则**停止发布**，先补测试让 MSI 回升，**禁止靠下调 baseline 放行**（除非已评估该 mutation 无害，如不可达分支）
-- 约 5-7 分钟，仅本机跑（CI 不跑，避免 PR 等待）；`untested` mutation 即补测试指引
-
-##### 3.0.2 本机模拟 main CI（重点：main-only 的 compat-snapshot）
+##### 3.0.1 本机模拟 main CI（重点：main-only 的 compat-snapshot）
 
 `ci.yml` 的 `compat-snapshot` 带 `if: github.ref == 'refs/heads/main'`——**PR / dev push 都不触发，只有合并到 main 才跑**。新增 HTTP controller 测试漏 capture 快照 fixture 时，PR 全绿、合并后才因 `fixture_missing` 变红（已踩：`3f716ec` 新增 security 测试漏 capture）。合并前本机补跑这套抓出来。
 
@@ -99,7 +88,28 @@ git pull origin main
 
 如果 dev 没有领先 main 的提交，跳过 PR，直接 `git checkout main && git pull`。
 
-#### 3.2 执行发布
+#### 3.2 当前 main 完整 mutation 强制门禁
+
+切换并同步 main 后，对**当前 main fingerprint** 运行全部 6 个核心类。不要传
+`MUTATE_TARGET_CLASSES`，否则只是普通开发期的目标集，不能满足正式版完整门禁：
+
+```bash
+MAIN_MUTATION_RUN=".superpowers/finish-check-runs/main-release-<版本号>"
+python3 skills/scripts/finish-check-exec.py freeze --run-dir "$MAIN_MUTATION_RUN"
+python3 skills/scripts/finish-check-exec.py run \
+  --run-dir "$MAIN_MUTATION_RUN" --gate mutation
+python3 skills/scripts/finish-check-exec.py verify \
+  --run-dir "$MAIN_MUTATION_RUN" --require mutation
+```
+
+- MSI 必须 ≥ `backend/tests/.mutation-baseline.json` 的 `min_msi`；不达标则停止发布并补测试，禁止下调 baseline 放行。
+- mutation 按 `skills/mutation-shards.json` 的六个精确文件逐片运行，完整结果缓存到 `.superpowers/mutation-shard-cache/v1/`；中断或修复后只重跑失效分片，最终按 mutant 数加权汇总。缓存不能替代当前 main fingerprint 的汇总 gate 证据。
+- 旧 11818 秒日志实际扩展到 11 个文件、3544 个 mutant 且未完成，不能证明精确六片每次需要 3 小时。Fund 精确完整样本为 108 个 mutant、79 killed、29 untested，mutant 阶段 393.67–411.96 秒，整片最新墙钟 530.424 秒；首次六片完整运行结束前不承诺固定时长。
+- 开发机器不配置定时或夜间 mutation；完整门禁仅由 main 正式发布触发。
+- `build/release.sh` 会再次执行上述 `verify`，并要求固定目录
+  `.superpowers/finish-check-runs/main-release-<版本号>` 的证据与当前源码一致；验证发生在创建 `v<版本号>` / `latest` tag 之前，缺失、失败或 stale 均拒绝发布。
+
+#### 3.3 执行发布
 
 ```
 bash build/release.sh <版本号>
@@ -115,7 +125,7 @@ bash build/release.sh <版本号>
 - main/dev 的远程目录和 `releases.json` 记录分别只保留最新 `KEEP_VERSIONS` 条（默认各 5 条）
 - 每台目标服务器上传后必须通过远程文件/哈希/latest 链接校验和公网全量下载哈希校验，任一失败则发布失败
 
-#### 3.3 发布后：同步分支 + 切回 dev
+#### 3.4 发布后：同步分支 + 切回 dev
 
 ```
 # 把 main 同步回 dev（如果 dev 落后）

@@ -12,7 +12,8 @@
 # 分组：
 #   A 单元（直接驱动守卫函数）：A1 还原生效 / A2 成功态不误还原 / A3 守卫失败不吞 / A4 搁浅拦截 /
 #     A5 空壳清理 / A6 same-fs 断言 / A7 vendor-only 回迁(⑧) / A8 extras 还原(⑨) /
-#     A9 composer 判定(⑧) / A10 cleanup 还原 extras 集成(⑨)
+#     A9 composer 判定(⑧) / A10 cleanup 还原 extras 集成(⑨) / A11 正常恢复消费 extras /
+#     A12 consume 清理失败不中止升级
 #   B 信号注入（子进程 harness）：B1 SIGINT / B2 SIGTERM / B3 SIGHUP 还原（set -m 真投递 + 睡满哨兵，⑫）
 #     + B4 SIGKILL 后重跑拦截
 #   C 回归守卫：PRESERVE_DIR 钉在 $INSTALL_DIR 下 / 生产信号 trap 装配行 / composer vendor 缺失兜底(⑧) /
@@ -302,7 +303,6 @@ test_a8() {
     printf 'ORDER-ADAPTER' >"$PRESERVE_DIR/api_adapters/order/MyOrderApi.php"
     printf 'ACME-ADAPTER' >"$PRESERVE_DIR/api_adapters/acme/MyAcmeApi.php"
     printf 'LOGO' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
-    printf 'SVG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.svg"
     printf 'PNG-QR' >"$PRESERVE_DIR/frontend_config/user_qrcode.png"
     printf 'LOGIN' >"$PRESERVE_DIR/frontend_config/user_login.svg"
     local rc
@@ -313,7 +313,6 @@ test_a8() {
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Order/Api/MyOrderApi.php" 2>/dev/null || true)" = "ORDER-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/backend/app/Services/Acme/Api/MyAcmeApi.php" 2>/dev/null || true)" = "ACME-ADAPTER" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg" 2>/dev/null || true)" = "LOGO" ] || ok=0
-    [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.svg" 2>/dev/null || true)" = "SVG-QR" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/qrcode.png" 2>/dev/null || true)" = "PNG-QR" ] || ok=0
     [ "$(cat "$INSTALL_DIR/frontend/user/login.svg" 2>/dev/null || true)" = "LOGIN" ] || ok=0
     if [ "$ok" -eq 1 ]; then
@@ -410,6 +409,68 @@ MAIN
     rm -rf "$base"
 }
 
+# A11 正常成功路径消费 extras：步骤 9 还原后必须删掉已成功使用的 preserve 副本；
+# 随后的 EXIT cleanup 再调用守卫时应 no-op，不能覆盖步骤 9 之后的原位文件或打印中断还原。
+test_a11() {
+    local base
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base"
+    PRESERVE_DIR="$base/.upgrade-preserve-a11"
+    mkdir -p "$PRESERVE_DIR/api_adapters/order" "$PRESERVE_DIR/frontend_config"
+    printf 'ORDER-ORIGINAL' >"$PRESERVE_DIR/api_adapters/order/CustomApi.php"
+    printf 'LOGO-ORIGINAL' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
+
+    local rc_first rc_guard ok=1
+    _restore_preserved_extras consume
+    rc_first=$?
+    printf 'ORDER-AFTER-STEP9' >"$INSTALL_DIR/backend/app/Services/Order/Api/CustomApi.php"
+    printf 'LOGO-AFTER-STEP9' >"$INSTALL_DIR/frontend/user/logo.svg"
+    _restore_preserved_extras
+    rc_guard=$?
+
+    [ "$rc_first" -eq 0 ] || ok=0
+    [ "$rc_guard" -eq 0 ] || ok=0
+    [ ! -d "$PRESERVE_DIR/api_adapters/order" ] || ok=0
+    [ ! -f "$PRESERVE_DIR/frontend_config/user_logo.svg" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/backend/app/Services/Order/Api/CustomApi.php")" = "ORDER-AFTER-STEP9" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg")" = "LOGO-AFTER-STEP9" ] || ok=0
+    if [ "$ok" -eq 1 ]; then
+        pass "A11 正常恢复消费 extras：cleanup no-op，不再重复覆盖或误报中断还原"
+    else
+        fail "A11 正常恢复未消费 extras（first=${rc_first} guard=${rc_guard}）"
+    fi
+    rm -rf "$base"
+}
+
+# A12 consume 模式下「cp 成功但 rm 清理失败」必须不影响返回码：此时数据面已正确，
+# 纯清理动作无权把一次正确的升级打断在步骤 9（那会触发恢复 runbook 并让站点滞留维护态）。
+test_a12() {
+    local base
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base"
+    PRESERVE_DIR="$base/.upgrade-preserve-a12"
+    mkdir -p "$PRESERVE_DIR/api_adapters/order" "$PRESERVE_DIR/frontend_config"
+    printf 'ORDER-ORIGINAL' >"$PRESERVE_DIR/api_adapters/order/CustomApi.php"
+    printf 'LOGO-ORIGINAL' >"$PRESERVE_DIR/frontend_config/user_logo.svg"
+    # 只读父目录 → 其中的删除操作失败，但读取/复制不受影响
+    chmod 500 "$PRESERVE_DIR/api_adapters" "$PRESERVE_DIR/frontend_config"
+
+    local rc ok=1
+    _restore_preserved_extras consume
+    rc=$?
+
+    [ "$rc" -eq 0 ] || ok=0
+    [ "$(cat "$INSTALL_DIR/backend/app/Services/Order/Api/CustomApi.php" 2>/dev/null)" = "ORDER-ORIGINAL" ] || ok=0
+    [ "$(cat "$INSTALL_DIR/frontend/user/logo.svg" 2>/dev/null)" = "LOGO-ORIGINAL" ] || ok=0
+    chmod 700 "$PRESERVE_DIR/api_adapters" "$PRESERVE_DIR/frontend_config" 2>/dev/null || true
+    if [ "$ok" -eq 1 ]; then
+        pass "A12 consume 清理失败不参与返回码：内容已落位，升级不被纯清理动作打断"
+    else
+        fail "A12 consume 清理失败仍中止升级（rc=${rc}）"
+    fi
+    rm -rf "$base"
+}
+
 test_a1
 test_a2
 test_a3
@@ -420,6 +481,8 @@ test_a7
 test_a8
 test_a9
 test_a10
+test_a11
+test_a12
 
 # ========================================================================
 # B. 信号注入（子进程 harness，直接复现验收⑦）
@@ -594,6 +657,13 @@ else
     fail "C cleanup 未在删 preserve 前还原 extras（应 if _restore_preserved_extras; then ... rm PRESERVE_DIR）"
 fi
 
+# 正常步骤 9 必须以 consume 模式恢复并消费副本；否则成功 EXIT cleanup 会重复还原并误报“中断升级遗留”。
+if grep -qE '_restore_preserved_extras[[:space:]]+consume' "$UPGRADE"; then
+    pass "C 正常恢复消费 extras，成功 cleanup 不再重复还原"
+else
+    fail "C 正常步骤 9 未消费 extras（成功退出仍会误报中断还原）"
+fi
+
 if grep -qE 'for file in .*platform-config\.json|frontend_(config|assets)/(admin|user)_platform-config' "$UPGRADE"; then
     fail "C upgrade.sh 不应再把 platform-config.json 纳入 preserve/restore 前端回写"
 else
@@ -654,16 +724,20 @@ else
     fail "C storage/app 运行数据缺少三层打包排除"
 fi
 
-QRCODE_SVG="$ROOT/frontend/user/public/qrcode.svg"
+QRCODE_PNG="$ROOT/frontend/user/public/qrcode.png"
+QRCODE_PNG_HEADER="$(od -An -tx1 -N24 "$QRCODE_PNG" 2>/dev/null | tr -d ' \n')"
 if [ -f "$ROOT/frontend/user/public/logo.svg" ] &&
-    [ -f "$QRCODE_SVG" ] &&
-    [ ! -e "$ROOT/frontend/user/public/qrcode.png" ] &&
-    [ "$(wc -c <"$QRCODE_SVG")" -le 2048 ] &&
-    grep -qF '"frontend/user/qrcode.svg"' "$BUILD_CONFIG" &&
-    grep -qF '"frontend/user/qrcode.png"' "$BUILD_CONFIG"; then
-    pass "C 完整包使用轻量 SVG，升级包不交付二维码并保留安装目录的新旧回落资源"
+    [ -f "$QRCODE_PNG" ] &&
+    [ "$QRCODE_PNG_HEADER" = "89504e470d0a1a0a0000000d494844520000019000000190" ] &&
+    [ ! -e "$ROOT/frontend/user/public/qrcode.svg" ] &&
+    ! grep -qF '"frontend/user/qrcode.svg"' "$BUILD_CONFIG" &&
+    grep -qF '"frontend/user/qrcode.png"' "$BUILD_CONFIG" &&
+    grep -qF '$CUSTOM_DIR/qrcode.png' "$CONTAINER_BUILD" &&
+    grep -qF '$WORKSPACE_DIR/frontend/user/public/qrcode.png' "$CONTAINER_BUILD" &&
+    ! grep -qF 'qrcode.svg' "$CONTAINER_BUILD"; then
+    pass "C 完整包和定制构建使用 400x400 PNG，升级包不交付二维码并仅保护 PNG"
 else
-    fail "C 默认 SVG 缺失/过大、仍携带默认 PNG，或升级包未排除新旧二维码"
+    fail "C 默认/定制构建 PNG 错误、仍携带 SVG，或升级包未排除 PNG"
 fi
 
 LOGIN_SVG="$ROOT/frontend/user/public/login.svg"

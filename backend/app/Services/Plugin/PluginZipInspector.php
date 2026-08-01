@@ -62,7 +62,7 @@ class PluginZipInspector
                 return $name;
             }
 
-            if (preg_match('#^[^/]+/plugin\.json$#', $trimmed)) {
+            if (preg_match('#^(?:[^/]+/){1,2}plugin\.json$#', $trimmed)) {
                 $nestedManifest ??= $name;
             }
         }

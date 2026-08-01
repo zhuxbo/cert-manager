@@ -5,7 +5,9 @@ namespace App\Services\Notification\Builders;
 use App\Bootstrap\ApiExceptions;
 use App\Console\Commands\Concerns\ExpireNotifyWindow;
 use App\Models\Order;
+use App\Models\Product;
 use App\Models\User;
+use App\Services\Notification\CertificateProductType;
 use App\Services\Notification\DTOs\NotificationIntent;
 use App\Services\Notification\DTOs\NotificationPayload;
 use App\Services\Notification\TemplateSelector;
@@ -64,11 +66,14 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
                 $daysLeft = 0;
             }
 
+            $productType = CertificateProductType::normalize($order->product->product_type);
             $certificates[] = [
                 'domain' => $order->latestCert->common_name,
                 'expire_at' => $order->latestCert->expires_at->format('Y-m-d'),
                 'days_left' => $daysLeft,
                 'delegation_status' => 'need_renew',
+                'product_type' => $productType,
+                'product_type_label' => CertificateProductType::label($productType),
             ];
         }
 
@@ -76,13 +81,16 @@ class CertExpireNotificationBuilder implements NotificationBuilderInterface
             return null;
         }
 
-        $subject = 'SSL证书到期提醒 ['.$siteName.']';
+        $subject = '证书到期提醒 ['.$siteName.']';
         $data = [
             'username' => $notifiable->username,
             'email' => $email,
             'site_name' => $siteName,
             'site_url' => $siteUrl,
             'certificates' => $certificates,
+            'has_ssl_certificate' => collect($certificates)->contains(
+                fn (array $certificate): bool => $certificate['product_type'] === Product::TYPE_SSL
+            ),
             'subject' => $subject,
             // 保留键以兼容历史模板；去重后到期邮件只列"需手动续期"证书，故恒为 false
             'has_delegation_issue' => false,

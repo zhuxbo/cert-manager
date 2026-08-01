@@ -42,6 +42,7 @@ uses(RefreshDatabase::class)->in(
     'Feature/Middleware',
     'Feature/Models',
     'Feature/Services',
+    'Feature/Support',
     'Feature/Timezone',
 );
 

@@ -6,6 +6,7 @@ use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\ArchiveGuard;
 use App\Services\Upgrade\VersionManager;
+use App\Support\Opcache;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
@@ -179,78 +180,18 @@ class PluginManager
         $this->downloadPlugin($downloadUrl, $zipPath);
         $this->report('verifying', '正在校验插件包...');
         $this->verifyPluginPackageHash($zipPath, $expectedSha256);
-        $migrationRecordsBefore = [];
-        $migrationAttempted = false;
-
         try {
             // 解压 → 验证 → 安装
             $this->report('extracting', '正在解压插件包...');
             $extractDir = $this->extractPlugin($zipPath);
             $pluginSourceDir = $this->findPluginDir($extractDir, $name);
-            $this->report('validating', '正在校验插件包...');
-            $this->validatePlugin($pluginSourceDir, $name);
 
-            // 写入 release_url
-            if ($releaseUrl) {
-                $this->updatePluginManifest($pluginSourceDir, ['release_url' => $releaseUrl]);
-            }
-
-            // 移动到 plugins 目录
-            $this->report('applying', '正在安装插件文件...');
-            $this->applyPlugin($pluginSourceDir, $pluginDir);
-
-            // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
-            $this->installPluginComposerDeps($name, $pluginDir);
-
-            // 运行 migrate
-            $this->report('migrating', '正在运行插件迁移...');
-            $migrationRecordsBefore = $this->pluginMigrationRecordNames($name);
-            $migrationAttempted = true;
-            $this->runPluginMigrations($name);
-            $this->report('seeding', '正在运行插件初始化数据...');
-            $this->runPluginSeeders($name);
-
-            // 替换 nginx 占位符
-            $this->replaceNginxPlaceholders("$pluginDir/nginx");
-
-            // 清理缓存
-            $this->report('clearing_cache', '正在清理系统缓存...');
-            $this->clearCaches();
-
-            $result = [
-                'name' => $name,
-                'version' => $release['version'],
-                'message' => "插件 $name v{$release['version']} 安装成功",
-            ];
-
-            if ($this->hasNginxConfig("$pluginDir/nginx")) {
-                $result['nginx_reload'] = true;
-                $result['message'] .= '，请重载 Nginx 以使配置生效';
-            }
-
-            // 流程成功终局：清理本次迁移 marker（失败路径的清理在 rollbackNewPluginMigrations 内）
-            $this->cleanupMigrationMarker($name);
-
-            return $result;
-        } catch (\Throwable $e) {
-            $migrationsClean = true;
-            if ($migrationAttempted) {
-                $migrationsClean = $this->rollbackNewPluginMigrations($name, $migrationRecordsBefore);
-            }
-
-            // composer install / migrate 等失败：清理本次落地的半装目录。
-            // 远程安装的"已安装"前置校验在 try 外，故 try 内 $pluginDir 必为本次新建，
-            // 直接删安全——否则残留半装目录会让重装命中"已安装"、更新命中"已是最新"陷入死锁。
-            if ($migrationsClean && is_dir($pluginDir)) {
-                File::deleteDirectory($pluginDir);
-            } elseif (! $migrationsClean) {
-                $recoveryDir = $this->quarantinePluginDirectory($name, $pluginDir);
-                Log::error("[Plugin] 迁移回滚失败，已隔离半装目录供人工恢复: $name", [
-                    'recovery_dir' => $recoveryDir,
-                ]);
-            }
-
-            throw $e;
+            return $this->installExtractedPlugin(
+                $pluginSourceDir,
+                $name,
+                $release['version'],
+                $releaseUrl,
+            );
         } finally {
             // 清理临时文件
             $this->cleanupTemp($zipPath, $extractDir ?? null);
@@ -262,15 +203,11 @@ class PluginManager
      */
     public function installFromZip(string $zipPath): array
     {
+        $this->report('extracting', '正在解压插件包...');
         $extractDir = $this->extractPlugin($zipPath);
-        $applied = false;
-        $pluginDir = null;
-        $name = null;
-        $migrationRecordsBefore = [];
-        $migrationAttempted = false;
 
         try {
-            // 查找插件目录（ZIP 内可能有一层根目录）
+            // 查找插件目录（ZIP 内可能有包装目录）
             $pluginSourceDir = $this->findPluginDirInExtract($extractDir);
             $manifest = json_decode(file_get_contents("$pluginSourceDir/plugin.json"), true);
             $name = $manifest['name'] ?? null;
@@ -280,24 +217,53 @@ class PluginManager
             }
 
             $this->validatePluginName($name);
-            $this->validatePlugin($pluginSourceDir, $name);
 
-            // 检查是否已安装
-            $pluginDir = "$this->pluginsPath/$name";
-            if (is_dir($pluginDir) && file_exists("$pluginDir/plugin.json")) {
-                throw new RuntimeException("插件 $name 已安装，请使用更新功能");
-            }
+            $version = is_string($manifest['version'] ?? null) ? $manifest['version'] : '0.0.0';
 
-            // 移动到 plugins 目录（$applied 标记本次是否落地了目录：仅本次新建才在失败时清理，
-            // 不误删"已安装"校验命中的他人目录）
+            return $this->installExtractedPlugin($pluginSourceDir, $name, $version);
+        } finally {
+            $this->cleanupTemp(null, $extractDir);
+        }
+    }
+
+    /**
+     * 安装已解压的插件包。
+     *
+     * 在线安装与上传安装在各自完成取包后统一进入此流程，避免包校验、依赖安装、
+     * 迁移与失败清理语义发生漂移。
+     */
+    protected function installExtractedPlugin(
+        string $pluginSourceDir,
+        string $name,
+        string $version,
+        ?string $releaseUrl = null,
+    ): array {
+        $this->report('validating', '正在校验插件包...');
+        $this->validatePlugin($pluginSourceDir, $name);
+
+        $manifest = json_decode(file_get_contents("$pluginSourceDir/plugin.json"), true);
+        $this->checkCompatibility(is_array($manifest) ? $manifest : []);
+
+        $pluginDir = "$this->pluginsPath/$name";
+        if (is_dir($pluginDir) && file_exists("$pluginDir/plugin.json")) {
+            throw new RuntimeException("插件 $name 已安装，请使用更新功能");
+        }
+
+        if ($releaseUrl) {
+            $this->updatePluginManifest($pluginSourceDir, ['release_url' => $releaseUrl]);
+        }
+
+        $applied = false;
+        $migrationRecordsBefore = [];
+        $migrationAttempted = false;
+
+        try {
             $this->report('applying', '正在安装插件文件...');
             $this->applyPlugin($pluginSourceDir, $pluginDir);
             $applied = true;
 
-            // 安装插件 composer 依赖（仅当插件自带 backend/composer.json；无则跳过）
             $this->installPluginComposerDeps($name, $pluginDir);
 
-            // 运行 migrate
             $this->report('migrating', '正在运行插件迁移...');
             $migrationRecordsBefore = $this->pluginMigrationRecordNames($name);
             $migrationAttempted = true;
@@ -305,14 +271,10 @@ class PluginManager
             $this->report('seeding', '正在运行插件初始化数据...');
             $this->runPluginSeeders($name);
 
-            // 替换 nginx 占位符
             $this->replaceNginxPlaceholders("$pluginDir/nginx");
 
-            // 清理缓存
             $this->report('clearing_cache', '正在清理系统缓存...');
             $this->clearCaches();
-
-            $version = $manifest['version'] ?? '0.0.0';
 
             $result = [
                 'name' => $name,
@@ -325,21 +287,18 @@ class PluginManager
                 $result['message'] .= '，请重载 Nginx 以使配置生效';
             }
 
-            // 流程成功终局：清理本次迁移 marker（失败路径的清理在 rollbackNewPluginMigrations 内）
             $this->cleanupMigrationMarker($name);
 
             return $result;
         } catch (\Throwable $e) {
             $migrationsClean = true;
-            if ($migrationAttempted && is_string($name) && $name !== '') {
+            if ($migrationAttempted) {
                 $migrationsClean = $this->rollbackNewPluginMigrations($name, $migrationRecordsBefore);
             }
 
-            // composer install / migrate 等失败：清理本次落地的半装目录（$applied 守卫，
-            // 不误删"已安装"校验命中的既有插件），避免死锁循环
-            if ($migrationsClean && $applied && $pluginDir && is_dir($pluginDir)) {
+            if ($migrationsClean && $applied && is_dir($pluginDir)) {
                 File::deleteDirectory($pluginDir);
-            } elseif (! $migrationsClean && is_string($name) && $name !== '' && $pluginDir) {
+            } elseif (! $migrationsClean) {
                 $recoveryDir = $this->quarantinePluginDirectory($name, $pluginDir);
                 Log::error("[Plugin] 迁移回滚失败，已隔离半装目录供人工恢复: $name", [
                     'recovery_dir' => $recoveryDir,
@@ -347,8 +306,6 @@ class PluginManager
             }
 
             throw $e;
-        } finally {
-            $this->cleanupTemp(null, $extractDir);
         }
     }
 
@@ -883,6 +840,12 @@ class PluginManager
             if (file_exists("$dir/plugin.json")) {
                 return $dir;
             }
+
+            foreach (File::directories($dir) as $nestedDir) {
+                if (file_exists("$nestedDir/plugin.json")) {
+                    return $nestedDir;
+                }
+            }
         }
 
         throw new RuntimeException('ZIP 包中未找到 plugin.json');
@@ -1249,13 +1212,20 @@ class PluginManager
         try {
             Artisan::call('route:clear');
             Artisan::call('config:clear');
-
-            if (function_exists('opcache_reset')) {
-                opcache_reset();
-            }
         } catch (\Exception $e) {
             Log::warning("[Plugin] 清理缓存部分失败: {$this->safeError($e)}");
         }
+
+        // opcache 与 route/config 分开记账：opcache.restrict_api 受限时只是字节码缓存清不了，
+        // route/config 其实都成功了，合并成一条"清理缓存部分失败"会把排障带偏。
+        // 但分开 ≠ 不记：这里是 FPM 进程内、少数能真清掉线上字节码的位置，清不成必须留痕，
+        // 否则 restrict_api 的机器上更新插件后字节码没换、全系统零痕迹。
+        $opcache = app(Opcache::class);
+        $result = $opcache->reset();
+        if ($result['status'] !== Opcache::OK) {
+            Log::notice("[Plugin] opcache: {$result['status']}", $result);
+        }
+        $opcache->reportFailure($result, 'plugin lifecycle clearCaches');
     }
 
     protected function report(string $stage, string $message): void

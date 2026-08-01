@@ -796,12 +796,12 @@ test('failed() 对已落库 failed 的 task 不重复 update（普通异常路�
 });
 
 test('failed() 构造 task_failed NotificationIntent 派发到 NotificationCenter', function () {
-    // 配置 site.adminEmail + 对应 Admin
-    $admin = Admin::factory()->create(['email' => 'ops@example.com']);
+    // site.adminEmail 是运维别名，Admin 登录邮箱为空；Admin 仅作为通知归属。
+    $admin = Admin::factory()->create(['email' => null]);
     $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点', 'weight' => 1]);
     Setting::updateOrCreate(
         ['group_id' => $group->id, 'key' => 'adminEmail'],
-        ['type' => 'string', 'value' => 'ops@example.com', 'weight' => 0]
+        ['type' => 'string', 'value' => 'ops-alias@example.com', 'weight' => 0]
     );
     Setting::clearGroupCache($group->id);
 
@@ -830,7 +830,7 @@ test('failed() 构造 task_failed NotificationIntent 派发到 NotificationCente
     expect($captured->notifiableId)->toBe($admin->id);
     expect($captured->context['task_id'])->toBe($task->id);
     expect($captured->context['error_message'])->toBe('boom upstream timeout');
-    expect($captured->context['admin_email'])->toBe('ops@example.com');
+    expect($captured->context['admin_email'])->toBe('ops-alias@example.com');
 });
 
 test('failed() 在 task 不存在时直接返回，不派发通知', function () {

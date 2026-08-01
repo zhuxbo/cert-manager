@@ -1,5 +1,8 @@
 <template>
-  <div class="descriptions">
+  <div
+    v-if="['unpaid', 'pending', 'processing'].includes(cert.status)"
+    class="descriptions"
+  >
     <div style="margin: 10px 0">
       <el-button
         v-if="['unpaid'].includes(cert.status)"

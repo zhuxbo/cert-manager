@@ -38,7 +38,7 @@ test('adminEmail 命中 Admin 记录 → admin=命中行, email=adminEmail', fun
 
 test('adminEmail 为别名（不命中）但有 Admin → admin=first, email=别名（别名优先投递）', function () {
     setSiteAdminEmailForResolve('ops-alias@corp.example');
-    $first = Admin::factory()->create(['email' => 'login-admin@corp.example']);
+    $first = Admin::factory()->create(['email' => null]);
 
     $t = Admin::resolveAlertTarget();
 
@@ -57,8 +57,9 @@ test('adminEmail 为别名且无任何 Admin 记录 → admin=null, email=别名
         ->and($t['email'])->toBe('ops-alias@corp.example');
 });
 
-test('adminEmail 未配置 + 有 Admin → admin=first, email=admin->email', function () {
+test('adminEmail 未配置 → 跳过空邮箱 Admin，选择首个邮箱非空的 Admin', function () {
     setSiteAdminEmailForResolve(null);
+    Admin::factory()->create(['email' => null]);
     $admin = Admin::factory()->create(['email' => 'only-admin@corp.example']);
 
     $t = Admin::resolveAlertTarget();

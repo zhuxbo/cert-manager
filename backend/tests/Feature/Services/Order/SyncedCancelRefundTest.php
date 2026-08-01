@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Models\Product;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\Task;
@@ -241,6 +242,7 @@ test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：
             'common_name' => 'sync-renew-source.example.com',
             'order_id' => $order->id,
             'action' => '续费',
+            'product_type' => Product::TYPE_SSL,
         ]);
 });
 
@@ -312,6 +314,7 @@ test('#6 开关开 + 上游 cancelled + action=reissue：触发增量退款 + ce
         'common_name' => 'sync-reissue-source.example.com',
         'order_id' => $order->id,
         'action' => '重签',
+        'product_type' => Product::TYPE_SSL,
     ]);
 });
 
@@ -571,7 +574,10 @@ test('#12 上游 revoked + action=new（plain new）+ 开关开：走 sync 默�
 
     // 用户充值 100，下单扣 100 → balance=0；revoked 不触发 cancelled 退款分支
     $user = $this->createTestUser(['balance' => '100.00']);
-    $product = $this->createTestProduct(['refund_period' => 30]);
+    $product = $this->createTestProduct([
+        'refund_period' => 30,
+        'product_type' => Product::TYPE_CODESIGN,
+    ]);
     $order = $this->createTestOrder($user, $product, [
         'amount' => '100.00',
         'purchased_standard_count' => 1,
@@ -613,6 +619,7 @@ test('#12 上游 revoked + action=new（plain new）+ 开关开：走 sync 默�
             'expires_at' => '2027-01-15',
             'order_id' => $order->id,
             'is_successor' => false,
+            'product_type' => Product::TYPE_CODESIGN,
         ]);
 });
 
@@ -620,7 +627,10 @@ test('#19 上游 revoked + action=renew 有前驱：通用写回落 revoked + �
     // 接替单签发 active 后被 CA 吊销，前驱已 renewed 脱离 cert_expire/AutoRenew/cert_renew_stalled 三重监控 →
     // 双重静默（前驱不受监控 + 接替单吊销无告知）。cert_revoked 是唯一告知；is_successor=true 触发前驱脱监控文案。
     $user = $this->createTestUser(['balance' => '80.00']);
-    $product = $this->createTestProduct(['refund_period' => 30]);
+    $product = $this->createTestProduct([
+        'refund_period' => 30,
+        'product_type' => Product::TYPE_SMIME,
+    ]);
 
     // 前驱证书（renewed 终态，跨订单）
     $sourceOrder = $this->createTestOrder($user, $product);
@@ -667,6 +677,7 @@ test('#19 上游 revoked + action=renew 有前驱：通用写回落 revoked + �
             'expires_at' => '2027-02-20',
             'order_id' => $order->id,
             'is_successor' => true,
+            'product_type' => Product::TYPE_SMIME,
         ]);
 });
 
@@ -782,6 +793,7 @@ test('#16 开关关 + 上游 cancelled + renew 有前驱：通用写回落 cance
             'common_name' => 'writeback-renew-source.example.com',
             'order_id' => $order->id,
             'action' => '续费',
+            'product_type' => Product::TYPE_SSL,
         ]);
 });
 
@@ -831,6 +843,7 @@ test('#17 开关关 + 上游 cancelled + reissue 有前驱：通用写回落 can
         'common_name' => 'writeback-reissue-source.example.com',
         'order_id' => $order->id,
         'action' => '重签',
+        'product_type' => Product::TYPE_SSL,
     ]);
 });
 

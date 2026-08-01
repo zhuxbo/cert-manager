@@ -39,6 +39,7 @@ function buildMockOrder(array $certData = [], array $productData = []): Order&Mo
 
     $product = Mockery::mock(Product::class)->makePartial();
     $product->shouldReceive('getAttribute')->with('ca')->andReturn($productData['ca'] ?? 'Sectigo');
+    $product->shouldReceive('getAttribute')->with('product_type')->andReturn($productData['product_type'] ?? Product::TYPE_SSL);
 
     $order = Mockery::mock(Order::class)->makePartial();
     $order->shouldReceive('getAttribute')->with('latestCert')->andReturn($cert);
@@ -219,9 +220,62 @@ test('自动任务不会执行 → 加入通知列表，delegation_status=need_r
     expect($result->data['email'])->toBe('user@example.com');
     expect($result->data['username'])->toBe('testuser');
     // _meta 结构守护：与 FinanceAudit/TaskFailed/CertIssued 对齐，MailChannel 据此读 subject + is_html
-    expect($result->data['_meta']['subject'])->toContain('SSL证书到期提醒');
+    expect($result->data['_meta']['subject'])->toContain('证书到期提醒');
     expect($result->data['_meta']['is_html'])->toBeTrue();
 });
+
+test('混合产品类型逐项展示且仅 SSL 项标记为网站证书', function () {
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+
+    $orders = new Collection([
+        buildMockOrder(['common_name' => 'www.example.com'], ['product_type' => Product::TYPE_SSL]),
+        buildMockOrder(['common_name' => 'mail@example.com'], ['product_type' => Product::TYPE_SMIME]),
+        buildMockOrder(['common_name' => 'Example Software'], ['product_type' => Product::TYPE_CODESIGN]),
+        buildMockOrder(['common_name' => 'Example Document'], ['product_type' => Product::TYPE_DOCSIGN]),
+    ]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, buildMockUser());
+    $certificates = collect($result->data['certificates'])->keyBy('domain');
+
+    expect($certificates['www.example.com'])
+        ->product_type->toBe(Product::TYPE_SSL)
+        ->product_type_label->toBe('SSL')
+        ->and($certificates['mail@example.com'])
+        ->product_type->toBe(Product::TYPE_SMIME)
+        ->product_type_label->toBe('S/MIME')
+        ->and($certificates['Example Software'])
+        ->product_type->toBe(Product::TYPE_CODESIGN)
+        ->product_type_label->toBe('代码签名')
+        ->and($certificates['Example Document'])
+        ->product_type->toBe(Product::TYPE_DOCSIGN)
+        ->product_type_label->toBe('文档签名')
+        ->and($result->data['has_ssl_certificate'])->toBeTrue();
+});
+
+test('产品类型为空或未知时回落为 SSL', function (mixed $productType) {
+    $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
+    $autoRenewService->shouldReceive('willAutoRenewExecute')->andReturn(false);
+    $autoRenewService->shouldReceive('willAutoReissueExecute')->andReturn(false);
+
+    $orders = new Collection([
+        buildMockOrder(['common_name' => 'fallback.example.com'], ['product_type' => $productType]),
+    ]);
+    $builder = buildPartialBuilder($autoRenewService, $orders);
+    $intent = new NotificationIntent('cert_expire', 'user', 1, ['email' => 'user@example.com']);
+
+    $result = $builder->build($intent, buildMockUser());
+
+    expect($result->data['certificates'][0]['product_type'])->toBe(Product::TYPE_SSL)
+        ->and($result->data['certificates'][0]['product_type_label'])->toBe('SSL')
+        ->and($result->data['has_ssl_certificate'])->toBeTrue();
+})->with([
+    '空值' => null,
+    '未知值' => 'unknown',
+]);
 
 test('intent.context.email 为空时回落 notifiable.email', function () {
     $autoRenewService = Mockery::mock(AutoRenewService::class)->makePartial();
