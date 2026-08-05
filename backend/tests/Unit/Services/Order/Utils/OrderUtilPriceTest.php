@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Models\Acme;
 use App\Models\Admin;
 use App\Models\Product;
@@ -145,6 +146,44 @@ test('getMinPrice 抽取 fetchPriceRows 后行为不变：有价返实际价', f
     expect($minPrice['price'])->toBe('123.45')
         ->and($minPrice['alternative_standard_price'])->toBe('10.00')
         ->and($minPrice['alternative_wildcard_price'])->toBe('20.00');
+});
+
+test('交易计价在价格行缺失时拒绝继续，不能静默按零元成单', function () {
+    $user = $this->createTestUser(['level_code' => 'standard']);
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $cert = $this->createTestCert($order, [
+        'standard_count' => 0,
+        'wildcard_count' => 0,
+    ]);
+
+    try {
+        OrderUtil::getLatestCertAmount($order->toArray(), $cert->toArray(), $product->toArray());
+        test()->fail('价格行缺失时应拒绝交易计价');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse()['msg'] ?? '')->toBe('产品价格未配置，请联系管理员');
+    }
+});
+
+test('交易计价允许存在价格行的显式零元产品', function () {
+    $user = $this->createTestUser(['level_code' => 'standard']);
+    $product = $this->createTestProduct();
+    ProductPrice::create([
+        'product_id' => $product->id,
+        'level_code' => 'standard',
+        'period' => 12,
+        'price' => '0.00',
+        'alternative_standard_price' => '0.00',
+        'alternative_wildcard_price' => '0.00',
+    ]);
+    $order = $this->createTestOrder($user, $product);
+    $cert = $this->createTestCert($order, [
+        'standard_count' => 0,
+        'wildcard_count' => 0,
+    ]);
+
+    expect(OrderUtil::getLatestCertAmount($order->toArray(), $cert->toArray(), $product->toArray()))
+        ->toBe('0.00');
 });
 
 test('初始化价格后 SSL 混合多域名按真实 SAN 数量计费且零 SAN 为零元', function () {

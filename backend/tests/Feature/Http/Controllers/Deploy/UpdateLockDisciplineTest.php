@@ -4,6 +4,7 @@ use App\Models\Cert;
 use App\Models\DeployToken;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ProductPrice;
 use App\Models\User;
 use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -41,6 +42,12 @@ beforeEach(function () {
         'reissue' => 1,
         'validation_methods' => ['delegation', 'txt', 'http'],
     ]);
+
+    // 续费/重签走交易计价路径（getLatestCertAmount）：缺价格行会在锁前抛错、让探针用例前提落空。
+    ProductPrice::firstOrCreate(
+        ['product_id' => $this->product->id, 'level_code' => 'standard', 'period' => 12],
+        ['price' => '10.00', 'alternative_standard_price' => '10.00', 'alternative_wildcard_price' => '20.00'],
+    );
 
     // 上游提交（commit 段，事务外）挡真实 HTTP：renew/reissue 订单的上游提交分发到 Api::renew()/reissue()，
     // 统一返回 code=0 让 getData('commit') 吞掉、订单停 pending（不影响本用例只观测锁前 initParams）。

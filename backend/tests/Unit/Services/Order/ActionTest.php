@@ -1307,6 +1307,19 @@ test('sync 下游 pull（suppressCallback=true）状态变 active 不创建 call
  */
 function createUnpaidOrderForCharge(User $user, Product $product, string $amount): array
 {
+    ProductPrice::firstOrCreate(
+        [
+            'product_id' => $product->id,
+            'level_code' => 'standard',
+            'period' => 12,
+        ],
+        [
+            'price' => $amount,
+            'alternative_standard_price' => '10.00',
+            'alternative_wildcard_price' => '20.00',
+        ]
+    );
+
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
