@@ -25,6 +25,7 @@ UPGRADE="$ROOT/deploy/upgrade.sh"
 BUILD_CONFIG="$ROOT/build/config.json"
 CONTAINER_BUILD="$ROOT/build/scripts/container-build.sh"
 COLLECT_ARTIFACTS="$ROOT/build/scripts/collect-artifacts.sh"
+PACKAGE_SCRIPT="$ROOT/build/scripts/package.sh"
 PASS=0
 FAIL=0
 
@@ -715,13 +716,17 @@ else
     pass "C Web 静态产物不再携带系统默认 favicon"
 fi
 
-if grep -qF "storage/app/***" "$CONTAINER_BUILD" "$COLLECT_ARTIFACTS" &&
-    grep -qF '"backend/storage/app/***"' "$BUILD_CONFIG" &&
-    grep -qF 'rm -rf "$WORKSPACE_DIR/backend/storage/app"' "$CONTAINER_BUILD" &&
-    grep -qF 'rm -rf "$PRODUCTION_DIR/backend/storage/app"' "$COLLECT_ARTIFACTS"; then
-    pass "C 构建复制、产物汇总和完整包均排除 storage/app 运行数据"
+if grep -qF '"storage/app/"' "$BUILD_CONFIG" &&
+    grep -qF '"storage/databak/"' "$BUILD_CONFIG" &&
+    grep -qF '"storage/pay/"' "$BUILD_CONFIG" &&
+    grep -qF '"storage/framework/views/"' "$BUILD_CONFIG" &&
+    grep -qF "jq -r '.exclude_patterns.backend[]'" "$CONTAINER_BUILD" "$COLLECT_ARTIFACTS" &&
+    grep -qF 'rm -rf "$WORKSPACE_DIR/backend/storage" "$WORKSPACE_DIR/backend/bootstrap/cache"' "$CONTAINER_BUILD" &&
+    grep -qF 'rm -rf "$PRODUCTION_DIR/backend/storage" "$PRODUCTION_DIR/backend/bootstrap/cache"' "$COLLECT_ARTIFACTS" &&
+    grep -qF '"$SCRIPT_DIR/audit-package.sh"' "$PACKAGE_SCRIPT"; then
+    pass "C 构建工作区、产物汇总、打包与内容审计均阻断运行数据"
 else
-    fail "C storage/app 运行数据缺少三层打包排除"
+    fail "C 运行数据缺少构建清理、统一排除或发布包内容审计"
 fi
 
 QRCODE_PNG="$ROOT/frontend/user/public/qrcode.png"

@@ -16,8 +16,19 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 COMMON="$ROOT/deploy/scripts/common.sh"
 UPGRADE="$ROOT/deploy/upgrade.sh"
 ENV_CHECKER="$ROOT/backend/app/Services/Upgrade/EnvironmentChecker.php"
+source "$ROOT/deploy/test/php-test-runner.sh"
 PASS=0
 FAIL=0
+TEST_TMP="$(mktemp -d)"
+CASE_TMP_DIRS=()
+cleanup() {
+    local dir
+    for dir in "${CASE_TMP_DIRS[@]}"; do
+        rm -rf "$dir"
+    done
+    rm -rf "$TEST_TMP"
+}
+trap cleanup EXIT
 
 # 提取顶层函数体：从 `^name() {$` 到该函数顶格闭合 `^}$`（含首尾两行）。
 # 顶层函数闭合 } 顶格，函数体内嵌套 } 多有缩进；但两类多行块内也可能出现顶格 }，
@@ -63,16 +74,15 @@ assert_identical _read_req_field
 # ===== ④ _redis_required_from_env bash↔PHP 运行时输出等价 =====
 echo ""
 echo "=== _redis_required_from_env bash↔PHP 运行时输出等价 ==="
-PHP_BIN="$(command -v php 2>/dev/null || true)"
-if [ -z "$PHP_BIN" ]; then
-    for d in /www/server/php/*/bin/php /opt/homebrew/bin/php /usr/local/bin/php; do
-        [ -x "$d" ] && PHP_BIN="$d" && break
-    done
-fi
-
-if [ -z "$PHP_BIN" ] || [ ! -f "$ENV_CHECKER" ]; then
-    echo "⚠ 无 PHP CLI 或缺 EnvironmentChecker，跳过 redis 跨实现等价（PHP 侧另有单测覆盖语义）"
+if [ ! -f "$ENV_CHECKER" ]; then
+    echo "✗ 缺少 EnvironmentChecker，禁止跳过 redis 跨实现等价"
+    FAIL=$((FAIL + 1))
+elif ! test_php_init "$ROOT" "$TEST_TMP"; then
+    echo "✗ Docker app PHP 与宿主 PHP 均不可用，禁止跳过 redis 跨实现等价"
+    FAIL=$((FAIL + 1))
 else
+    PHP_BIN="$TEST_PHP_BIN"
+    echo "PHP CLI: $TEST_PHP_RUNTIME ($(test_php_version))"
     # eval 出 upgrade.sh 的 bash 版本（不 source 整个 upgrade.sh，避免触发主流程）
     eval "$(extract_fn "$UPGRADE" _redis_required_from_env)"
     PHP_CMD="$PHP_BIN" # bash 版本依赖此全局
@@ -85,7 +95,8 @@ else
     assert_redis_equiv() {
         local label="$1" content="$2"
         local tmp bash_rc php_rc
-        tmp="$(mktemp -d)"
+        tmp="$(test_php_mktemp_dir symmetric-redis)"
+        CASE_TMP_DIRS+=("$tmp")
         mkdir -p "$tmp/backend"
         printf '%s' "$content" >"$tmp/backend/.env"
         INSTALL_DIR="$tmp" _redis_required_from_env

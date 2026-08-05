@@ -92,130 +92,27 @@ jobs:
       - name: Build user frontend
         run: pnpm build:user
 
-      - name: Prepare release directory
+      - name: Collect and package release artifacts
+        env:
+          BUILD_BACKEND: 'true'
+          BUILD_ADMIN: 'true'
+          BUILD_USER: 'true'
+          BUILD_NGINX: 'true'
+          BUILD_WEB: 'true'
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.version.outputs.channel }}
+          CONFIG_FILE: ${{ github.workspace }}/build/config.json
+          SOURCE_DIR: ${{ github.workspace }}
+          WORKSPACE_DIR: ${{ github.workspace }}
+          PRODUCTION_DIR: ${{ github.workspace }}/build/temp/production-code
+          BUILD_ASSETS_DIR: ${{ github.workspace }}/build
         run: |
-          mkdir -p release/ssl-manager
-
-          # 后端：使用 rsync 排除不需要的文件
-          rsync -a \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='.gitignore' \
-            --exclude='.gitattributes' \
-            --exclude='.editorconfig' \
-            --exclude='.pint.json' \
-            --exclude='.idea' \
-            --exclude='.vscode' \
-            --exclude='.cursor' \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='.phpunit.cache' \
-            --exclude='.phpunit.result.cache' \
-            --exclude='phpunit.xml' \
-            --exclude='phpstan.neon' \
-            --exclude='tests' \
-            --exclude='vendor' \
-            --exclude='storage/logs/*' \
-            --exclude='storage/framework/cache/*' \
-            --exclude='storage/framework/sessions/*' \
-            --exclude='storage/framework/views/*' \
-            --exclude='storage/debugbar' \
-            --exclude='bootstrap/cache/*' \
-            --exclude='*.md' \
-            --exclude='LICENSE' \
-            backend/ release/ssl-manager/backend/
-
-          # 创建 .ssl-manager 标记文件
-          echo "ssl-manager" > release/ssl-manager/backend/.ssl-manager
-
-          # 保留必要的空目录结构
-          mkdir -p release/ssl-manager/backend/storage/{app/public,framework/{cache,sessions,views},logs}
-          mkdir -p release/ssl-manager/backend/bootstrap/cache
-          touch release/ssl-manager/backend/storage/.gitkeep
-          touch release/ssl-manager/backend/bootstrap/cache/.gitkeep
-
-          # 复制前端构建产物
-          mkdir -p release/ssl-manager/frontend
-          cp -r frontend/admin/dist release/ssl-manager/frontend/admin
-          cp -r frontend/user/dist release/ssl-manager/frontend/user
-
-          # 复制 build/web 整个目录到 frontend/web（包含 web.conf、help、public）
-          cp -r build/web release/ssl-manager/frontend/
-
-          # 复制配置文件（不含 deploy，deploy 单独打包）
-          cp -r build/nginx release/ssl-manager/ 2>/dev/null || true
-
-          # 生成版本信息文件
-          cat > release/ssl-manager/version.json <<EOF
-          {
-            "version": "${{ steps.version.outputs.version }}",
-            "channel": "${{ steps.version.outputs.channel }}",
-            "build_time": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          }
-          EOF
-
-          # 创建 manifest.json
-          cat > release/ssl-manager/manifest.json <<EOF
-          {
-            "version": "${{ steps.version.outputs.version }}",
-            "channel": "${{ steps.version.outputs.channel }}",
-            "build_time": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          }
-          EOF
-
-      - name: Create full package
-        run: |
-          cd release
-          zip -rq ssl-manager-full-${{ steps.version.outputs.version }}.zip ssl-manager
-
-      - name: Create upgrade package
-        run: |
-          cd release
-          mkdir -p upgrade
-          cp -r ssl-manager/backend upgrade/
-          cp -r ssl-manager/frontend upgrade/
-          cp ssl-manager/version.json upgrade/
-          cp ssl-manager/manifest.json upgrade/
-          rm -rf upgrade/backend/vendor
-          rm -rf upgrade/backend/.env*
-          rm -rf upgrade/backend/storage
-          rm -rf upgrade/backend/bootstrap/cache/*
-          # 升级包排除 web 目录（用户可能已定制）
-          rm -rf upgrade/frontend/web
-          mkdir -p upgrade/backend/vendor
-          touch upgrade/backend/vendor/.gitkeep
-          mkdir -p upgrade/backend/storage/{app/public,framework/{cache,sessions,views},logs}
-          mkdir -p upgrade/backend/bootstrap/cache
-          zip -rq ssl-manager-upgrade-${{ steps.version.outputs.version }}.zip upgrade
-
-      - name: Create script deploy package
-        run: |
-          cd release
-          mkdir -p script-deploy/scripts
-          # 复制部署脚本
-          cp ../deploy/install.sh script-deploy/
-          cp ../deploy/upgrade.sh script-deploy/
-          cp -r ../deploy/scripts/*.sh script-deploy/scripts/
-          cat > script-deploy/README.md <<EOF
-          # SSL Manager 脚本部署包
-
-          版本: ${{ steps.version.outputs.version }}
-
-          ## 安装
-
-          \`\`\`bash
-          chmod +x install.sh
-          ./install.sh
-          \`\`\`
-
-          ## 升级
-
-          \`\`\`bash
-          chmod +x upgrade.sh
-          ./upgrade.sh
-          \`\`\`
-          EOF
-          zip -rq ssl-manager-script-${{ steps.version.outputs.version }}.zip script-deploy
+          ./build/scripts/collect-artifacts.sh
+          ./build/scripts/package.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --channel "${{ steps.version.outputs.channel }}" \
+            --source "$PRODUCTION_DIR" \
+            --output "$GITHUB_WORKSPACE/release"
 
       - name: Calculate checksums
         run: |

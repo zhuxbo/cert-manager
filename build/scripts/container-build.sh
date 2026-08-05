@@ -105,19 +105,29 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 if [ "$BUILD_BACKEND" = "true" ]; then
     log_info "复制后端源码..."
     mkdir -p "$WORKSPACE_DIR/backend"
-    rm -rf "$WORKSPACE_DIR/backend/storage/app"
+    # storage 与 bootstrap/cache 都是机器运行数据。先清空旧工作区，避免 rsync
+    # 对排除项不执行 --delete 时残留上一次构建的备份、凭据或缓存。
+    rm -rf "$WORKSPACE_DIR/backend/storage" "$WORKSPACE_DIR/backend/bootstrap/cache"
+
+    BACKEND_EXCLUDE_FILE="$(mktemp)"
+    jq -r '.exclude_patterns.backend[]' "$CONFIG_FILE" >"$BACKEND_EXCLUDE_FILE"
+    cat >>"$BACKEND_EXCLUDE_FILE" <<'EOF'
+.git/
+vendor/
+EOF
     rsync -a --delete \
-        --exclude='.git' \
-        --exclude='vendor' \
-        --exclude='.idea' \
-        --exclude='.vscode' \
-        --exclude='storage/debugbar' \
-        --exclude='storage/app/***' \
-        --exclude='storage/backups' \
-        --exclude='storage/upgrades' \
-        --exclude='storage/logs/*.log' \
+        --exclude-from="$BACKEND_EXCLUDE_FILE" \
         "$SOURCE_DIR/backend/" "$WORKSPACE_DIR/backend/"
-    mkdir -p "$WORKSPACE_DIR/backend/storage/app/public" "$WORKSPACE_DIR/backend/storage/app/private"
+    rm -f "$BACKEND_EXCLUDE_FILE"
+    mkdir -p \
+        "$WORKSPACE_DIR/backend/bootstrap/cache" \
+        "$WORKSPACE_DIR/backend/storage/app/public" \
+        "$WORKSPACE_DIR/backend/storage/app/private" \
+        "$WORKSPACE_DIR/backend/storage/framework/cache" \
+        "$WORKSPACE_DIR/backend/storage/framework/sessions" \
+        "$WORKSPACE_DIR/backend/storage/framework/views" \
+        "$WORKSPACE_DIR/backend/storage/logs" \
+        "$WORKSPACE_DIR/backend/storage/pay"
     log_success "后端源码已复制"
 fi
 

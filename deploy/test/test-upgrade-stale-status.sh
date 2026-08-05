@@ -12,9 +12,9 @@
 #   A5 UPGRADE_IGNORE_RUNNING=1 → rc=0 放行且不归档（不调 php）
 #   A6 php 探测失败（stub rc=1）→ verdict 回落 other、文件原样、rc=0
 #   A7 归档 mv 失败（目录只读）→ best-effort 忽略、原文件保留、rc=0
-# B 组（真 php；CI setup-php 恒有，本地无 php 时显式提示跳过）：php verdict 判定正确性
+# B 组（真 php；本地优先 Docker app，CI 回落 setup-php；两者都不可用则失败）：php verdict 判定正确性
 #   B1 running + 死 pid → 归档
-#   B2 running + 活 pid（本测试进程）→ rc=1
+#   B2 running + 活 pid（容器探针或本测试进程）→ rc=1
 #   B3 completed → 原样
 #   B4 损坏 JSON → 原样
 #   B5 running + 活 pid 但 pid_starttime 不符（PID 复用）→ Linux 判死归档 / 非 Linux 保守中止
@@ -22,6 +22,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 UPGRADE="$ROOT/deploy/upgrade.sh"
+source "$ROOT/deploy/test/php-test-runner.sh"
 PASS=0
 FAIL=0
 
@@ -53,7 +54,17 @@ if [ -z "$FN_SRC" ]; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+B_TMP=""
+DOCKER_ALIVE_PID=""
+cleanup() {
+    if [ -n "$DOCKER_ALIVE_PID" ]; then
+        docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" \
+            exec -T app sh -c "kill $DOCKER_ALIVE_PID 2>/dev/null || true" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$TMP"
+    [ -z "$B_TMP" ] || rm -rf "$B_TMP"
+}
+trap cleanup EXIT
 
 # stub php：忽略实参，按 STUB_VERDICT / STUB_RC 输出（模拟 verdict 通道）
 STUB_PHP="$TMP/php-stub"
@@ -86,7 +97,7 @@ run_guard() {
 }
 
 fresh_sandbox() {
-    local dir="$TMP/install-$1"
+    local dir="${SANDBOX_ROOT:-$TMP}/install-$1"
     rm -rf "$dir"
     mkdir -p "$dir/backend/storage/upgrades"
     echo "$dir"
@@ -173,13 +184,43 @@ fi
 
 # ---------- B 组：真 php verdict 判定 ----------
 
-if command -v php >/dev/null 2>&1; then
-    REAL_PHP="$(command -v php)"
+REAL_PHP=""
+PHP_RUNTIME=""
+PHP_HAS_PROC=0
+
+# 项目后端是容器开发环境，本地优先使用 app 容器；CI 没有 Compose app，
+# 但 workflow 已 setup-php，此时回落宿主 PHP。禁止两者都没有时静默跳过。
+if test_php_init "$ROOT" "$TMP"; then
+    PHP_RUNTIME="$TEST_PHP_RUNTIME"
+    PHP_HAS_PROC="$TEST_PHP_HAS_PROC"
+    REAL_PHP="$TEST_PHP_BIN"
+    if [ "$PHP_RUNTIME" = "docker" ]; then
+        B_TMP="$(test_php_mktemp_dir upgrade-stale-status)"
+    fi
+    SANDBOX_ROOT="$B_TMP"
+    echo "B 组 PHP: $PHP_RUNTIME ($(test_php_version))"
+else
+    fail "B0 Docker app PHP 与宿主 PHP 均不可用，禁止跳过真 PHP 判定"
+fi
+
+if [ -n "$REAL_PHP" ]; then
+    if [ "$PHP_RUNTIME" = "docker" ]; then
+        DOCKER_ALIVE_PID=$(docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" \
+            exec -T app sh -c 'nohup sleep 60 >/dev/null 2>&1 & echo $!')
+        if ! docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" \
+            exec -T app sh -c "kill -0 $DOCKER_ALIVE_PID" >/dev/null 2>&1; then
+            fail "B0 无法在 app 容器创建活 PID 探针"
+            DOCKER_ALIVE_PID=""
+            echo "结果: $PASS 通过 / $FAIL 失败"
+            exit 1
+        fi
+        ALIVE_PID="$DOCKER_ALIVE_PID"
+    else
+        ALIVE_PID="$$"
+    fi
 
     # B1 running + 死 pid
-    (exit 0) &
-    DEAD_PID=$!
-    wait "$DEAD_PID" 2>/dev/null || true
+    DEAD_PID=99999999
     SB="$(fresh_sandbox b1)"
     printf '{"status":"running","pid":%d}' "$DEAD_PID" >"$(status_of "$SB")"
     if run_guard "$SB" "$REAL_PHP" &&
@@ -190,9 +231,9 @@ if command -v php >/dev/null 2>&1; then
         fail "B1 真 php 应判 running_dead 并归档"
     fi
 
-    # B2 running + 活 pid（本测试脚本进程）
+    # B2 running + 活 pid（容器进程或本测试脚本进程）
     SB="$(fresh_sandbox b2)"
-    printf '{"status":"running","pid":%d}' "$$" >"$(status_of "$SB")"
+    printf '{"status":"running","pid":%d}' "$ALIVE_PID" >"$(status_of "$SB")"
     if run_guard "$SB" "$REAL_PHP"; then
         fail "B2 真 php：活 pid 应 rc=1 中止"
     else
@@ -220,8 +261,8 @@ if command -v php >/dev/null 2>&1; then
     # B5 running + 活 pid 但 pid_starttime 不符（PID 复用）
     #   Linux(/proc)：starttime 校验判死 → 归档；非 Linux：无 /proc 不校验，保守判活 → rc=1 中止
     SB="$(fresh_sandbox b5)"
-    printf '{"status":"running","pid":%d,"pid_starttime":"1"}' "$$" >"$(status_of "$SB")"
-    if [ -d /proc ]; then
+    printf '{"status":"running","pid":%d,"pid_starttime":"1"}' "$ALIVE_PID" >"$(status_of "$SB")"
+    if [ "$PHP_HAS_PROC" -eq 1 ]; then
         if run_guard "$SB" "$REAL_PHP" &&
             [ ! -f "$(status_of "$SB")" ] &&
             ls "$(status_of "$SB")".stale.* >/dev/null 2>&1; then
@@ -236,8 +277,6 @@ if command -v php >/dev/null 2>&1; then
             pass "B5 真 php：非 Linux 回落保守判活 → rc=1 中止"
         fi
     fi
-else
-    echo "! B 组跳过：PATH 无 php（CI 由 setup-php 保证执行；本地可在带 php 的环境重跑）"
 fi
 
 echo ""

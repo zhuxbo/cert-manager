@@ -60,6 +60,7 @@ run_rsync_with_stats() {
 
 # 从环境变量获取路径
 CONFIG_FILE="${CONFIG_FILE:-/build/config.json}"
+BUILD_ASSETS_DIR="${BUILD_ASSETS_DIR:-/build}"
 SOURCE_DIR="${SOURCE_DIR:-/source}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 PRODUCTION_DIR="${PRODUCTION_DIR:-/workspace/production-code}"
@@ -67,8 +68,51 @@ FORCE_BUILD="${FORCE_BUILD:-false}"
 
 log_info "开始同步构建产物..."
 
-# 确保生产目录存在
+require_source_dir() {
+    local enabled="$1"
+    local label="$2"
+    local path="$3"
+
+    if [ "$enabled" = "true" ] && [ ! -d "$path" ]; then
+        log_error "${label}目录不存在: $path"
+        exit 1
+    fi
+}
+
+# 请求构建的输入必须在清理旧产物前完整存在，避免失败时复用陈旧文件。
+require_source_dir "${BUILD_BACKEND:-false}" "后端源码" "$WORKSPACE_DIR/backend"
+require_source_dir "${BUILD_ADMIN:-false}" "管理端 dist " "$WORKSPACE_DIR/frontend/admin/dist"
+require_source_dir "${BUILD_USER:-false}" "用户端 dist " "$WORKSPACE_DIR/frontend/user/dist"
+require_source_dir "${BUILD_NGINX:-false}" "nginx 配置" "$BUILD_ASSETS_DIR/nginx"
+require_source_dir "${BUILD_WEB:-false}" "web 静态文件" "$BUILD_ASSETS_DIR/web"
+
+# production-code 是可重建产物，先清空整个目录，避免未知顶层文件跨构建残留。
+# 清理前必须比较物理路径，防止 `source/.`、符号链接或祖先目录绕过字符串校验。
+if [ -z "$PRODUCTION_DIR" ]; then
+    log_error "拒绝清理不安全的生产产物目录: $PRODUCTION_DIR"
+    exit 1
+fi
 mkdir -p "$PRODUCTION_DIR"
+PRODUCTION_REAL="$(cd "$PRODUCTION_DIR" && pwd -P)"
+if [ "$PRODUCTION_REAL" = "/" ]; then
+    log_error "拒绝清理不安全的生产产物目录: $PRODUCTION_DIR -> $PRODUCTION_REAL"
+    exit 1
+fi
+
+for protected_dir in "$SOURCE_DIR" "$WORKSPACE_DIR" "$BUILD_ASSETS_DIR"; do
+    if [ ! -d "$protected_dir" ]; then
+        log_error "构建保护目录不存在: $protected_dir"
+        exit 1
+    fi
+    PROTECTED_REAL="$(cd "$protected_dir" && pwd -P)"
+    if [ "$PROTECTED_REAL" = "$PRODUCTION_REAL" ] || [[ "$PROTECTED_REAL" == "$PRODUCTION_REAL/"* ]]; then
+        log_error "拒绝清理不安全的生产产物目录: $PRODUCTION_DIR -> ${PRODUCTION_REAL}（包含保护目录 ${PROTECTED_REAL}）"
+        exit 1
+    fi
+done
+
+PRODUCTION_DIR="$PRODUCTION_REAL"
+find "$PRODUCTION_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cd "$PRODUCTION_DIR"
 
 # 创建目录结构
@@ -80,7 +124,9 @@ if [ "${BUILD_BACKEND:-false}" = "true" ]; then
     if [ -d "$BACKEND_SOURCE" ]; then
         log_info "复制后端文件（rsync，含排除与 --delete）..."
         mkdir -p "$PRODUCTION_DIR/backend"
-        rm -rf "$PRODUCTION_DIR/backend/storage/app"
+        # 排除目录不会被 rsync --delete 清理，必须先移除整个运行时 storage
+        # 与 bootstrap/cache，防止旧备份、支付凭据和编译缓存残留到产物。
+        rm -rf "$PRODUCTION_DIR/backend/storage" "$PRODUCTION_DIR/backend/bootstrap/cache"
 
         # 生成排除列表文件
         EXCLUDE_FILE="$(mktemp)"
@@ -110,11 +156,6 @@ CONTRIBUTING*
 frontend/
 nginx/
 web/
-storage/backups/
-storage/upgrades/
-storage/app/***
-storage/logs/*.log
-storage/framework/testing/
 vendor/**/tests/
 vendor/**/Tests/
 vendor/**/test/
@@ -128,11 +169,35 @@ EOF
 
         # 直接执行 rsync（rsync 本身已优化，只复制有变化的文件）
         run_rsync_with_stats "后端" -a --delete --exclude-from="$EXCLUDE_FILE" "$BACKEND_SOURCE/" "$PRODUCTION_DIR/backend/"
-        mkdir -p "$PRODUCTION_DIR/backend/storage/app/public" "$PRODUCTION_DIR/backend/storage/app/private"
+
+        # 干净 checkout 没有被忽略的 runtime cache；用仓库内已版本化的 PSL
+        # fixture 作为离线回落，避免正式安装首次解析域名时强依赖外网。
+        PSL_TARGET="$PRODUCTION_DIR/backend/storage/domain-rules/public_suffix_list.dat"
+        if [ ! -s "$PSL_TARGET" ]; then
+            PSL_FALLBACK="$SOURCE_DIR/backend/tests/Fixtures/public_suffix_list.dat"
+            if [ ! -s "$PSL_FALLBACK" ]; then
+                log_error "缺少 Public Suffix List: ${PSL_TARGET}，且无回落文件 $PSL_FALLBACK"
+                exit 1
+            fi
+            mkdir -p "$(dirname "$PSL_TARGET")"
+            cp "$PSL_FALLBACK" "$PSL_TARGET"
+            log_info "已从版本化 fixture 写入离线 Public Suffix List"
+        fi
+
+        mkdir -p \
+            "$PRODUCTION_DIR/backend/bootstrap/cache" \
+            "$PRODUCTION_DIR/backend/storage/app/public" \
+            "$PRODUCTION_DIR/backend/storage/app/private" \
+            "$PRODUCTION_DIR/backend/storage/framework/cache" \
+            "$PRODUCTION_DIR/backend/storage/framework/sessions" \
+            "$PRODUCTION_DIR/backend/storage/framework/views" \
+            "$PRODUCTION_DIR/backend/storage/logs" \
+            "$PRODUCTION_DIR/backend/storage/pay"
         log_success "后端复制完成"
         rm -f "$EXCLUDE_FILE"
     else
-        log_warning "后端目录不存在: $BACKEND_SOURCE"
+        log_error "后端目录不存在: $BACKEND_SOURCE"
+        exit 1
     fi
 fi
 
@@ -146,6 +211,7 @@ if [ "${BUILD_ADMIN:-false}" = "true" ]; then
         log_success "管理端前端复制完成"
     else
         log_error "管理端 dist 目录不存在: $ADMIN_DIST"
+        exit 1
     fi
 fi
 
@@ -159,6 +225,7 @@ if [ "${BUILD_USER:-false}" = "true" ]; then
         log_success "用户端前端复制完成"
     else
         log_error "用户端 dist 目录不存在: $USER_DIST"
+        exit 1
     fi
 fi
 
@@ -166,7 +233,7 @@ fi
 if [ "${BUILD_NGINX:-false}" = "true" ]; then
     log_info "复制 nginx 配置..."
     mkdir -p nginx
-    run_rsync_with_stats "nginx" -a --delete /build/nginx/ "$PRODUCTION_DIR/nginx/"
+    run_rsync_with_stats "nginx" -a --delete "$BUILD_ASSETS_DIR/nginx/" "$PRODUCTION_DIR/nginx/"
     NGINX_FILES=$(find "$PRODUCTION_DIR/nginx" -type f | wc -l)
     log_success "nginx 配置复制完成（$NGINX_FILES 个文件）"
 fi
@@ -175,7 +242,7 @@ fi
 if [ "${BUILD_WEB:-false}" = "true" ]; then
     log_info "复制 web 静态文件..."
     mkdir -p frontend/web
-    run_rsync_with_stats "web" -a --delete /build/web/ "$PRODUCTION_DIR/frontend/web/"
+    run_rsync_with_stats "web" -a --delete "$BUILD_ASSETS_DIR/web/" "$PRODUCTION_DIR/frontend/web/"
 
     WEB_FILES=$(find "$PRODUCTION_DIR/frontend/web" -type f | wc -l)
     log_success "web 静态文件复制完成（$WEB_FILES 个文件）"

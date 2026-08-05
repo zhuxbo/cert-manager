@@ -57,11 +57,13 @@ build/
 | `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级保留现有依赖）          |
 | `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/） |
 
-> 包清单与 sha256 写入 release 站根目录的 `releases.json`（由 `release.sh` 上传时生成），install/upgrade 链路统一从该文件读 `assets[].sha256` 强校验。打包阶段不再生成包内 `manifest.json`。
+> 包清单与 sha256 写入 release 站根目录的 `releases.json`（由 `release.sh` 上传时生成），install/upgrade 链路统一从该文件读 `assets[].sha256` 强校验。包内暂时保留最简 `manifest.json` 兼容旧版 PackageExtractor。
+
+本地发布与 GitHub Release 统一使用 `collect-artifacts.sh` + `package.sh`。后端测试/开发文件以及 `storage/app`、`storage/databak`、`storage/pay`、Laravel 缓存等机器运行数据由 `build/config.json` 统一排除；三个 zip 生成后还会执行失败即停的内容审计。
 
 ### 手动打包
 
-手动打包必须使用完整构建后的 `build/temp/production-code`。脚本会在打包前校验后端、前端和 nginx 关键产物，缺失时直接失败并清理半成品 zip。
+手动打包必须使用完整构建后的 `build/temp/production-code`。脚本会在打包前校验后端、前端和 nginx 关键产物，打包后审计测试文件、运行数据、凭据、备份、缓存和必需文件；任一检查失败都会删除半成品 zip。
 
 ```bash
 # 使用默认 build/temp/production-code

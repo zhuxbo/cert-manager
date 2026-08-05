@@ -14,11 +14,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT="$(cd "$DEPLOY_DIR/.." && pwd)"
 UPGRADE_SH="$DEPLOY_DIR/upgrade.sh"
+source "$SCRIPT_DIR/php-test-runner.sh"
 
 # 提取 version_gt 函数体（'version_gt() {' 到 '^}$'）— 避免 source 整个 upgrade.sh 触发 main
-TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
+TEST_TMP=$(mktemp -d)
+TMP="$TEST_TMP/version-gt.sh"
+trap 'rm -rf "$TEST_TMP"' EXIT
 
 awk '
     /^version_gt\(\) \{/ { in_fn = 1; print; next }
@@ -107,19 +110,12 @@ echo ""
 echo "=== 跨实现等价（bash version_gt vs PHP version_compare）==="
 echo "（反模式 4 配套：4 处独立实现必须语义一致，本段验证 bash 与 PHP 输出对齐）"
 
-# 探测 PHP CLI
-PHP_BIN=$(command -v php 2>/dev/null || true)
-if [ -z "$PHP_BIN" ]; then
-    # 宝塔风格 fallback：找任一可用 PHP
-    for d in /www/server/php/*/bin/php /opt/homebrew/bin/php /usr/local/bin/php; do
-        [ -x "$d" ] && PHP_BIN="$d" && break
-    done
-fi
-
-if [ -z "$PHP_BIN" ]; then
-    echo "⚠ 未找到 PHP CLI，跳过跨实现等价测试（PHP 单测已独立覆盖语义）"
+if ! test_php_init "$ROOT" "$TEST_TMP"; then
+    echo "✗ Docker app PHP 与宿主 PHP 均不可用，禁止跳过跨实现等价测试"
+    FAIL=$((FAIL + 1))
 else
-    echo "PHP CLI: $PHP_BIN ($($PHP_BIN -r 'echo PHP_VERSION;'))"
+    PHP_BIN="$TEST_PHP_BIN"
+    echo "PHP CLI: $TEST_PHP_RUNTIME ($(test_php_version))"
 
     # 调 PHP 的 version_compare —— 用与 VersionManager::compareVersions 相同的预处理
     # (strtolower + ltrim v/V)，反映生产代码行为。M2 修复后 VersionManager 入口已统一 strtolower，
