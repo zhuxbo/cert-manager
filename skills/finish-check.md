@@ -41,9 +41,9 @@ python3 skills/scripts/finish-check-exec.py run \
 | `plugin-<name>:exclusive`   | 同一插件的 install/build/package，防共享 `node_modules`/`dist`/输出 zip 竞争               |
 | `package:exclusive`         | 主程序 collect/package；不得与另一个主程序打包并行                                         |
 
-mutation gate 由 `skills/scripts/mutation-shards.py` 按精确 PHP 文件编排；缓存未命中的分片再通过 `skills/scripts/run-isolated-mutation.sh` 把冻结后端源码和插件源码复制到 `.superpowers/mutation-workspaces/`，并在具名一次性容器中运行。仅后端 `vendor` 从原目录只读挂载，Pest 两个临时目录单独可写，插件安装/回滚、Laravel cache、mutant 与测试产物只落隔离副本。取消时必须删除容器并确认退出后才释放 runtime/DB 锁。reviewer 可以把**源码阅读**与 mutation 重叠；Pint/PHPStan/Artisan/失败场景仍须按上表等待对应锁。
+mutation gate 由 `skills/scripts/mutation-shards.py` 按精确 PHP 文件编排；缓存未命中的分片再通过 `skills/scripts/run-isolated-mutation.sh` 把冻结后端源码和插件源码复制到 `.superpowers/mutation-workspaces/`，随后一次性物化到 Docker 原生 volume 并在只读根文件系统的具名容器中运行。正式 mutation 不再从 macOS bind mount 高频读取源码/vendor；Pest、Laravel cache/storage 等高频临时写路径使用有大小上限的 `tmpfs`，显式分片缓存仍按需绑定项目内受控目录。插件安装/回滚、mutant 与测试产物只落隔离 volume/tmpfs。取消时必须删除并确认 PHP/MySQL/seed 容器及两个原生 volume 均已退出或移除，之后才释放 runtime/DB 锁。reviewer 可以把**源码阅读**与 mutation 重叠；Pint/PHPStan/Artisan/失败场景仍须按上表等待对应锁。
 
-mutation 每次同时启动 `mutation-mysql` 一次性 MySQL 8.4，数据目录挂在 3 GiB `tmpfs`；该服务属于 Compose `tools` profile，日常 `docker compose up` 不会启动，也不会读写开发库。为减少反复建库/迁移的刷盘成本，该实例禁用 binlog/doublewrite 并使用 `innodb_flush_log_at_trx_commit=2`；InnoDB、事务、外键和唯一索引语义保持开启。包装脚本必须等待数据库就绪，且无论成功、失败或中断都同时删除 PHP 和 MySQL 临时容器。
+mutation 每次同时启动 `mutation-mysql` 一次性 MySQL 8.4，数据目录挂在 1 GiB `tmpfs`；正常测试实占应明显低于上限，若容量耗尽则门禁失败并调查异常数据膨胀，不通过扩大上限掩盖。该服务属于 Compose `tools` profile，日常 `docker compose up` 不会启动，也不会读写开发库。为减少反复建库/迁移的刷盘成本，该实例禁用 binlog/doublewrite 并使用 `innodb_flush_log_at_trx_commit=2`；InnoDB、事务、外键和唯一索引语义保持开启。包装脚本必须等待数据库就绪，且无论成功、失败或中断都同时删除 PHP 和 MySQL 临时容器。
 
 每个分片同时绑定唯一 FQCN 和 `--path`，并要求输出恰好 1 个文件；不能再用 `Action` 等短类名的前缀匹配结果充当范围证据。完整核心 mutation 只在 main 正式发布前强制运行；开发机器不设置定时或夜间任务。普通 finish-check 由 `derive-scope.sh` 确定性判定：改动 6 个默认核心类时自动加入对应类，plan 的其他目标必须通过可重复的 `--mutation-target-class <FQCN>` 显式声明。脚本输出 `MUTATION_REQUIRED`、最终目标以及可直接执行的 run/verify 参数。
 

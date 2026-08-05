@@ -300,7 +300,7 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 - **预发布版（dev 通道）不跑**（试错性质，门禁仅在正式版生效）
 - **CI 不跑**（完整门禁成本高且正式发布前已有本机硬门禁；首次精确六片完整样本完成前不承诺固定时长）
 - 开发机器不配置定时或夜间 mutation
-- mutation 分片通过 `run-isolated-mutation.sh` 使用独立的 MySQL 8.4 `tmpfs` 实例，不共用开发库；临时库只放宽崩溃耐久性，不关闭 InnoDB/事务/外键/唯一索引
+- mutation 分片通过 `run-isolated-mutation.sh` 使用独立的 MySQL 8.4 `tmpfs` 实例，不共用开发库；应用源码/vendor/插件先物化到一次性 Docker 原生 volume，高频临时写路径使用有上限的 `tmpfs`；临时库只放宽崩溃耐久性，不关闭 InnoDB/事务/外键/唯一索引
 
 **门槛**：
 
