@@ -72,6 +72,40 @@ test('credentials 含 schema 外字段被拒（白名单校验，防额外字段
     expect(CloudDeployAccess::withoutGlobalScopes()->count())->toBe(0);
 });
 
+test('创建凭证时拒绝指向回环地址的部署服务', function () {
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '本机 SamWaf',
+            'provider' => 'samwaf',
+            'credentials' => [
+                'server_url' => 'http://127.0.0.1:26666/api',
+                'api_key' => 'secret',
+            ],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 0]);
+
+    expect(CloudDeployAccess::withoutGlobalScopes()->count())->toBe(0);
+});
+
+test('创建凭证时允许公共地址且不会误伤 allow_insecure 设计取舍', function () {
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '公网 SamWaf',
+            'provider' => 'samwaf',
+            'credentials' => [
+                'server_url' => 'https://1.1.1.1:9443/api',
+                'api_key' => 'secret',
+                'allow_insecure' => true,
+            ],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $access = CloudDeployAccess::withoutGlobalScopes()->firstOrFail();
+    expect($access->credentials['allow_insecure'])->toBeTrue();
+});
+
 test('更新凭证不允许修改 provider', function () {
     $access = CloudDeployAccess::create([...$this->payload, 'user_id' => $this->user->id]); // aliyun
 

@@ -2,8 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Baotawaf;
 
-use GuzzleHttp\Client as GuzzleClient;
-
 /**
  * 堡塔云 WAF deployer 共用的 makeClient 实现（site / console 两 product 一致）。
  *
@@ -16,8 +14,7 @@ trait BuildsBaotawafClient
     {
         return match ($kind) {
             'api' => new BaotawafClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure'] ?? null),
                 ]),

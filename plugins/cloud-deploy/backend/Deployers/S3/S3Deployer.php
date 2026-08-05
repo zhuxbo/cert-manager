@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\S3;
 
 use Aws\S3\S3Client;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
+use Plugins\CloudDeploy\Support\SafeHttpClientFactory;
 use Throwable;
 
 /**
@@ -100,11 +102,23 @@ class S3Deployer extends AbstractDeployer
      */
     protected function makeClient(string $kind, array $credentials): object
     {
+        $endpoint = isset($credentials['endpoint']) && (string) $credentials['endpoint'] !== ''
+            ? (string) $credentials['endpoint']
+            : null;
+        $httpOptions = null;
+
+        if ($endpoint !== null) {
+            $destination = app(OutboundDestinationPolicy::class)->authorize($this->provider(), $endpoint);
+            $endpoint = $destination->url;
+            $httpOptions = app(SafeHttpClientFactory::class)->optionsFor($destination);
+        }
+
         return match ($kind) {
             's3' => new S3Client(array_filter([
                 'version' => 'latest',
                 'region' => isset($credentials['region']) && (string) $credentials['region'] !== '' ? (string) $credentials['region'] : 'us-east-1',
-                'endpoint' => isset($credentials['endpoint']) && (string) $credentials['endpoint'] !== '' ? (string) $credentials['endpoint'] : null,
+                'endpoint' => $endpoint,
+                'http' => $httpOptions,
                 'use_path_style_endpoint' => ! empty($credentials['__use_path_style']),
                 'credentials' => [
                     'key' => $credentials['access_key_id'] ?? '',

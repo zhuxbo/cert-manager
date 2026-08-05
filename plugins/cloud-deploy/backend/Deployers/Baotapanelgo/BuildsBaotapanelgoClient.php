@@ -2,8 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Baotapanelgo;
 
-use GuzzleHttp\Client as GuzzleClient;
-
 /**
  * 宝塔面板（Windows Go 版）deployer 共用的 makeClient 实现（site / console 两 product 一致）。
  *
@@ -16,8 +14,7 @@ trait BuildsBaotapanelgoClient
     {
         return match ($kind) {
             'api' => new BaotapanelgoClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure'] ?? null),
                 ]),

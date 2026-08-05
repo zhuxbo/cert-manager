@@ -8,9 +8,18 @@ use Plugins\CloudDeploy\Deployers\Byteplus\BytePlusClbDeployer;
 use Plugins\CloudDeploy\Deployers\Byteplus\BytePlusMediaLiveDeployer;
 use Plugins\CloudDeploy\Deployers\Byteplus\BytePlusRestClient;
 use Plugins\CloudDeploy\Deployers\Byteplus\BytePlusTosDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// TOS host 由 bucket 派生：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /**
  * 锁定各 deployer 真实 makeClient 构造出的 BytePlusRestClient 的 (service, region, host) 签名 scope 字段。
@@ -111,4 +120,13 @@ test('TOS makeClient：certcenter 固定 ap-singapore-1；tos service=tos host={
     expect($tos['service'])->toBe('tos');
     expect($tos['region'])->toBe('ap-singapore-1');
     expect($tos['host'])->toBe('mybucket.tos-ap-singapore-1.bytepluses.com');
+});
+
+test('TOS bucket 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = new BytePlusTosDeployer;
+    $make = new ReflectionMethod($deployer, 'makeClient');
+    $make->setAccessible(true);
+
+    expect(fn () => $make->invoke($deployer, 'tos', ['access_key_id' => 'AK', 'secret_access_key' => 'SK'], 'ap-singapore-1', 'public.example:443/path'))
+        ->toThrow(OutboundDestinationException::class);
 });

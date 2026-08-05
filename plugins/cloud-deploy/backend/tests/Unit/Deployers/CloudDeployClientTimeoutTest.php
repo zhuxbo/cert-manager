@@ -10,9 +10,18 @@ use Plugins\CloudDeploy\Deployers\Aws\AwsCloudFrontDeployer;
 use Plugins\CloudDeploy\Deployers\Aws\AwsIamDeployer;
 use Plugins\CloudDeploy\Deployers\Aws\AwsNlbDeployer;
 use Plugins\CloudDeploy\Deployers\Aws\BuildsAwsClientConfig;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// aliyunConfig 内做 endpoint 校验：stub 策略放行公网 host
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -48,6 +57,14 @@ test('BuildsAliyunConfig 产物含 readTimeout/connectTimeout（darabonba Config
 
     expect($cfg->readTimeout)->not->toBeNull()
         ->and($cfg->connectTimeout)->not->toBeNull();
+});
+
+test('aliyunConfig endpoint 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $m = new ReflectionMethod(AliyunCasDeployDeployer::class, 'aliyunConfig');
+    $m->setAccessible(true);
+
+    expect(fn () => $m->invoke(new AliyunCasDeployDeployer, ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], 'public.example:443/path.aliyuncs.com'))
+        ->toThrow(OutboundDestinationException::class);
 });
 
 test('Aliyun deployer 不得内联 new Config（守门：darabonba Config 仅经 BuildsAliyunConfig::aliyunConfig 注入 timeout）', function () {

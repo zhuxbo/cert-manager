@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Flexcdn;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -75,8 +74,7 @@ class FlexcdnDeployer extends AbstractDeployer
 
         return match ($kind) {
             'api' => new FlexcdnRestClient(
-                new GuzzleClient([
-                    'base_uri' => "$serverUrl/",
+                $this->outboundHttpClient("$serverUrl/", [
                     'connect_timeout' => 10,
                     'timeout' => 30,
                     'verify' => empty($credentials['allow_insecure']),

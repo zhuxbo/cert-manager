@@ -5,6 +5,8 @@ namespace Plugins\CloudDeploy\Requests\Concerns;
 use Illuminate\Contracts\Validation\Validator;
 use InvalidArgumentException;
 use Plugins\CloudDeploy\Deployers\Registry;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 
 /**
  * 服务端 schema 校验：以 Registry catalog 为唯一来源，按选中的 provider / product
@@ -30,6 +32,7 @@ trait ValidatesAgainstSchema
 
         $this->assertRequiredFields($validator, 'credentials', $schema, $credentials);
         $this->assertNoUnknownFields($validator, 'credentials', $schema, $credentials);
+        $this->assertDestinationFields($validator, $provider, 'credentials', $schema, $credentials);
     }
 
     /**
@@ -50,6 +53,7 @@ trait ValidatesAgainstSchema
         $schema = $registry->resolveDeployer($provider, $product)->configSchema();
         $this->assertRequiredFields($validator, 'config', $schema, $config);
         $this->assertNoUnknownFields($validator, 'config', $schema, $config);
+        $this->assertDestinationFields($validator, $provider, 'config', $schema, $config);
     }
 
     /**
@@ -86,6 +90,43 @@ trait ValidatesAgainstSchema
         foreach (array_keys($values) as $key) {
             if (! in_array($key, $allowed, true)) {
                 $validator->errors()->add("$attribute.$key", "不支持的字段：$key");
+            }
+        }
+    }
+
+    /**
+     * schema 标记为 destination 的字段是租户可控出站地址；新增和更新时始终使用严格策略。
+     *
+     * @param  list<array{key:string,destination?:bool}>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function assertDestinationFields(
+        Validator $validator,
+        string $provider,
+        string $attribute,
+        array $schema,
+        array $values,
+    ): void {
+        foreach ($schema as $field) {
+            if (empty($field['destination'])) {
+                continue;
+            }
+
+            $key = $field['key'];
+            $url = $values[$key] ?? null;
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            // endpoint 类裸 host（腾讯 SDK 自动拼 https://）补默认 scheme，完整 URL 原样校验
+            if (! str_contains($url, '://')) {
+                $url = 'https://'.$url;
+            }
+
+            try {
+                app(OutboundDestinationPolicy::class)->authorize($provider, $url);
+            } catch (OutboundDestinationException) {
+                $validator->errors()->add("$attribute.$key", '部署目标地址不符合出站安全策略');
             }
         }
     }

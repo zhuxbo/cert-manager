@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Webhook;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -158,6 +157,8 @@ class WebhookDeployer extends AbstractDeployer
         );
 
         $timeout = isset($config['timeout']) && (int) $config['timeout'] > 0 ? (int) $config['timeout'] : 30;
+        $url = $this->authorizedOutboundUrl($url);
+        $credentials['url'] = $url;
 
         $this->guardSdk(function () use ($credentials, $method, $url, $headers, $contentType, $data, $timeout) {
             /** @var WebhookClient $client */
@@ -283,7 +284,7 @@ class WebhookDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'http' => new WebhookClient(new GuzzleClient([
+            'http' => new WebhookClient($this->outboundAbsoluteHttpClient((string) ($credentials['url'] ?? ''), [
                 'verify' => ! $this->truthy($credentials['allow_insecure'] ?? null),
             ])),
         };

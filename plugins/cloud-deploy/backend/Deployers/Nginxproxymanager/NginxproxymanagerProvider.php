@@ -27,7 +27,7 @@ class NginxproxymanagerProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '服务地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '服务地址', 'required' => true, 'destination' => true],
             ['key' => 'auth_method', 'label' => '认证方式（password 账号密码 / token API Token）', 'required' => false],
             ['key' => 'username', 'label' => '用户名（认证方式为 password 时必填）', 'required' => false],
             ['key' => 'password', 'label' => '密码（认证方式为 password 时必填）', 'required' => false, 'secret' => true],

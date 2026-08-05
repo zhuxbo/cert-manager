@@ -2,8 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Baotapanel;
 
-use GuzzleHttp\Client as GuzzleClient;
-
 /**
  * 宝塔面板 deployer 共用的 makeClient 实现（site / console 两 product 一致）。
  *
@@ -16,8 +14,7 @@ trait BuildsBaotapanelClient
     {
         return match ($kind) {
             'api' => new BaotapanelClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure'] ?? null),
                 ]),

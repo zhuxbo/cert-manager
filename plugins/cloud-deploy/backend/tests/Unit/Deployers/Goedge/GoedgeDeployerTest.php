@@ -114,7 +114,7 @@ test('makeClient 注入 base_uri + allow_insecure 关 TLS（凭证不入 Guzzle 
     $deployer = new GoedgeDeployer;
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
-    $client = $ref->invoke($deployer, 'api', goedgeCreds() + ['allow_insecure' => true, 'server_url' => 'https://edge:7788/']);
+    $client = $ref->invoke($deployer, 'api', array_replace(goedgeCreds(), ['allow_insecure' => true, 'server_url' => 'https://1.1.1.1:7788/']));
     expect($client)->toBeInstanceOf(GoedgeRestClient::class);
 
     $httpProp = new ReflectionProperty($client, 'http');
@@ -123,5 +123,5 @@ test('makeClient 注入 base_uri + allow_insecure 关 TLS（凭证不入 Guzzle 
     $cfg = new ReflectionMethod($guzzle, 'getConfig');
     $cfg->setAccessible(true);
     expect($cfg->invoke($guzzle, 'verify'))->toBeFalse();
-    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://edge:7788/');
+    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://1.1.1.1:7788/');
 });

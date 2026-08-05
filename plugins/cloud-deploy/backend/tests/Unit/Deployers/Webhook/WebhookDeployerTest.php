@@ -3,9 +3,17 @@
 use Plugins\CloudDeploy\Deployers\Webhook\WebhookApiException;
 use Plugins\CloudDeploy\Deployers\Webhook\WebhookClient;
 use Plugins\CloudDeploy\Deployers\Webhook\WebhookDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /**
  * 测试用叶子证书（CN=example.com，SAN=example.com,www.example.com）——验证 ${...COMMONNAME} /
@@ -185,6 +193,15 @@ test('不支持的内容类型抛业务错误', function () {
     expect(fn () => $deployer->bind(webhookCertRef(), [
         'url' => 'https://h', 'headers' => 'Content-Type: application/xml',
     ], []))->toThrow(RuntimeException::class, '不支持的 Webhook 内容类型');
+});
+
+test('运行时指向回环地址的 Webhook 被出站策略拦截（不触达客户端）', function () {
+    $client = Mockery::mock(WebhookClient::class);
+    $client->shouldNotReceive('send');
+
+    $deployer = webhookDeployerWith(fn () => $client);
+    expect(fn () => $deployer->bind(webhookCertRef(), ['url' => 'http://127.0.0.1:80/cb'], []))
+        ->toThrow(OutboundDestinationException::class);
 });
 
 test('bind 遇 WebhookApiException 时脱敏重抛（含状态码、无 token、不挂 previous）', function () {

@@ -10,6 +10,7 @@ use AlibabaCloud\Oss\V2\Models\CertificateConfiguration;
 use AlibabaCloud\Oss\V2\Models\Cname;
 use AlibabaCloud\Oss\V2\Models\PutCnameRequest;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
 /**
@@ -85,6 +86,10 @@ class AliyunOssDeployer extends AbstractDeployer
 
     protected function makeClient(string $kind, array $credentials): object
     {
+        // region 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
+        $endpoint = $this->endpointForRegion((string) ($credentials['region'] ?? ''));
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost($this->provider(), $endpoint);
+
         return match ($kind) {
             'oss' => new OssClient(
                 (new OssConfig)
@@ -94,7 +99,7 @@ class AliyunOssDeployer extends AbstractDeployer
                     ))
                     ->setSignatureVersion('v4')
                     ->setRegion($credentials['region'] ?? '')
-                    ->setEndpoint($this->endpointForRegion($credentials['region'] ?? ''))
+                    ->setEndpoint($endpoint)
                     // G3：OSS V2 SDK 独立于 darabonba Config，显式设连接/读写超时（秒），防 TCP 黑洞挂起
                     ->setConnectTimeout(5.0)
                     ->setReadwriteTimeout(10.0),

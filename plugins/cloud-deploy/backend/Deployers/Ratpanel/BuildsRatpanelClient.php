@@ -2,8 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Ratpanel;
 
-use GuzzleHttp\Client as GuzzleClient;
-
 /**
  * 耗子面板 makeClient 共用逻辑（site / console 两端点一致）。
  *
@@ -23,8 +21,7 @@ trait BuildsRatpanelClient
         $basePath = rtrim($urlPath, '/').'/api';
 
         return new RatpanelRestClient(
-            new GuzzleClient([
-                'base_uri' => "$serverUrl/api/",
+            $this->outboundHttpClient("$serverUrl/api/", [
                 'connect_timeout' => 10,
                 'timeout' => 30,
                 'verify' => empty($credentials['allow_insecure']),

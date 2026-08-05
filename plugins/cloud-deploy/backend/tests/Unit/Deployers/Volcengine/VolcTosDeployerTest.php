@@ -3,9 +3,17 @@
 use Plugins\CloudDeploy\Deployers\Volcengine\VolcApiException;
 use Plugins\CloudDeploy\Deployers\Volcengine\VolcRestClient;
 use Plugins\CloudDeploy\Deployers\Volcengine\VolcTosDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// TOS host 由 bucket 派生：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 function volcTosDeployerWith(callable $clientFactory): VolcTosDeployer
 {
@@ -92,4 +100,10 @@ test('bind SDK 抛 VolcApiException 时脱敏重抛（无 AK/SK、不挂 previou
         expect($e->getMessage())->not->toContain('AK-SECRET-XYZ')->not->toContain('SK-SECRET-ABC');
         expect($e->getPrevious())->toBeNull();
     }
+});
+
+test('TOS bucket 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = volcTosDeployerWith(fn () => new stdClass);
+    expect(fn () => $deployer->bind('c', volcTosCreds(), ['region' => 'cn-beijing', 'bucket' => 'public.example:443/path', 'domain' => 'd.example.com']))
+        ->toThrow(RuntimeException::class);
 });

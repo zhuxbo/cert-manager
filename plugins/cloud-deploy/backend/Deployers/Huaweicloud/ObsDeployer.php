@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Huaweicloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
 /**
@@ -86,13 +87,8 @@ class ObsDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials, string $region = '', string $bucket = ''): object
     {
         return match ($kind) {
-            // OBS 独立签名（HMAC-SHA1），虚拟主机式 host。
-            'obs' => new HuaweiObsClient(
-                $bucket,
-                $region,
-                $credentials['access_key_id'] ?? '',
-                $credentials['secret_access_key'] ?? '',
-            ),
+            // OBS 独立签名（HMAC-SHA1），虚拟主机式 host；bucket 可经 :port/ 注入突破 DNS 后缀（反模式 18）
+            'obs' => $this->newObsClient($credentials, $region, $bucket),
             // SCM 托管走 SDK-HMAC-SHA256 REST（回落 cn-north-4）。
             'scm' => new HuaweicloudRestClient(
                 $this->scmHost(),
@@ -100,6 +96,24 @@ class ObsDeployer extends AbstractDeployer
                 $credentials['secret_access_key'] ?? '',
             ),
         };
+    }
+
+    /**
+     * @param  array<string,mixed>  $credentials
+     */
+    private function newObsClient(array $credentials, string $region, string $bucket): HuaweiObsClient
+    {
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost(
+            $this->provider(),
+            $bucket.'.obs.'.$region.'.myhuaweicloud.com',
+        );
+
+        return new HuaweiObsClient(
+            $bucket,
+            $region,
+            $credentials['access_key_id'] ?? '',
+            $credentials['secret_access_key'] ?? '',
+        );
     }
 
     protected function sanitize(Throwable $e): string

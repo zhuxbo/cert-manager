@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Cpanel;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -69,8 +68,7 @@ class CpanelDeployer extends AbstractDeployer
         $apiToken = (string) ($credentials['api_token'] ?? '');
 
         return match ($kind) {
-            'api' => new CpanelClient(new GuzzleClient([
-                'base_uri' => "$serverUrl/execute/",
+            'api' => new CpanelClient($this->outboundHttpClient("$serverUrl/execute/", [
                 'timeout' => 30,
                 'verify' => empty($credentials['allow_insecure']),
                 'headers' => [

@@ -2,6 +2,7 @@
 
 use BaiduBce\Exception\BceServiceException;
 use Plugins\CloudDeploy\Deployers\Baidu\BaiduAppblbDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -106,4 +107,13 @@ test('bind SDK 抛 BceServiceException 时脱敏重抛（无 AK/SK、不挂 prev
         expect($e->getMessage())->not->toContain('AK-SECRET-XYZ')->not->toContain('SK-SECRET-ABC');
         expect($e->getPrevious())->toBeNull();
     }
+});
+
+test('region 含 URL 分隔符时在调用客户端前被拒绝', function () {
+    $deployer = new BaiduAppblbDeployer;
+    $method = (new ReflectionClass(BaiduAppblbDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'blb', baiduAppblbCreds(), 'public.example:443/path'))
+        ->toThrow(OutboundDestinationException::class);
 });

@@ -26,7 +26,7 @@ class SynologydsmProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '服务地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '服务地址', 'required' => true, 'destination' => true],
             ['key' => 'username', 'label' => '用户名', 'required' => true],
             ['key' => 'password', 'label' => '密码', 'required' => true, 'secret' => true],
             ['key' => 'totp_secret', 'label' => '二步验证 TOTP 密钥（选填，base32）', 'required' => false, 'secret' => true],

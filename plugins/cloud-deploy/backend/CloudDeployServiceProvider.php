@@ -9,16 +9,23 @@ use Composer\Autoload\ClassLoader;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
+use Plugins\CloudDeploy\Commands\CloudDeployAuditDestinationsCommand;
 use Plugins\CloudDeploy\Commands\CloudDeployReconcileCommand;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Notifications\CloudDeployFailedNotificationBuilder;
 use Plugins\CloudDeploy\Support\CloudDeployTriggers;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
+use Plugins\CloudDeploy\Support\SafeHttpClientFactory;
 
 class CloudDeployServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
         $this->loadPluginVendor();
+        $this->mergeConfigFrom(__DIR__.'/config/cloud-deploy.php', 'cloud-deploy');
+
+        $this->app->singleton(OutboundDestinationPolicy::class);
+        $this->app->singleton(SafeHttpClientFactory::class);
 
         // Registry 单例：按 provider 拆分的 registry/*.php 各返回一个 Closure(Registry)，逐个 apply 注册 provider + deployer
         $this->app->singleton(Registry::class, function () {
@@ -79,7 +86,10 @@ class CloudDeployServiceProvider extends ServiceProvider
         $this->loadRoutesFrom("$basePath/backend/routes/admin.php");
         $this->loadMigrationsFrom("$basePath/backend/migrations");
 
-        $this->commands([CloudDeployReconcileCommand::class]);
+        $this->commands([
+            CloudDeployAuditDestinationsCommand::class,
+            CloudDeployReconcileCommand::class,
+        ]);
 
         // callAfterResolving(Schedule)：插件自注册定时，无需改主系统 routes/console.php（已容器实测）
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {

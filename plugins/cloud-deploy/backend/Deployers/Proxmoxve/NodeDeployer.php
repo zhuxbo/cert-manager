@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Proxmoxve;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -74,8 +73,7 @@ class NodeDeployer extends AbstractDeployer
 
         return match ($kind) {
             'api' => new ProxmoxveClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api2/json/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api2/json/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure_connections'] ?? false),
                     'headers' => [

@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Tencent;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
 use TencentCloud\Common\CommonClient;
 use TencentCloud\Common\Credential;
 use TencentCloud\Common\Profile\ClientProfile;
@@ -36,6 +37,10 @@ class TencentGa2Deployer extends AbstractDeployer
 
     private const GA2_VERSION = '2025-01-15';
 
+    private const GA2_ENDPOINT = 'ga2.tencentcloudapi.com';
+
+    private const GA2_INTL_ENDPOINT = 'ga2.intl.tencentcloudapi.com';
+
     public function provider(): string
     {
         return 'tencent';
@@ -56,7 +61,7 @@ class TencentGa2Deployer extends AbstractDeployer
         return [
             ['key' => 'accelerator_id', 'label' => '全球加速实例 ID', 'type' => 'string', 'required' => true],
             ['key' => 'listener_id', 'label' => '监听器 ID', 'type' => 'string', 'required' => true],
-            ['key' => 'endpoint', 'label' => '接口端点（选填，国际站填 ga2.intl.tencentcloudapi.com）', 'type' => 'string', 'required' => false],
+            ['key' => 'endpoint', 'label' => '接口端点（选填，国际站填 ga2.intl.tencentcloudapi.com）', 'type' => 'string', 'required' => false, 'destination' => true],
         ];
     }
 
@@ -212,8 +217,11 @@ class TencentGa2Deployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
-        $endpoint = (string) ($credentials['endpoint'] ?? '');
-        $intl = str_ends_with($endpoint, 'intl.tencentcloudapi.com');
+        $endpoint = strtolower(rtrim(trim((string) ($credentials['endpoint'] ?? '')), '.'));
+        if ($endpoint !== '' && ! in_array($endpoint, [self::GA2_ENDPOINT, self::GA2_INTL_ENDPOINT], true)) {
+            throw new OutboundDestinationException('endpoint_not_allowed');
+        }
+        $intl = $endpoint === self::GA2_INTL_ENDPOINT;
 
         $http = new HttpProfile;
         $http->setReqTimeout(15);

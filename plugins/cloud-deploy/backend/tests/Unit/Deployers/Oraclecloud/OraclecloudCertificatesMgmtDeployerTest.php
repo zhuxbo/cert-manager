@@ -5,9 +5,18 @@ use Plugins\CloudDeploy\Deployers\Oraclecloud\OracleCertMgmtUploader;
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OraclecloudApiException;
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OraclecloudCertificatesMgmtDeployer;
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OraclecloudClient;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// OCI host 由 region 派生：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /** 测试子类：override makeClient（signer / api kind）。 */
 function oracleDeployerWith(callable $clientFactory): OraclecloudCertificatesMgmtDeployer
@@ -193,4 +202,14 @@ test('upload 遇 OraclecloudApiException 脱敏重抛（无私钥、不挂 previ
         expect($e->getMessage())->not->toContain('PRIVATE KEY');
         expect($e->getPrevious())->toBeNull();
     }
+});
+
+test('region 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = new OraclecloudCertificatesMgmtDeployer;
+    $method = (new ReflectionClass(OraclecloudCertificatesMgmtDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+    $signer = new OciRequestSigner('', '', '', '', '');
+
+    expect(fn () => $method->invoke($deployer, 'api', [], $signer, 'public.example:443/path'))
+        ->toThrow(OutboundDestinationException::class);
 });

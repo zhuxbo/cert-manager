@@ -3,6 +3,8 @@
 use Plugins\CloudDeploy\Deployers\K8s\K8sApiException;
 use Plugins\CloudDeploy\Deployers\K8s\K8sClient;
 use Plugins\CloudDeploy\Deployers\K8s\K8sSecretDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -132,4 +134,20 @@ test('bind 遇 K8sApiException 时脱敏重抛（含 reason、无 token、不挂
         expect($e->getPrevious())->toBeNull();
         expect($e->getTraceAsString())->not->toContain('TOKEN-LEAK-123');
     }
+});
+
+test('运行时 API Server 指向回环地址被出站策略拦截（makeClient 不产出客户端）', function () {
+    app()->instance(
+        OutboundDestinationPolicy::class,
+        new OutboundDestinationPolicy(
+            resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+        ),
+    );
+
+    $deployer = new K8sSecretDeployer;
+    $method = (new ReflectionClass(K8sSecretDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'api', ['server' => 'https://127.0.0.1:6443']))
+        ->toThrow(OutboundDestinationException::class);
 });

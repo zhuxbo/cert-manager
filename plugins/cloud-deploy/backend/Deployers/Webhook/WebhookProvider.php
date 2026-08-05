@@ -31,7 +31,7 @@ class WebhookProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'url', 'label' => 'Webhook 回调地址', 'required' => true],
+            ['key' => 'url', 'label' => 'Webhook 回调地址', 'required' => true, 'destination' => true],
             ['key' => 'method', 'label' => '请求谓词（默认 POST）', 'required' => false],
             ['key' => 'headers', 'label' => '请求标头（多行 Key: Value）', 'required' => false, 'secret' => true],
             ['key' => 'data', 'label' => '回调数据（JSON）', 'required' => false],

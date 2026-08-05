@@ -5,9 +5,18 @@ use AlibabaCloud\Oss\V2\Exception\ServiceException;
 use AlibabaCloud\Oss\V2\Models\PutCnameRequest;
 use AlibabaCloud\Oss\V2\Models\PutCnameResult;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunOssDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// OSS endpoint 由 region 派生：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /**
  * 测试子类：override makeClient 注入缝，按 $kind 返回 Mockery mock client（不 new 真实 SDK client，不触网）。
@@ -154,4 +163,14 @@ test('OSS OperationException（底层 Guzzle 链入 previous，message 含签名
         expect($e->getPrevious())->toBeNull();
         expect($e->getTraceAsString())->not->toContain('AK-LEAK-NET')->not->toContain('SIG-LEAK-NET');
     }
+});
+
+test('region 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = new AliyunOssDeployer;
+    $method = (new ReflectionClass(AliyunOssDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'oss', [
+        'access_key_id' => 'AK', 'access_key_secret' => 'SK', 'region' => 'public.example:443/path',
+    ]))->toThrow(OutboundDestinationException::class);
 });
