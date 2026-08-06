@@ -120,6 +120,8 @@ bash build/build.sh --clear-cache
 
 打包排除规则的唯一真相源是 `build/config.json` 的 `exclude_patterns.backend`，由 `container-build.sh`（构建工作区）、`collect-artifacts.sh`（收集到 production-code）、`package.sh`（生成 full/upgrade 包）和 GitHub Release 共享。已覆盖：IDE Helper 产物与 publish 配置（`_ide_helper.php` / `_ide_helper_models.php` / `.phpstorm.meta.php` / `config/ide-helper.php`——后者由 `require-dev` 的 `barryvdh/laravel-ide-helper` publish，生产 `--no-dev` 不装该包故冗余）、过程文档目录 `.superpowers/`、测试与工具配置（`tests/` / `scripts/` / `phpunit.xml` / `phpstan.neon` / `.pint.json` / `.editorconfig`）、`.env` / `.env.testing`，以及 `storage/app`、`storage/databak`、`storage/pay`、`storage/temp-certs`、Laravel 缓存等机器运行数据。构建工作区和 production-code 在同步前还会清空旧 `storage` / `bootstrap/cache`，避免 rsync 排除项残留；`audit-package.sh` 对三个 zip 做最终失败即停审计。**保留**：`.ssl-manager`（部署 marker，`upgrade.sh` 据此定位安装目录，勿排除）、`.env.example`（仅 full 包需要；upgrade 包按 `.env.*` 规则一并排除，不覆盖用户配置）、`storage/domain-rules/public_suffix_list.dat`（运行时离线规则）。
 
+运行文件排除不等于删除目录契约：full 包必须保留空的 `bootstrap/cache`、`storage/{logs,framework/cache/data,framework/sessions,framework/views,app/public,app/private}` 与 `backups/upgrades`；upgrade 包必须保留空 `bootstrap/cache`，但连空的 `backend/storage/` 目录项也不得携带，避免覆盖存量数据。`audit-package.sh` 同时校验“必需空目录存在”和“目录内无运行文件”。
+
 ### 手动打包
 
 手动打包必须使用完整构建后的 `build/temp/production-code`。`package.sh` 会在打包前校验后端、前端和 nginx 关键产物，打包后审计测试/开发文件、运行数据、凭据、备份、缓存、包类型边界和必需文件；任一检查失败都会清理半成品 zip。

@@ -227,6 +227,44 @@ else
     e2e_fail "无来源应当 return 非 0，实际: $out"
 fi
 
+# === 测试 9：核心运行目录必须在 Composer 前创建并以 www 验写 ===
+e2e_log "9. 核心运行目录在 Composer 前就绪"
+PERMISSIONS_BODY=$(awk '/^set_permissions\(\) \{/,/^}/' "$BT_INSTALL")
+runtime_dirs_ok=true
+for required_dir in \
+    backend/bootstrap/cache \
+    backend/storage \
+    backend/storage/logs \
+    backend/storage/framework \
+    backend/storage/framework/cache/data \
+    backend/storage/framework/sessions \
+    backend/storage/framework/views \
+    backend/storage/app/public \
+    backend/storage/app/private \
+    backups/upgrades; do
+    if ! echo "$PERMISSIONS_BODY" | grep -qF "\"$required_dir\""; then
+        runtime_dirs_ok=false
+        e2e_fail "set_permissions 缺少核心运行目录: $required_dir"
+    fi
+done
+
+if [ "$runtime_dirs_ok" = true ] &&
+    echo "$PERMISSIONS_BODY" | grep -qF 'mkdir -p "$abs_path"' &&
+    echo "$PERMISSIONS_BODY" | grep -qF 'sudo -u "$WWW_USER" test -w "$abs_path"'; then
+    e2e_pass "set_permissions 创建并以实际 Web 用户验写全部核心目录"
+else
+    [ "$runtime_dirs_ok" = false ] || e2e_fail "set_permissions 缺少统一创建或 www 可写检查"
+fi
+
+set_permissions_line=$(grep -nE '^[[:space:]]+set_permissions$' "$BT_INSTALL" | tail -1 | cut -d: -f1 || true)
+composer_install_line=$(grep -nE '^[[:space:]]+run_composer_install$' "$BT_INSTALL" | tail -1 | cut -d: -f1 || true)
+if [ -n "$set_permissions_line" ] && [ -n "$composer_install_line" ] &&
+    [ "$set_permissions_line" -lt "$composer_install_line" ]; then
+    e2e_pass "set_permissions 严格早于 run_composer_install"
+else
+    e2e_fail "安装流程未保证核心运行目录在 Composer 前就绪"
+fi
+
 echo
 echo "结果: ${E2E_PASS:-0} passed / ${E2E_FAIL:-0} failed"
 exit "${E2E_FAIL:-0}"

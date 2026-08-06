@@ -140,7 +140,7 @@
       "command": [
         "bash",
         "-lc",
-        "set -euo pipefail\nfor archive in build/temp/packages/ssl-manager-{full,upgrade,script}-0.0.0-finish-check.zip; do\n  test -s \"$archive\"\n  unzip -tq \"$archive\"\ndone\nif unzip -l build/temp/packages/ssl-manager-full-0.0.0-finish-check.zip | grep -Eq 'backend/storage/app/'; then exit 1; fi\necho PACKAGE_INVARIANTS_PASS"
+        "set -euo pipefail\nfor archive in build/temp/packages/ssl-manager-{full,upgrade,script}-0.0.0-finish-check.zip; do\n  test -s \"$archive\"\n  unzip -tq \"$archive\"\ndone\nif unzip -Z1 build/temp/packages/ssl-manager-full-0.0.0-finish-check.zip | grep -Ev '/$' | grep -Eq '^full/backend/storage/app/'; then exit 1; fi\necho PACKAGE_INVARIANTS_PASS"
       ],
       "locks": ["package:shared"]
     },

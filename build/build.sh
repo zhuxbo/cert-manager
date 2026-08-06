@@ -418,12 +418,9 @@ if [ "$RUN_STATUS" -eq 0 ]; then
         log_step "创建安装包"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         PACKAGE_CHANNEL="${RELEASE_CHANNEL:-main}"
-        if bash "$SCRIPT_DIR/scripts/package.sh" --channel "$PACKAGE_CHANNEL"; then
-            log_success "安装包创建完成"
-            log_info "安装包位于: $TEMP_DIR/packages"
-        else
-            log_warning "安装包创建失败"
-        fi
+        bash "$SCRIPT_DIR/scripts/package.sh" --channel "$PACKAGE_CHANNEL"
+        log_success "安装包创建完成"
+        log_info "安装包位于: $TEMP_DIR/packages"
         echo ""
     fi
 

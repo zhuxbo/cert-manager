@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$(dirname "$SCRIPT_DIR")"
 AUDITOR="$BUILD_DIR/scripts/audit-package.sh"
+PACKAGER="$BUILD_DIR/scripts/package.sh"
+BUILD_ENTRY="$BUILD_DIR/build.sh"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
@@ -17,12 +19,21 @@ make_valid_packages() {
     rm -rf "$STAGE" "$FULL_ZIP" "$UPGRADE_ZIP" "$SCRIPT_ZIP"
     mkdir -p \
         "$STAGE/full/backend" \
+        "$STAGE/full/backend/bootstrap/cache" \
+        "$STAGE/full/backend/storage/app/private" \
+        "$STAGE/full/backend/storage/app/public" \
+        "$STAGE/full/backend/storage/framework/cache/data" \
+        "$STAGE/full/backend/storage/framework/sessions" \
+        "$STAGE/full/backend/storage/framework/views" \
+        "$STAGE/full/backend/storage/logs" \
         "$STAGE/full/backend/storage/domain-rules" \
+        "$STAGE/full/backups/upgrades" \
         "$STAGE/full/frontend/admin" \
         "$STAGE/full/frontend/user" \
         "$STAGE/full/nginx" \
         "$STAGE/full/scripts" \
         "$STAGE/upgrade/backend" \
+        "$STAGE/upgrade/backend/bootstrap/cache" \
         "$STAGE/upgrade/frontend/admin" \
         "$STAGE/upgrade/frontend/user" \
         "$STAGE/upgrade/nginx" \
@@ -83,6 +94,56 @@ expect_rejected() {
 make_valid_packages
 "$AUDITOR" "$FULL_ZIP" "$UPGRADE_ZIP" "$SCRIPT_ZIP" >/dev/null
 
+for required_dir in \
+    backend/bootstrap/cache \
+    backend/storage \
+    backend/storage/app/private \
+    backend/storage/app/public \
+    backend/storage/framework \
+    backend/storage/framework/cache/data \
+    backend/storage/framework/sessions \
+    backend/storage/framework/views \
+    backend/storage/logs \
+    backups/upgrades; do
+    make_valid_packages
+    rm -rf "$STAGE/full/$required_dir"
+    rm -f "$FULL_ZIP"
+    (cd "$STAGE" && zip -rq "$FULL_ZIP" full)
+    expect_rejected "完整包缺少 $required_dir 空目录"
+done
+
+rm -rf "$STAGE/upgrade/backend/bootstrap/cache"
+rm -f "$UPGRADE_ZIP"
+(cd "$STAGE" && zip -rq "$UPGRADE_ZIP" upgrade)
+expect_rejected "升级包缺少 bootstrap/cache 空目录"
+
+make_valid_packages
+touch "$STAGE/full/backend/bootstrap/cache/config.php"
+(cd "$STAGE" && zip -q "$FULL_ZIP" full/backend/bootstrap/cache/config.php)
+expect_rejected "完整包 bootstrap/cache 携带缓存文件"
+
+make_valid_packages
+touch "$STAGE/full/backups/upgrades/package.zip"
+(cd "$STAGE" && zip -q "$FULL_ZIP" full/backups/upgrades/package.zip)
+expect_rejected "完整包 backups/upgrades 携带升级包"
+
+make_valid_packages
+mkdir -p "$STAGE/upgrade/backend/storage"
+rm -f "$UPGRADE_ZIP"
+(cd "$STAGE" && zip -rq "$UPGRADE_ZIP" upgrade)
+expect_rejected "升级包包含空 storage 目录项"
+
+grep -Fq 'rm -rf "$UPGRADE_DIR/backend/storage"' "$PACKAGER" || {
+    echo "打包脚本未在压缩前移除升级包空 storage 目录" >&2
+    exit 1
+}
+
+if grep -Fq 'if bash "$SCRIPT_DIR/scripts/package.sh"' "$BUILD_ENTRY"; then
+    echo "构建入口仍会吞掉打包或审计失败" >&2
+    exit 1
+fi
+
+make_valid_packages
 mkdir -p "$STAGE/full/backend/storage/databak"
 touch "$STAGE/full/backend/storage/databak/backup.sql.gz"
 (cd "$STAGE" && zip -q "$FULL_ZIP" full/backend/storage/databak/backup.sql.gz)

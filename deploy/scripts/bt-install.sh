@@ -728,15 +728,27 @@ run_composer_install() {
 set_permissions() {
     log_step "设置文件权限"
 
-    # 创建 backups 目录（备份和升级包存储）
-    mkdir -p "$INSTALL_DIR/backups/upgrades"
-
-    # 创建 storage 子目录（文件缓存等功能需要，必须在 chown 之前创建）
-    mkdir -p "$INSTALL_DIR/backend/storage/logs" \
-        "$INSTALL_DIR/backend/storage/framework/cache/data" \
-        "$INSTALL_DIR/backend/storage/framework/sessions" \
-        "$INSTALL_DIR/backend/storage/framework/views" \
-        "$INSTALL_DIR/backend/storage/app/public"
+    # 空目录不会被 Git 追踪，也可能在第三方重打包时丢失；Composer/Artisan 前主动补齐。
+    local -a runtime_rel_dirs=(
+        "backend/bootstrap/cache"
+        "backend/storage"
+        "backend/storage/logs"
+        "backend/storage/framework"
+        "backend/storage/framework/cache/data"
+        "backend/storage/framework/sessions"
+        "backend/storage/framework/views"
+        "backend/storage/app/public"
+        "backend/storage/app/private"
+        "backups/upgrades"
+    )
+    local rel_path abs_path
+    for rel_path in "${runtime_rel_dirs[@]}"; do
+        abs_path="$INSTALL_DIR/$rel_path"
+        if ! mkdir -p "$abs_path"; then
+            log_error "无法创建运行目录: $abs_path"
+            exit 1
+        fi
+    done
 
     # 使用 chown -R 一次性设置权限（比 find -exec 快得多）
     # 忽略 .user.ini 的错误（宝塔会锁定此文件）
@@ -753,6 +765,16 @@ set_permissions() {
 
     # 确保 backups 目录可写
     chmod -R 775 "$INSTALL_DIR/backups" 2>/dev/null || true
+
+    # root 的 test -w 没有意义，必须用实际 FPM/队列用户逐项验写。
+    for rel_path in "${runtime_rel_dirs[@]}"; do
+        abs_path="$INSTALL_DIR/$rel_path"
+        if ! sudo -u "$WWW_USER" test -w "$abs_path"; then
+            log_error "Web 用户 $WWW_USER 无法写入运行目录: $abs_path"
+            log_info "请手动执行: chown $WWW_USER:$WWW_USER '$abs_path' && chmod 775 '$abs_path'"
+            exit 1
+        fi
+    done
 
     # 验证权限设置
     local owner=$(stat -c '%U' "$INSTALL_DIR/backend" 2>/dev/null || echo "unknown")

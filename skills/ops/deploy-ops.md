@@ -80,7 +80,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 ### 脚本自动处理
 
-- **权限**：`chown -R www:www $INSTALL_DIR`（宝塔 Web 用户为 `www`，非 `www-data`），`chmod -R 775 storage bootstrap/cache backups`
+- **运行目录与权限**：安装器在 Composer 前主动创建 `bootstrap/cache`、`storage/{logs,framework/cache/data,framework/sessions,framework/views,app/public,app/private}`、`backups/upgrades`，再执行 `chown -R www:www $INSTALL_DIR`（宝塔 Web 用户为 `www`，非 `www-data`）及相应 `775`，并以 `www` 身份逐项验写。`upgrade.sh` 在备份/down/freeze 前和代码替换后各自愈一次；后台升级同步 bootstrap 后同样补齐。任一核心目录不可写都必须中止，不能继续进入 Composer/Artisan。
 - **Nginx 占位符**：替换 `$INSTALL_DIR/nginx/*.conf` 和 `frontend/web/*.conf` 中的 `__PROJECT_ROOT__`
 - **version.json**：注入 `release_url` 和 `network` 字段
 

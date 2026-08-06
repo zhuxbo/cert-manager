@@ -334,9 +334,26 @@ if [ -d "$FULL_DIR/nginx" ]; then
     log_info "已包含 nginx 配置"
 fi
 
-# 创建 Laravel 运行时必需的空目录结构（zip -r 会保留空目录）
-mkdir -p "$FULL_DIR/backend/storage/"{app/{public,private},framework/{cache,sessions,views},logs,pay}
-mkdir -p "$FULL_DIR/backend/bootstrap/cache"
+# 创建 Laravel 运行时必需的空目录结构（zip -r 会保留空目录）。此清单与安装、
+# Shell 升级和后台升级保持同名契约，由 deploy 测试做集合等价校验。
+runtime_rel_dirs=(
+    "backend/bootstrap/cache"
+    "backend/storage"
+    "backend/storage/logs"
+    "backend/storage/framework"
+    "backend/storage/framework/cache/data"
+    "backend/storage/framework/sessions"
+    "backend/storage/framework/views"
+    "backend/storage/app/public"
+    "backend/storage/app/private"
+    "backups/upgrades"
+)
+for rel_path in "${runtime_rel_dirs[@]}"; do
+    mkdir -p "$FULL_DIR/$rel_path"
+done
+
+# pay 保持既有完整包兼容，但不属于 Composer/Artisan 的核心目录契约。
+mkdir -p "$FULL_DIR/backend/storage/pay"
 mkdir -p "$FULL_DIR/backend/vendor"
 
 # 创建 version.json（运行时版本信息）
@@ -412,6 +429,12 @@ create_exclude_file "upgrade" "$UPGRADE_BACKEND_EXCLUDE" "backend/"
 
 mkdir -p "$UPGRADE_DIR/backend"
 rsync -a --exclude-from="$UPGRADE_BACKEND_EXCLUDE" "$PRODUCTION_DIR/backend/" "$UPGRADE_DIR/backend/"
+
+# rsync 的 `storage/*` 排除规则仍可能保留空的 storage 目录项；升级包必须完全不携带它。
+rm -rf "$UPGRADE_DIR/backend/storage"
+
+# 升级会整体替换 bootstrap；缓存文件不入包，但 Laravel 启动前空目录必须存在。
+mkdir -p "$UPGRADE_DIR/backend/bootstrap/cache"
 
 # 升级包不需要 vendor 目录（升级时会保留现有的 vendor）
 
