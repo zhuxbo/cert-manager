@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Nginxproxymanager;
 
-use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Cookie\CookieJar;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
@@ -78,8 +77,7 @@ class CertificateDeployer extends AbstractDeployer
 
         return match ($kind) {
             'api' => new NginxproxymanagerClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure_connections'] ?? false),
                     'cookies' => new CookieJar,

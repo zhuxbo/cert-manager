@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Apisix;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -72,8 +71,7 @@ class CertificateDeployer extends AbstractDeployer
     {
         return match ($kind) {
             'api' => new ApisixClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/apisix/admin/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/apisix/admin/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure_connections'] ?? false),
                     'headers' => [

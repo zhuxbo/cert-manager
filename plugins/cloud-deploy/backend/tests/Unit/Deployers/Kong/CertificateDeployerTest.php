@@ -170,6 +170,6 @@ test('makeClient：allow_insecure_connections=true 时不抛、能造出 KongCli
     $deployer = new CertificateDeployer;
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
-    $client = $ref->invoke($deployer, 'api', ['server_url' => 'https://x', 'api_token' => 't', 'allow_insecure_connections' => true], '');
+    $client = $ref->invoke($deployer, 'api', ['server_url' => 'https://1.1.1.1', 'api_token' => 't', 'allow_insecure_connections' => true], '');
     expect($client)->toBeInstanceOf(KongClient::class);
 });

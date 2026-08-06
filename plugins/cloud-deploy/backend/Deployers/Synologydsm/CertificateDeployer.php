@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Synologydsm;
 
-use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Cookie\CookieJar;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
@@ -134,8 +133,7 @@ class CertificateDeployer extends AbstractDeployer
     {
         return match ($kind) {
             'api' => new SynologydsmClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/'),
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/'), [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure_connections'] ?? false),
                     'cookies' => new CookieJar,

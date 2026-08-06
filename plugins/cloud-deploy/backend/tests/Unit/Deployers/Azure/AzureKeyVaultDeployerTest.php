@@ -8,9 +8,18 @@ use Plugins\CloudDeploy\Deployers\Azure\AzureKeyVaultClient;
 use Plugins\CloudDeploy\Deployers\Azure\AzureKeyVaultDeployer;
 use Plugins\CloudDeploy\Deployers\Azure\AzureKeyVaultUploader;
 use Plugins\CloudDeploy\Deployers\Azure\AzureOAuth2;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// 合法 vault 名派生公网 host：resolver 对任意 host 返回公网 IP 放行，私网注入由策略拦截
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /** 测试子类：override makeClient（oauth / api kind）。 */
 function azureDeployerWith(callable $clientFactory): AzureKeyVaultDeployer
@@ -178,3 +187,14 @@ test('upload 遇 AzureApiException 脱敏重抛（无 secret/token、不挂 prev
         expect($e->getPrevious())->toBeNull();
     }
 });
+
+test('vault_name 含 URL 分隔符时在调用客户端前被拒绝', function (string $vaultName) {
+    [$certPem, $keyPem] = azureSelfSignedCert();
+    $deployer = azureDeployerWith(fn () => new stdClass);
+
+    expect(fn () => $deployer->certUploader(['vault_name' => $vaultName])->upload($certPem, $keyPem, '', azureCreds()))
+        ->toThrow(OutboundDestinationException::class);
+})->with([
+    'private host rewrite' => '127.0.0.1:6443/foo',
+    'public host rewrite' => 'public.example:443/path',
+]);

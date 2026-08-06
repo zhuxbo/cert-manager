@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Cdnfly;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -122,8 +121,7 @@ class CdnDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'api' => new CdnflyClient(new GuzzleClient([
-                'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/v1/',
+            'api' => new CdnflyClient($this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/v1/', [
                 'timeout' => 30,
                 'verify' => ! $this->truthy($credentials['allow_insecure_connections'] ?? false),
                 'headers' => [

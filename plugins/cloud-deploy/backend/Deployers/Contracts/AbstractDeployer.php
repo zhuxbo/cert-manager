@@ -2,6 +2,9 @@
 
 namespace Plugins\CloudDeploy\Deployers\Contracts;
 
+use GuzzleHttp\Client;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
+use Plugins\CloudDeploy\Support\SafeHttpClientFactory;
 use RuntimeException;
 use Throwable;
 
@@ -67,6 +70,37 @@ abstract class AbstractDeployer implements DeployerInterface
      * @param  array<string,mixed>  $credentials
      */
     abstract protected function makeClient(string $kind, array $credentials): object;
+
+    /**
+     * 为租户可控服务地址创建受插件出站策略约束的客户端。
+     *
+     * @param  array<string,mixed>  $options
+     */
+    protected function outboundHttpClient(string $baseUri, array $options = []): Client
+    {
+        return app(SafeHttpClientFactory::class)->forBaseUri($this->provider(), $baseUri, $options);
+    }
+
+    /**
+     * 为 Webhook 等绝对地址创建受插件出站策略约束的客户端。
+     *
+     * @param  array<string,mixed>  $options
+     */
+    protected function outboundAbsoluteHttpClient(string $url, array $options = []): Client
+    {
+        return app(SafeHttpClientFactory::class)->forAbsoluteUrl($this->provider(), $url, $options);
+    }
+
+    /**
+     * 运行时校验租户可控绝对地址（Webhook 等），配合 outboundAbsoluteHttpClient 双层防御：
+     * 此处拦截违反策略的地址并抛出可被 guardSdk 归一的异常，客户端构造时再由工厂复检。
+     */
+    protected function authorizedOutboundUrl(string $url): string
+    {
+        app(OutboundDestinationPolicy::class)->authorize($this->provider(), $url);
+
+        return $url;
+    }
 
     /**
      * 包裹 SDK 调用：捕获任何 Throwable → 重建干净 RuntimeException（只 code+脱敏 message，

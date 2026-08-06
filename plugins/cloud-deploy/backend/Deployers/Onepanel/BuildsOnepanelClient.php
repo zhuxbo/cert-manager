@@ -2,8 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Onepanel;
 
-use GuzzleHttp\Client as GuzzleClient;
-
 /**
  * 1Panel deployer 共用的 makeClient 实现（site / console 两 product 一致）。
  *
@@ -29,8 +27,7 @@ trait BuildsOnepanelClient
         $isV2 = $apiVersion === 'v2';
         $base = $serverUrl.($isV2 ? '/api/v2/' : '/api/v1/');
 
-        $guzzle = new GuzzleClient([
-            'base_uri' => $base,
+        $guzzle = $this->outboundHttpClient($base, [
             'timeout' => 30,
             'verify' => ! $this->truthy($credentials['allow_insecure'] ?? null),
         ]);

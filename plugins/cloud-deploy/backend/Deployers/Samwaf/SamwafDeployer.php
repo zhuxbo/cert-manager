@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Samwaf;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -78,8 +77,7 @@ class SamwafDeployer extends AbstractDeployer
         $serverUrl = rtrim((string) ($credentials['server_url'] ?? ''), '/');
 
         return match ($kind) {
-            'api' => new SamwafClient(new GuzzleClient([
-                'base_uri' => "$serverUrl/api/v1/",
+            'api' => new SamwafClient($this->outboundHttpClient("$serverUrl/api/v1/", [
                 'timeout' => 30,
                 'verify' => empty($credentials['allow_insecure']),
                 'headers' => [

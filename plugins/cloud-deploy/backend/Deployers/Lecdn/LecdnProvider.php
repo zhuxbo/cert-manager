@@ -26,7 +26,7 @@ class LecdnProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '服务地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '服务地址', 'required' => true, 'destination' => true],
             ['key' => 'api_version', 'label' => 'API 版本（v3）', 'required' => true],
             ['key' => 'api_role', 'label' => 'API 角色（client 用户端 / master 主控端）', 'required' => true],
             ['key' => 'username', 'label' => '用户名', 'required' => true],

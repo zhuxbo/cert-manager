@@ -85,7 +85,21 @@ services:
       MYSQL_DATABASE: ssl_manager_test
       TZ: Asia/Shanghai
     tmpfs:
-      - /var/lib/mysql:size=3g,mode=1777
+      - /var/lib/mysql:size=1g,mode=1777
+
+  # Mutation 专用一次性应用容器：根文件系统只读。执行脚本先把冻结源码、
+  # vendor 和插件快照物化到 Docker 原生 volume；高频临时写入再由 tmpfs 承接。
+  mutation-app:
+    image: ssl-manager-app:php${PHP_VERSION:-8.4}
+    profiles: ["tools"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777,nosuid,nodev
+      - /var/backups:size=1g,mode=1777,nosuid,nodev
+      - /var/www/bootstrap/cache:size=64m,mode=1777,nosuid,nodev
+      - /var/www/storage:size=1g,mode=1777,nosuid,nodev
+      - /var/www/vendor/pestphp/pest/.temp:size=256m,mode=1777,nosuid,nodev
+      - /var/www/vendor/pestphp/pest-plugin-mutate/.temp/mutations:size=1g,mode=1777,nosuid,nodev
 
   redis:
     image: redis:7-alpine

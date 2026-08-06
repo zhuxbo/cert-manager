@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\K8s;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -171,8 +170,7 @@ class K8sSecretDeployer extends AbstractDeployer
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'api' => new K8sClient(new GuzzleClient([
-                'base_uri' => rtrim((string) ($credentials['server'] ?? ''), '/').'/api/v1/',
+            'api' => new K8sClient($this->outboundHttpClient(rtrim((string) ($credentials['server'] ?? ''), '/').'/api/v1/', [
                 'timeout' => 30,
                 'verify' => isset($credentials['ca_cert']) && (string) $credentials['ca_cert'] !== ''
                     ? $this->caCertPath((string) $credentials['ca_cert'])

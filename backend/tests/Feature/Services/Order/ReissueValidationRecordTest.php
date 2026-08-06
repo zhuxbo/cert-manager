@@ -4,6 +4,7 @@ use App\Models\Cert;
 use App\Models\DomainValidationRecord;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ProductPrice;
 use App\Models\User;
 use Tests\Traits\ActsAsUser;
 use Tests\Traits\CreatesTestData;
@@ -17,6 +18,10 @@ uses(ActsAsUser::class, MocksExternalApis::class, CreatesTestData::class);
 test('reissue 删除该订单旧的 DomainValidationRecord（恢复验证快档）', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create();
+    ProductPrice::firstOrCreate(
+        ['product_id' => $product->id, 'level_code' => 'standard', 'period' => 12],
+        ['price' => '10.00', 'alternative_standard_price' => '10.00', 'alternative_wildcard_price' => '20.00'],
+    );
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,

@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Volcengine;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
 /**
@@ -69,6 +70,12 @@ class VolcTosDeployer extends AbstractDeployer
         $certId = (string) $certRef;
 
         $this->guardSdk(function () use ($credentials, $region, $bucket, $domain, $certId) {
+            // bucket 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
+            app(OutboundDestinationPolicy::class)->authorizeOfficialHost(
+                $this->provider(),
+                $bucket.'.tos-'.$region.'.volces.com',
+            );
+
             /** @var VolcRestClient $client */
             $client = $this->makeClient('tos', $credentials, $region);
             $client->putTos($bucket, $region, [

@@ -89,7 +89,7 @@ test('makeClient 注入 cpanel 令牌头 + base_uri/execute + allow_insecure 关
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
     $client = $ref->invoke($deployer, 'api', [
-        'server_url' => 'https://host:2083/', 'username' => 'u', 'api_token' => 't', 'allow_insecure' => true,
+        'server_url' => 'https://1.1.1.1:2083/', 'username' => 'u', 'api_token' => 't', 'allow_insecure' => true,
     ]);
     expect($client)->toBeInstanceOf(CpanelClient::class);
 
@@ -101,5 +101,5 @@ test('makeClient 注入 cpanel 令牌头 + base_uri/execute + allow_insecure 关
     $cfg->setAccessible(true);
     expect($cfg->invoke($guzzle, 'headers')['Authorization'])->toBe('cpanel u:t');
     expect($cfg->invoke($guzzle, 'verify'))->toBeFalse();
-    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://host:2083/execute/');
+    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://1.1.1.1:2083/execute/');
 });

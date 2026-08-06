@@ -5,6 +5,7 @@ namespace Plugins\CloudDeploy\Deployers\Oraclecloud;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
 /**
@@ -88,8 +89,19 @@ class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements Up
                 (string) ($credentials['private_key'] ?? ''),
                 (string) ($credentials['private_key_passphrase'] ?? ''),
             ),
-            'api' => new OraclecloudClient($signer ?? new OciRequestSigner('', '', '', ''), $region),
+            // region 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
+            'api' => $this->newOracleApiClient($signer ?? new OciRequestSigner('', '', '', ''), $region),
         };
+    }
+
+    private function newOracleApiClient(OciRequestSigner $signer, string $region): OraclecloudClient
+    {
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost(
+            $this->provider(),
+            'certificatesmanagement.'.$region.'.oci.oraclecloud.com',
+        );
+
+        return new OraclecloudClient($signer, $region);
     }
 
     protected function sanitize(Throwable $e): string

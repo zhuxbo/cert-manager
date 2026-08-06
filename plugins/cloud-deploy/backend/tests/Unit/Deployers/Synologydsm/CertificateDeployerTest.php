@@ -279,7 +279,7 @@ test('makeClient：allow_insecure_connections=true 时不抛、能造出 Synolog
     $deployer = new CertificateDeployer;
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
-    $client = $ref->invoke($deployer, 'api', ['server_url' => 'https://x', 'username' => 'u', 'password' => 'p', 'allow_insecure_connections' => true]);
+    $client = $ref->invoke($deployer, 'api', ['server_url' => 'https://1.1.1.1', 'username' => 'u', 'password' => 'p', 'allow_insecure_connections' => true]);
     expect($client)->toBeInstanceOf(SynologydsmClient::class);
 });
 

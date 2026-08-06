@@ -2,9 +2,18 @@
 
 use BaiduBce\Exception\BceServiceException;
 use Plugins\CloudDeploy\Deployers\Baidu\BaiduBlbDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// BLB host 由 region 派生：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /**
  * 测试子类：override makeClient（3 参带 region）注入缝，按 $kind 返回 mock（cert / blb）。
@@ -198,4 +207,13 @@ test('bind SDK 抛 BceServiceException 时脱敏重抛（含错误码、无 AK/S
         expect($e->getPrevious())->toBeNull();
         expect($e->getTraceAsString())->not->toContain('AK-SECRET-XYZ')->not->toContain('SK-SECRET-ABC');
     }
+});
+
+test('region 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = new BaiduBlbDeployer;
+    $method = (new ReflectionClass(BaiduBlbDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'blb', ['access_key_id' => 'AK', 'secret_access_key' => 'SK'], 'public.example:443/path'))
+        ->toThrow(OutboundDestinationException::class);
 });

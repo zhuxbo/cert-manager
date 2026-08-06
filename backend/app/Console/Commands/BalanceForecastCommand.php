@@ -87,6 +87,13 @@ class BalanceForecastCommand extends Command
             $required = '0.00';
             $certificates = [];
             foreach ($userOrders as $order) {
+                // 与 AutoRenewCommand 同构：缺价格行的订单跳过，避免 getRequiredMinPrice 抛错中断整批预估
+                if (! OrderUtil::hasPriceConfigured($user->id, $order->product_id, $order->period)) {
+                    $this->error("订单 #{$order->id} 跳过：产品价格未配置（product={$order->product_id} period={$order->period}）");
+
+                    continue;
+                }
+
                 $cert = $order->latestCert;
                 $amount = OrderUtil::getLatestCertAmount(
                     ['user_id' => $user->id, 'product_id' => $order->product_id, 'period' => $order->period,

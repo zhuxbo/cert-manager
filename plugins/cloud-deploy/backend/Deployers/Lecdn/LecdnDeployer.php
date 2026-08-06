@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Lecdn;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -92,8 +91,7 @@ class LecdnDeployer extends AbstractDeployer
 
         return match ($kind) {
             'api' => new LecdnRestClient(
-                new GuzzleClient([
-                    'base_uri' => "$serverUrl/prod-api/",
+                $this->outboundHttpClient("$serverUrl/prod-api/", [
                     'connect_timeout' => 10,
                     'timeout' => 30,
                     'verify' => empty($credentials['allow_insecure']),

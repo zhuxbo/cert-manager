@@ -3,9 +3,18 @@
 use Plugins\CloudDeploy\Deployers\Huaweicloud\ElbDeployer;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweicloudApiException;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweicloudRestClient;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// regionalHost 内做 host 校验：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /** makeClient 4 参（kind/credentials/region/projectId）。iam（反查 projectId）/ elb（建证书 + 绑定）。 */
 function hwElbDeployerWith(callable $clientFactory): ElbDeployer
@@ -138,4 +147,13 @@ test('uploader 缺 region（探活态）upload 时抛明确异常', function () 
     expect($uploader->storeKind())->toBe('huawei_elb:default');
     expect(fn () => $uploader->upload('C', 'K', 'CH', hwElbCreds()))
         ->toThrow(RuntimeException::class, 'region');
+});
+
+test('region 含 URL 分隔符时即使目标解析为公网也被拒绝（regionalHost 共性校验）', function () {
+    $deployer = new ElbDeployer;
+    $method = (new ReflectionClass(ElbDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'elb', hwElbCreds(), 'public.example:443/path', 'project-1'))
+        ->toThrow(OutboundDestinationException::class);
 });

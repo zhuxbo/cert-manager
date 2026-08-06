@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Safeline;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -69,8 +68,7 @@ class SafelineDeployer extends AbstractDeployer
         $serverUrl = rtrim((string) ($credentials['server_url'] ?? ''), '/');
 
         return match ($kind) {
-            'api' => new SafelineClient(new GuzzleClient([
-                'base_uri' => "$serverUrl/",
+            'api' => new SafelineClient($this->outboundHttpClient("$serverUrl/", [
                 'timeout' => 30,
                 'verify' => empty($credentials['allow_insecure']),
                 'headers' => [

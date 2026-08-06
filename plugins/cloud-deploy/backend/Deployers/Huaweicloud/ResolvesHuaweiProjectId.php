@@ -2,6 +2,8 @@
 
 namespace Plugins\CloudDeploy\Deployers\Huaweicloud;
 
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
+
 /**
  * region 服务（elb/waf/live/apig）的项目 ID 反查。
  *
@@ -48,19 +50,26 @@ trait ResolvesHuaweiProjectId
 
     /**
      * region 服务 host：{service}.{region}.myhuaweicloud.com。
+     * region 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）。
      */
     protected function regionalHost(string $service, string $region): string
     {
-        return "$service.$region.myhuaweicloud.com";
+        $host = "$service.$region.myhuaweicloud.com";
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost($this->provider(), $host);
+
+        return $host;
     }
 
     /**
      * SCM 服务 host（按 region；region 为空回落 cn-north-4，对齐 certimate certmgr huaweicloud-scm）。
+     * region 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）。
      */
     protected function scmHost(string $region = ''): string
     {
         $region = $region !== '' ? $region : 'cn-north-4';
+        $host = "scm.$region.myhuaweicloud.com";
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost($this->provider(), $host);
 
-        return "scm.$region.myhuaweicloud.com";
+        return $host;
     }
 }

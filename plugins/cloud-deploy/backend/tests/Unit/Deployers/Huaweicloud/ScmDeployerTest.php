@@ -3,9 +3,18 @@
 use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweicloudApiException;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweicloudRestClient;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\ScmDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// scmHost 内做 host 校验：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /**
  * 测试子类：override makeClient（3 参，含 region）注入缝，按 $kind 返回 mock（scm）。
@@ -138,4 +147,13 @@ test('certUploader 据 config.region 构造 SCM client host（区域生效）', 
 
     $deployer->certUploader(['region' => 'cn-east-3'])->upload('C', 'K', 'CH', hwScmCreds());
     expect($capturedRegion)->toBe('cn-east-3');
+});
+
+test('scmHost region 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = new ScmDeployer;
+    $method = (new ReflectionClass(ScmDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'scm', hwScmCreds(), 'public.example:443/path'))
+        ->toThrow(OutboundDestinationException::class);
 });

@@ -4,9 +4,18 @@ use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweicloudApiException;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweicloudRestClient;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\HuaweiObsClient;
 use Plugins\CloudDeploy\Deployers\Huaweicloud\ObsDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+// OBS host 由 bucket 派生：stub 策略放行公网 host，注入场景由授权测试覆盖
+beforeEach(function () {
+    app()->instance(OutboundDestinationPolicy::class, new OutboundDestinationPolicy(
+        resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+    ));
+});
 
 /** makeClient 4 参（kind/credentials/region/bucket）。obs（绑定，HMAC-SHA1）/ scm（上传，HMAC-SHA256）。 */
 function hwObsDeployerWith(callable $clientFactory): ObsDeployer
@@ -104,4 +113,13 @@ test('bind SDK 抛 HuaweicloudApiException 时脱敏（无 AK/SK、不挂 previo
         expect($e->getMessage())->not->toContain('AK-SECRET-XYZ')->not->toContain('SK-SECRET-ABC');
         expect($e->getPrevious())->toBeNull();
     }
+});
+
+test('OBS bucket 含 URL 分隔符时即使目标解析为公网也被拒绝', function () {
+    $deployer = new ObsDeployer;
+    $method = (new ReflectionClass(ObsDeployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 'obs', hwObsCreds(), 'cn-north-4', 'public.example:443/path'))
+        ->toThrow(OutboundDestinationException::class);
 });

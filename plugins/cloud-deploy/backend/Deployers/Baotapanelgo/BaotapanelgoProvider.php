@@ -28,7 +28,7 @@ class BaotapanelgoProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '面板地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '面板地址', 'required' => true, 'destination' => true],
             ['key' => 'api_key', 'label' => '接口密钥', 'required' => true, 'secret' => true],
             ['key' => 'allow_insecure', 'label' => '允许不安全连接', 'required' => false],
         ];

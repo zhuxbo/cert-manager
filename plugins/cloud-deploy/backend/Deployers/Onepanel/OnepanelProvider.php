@@ -31,7 +31,7 @@ class OnepanelProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '面板地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '面板地址', 'required' => true, 'destination' => true],
             ['key' => 'api_version', 'label' => 'API 版本（v1/v2）', 'required' => true],
             ['key' => 'api_key', 'label' => '接口密钥', 'required' => true, 'secret' => true],
             ['key' => 'node_name', 'label' => '子节点名称（仅 v2，默认 local）', 'required' => false],

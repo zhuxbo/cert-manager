@@ -105,7 +105,7 @@ test('makeClient 注入 X-API-Key 头 + base/api/v1 + allow_insecure 关 TLS', f
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
     $client = $ref->invoke($deployer, 'api', [
-        'server_url' => 'https://waf:26666/', 'api_key' => 'k', 'allow_insecure' => true,
+        'server_url' => 'https://1.1.1.1:26666/', 'api_key' => 'k', 'allow_insecure' => true,
     ]);
 
     $httpProp = new ReflectionProperty($client, 'http');
@@ -115,5 +115,5 @@ test('makeClient 注入 X-API-Key 头 + base/api/v1 + allow_insecure 关 TLS', f
     $cfg->setAccessible(true);
     expect($cfg->invoke($guzzle, 'headers')['X-API-Key'])->toBe('k');
     expect($cfg->invoke($guzzle, 'verify'))->toBeFalse();
-    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://waf:26666/api/v1/');
+    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://1.1.1.1:26666/api/v1/');
 });

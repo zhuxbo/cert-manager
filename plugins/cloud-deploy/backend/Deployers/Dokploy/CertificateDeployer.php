@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Dokploy;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
 use Throwable;
@@ -80,8 +79,7 @@ class CertificateDeployer extends AbstractDeployer implements UploadOnlyDeployer
     {
         return match ($kind) {
             'api' => new DokployClient(
-                new GuzzleClient([
-                    'base_uri' => rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api/',
+                $this->outboundHttpClient(rtrim((string) ($credentials['server_url'] ?? ''), '/').'/api/', [
                     'timeout' => 30,
                     'verify' => ! $this->truthy($credentials['allow_insecure_connections'] ?? false),
                     'headers' => [

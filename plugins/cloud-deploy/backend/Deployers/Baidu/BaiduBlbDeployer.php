@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Baidu;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
 /**
@@ -82,9 +83,16 @@ class BaiduBlbDeployer extends AbstractDeployer
         return match ($kind) {
             // 证书中心：region-less。
             'cert' => new BaiduRestClient('certificate.baidubce.com', $credentials),
-            // BLB：region 维度，host 含 region。
-            'blb' => new BaiduRestClient("blb.$region.baidubce.com", $credentials),
+            // BLB：region 维度，host 含 region；region 可经 :port/ 注入突破 DNS 后缀（反模式 18）
+            'blb' => new BaiduRestClient($this->authorizedRegionHost("blb.$region.baidubce.com"), $credentials),
         };
+    }
+
+    private function authorizedRegionHost(string $host): string
+    {
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost($this->provider(), $host);
+
+        return $host;
     }
 
     protected function sanitize(Throwable $e): string

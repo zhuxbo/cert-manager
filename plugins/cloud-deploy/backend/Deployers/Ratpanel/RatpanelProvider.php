@@ -25,7 +25,7 @@ class RatpanelProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '服务地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '服务地址', 'required' => true, 'destination' => true],
             ['key' => 'access_token_id', 'label' => '访问令牌 ID', 'required' => true],
             ['key' => 'access_token', 'label' => '访问令牌', 'required' => true, 'secret' => true],
             ['key' => 'allow_insecure', 'label' => '允许不安全连接（跳过 TLS 校验）', 'required' => false],

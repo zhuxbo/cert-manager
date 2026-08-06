@@ -19,6 +19,18 @@ use Tests\Traits\MocksExternalApis;
 
 uses(ActsAsUser::class, MocksExternalApis::class, CreatesTestData::class);
 
+/**
+ * 交易计价路径（getLatestCertAmount → getRequiredMinPrice）缺价格行会抛错：
+ * 需要真实建单/续费/重签的用例先建价格行，否则请求在计价处提前失败。
+ */
+function ensureOrderProductPrice(Product $product): void
+{
+    ProductPrice::firstOrCreate(
+        ['product_id' => $product->id, 'level_code' => 'standard', 'period' => 12],
+        ['price' => '10.00', 'alternative_standard_price' => '10.00', 'alternative_wildcard_price' => '20.00'],
+    );
+}
+
 test('获取订单列表', function () {
     $user = User::factory()->create();
     $otherUser = User::factory()->create();
@@ -207,6 +219,7 @@ test('获取订单详情-订单不存在', function () {
 test('新建订单', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create();
+    ensureOrderProductPrice($product);
 
     $this->mockSdk();
 
@@ -242,6 +255,7 @@ test('新建订单', function () {
 test('续费订单', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create();
+    ensureOrderProductPrice($product);
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
@@ -329,6 +343,7 @@ test('不可添加且不可替换 SAN 产品续费允许继承原 SAN', function
         'add_san' => 0,
         'replace_san' => 0,
     ]);
+    ensureOrderProductPrice($product);
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
@@ -372,6 +387,7 @@ test('不可添加且不可替换 SAN 产品续费允许继承原 SAN', function
 test('重签订单', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create();
+    ensureOrderProductPrice($product);
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
@@ -470,6 +486,7 @@ test('不可添加 SAN 产品重签允许恢复到订单已购 SAN 数量', func
         'add_san' => 0,
         'replace_san' => 1,
     ]);
+    ensureOrderProductPrice($product);
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
@@ -552,6 +569,7 @@ test('不可替换 SAN 产品合并后按完整域名集合扣除赠送根域名
         'replace_san' => 0,
         'gift_root_domain' => 1,
     ]);
+    ensureOrderProductPrice($product);
     $order = Order::factory()->create([
         'user_id' => $user->id,
         'product_id' => $product->id,
@@ -675,6 +693,7 @@ test('订单列表-未认证', function () {
 test('新建订单-OV 未传 contact 时自动从企业反查联系人', function () {
     $user = User::factory()->withBalance('1000.00')->create();
     $product = Product::factory()->create(['validation_type' => 'ov']);
+    ensureOrderProductPrice($product);
     $contact = Contact::factory()->create(['user_id' => $user->id]);
     $org = Organization::factory()->create([
         'user_id' => $user->id,

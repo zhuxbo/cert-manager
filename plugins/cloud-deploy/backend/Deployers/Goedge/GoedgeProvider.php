@@ -25,7 +25,7 @@ class GoedgeProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '服务地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '服务地址', 'required' => true, 'destination' => true],
             ['key' => 'api_role', 'label' => 'API 角色（user / admin）', 'required' => true],
             ['key' => 'access_key_id', 'label' => 'AccessKey ID', 'required' => true],
             ['key' => 'access_key', 'label' => 'AccessKey', 'required' => true, 'secret' => true],

@@ -2,7 +2,6 @@
 
 namespace Plugins\CloudDeploy\Deployers\Goedge;
 
-use GuzzleHttp\Client as GuzzleClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
@@ -76,8 +75,7 @@ class GoedgeDeployer extends AbstractDeployer
 
         return match ($kind) {
             'api' => new GoedgeRestClient(
-                new GuzzleClient([
-                    'base_uri' => "$serverUrl/",
+                $this->outboundHttpClient("$serverUrl/", [
                     'connect_timeout' => 10,
                     'timeout' => 30,
                     'verify' => empty($credentials['allow_insecure']),

@@ -3,6 +3,7 @@
 use Mockery\MockInterface;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentGa2Deployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentSslUploader;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
 use TencentCloud\Common\CommonClient;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Ssl\V20191205\Models\DescribeCertificateRequest;
@@ -163,4 +164,31 @@ test('bind SDK 抛异常时脱敏重抛（无 AK/SK、不挂 previous）', funct
         expect($e->getMessage())->not->toContain('SECRET-ID-LEAK')->not->toContain('SECRET-KEY-LEAK');
         expect($e->getPrevious())->toBeNull();
     }
+});
+
+test('运行时 endpoint 仅允许腾讯 GA2 官方端点', function () {
+    $deployer = new TencentGa2Deployer;
+    $method = (new ReflectionClass(TencentGa2Deployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    foreach ([
+        '127.0.0.1:6443',
+        'edge.example.com',
+        'ga2.intl.tencentcloudapi.com.attacker.example',
+        'evilintl.tencentcloudapi.com',
+    ] as $endpoint) {
+        expect(fn () => $method->invoke($deployer, 'ga2', [
+            'secret_id' => 'AK', 'secret_key' => 'SK', 'endpoint' => $endpoint,
+        ]))->toThrow(OutboundDestinationException::class);
+    }
+
+    expect($method->invoke($deployer, 'ga2', [
+        'secret_id' => 'AK', 'secret_key' => 'SK', 'endpoint' => 'ga2.tencentcloudapi.com',
+    ]))->toBeInstanceOf(CommonClient::class);
+    expect($method->invoke($deployer, 'ga2', [
+        'secret_id' => 'AK', 'secret_key' => 'SK', 'endpoint' => 'ga2.intl.tencentcloudapi.com',
+    ]))->toBeInstanceOf(CommonClient::class);
+    expect($method->invoke($deployer, 'ssl', [
+        'secret_id' => 'AK', 'secret_key' => 'SK', 'endpoint' => 'ga2.intl.tencentcloudapi.com',
+    ]))->toBeInstanceOf(SslClient::class);
 });

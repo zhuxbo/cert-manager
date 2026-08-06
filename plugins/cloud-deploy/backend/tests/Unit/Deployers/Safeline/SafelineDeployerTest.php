@@ -84,7 +84,7 @@ test('makeClient 注入 X-SLCE-API-TOKEN 头 + allow_insecure 关 TLS 校验', f
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
     $client = $ref->invoke($deployer, 'api', [
-        'server_url' => 'https://waf:9443/', 'api_token' => 'tok', 'allow_insecure' => true,
+        'server_url' => 'https://1.1.1.1:9443/', 'api_token' => 'tok', 'allow_insecure' => true,
     ]);
 
     $httpProp = new ReflectionProperty($client, 'http');
@@ -94,5 +94,5 @@ test('makeClient 注入 X-SLCE-API-TOKEN 头 + allow_insecure 关 TLS 校验', f
     $cfg->setAccessible(true);
     expect($cfg->invoke($guzzle, 'headers')['X-SLCE-API-TOKEN'])->toBe('tok');
     expect($cfg->invoke($guzzle, 'verify'))->toBeFalse();
-    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://waf:9443/');
+    expect((string) $cfg->invoke($guzzle, 'base_uri'))->toBe('https://1.1.1.1:9443/');
 });

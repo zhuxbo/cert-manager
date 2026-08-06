@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Byteplus;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
 /**
@@ -100,14 +101,27 @@ class BytePlusTosDeployer extends AbstractDeployer
                 $credentials['secret_access_key'] ?? '',
             ),
             // TOS：S3 风格 TOS4 签名，host 含 bucket + region。
-            'tos' => new BytePlusRestClient(
-                'tos',
-                $region,
-                $credentials['access_key_id'] ?? '',
-                $credentials['secret_access_key'] ?? '',
-                "$bucket.tos-$region.bytepluses.com",
-            ),
+            'tos' => $this->newTosClient($credentials, $region, $bucket),
         };
+    }
+
+    /**
+     * bucket 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）。
+     *
+     * @param  array<string,mixed>  $credentials
+     */
+    private function newTosClient(array $credentials, string $region, string $bucket): BytePlusRestClient
+    {
+        $host = "$bucket.tos-$region.bytepluses.com";
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost($this->provider(), $host);
+
+        return new BytePlusRestClient(
+            'tos',
+            $region,
+            $credentials['access_key_id'] ?? '',
+            $credentials['secret_access_key'] ?? '',
+            $host,
+        );
     }
 
     protected function sanitize(Throwable $e): string

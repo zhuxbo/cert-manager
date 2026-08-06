@@ -565,6 +565,12 @@ echo ""
 # 包内 $FULL_DIR/$UPGRADE_DIR 仍带最简 manifest.json 兼容线上旧 PackageExtractor（见上文 TODO(2027-01-01)）
 echo ""
 
+log_step "审计发布包内容"
+"$SCRIPT_DIR/audit-package.sh" \
+    "$OUTPUT_DIR/$FULL_PACKAGE" \
+    "$OUTPUT_DIR/$UPGRADE_PACKAGE" \
+    "$OUTPUT_DIR/$SCRIPT_PACKAGE"
+
 # 完成
 log_info "============================================"
 log_success "打包完成！"
@@ -577,5 +583,6 @@ log_info "  - $UPGRADE_PACKAGE ($UPGRADE_SIZE) sha256=${UPGRADE_SHA256:0:16}…"
 if [ -n "$SCRIPT_SHA256" ]; then
     log_info "  - $SCRIPT_PACKAGE ($SCRIPT_SIZE) sha256=${SCRIPT_SHA256:0:16}…"
 fi
+
 log_info "（包外 sha256 索引由 release-common.sh 写入 releases.json；包内 manifest.json 为线上旧版本兼容层）"
 log_info "============================================"

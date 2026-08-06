@@ -359,7 +359,7 @@ class OrderUtil
         $wildcardMin = (int) $product['wildcard_min'];
         $totalMin = (int) $product['total_min'];
 
-        $minPrice = self::getMinPrice($userId, $productId, $period);
+        $minPrice = self::getRequiredMinPrice($userId, $productId, $period);
 
         $purchasedStandardCount = max($standardCount - $orderPurchasedStandardCount, 0);
         $purchasedWildcardCount = max($wildcardCount - $orderPurchasedWildcardCount, 0);
@@ -431,6 +431,28 @@ class OrderUtil
     {
         [$levelPrice, $customLevelPrice] = self::fetchPriceRows($userId, $productId, $period);
 
+        return self::composeMinPrice($levelPrice, $customLevelPrice);
+    }
+
+    /**
+     * 获取交易必需价格。
+     *
+     * 展示接口仍可通过 getMinPrice 将缺价显示为 0；真实交易必须区分“无价格行”与
+     * “存在 price=0 的免费产品”，避免配置遗漏静默生成零元订单。
+     */
+    private static function getRequiredMinPrice(int $userId, int $productId, int $period): array
+    {
+        [$levelPrice, $customLevelPrice] = self::fetchPriceRows($userId, $productId, $period);
+
+        if ($levelPrice === null && $customLevelPrice === null) {
+            self::error('产品价格未配置，请联系管理员');
+        }
+
+        return self::composeMinPrice($levelPrice, $customLevelPrice);
+    }
+
+    private static function composeMinPrice(?ProductPrice $levelPrice, ?ProductPrice $customLevelPrice): array
+    {
         $minPrice = [];
 
         $minPrice['price'] =

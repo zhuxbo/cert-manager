@@ -3,6 +3,7 @@
 namespace Plugins\CloudDeploy\Deployers\Aliyun;
 
 use Darabonba\OpenApi\Models\Config;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 
 /**
  * 阿里云 darabonba OpenApi Config 构造单一来源（G3：显式读/连超时，防 TCP 黑洞无限挂起）。
@@ -39,6 +40,9 @@ trait BuildsAliyunConfig
      */
     protected function aliyunConfig(array $credentials, string $endpoint): Config
     {
+        // endpoint 由 region 等租户可控字段派生，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost($this->provider(), $endpoint);
+
         return new Config([
             'accessKeyId' => $credentials['access_key_id'] ?? '',
             'accessKeySecret' => $credentials['access_key_secret'] ?? '',

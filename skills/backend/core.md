@@ -234,6 +234,8 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 
 > **CI 经验**：本地务必用 `--parallel` 跑测试，与 CI 保持一致。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
 
+> **deploy shell 测试的 PHP 边界**：需要 PHP 做跨实现对照的 `deploy/test/test-*.sh` 统一 source `deploy/test/php-test-runner.sh`；本地优先调用 Compose `app` 容器 PHP，GitHub Actions 无 Compose app 时回落 `setup-php`。两者都不可用必须失败，禁止以“宿主机无 PHP”为由跳过并返回绿色。
+
 > **storage 隔离（并行 + 单进程都隔离）**：paratest 各 worker 共享同一 `storage/` 真实磁盘但各自独立 DB（RefreshDatabase）。一测试造真实磁盘文件（`storage_path('app/verification/...')`）、另一测试触发扫/删目录的命令（如 `PurgeCommand` 扫 `verification/` 根按本 worker DB 判“孤立”删除）→ 并行时跨 worker 误删对方文件 → `file_exists` 偶发 false。`TestCase::isolateWorkerStorage()` 把运行时 `storage_path()` + Storage 门面（local/public disk）重定向到 `storage/framework/testing/worker-{token}`，token 取 paratest 的 `TEST_TOKEN`、**单进程回落固定 `single`**（不用 pid：每跑一个新目录会让目录无界堆积，且目录内跨运行缓存如 `domain-rules/public_suffix_list.dat` 每跑缺失 → 每跑实网重抓公共后缀表、断网即红；固定 token 让单进程与 worker 一样首跑落缓存、后续复用），故 `php artisan test <文件>` / `composer test:snapshot` 这类定向跑法同样隔离，**新写“造真实磁盘文件”的测试自动隔离、无需额外处理**（隔离只覆盖运行时 `storage_path()`/门面，不动 framework cache/log/session — 后者用 bootstrap config 路径）。曾踩：单进程不隔离时，支付设置类测试经 `Setting::clearGroupCache → PayConfigCache::forget` 删掉开发环境 `storage/pay` 的真实支付证书并留下测试假证书，而 `getPayConfig` 只在文件缺失时才按设置重写 → 该环境此后一直用假证书签名、静默不可用。普通 `artisan test --parallel` 无 coverage、窗口小常测不出，**变异门禁 `XDEBUG_MODE=coverage` 放大并发窗口才稳定复现**（曾致 `DocumentSubmit/PreviewTest` 偶发挂）。
 >
 > **公共后缀表（PSL）夹具**：固定 token 只保证“后续复用”，**首跑仍是空目录**（全新克隆 / 干净 CI / 新增 paratest worker）→ 必须联网，且缓存过期重抓会把测试结果绑到上游当时的表。故 `isolateWorkerStorage()` 建好目录后由 `Tests\Support\PublicSuffixListFixture::seed()` 把仓内快照 `tests/Fixtures/public_suffix_list.dat` 灌进 `domain-rules/public_suffix_list.dat`（`xxh128` 内容比对而非只比体积——同尺寸的旧版本残留/写坏缓存会让 DomainUtil 读到别的表；写同目录 `.<pid>.tmp` 再 `rename` 保证不被读到半截；命中快路径也 `touch` 一次，让 mtime 恒为当下）——**测试离线确定性，生产 `DomainUtil` 一行不改、线上照旧抓最新表**。夹具刷新：`curl -fsSL -o backend/tests/Fixtures/public_suffix_list.dat https://publicsuffix.org/list/public_suffix_list.dat`，跑 `DomainUtilTest` 绿了再提交；按需刷新即可（PSL 只增量改后缀，陈旧不影响既有断言）。夹具被截断/换掉时 `seed()` 直接抛 `RuntimeException` 报出原因与刷新命令，不让 `DomainUtil` 静默回落到**无任何多级后缀**的内置表（那会让 `example.com.cn` / `sub.example.co.uk` 解析整体变形，`DomainUtilTest` 只报“两字符串不相等”）。`PublicSuffixListFixtureTest` 做常驻守卫：夹具行数下限 + `com.cn`/`co.uk` 等多级后缀存在、缓存内容与夹具一致且 mtime 恒为当下，以及**探针用例**——往缓存的 ICANN 段首插一条现实中不存在的后缀再断言 `DomainUtil::getRootDomain()` 随之变化。**探针不可省**：缓存路径是 `DomainUtil::loadRules()` 的手抄副本，抄错时联网 CI 下 DomainUtil 会自己把真表抓回来、一切照常全绿，整套离线机制静默失效。
@@ -300,7 +302,7 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 - **预发布版（dev 通道）不跑**（试错性质，门禁仅在正式版生效）
 - **CI 不跑**（完整门禁成本高且正式发布前已有本机硬门禁；首次精确六片完整样本完成前不承诺固定时长）
 - 开发机器不配置定时或夜间 mutation
-- mutation 分片通过 `run-isolated-mutation.sh` 使用独立的 MySQL 8.4 `tmpfs` 实例，不共用开发库；临时库只放宽崩溃耐久性，不关闭 InnoDB/事务/外键/唯一索引
+- mutation 分片通过 `run-isolated-mutation.sh` 使用独立的 MySQL 8.4 `tmpfs` 实例，不共用开发库；应用源码/vendor/插件先物化到一次性 Docker 原生 volume，高频临时写路径使用有上限的 `tmpfs`；临时库只放宽崩溃耐久性，不关闭 InnoDB/事务/外键/唯一索引
 
 **门槛**：
 

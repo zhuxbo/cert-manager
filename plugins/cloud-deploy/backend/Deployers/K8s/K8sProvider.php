@@ -33,7 +33,7 @@ class K8sProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server', 'label' => 'API Server 地址', 'required' => true],
+            ['key' => 'server', 'label' => 'API Server 地址', 'required' => true, 'destination' => true],
             ['key' => 'token', 'label' => 'Bearer Token', 'required' => true, 'secret' => true],
             ['key' => 'ca_cert', 'label' => 'API Server CA 证书（PEM，选填）', 'required' => false, 'secret' => true],
         ];

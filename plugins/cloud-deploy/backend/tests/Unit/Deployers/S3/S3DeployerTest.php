@@ -1,9 +1,12 @@
 <?php
 
+use Aws\AwsClient;
 use Aws\CommandInterface;
 use Aws\Exception\AwsException;
 use Aws\S3\S3Client;
 use Plugins\CloudDeploy\Deployers\S3\S3Deployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -125,4 +128,52 @@ test('bind 遇 AwsException 时脱敏重抛（含错误码、无 AK/SK、不挂 
         expect($e->getMessage())->not->toContain('SECRET-LEAK-9')->not->toContain('AKIA-LEAK-1234567890');
         expect($e->getPrevious())->toBeNull();
     }
+});
+
+test('运行时 Endpoint 指向回环地址被出站策略拦截（不构造 S3Client）', function () {
+    app()->instance(
+        OutboundDestinationPolicy::class,
+        new OutboundDestinationPolicy(
+            resolver: static fn (string $host): array => $host === '' ? [] : ['93.184.216.34'],
+        ),
+    );
+
+    $deployer = new S3Deployer;
+    $method = (new ReflectionClass(S3Deployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+
+    expect(fn () => $method->invoke($deployer, 's3', [
+        'access_key_id' => 'AKIDXXXX', 'secret_access_key' => 'SECRET', 'region' => 'us-east-1',
+        'endpoint' => 'http://127.0.0.1:9000',
+    ]))->toThrow(OutboundDestinationException::class);
+});
+
+test('自定义 S3 Endpoint 的 SDK 传输层钉在策略已审 IP', function () {
+    app()->instance(
+        OutboundDestinationPolicy::class,
+        new OutboundDestinationPolicy(
+            resolver: static fn (string $host): array => $host === 's3.example.com'
+                ? ['93.184.216.34']
+                : [],
+        ),
+    );
+
+    $deployer = new S3Deployer;
+    $method = (new ReflectionClass(S3Deployer::class))->getMethod('makeClient');
+    $method->setAccessible(true);
+    /** @var S3Client $client */
+    $client = $method->invoke($deployer, 's3', [
+        'access_key_id' => 'AKIDXXXX',
+        'secret_access_key' => 'SECRET',
+        'region' => 'us-east-1',
+        'endpoint' => 'https://S3.EXAMPLE.COM./api',
+    ]);
+
+    $requestOptions = (new ReflectionClass(AwsClient::class))->getProperty('defaultRequestOptions');
+    $requestOptions->setAccessible(true);
+    /** @var array<string,mixed> $http */
+    $http = $requestOptions->getValue($client);
+    expect((string) $client->getEndpoint())->toBe('https://s3.example.com/api')
+        ->and($http['curl'][CURLOPT_RESOLVE] ?? null)
+        ->toBe(['s3.example.com:443:93.184.216.34']);
 });

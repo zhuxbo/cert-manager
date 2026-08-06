@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Azure;
 
 use Closure;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use RuntimeException;
 use Throwable;
 
@@ -58,6 +59,12 @@ class AzureKeyVaultUploader implements CertUploaderInterface
 
         $env = AzureCloudEnv::resolve($this->cloudName);
         $vaultBaseUrl = 'https://'.$this->vaultName.'.'.$env['vaultDnsSuffix'];
+
+        // vault_name 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
+        app(OutboundDestinationPolicy::class)->authorizeOfficialHost(
+            'azure',
+            $this->vaultName.'.'.$env['vaultDnsSuffix'],
+        );
 
         try {
             $oauth = ($this->oauthFactory)();

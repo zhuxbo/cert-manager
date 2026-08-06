@@ -155,21 +155,14 @@ class MutateTargetsTest(unittest.TestCase):
             wrapper,
         )
         self.assertIn('-e "MUTATE_DRY_RUN=$DRY_RUN"', wrapper)
-        self.assertIn(
-            '-v "$PEST_MUTATIONS:/var/www/vendor/pestphp/'
-            'pest-plugin-mutate/.temp/mutations"',
-            wrapper,
-        )
-        self.assertIn(
-            '-v "$PEST_MUTATE_CACHE:/var/www/vendor/pestphp/'
-            'pest-plugin-mutate/.temp/pest-mutate-cache"',
-            wrapper,
-        )
-        self.assertIn(
-            '-v "$PEST_TEMP:/var/www/vendor/pestphp/pest/.temp"',
-            wrapper,
-        )
-        self.assertIn('-v "$PLUGINS_SNAPSHOT:/var/plugins"', wrapper)
+        self.assertIn('-v "$APP_VOLUME_NAME:/var/www"', wrapper)
+        self.assertIn('-v "$PLUGINS_VOLUME_NAME:/var/plugins"', wrapper)
+        self.assertIn('-v "$BACKEND_SNAPSHOT:/source:ro"', wrapper)
+        self.assertIn('-v "$PROJECT_ROOT/backend/vendor:/source-vendor:ro"', wrapper)
+        self.assertIn('-v "$PLUGINS_SNAPSHOT:/source-plugins:ro"', wrapper)
+        self.assertIn('docker volume create "$APP_VOLUME_NAME"', wrapper)
+        self.assertIn('docker volume create "$PLUGINS_VOLUME_NAME"', wrapper)
+        self.assertIn('docker_args+=(mutation-app)', wrapper)
         self.assertNotIn('-v "$PROJECT_ROOT/plugins:/var/plugins:ro"', wrapper)
         self.assertIn('-e "DB_HOST=$DB_CONTAINER_NAME"', wrapper)
         self.assertIn('-e DB_DATABASE=ssl_manager_test', wrapper)
@@ -193,12 +186,32 @@ class MutateTargetsTest(unittest.TestCase):
         )[0]
 
         self.assertIn('profiles: ["tools"]', service)
-        self.assertIn("/var/lib/mysql:size=3g,mode=1777", service)
+        self.assertIn("/var/lib/mysql:size=1g,mode=1777", service)
         self.assertIn("--skip-log-bin", service)
         self.assertIn("--innodb-flush-log-at-trx-commit=2", service)
         self.assertIn("--innodb-doublewrite=OFF", service)
         self.assertNotIn("--skip-innodb", service)
         self.assertNotIn("--foreign-key-checks=0", service)
+
+    def test_mutation_app_uses_native_volumes_and_tmpfs_hot_paths(self) -> None:
+        compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        service = compose.split("  mutation-app:\n", 1)[1].split(
+            "\n  redis:\n",
+            1,
+        )[0]
+
+        self.assertIn('profiles: ["tools"]', service)
+        self.assertIn("read_only: true", service)
+        for mount in [
+            "/tmp:size=256m",
+            "/var/backups:size=1g",
+            "/var/www/bootstrap/cache:size=64m",
+            "/var/www/storage:size=1g",
+            "/var/www/vendor/pestphp/pest/.temp:size=256m",
+            "/var/www/vendor/pestphp/pest-plugin-mutate/.temp/mutations:size=1g",
+        ]:
+            self.assertIn(mount, service)
+        self.assertNotIn("/var/www/storage/framework/", service)
 
     def test_isolated_wrapper_starts_waits_for_and_cleans_mutation_mysql(self) -> None:
         wrapper = (
@@ -209,7 +222,7 @@ class MutateTargetsTest(unittest.TestCase):
         ready_position = wrapper.index('mysqladmin ping', start_position)
         app_position = wrapper.index('docker_args=(', ready_position)
         cleanup_position = wrapper.index(
-            'docker rm -f "$DB_CONTAINER_NAME"',
+            'remove_and_confirm_container "$DB_CONTAINER_NAME"',
         )
 
         self.assertLess(start_position, ready_position)
@@ -222,6 +235,11 @@ class MutateTargetsTest(unittest.TestCase):
             fake_docker.write_text(
                 "#!/bin/sh\n"
                 'if [ "$1" = "inspect" ]; then\n'
+                '    echo "Error: No such object: $2" >&2\n'
+                "    exit 1\n"
+                "fi\n"
+                'if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then\n'
+                '    echo "Error: No such volume: $3" >&2\n'
                 "    exit 1\n"
                 "fi\n"
                 "exit 0\n",
@@ -277,6 +295,11 @@ class MutateTargetsTest(unittest.TestCase):
                 "#!/bin/sh\n"
                 'printf "%s\\n" "$@" >> "$DOCKER_ARGS_LOG"\n'
                 'if [ "$1" = "inspect" ]; then\n'
+                '    echo "Error: No such object: $2" >&2\n'
+                "    exit 1\n"
+                "fi\n"
+                'if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then\n'
+                '    echo "Error: No such volume: $3" >&2\n'
                 "    exit 1\n"
                 "fi\n"
                 "exit 0\n",
@@ -306,24 +329,15 @@ class MutateTargetsTest(unittest.TestCase):
             self.assertRegex(
                 docker_args,
                 re.compile(
-                    r"/pest-mutate-temp/mutations:"
-                    r"/var/www/vendor/pestphp/"
-                    r"pest-plugin-mutate/\.temp/mutations"
-                ),
-            )
-            self.assertRegex(
-                docker_args,
-                re.compile(
                     re.escape(str(persistent_cache))
                     + r":/var/www/vendor/pestphp/"
                     r"pest-plugin-mutate/\.temp/pest-mutate-cache"
                 ),
             )
-            self.assertRegex(
+            self.assertIn("mutation-app", docker_args)
+            self.assertNotRegex(
                 docker_args,
-                re.compile(
-                    r"/pest-temp:/var/www/vendor/pestphp/pest/\.temp"
-                ),
+                re.compile(r"/pest-temp:/var/www/vendor/pestphp/pest/\.temp"),
             )
             self.assertEqual(
                 0o700,
@@ -360,7 +374,7 @@ class MutateTargetsTest(unittest.TestCase):
         kill_position = wrapper.index('kill "$DOCKER_CLIENT_PID"')
         wait_position = wrapper.index('wait "$DOCKER_CLIENT_PID"', kill_position)
         remove_position = wrapper.index(
-            'docker rm -f "$CONTAINER_NAME"',
+            'remove_and_confirm_container "$CONTAINER_NAME"',
             wait_position,
         )
 

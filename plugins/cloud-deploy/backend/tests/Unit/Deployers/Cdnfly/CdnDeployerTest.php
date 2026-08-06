@@ -220,6 +220,6 @@ test('makeClient：allow_insecure_connections=true 时 verify=false', function (
     $deployer = new CdnDeployer;
     $ref = new ReflectionMethod($deployer, 'makeClient');
     $ref->setAccessible(true);
-    $client = $ref->invoke($deployer, 'api', ['server_url' => 'https://x', 'api_key' => 'k', 'api_secret' => 's', 'allow_insecure_connections' => true]);
+    $client = $ref->invoke($deployer, 'api', ['server_url' => 'https://1.1.1.1', 'api_key' => 'k', 'api_secret' => 's', 'allow_insecure_connections' => true]);
     expect($client)->toBeInstanceOf(CdnflyClient::class);
 });

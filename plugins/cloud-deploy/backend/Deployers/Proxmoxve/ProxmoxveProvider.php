@@ -25,7 +25,7 @@ class ProxmoxveProvider implements ProviderInterface
     public function credentialSchema(): array
     {
         return [
-            ['key' => 'server_url', 'label' => '服务地址', 'required' => true],
+            ['key' => 'server_url', 'label' => '服务地址', 'required' => true, 'destination' => true],
             ['key' => 'api_token', 'label' => 'API Token（user@realm!tokenid）', 'required' => true, 'secret' => true],
             ['key' => 'api_token_secret', 'label' => 'API Token Secret', 'required' => true, 'secret' => true],
             ['key' => 'allow_insecure_connections', 'label' => '允许不安全连接（跳过 TLS 校验）', 'required' => false],
