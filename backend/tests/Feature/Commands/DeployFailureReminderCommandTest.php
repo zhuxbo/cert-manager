@@ -1,105 +1,123 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\AutoDeployReport;
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
-use App\Services\Order\AutoDeployReportService;
+use App\Services\Notification\NotificationCenter;
 use Illuminate\Support\Carbon;
-use Mockery\MockInterface;
+use Illuminate\Support\Facades\Cache;
 
 // TestCase + RefreshDatabase 由 Pest.php 对 Feature/Commands 自动应用
 
 afterEach(function () {
+    Carbon::setTestNow();
     Mockery::close();
 });
 
-/**
- * 造一个订单 + 证书 + 若干上报（按传入顺序创建，最后一个即最新一行）。
- */
-function makeReminderOrder(string $certStatus, Carbon $expiresAt, array $reportStatuses): Order
+beforeEach(function () {
+    Carbon::setTestNow('2026-08-06 11:00:00');
+    Admin::factory()->create(['email' => 'ops@example.com']);
+    Cache::flush();
+});
+
+function makeDeploySummaryOrder(): array
 {
     $user = User::factory()->create();
     $product = Product::factory()->create();
     $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
-
-    $factory = $certStatus === 'active' ? Cert::factory()->active() : Cert::factory()->state(['status' => $certStatus]);
-    $cert = $factory->create(['order_id' => $order->id, 'expires_at' => $expiresAt]);
+    $cert = Cert::factory()->active()->create(['order_id' => $order->id]);
     $order->update(['latest_cert_id' => $cert->id]);
 
-    foreach ($reportStatuses as $status) {
-        AutoDeployReport::create([
-            'order_id' => $order->id,
-            'cert_id' => $cert->id,
-            'status' => $status,
-        ]);
-    }
-
-    return $order;
+    return [$order, $cert];
 }
 
-function mockReportService(): MockInterface
+function createDeploySummaryReport(Order $order, Cert $cert, string $at, ?string $ip): void
 {
-    $svc = Mockery::mock(AutoDeployReportService::class);
-    app()->instance(AutoDeployReportService::class, $svc);
-
-    return $svc;
+    Carbon::setTestNow($at);
+    AutoDeployReport::create([
+        'order_id' => $order->id,
+        'cert_id' => $cert->id,
+        'status' => 'failure',
+        'ip' => $ip,
+        'message' => '部署失败',
+    ]);
+    Carbon::setTestNow('2026-08-06 11:00:00');
 }
 
-test('签名为 schedule:deploy-failure-reminder', function () {
+function captureDeploySummaryNotifications(): object
+{
+    $state = new class
+    {
+        public array $intents = [];
+    };
+    $center = Mockery::mock(NotificationCenter::class);
+    $center->shouldReceive('dispatch')->andReturnUsing(function ($intent) use ($state) {
+        $state->intents[] = $intent;
+    });
+    app()->instance(NotificationCenter::class, $center);
+
+    return $state;
+}
+
+test('上一完整小时的跨订单失败合并为一封管理员告警', function () {
+    [$order1, $cert1] = makeDeploySummaryOrder();
+    [$order2, $cert2] = makeDeploySummaryOrder();
+    createDeploySummaryReport($order1, $cert1, '2026-08-06 10:05:00', '203.0.113.1');
+    createDeploySummaryReport($order1, $cert1, '2026-08-06 10:20:00', '203.0.113.1');
+    createDeploySummaryReport($order2, $cert2, '2026-08-06 10:40:00', null);
+    $state = captureDeploySummaryNotifications();
+
     $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
+
+    expect($state->intents)->toHaveCount(1);
+    $context = $state->intents[0]->context;
+    expect($context['category'])->toBe('deploy_failure')
+        ->and($context['details']['report_count'])->toBe(3)
+        ->and($context['details']['order_count'])->toBe(2)
+        ->and($context['details']['client_failure_count'])->toBe(2)
+        ->and($context['details']['server_failure_count'])->toBe(1)
+        ->and($context['details']['order_sample'])->toContain((string) $order1->id)
+        ->and($context['details']['order_sample'])->toContain((string) $order2->id);
 });
 
-test('最后一条为 failure 且证书 active 未过期 → 提醒该订单', function () {
-    $order = makeReminderOrder('active', now()->addDays(10), ['success', 'failure']); // 最新=failure
-
-    $svc = mockReportService();
-    $svc->shouldReceive('notifyFailure')->once()
-        ->with(Mockery::on(fn ($o) => $o->id === $order->id))
-        ->andReturnTrue();
+test('聚合窗口排除更早历史和当前小时的失败', function () {
+    [$oldOrder, $oldCert] = makeDeploySummaryOrder();
+    [$windowOrder, $windowCert] = makeDeploySummaryOrder();
+    [$currentOrder, $currentCert] = makeDeploySummaryOrder();
+    createDeploySummaryReport($oldOrder, $oldCert, '2026-08-06 09:59:59', '203.0.113.1');
+    createDeploySummaryReport($windowOrder, $windowCert, '2026-08-06 10:30:00', '203.0.113.2');
+    createDeploySummaryReport($currentOrder, $currentCert, '2026-08-06 11:00:00', '203.0.113.3');
+    $state = captureDeploySummaryNotifications();
 
     $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
+
+    expect($state->intents)->toHaveCount(1)
+        ->and($state->intents[0]->context['details']['report_count'])->toBe(1)
+        ->and($state->intents[0]->context['details']['order_sample'])->toBe((string) $windowOrder->id);
 });
 
-test('最后一条为 success（已恢复）→ 不提醒', function () {
-    makeReminderOrder('active', now()->addDays(10), ['failure', 'success']); // 最新=success
+test('同一小时重复执行不会重复发送聚合告警', function () {
+    [$order, $cert] = makeDeploySummaryOrder();
+    createDeploySummaryReport($order, $cert, '2026-08-06 10:30:00', '203.0.113.1');
+    $state = captureDeploySummaryNotifications();
 
-    $svc = mockReportService();
-    $svc->shouldNotReceive('notifyFailure');
+    $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
+    $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
+
+    expect($state->intents)->toHaveCount(1);
+});
+
+test('上一完整小时没有失败时不发送告警', function () {
+    [$order, $cert] = makeDeploySummaryOrder();
+    createDeploySummaryReport($order, $cert, '2026-08-06 09:59:59', '203.0.113.1');
+    $state = captureDeploySummaryNotifications();
 
     $this->artisan('schedule:deploy-failure-reminder')
-        ->expectsOutputToContain('无未解决')
+        ->expectsOutputToContain('上一小时无失败')
         ->assertSuccessful();
-});
 
-test('订单终态（证书 renewed）→ 停止提醒', function () {
-    makeReminderOrder('renewed', now()->addDays(10), ['failure']); // 最新=failure 但订单终态
-
-    $svc = mockReportService();
-    $svc->shouldNotReceive('notifyFailure');
-
-    $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
-});
-
-test('证书已过期（expires_at < now，status 仍 active）→ 停止提醒', function () {
-    makeReminderOrder('active', now()->subDay(), ['failure']); // active 但已过期
-
-    $svc = mockReportService();
-    $svc->shouldNotReceive('notifyFailure');
-
-    $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
-});
-
-test('多订单混合：仅未解决且活跃的订单被提醒', function () {
-    $active = makeReminderOrder('active', now()->addDays(10), ['failure']);       // 应提醒
-    makeReminderOrder('active', now()->addDays(10), ['failure', 'success']);      // 已恢复，跳过
-    makeReminderOrder('expired', now()->subDay(), ['failure']);                    // 终态，跳过
-
-    $svc = mockReportService();
-    $svc->shouldReceive('notifyFailure')->once()
-        ->with(Mockery::on(fn ($o) => $o->id === $active->id))
-        ->andReturnTrue();
-
-    $this->artisan('schedule:deploy-failure-reminder')->assertSuccessful();
+    expect($state->intents)->toBeEmpty();
 });

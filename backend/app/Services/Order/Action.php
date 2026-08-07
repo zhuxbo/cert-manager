@@ -60,13 +60,8 @@ class Action
     /**
      * 导入产品
      */
-    public function importProduct(string $source = '', string $brand = '', string $api_id = '', string $type = 'new', bool $resilient = false): void
+    public function importProduct(string $source = '', string $brand = '', string $api_id = '', string $type = 'new'): void
     {
-        if ($resilient) {
-            // resilient（cron）模式：本次运行前清空逐产品失败收集
-            $this->importIssues = [];
-        }
-
         $allProducts = [];
 
         // 查询传统 Order 产品
@@ -97,13 +92,6 @@ class Action
         }
 
         if (empty($allProducts)) {
-            // resilient（cron）：空结果不抛异常（成功路径不产生异常，命令侧 catch 不会误捕），记 warning 返回
-            if ($resilient) {
-                Log::warning('[import_product] 未获取到产品，跳过来源', ['source' => $source]);
-
-                return;
-            }
-
             $this->error('没有获取到产品');
         }
 
@@ -116,57 +104,16 @@ class Action
         }
 
         foreach ($unique as $item) {
-            // resilient（cron）：单产品校验失败不中断整来源——收集 msg + Log::warning + continue
-            // （反模式16：ApiResponseException::getMessage() 恒空，取 getApiResponse()['msg']）
-            if ($resilient) {
-                try {
-                    $this->importProductItem($item, $source, $type);
-                } catch (ApiResponseException $e) {
-                    $this->importIssues[] = $e->getApiResponse()['msg'] ?? '';
-                    Log::warning('[import_product] 单产品同步失败，跳过', [
-                        'source' => $source,
-                        'code' => $item['code'] ?? '',
-                        'msg' => $e->getApiResponse()['msg'] ?? '',
-                    ]);
-                }
-
-                continue;
-            }
-
             $this->importProductItem($item, $source, $type);
-        }
-
-        // resilient 终态直接 return，不调 success()：success() 抛 code=1 异常，
-        // 命令侧 catch(Throwable) 会把成功运行误报为失败（I1）
-        if ($resilient) {
-            return;
         }
 
         $this->success();
     }
 
     /**
-     * resilient 模式下逐产品失败收集（供 ImportProductCommand 汇总 admin 告警）。
+     * 单产品导入处理体（update/create 分支）。
      *
-     * @var array<int, string>
-     */
-    protected array $importIssues = [];
-
-    /**
-     * resilient 导入的逐产品失败摘要（人工路径不产生、恒为空）。
-     *
-     * @return array<int, string>
-     */
-    public function getImportIssues(): array
-    {
-        return $this->importIssues;
-    }
-
-    /**
-     * 单产品导入处理体（update/create 分支），供人工路径与 resilient cron 复用（单一源，反模式4/6）。
-     *
-     * 校验失败经 $this->error() 抛 ApiResponseException：人工路径直接冒泡中断整来源；
-     * resilient 路径由 importProduct 循环 catch 收集后 continue，不中断其余产品。
+     * 校验失败经 $this->error() 抛 ApiResponseException，人工导入路径直接冒泡中断整批。
      *
      * @param  array<string, mixed>  $item  上游产品项（含 code）
      */
@@ -181,7 +128,6 @@ class Action
         $item['api_id'] = strval($item['code']);
         unset($item['code']);
 
-        $costProvided = array_key_exists('cost', $item) && $item['cost'] !== null;
         $cost = $item['cost'] ?? null;
         unset($item['cost']);
 
@@ -191,20 +137,11 @@ class Action
             if ($type === 'update' || $type === 'all') {
                 // 使用 UpdateRequest 验证规则
                 $updateRequest = new UpdateRequest;
-                $updateRequest->setProductId($product->id);
-                $updateRequest->skipSslDomainValidation();
 
                 // 过滤 null 值，避免上游未设置的字段覆盖本地数据
                 $item = array_filter($item, fn ($value) => $value !== null);
 
-                // 将 $item 数据合并到请求中，以便 rules() 能正确判断产品类型
-                $updateRequest->merge($item);
-
                 $validator = Validator::make($item, $updateRequest->rules());
-                $validator->after(function ($validator) use ($updateRequest) {
-                    $updateRequest->setValidator($validator);
-                    $updateRequest->withValidator($validator);
-                });
 
                 if ($validator->fails()) {
                     $this->error('产品数据验证失败', $validator->errors()->toArray());
@@ -226,24 +163,19 @@ class Action
                     unset($item['remark']);
                 }
                 // 本地权重已人工设置（非默认 0）时，同步不覆盖
-                if ((int) $product->weight !== 0) {
+                if ($product->weight !== 0) {
                     unset($item['weight']);
                 }
 
                 $product->fill($item);
-                $this->applyImportedCost($product, $cost, $costProvided);
+                $this->applyImportedCost($product, $cost);
                 $product->save();
             }
         } else {
             if ($type === 'new' || $type === 'all') {
                 $importRequest = new ImportCaProductRequest;
-                $importRequest->merge($item);
 
                 $validator = Validator::make($item, $importRequest->rules());
-                $validator->after(function ($validator) use ($importRequest) {
-                    $importRequest->setValidator($validator);
-                    $importRequest->withValidator($validator);
-                });
 
                 if ($validator->fails()) {
                     $this->error('产品数据验证失败', $validator->errors()->toArray());
@@ -252,15 +184,15 @@ class Action
                 $item = $importRequest->prepareForCreate($item);
                 $product = new Product;
                 $product->fill($item);
-                $this->applyImportedCost($product, $cost, $costProvided);
+                $this->applyImportedCost($product, $cost);
                 $product->save();
             }
         }
     }
 
-    private function applyImportedCost(Product $product, mixed $cost, bool $provided): void
+    private function applyImportedCost(Product $product, mixed $cost): void
     {
-        if (! $provided || ! is_array($cost)) {
+        if (! is_array($cost)) {
             return;
         }
 
@@ -783,7 +715,11 @@ class Action
             // 附带说明。与 cancelled 分支按 status 值天然互斥；防重同样靠 hasStatusChanged（二次 sync 终态
             // 守卫 unset data.status → hasStatusChanged=false → 不再派发），须与本分支同处终态守卫之后。
             if ($hasStatusChanged && $data['status'] === 'revoked') {
-                $this->dispatchRevokedNotification($order, $cert);
+                $this->dispatchRevokedNotification(
+                    $order,
+                    $cert,
+                    CertificateProductType::normalize($notificationProductType)
+                );
             }
 
             // 签发 取消 吊销 发起回调（suppressCallback=true 跳过：下游经 V1/V2 get 主动 pull 触发同步，
@@ -1404,14 +1340,8 @@ class Action
      * 携密纪律：context 仅白名单标量（被吊销证书标识 / 到期日 / 订单号 / 接替单标志 / 产品类型），绝不 toArray 整包；
      * 收件人 = 订单所属 user。吊销终态不再变动，故派发现场直接读值塞入、Builder 事件驱动无需重查。
      */
-    private function dispatchRevokedNotification(Order $order, Cert $cert): void
+    private function dispatchRevokedNotification(Order $order, Cert $cert, string $productType): void
     {
-        $order->loadMissing('product');
-        $product = $order->getAttribute('product');
-        $productType = CertificateProductType::normalize(
-            $product instanceof Product ? $product->product_type : null
-        );
-
         app(NotificationCenter::class)->dispatch(new NotificationIntent(
             'cert_revoked',
             'user',

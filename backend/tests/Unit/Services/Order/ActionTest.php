@@ -711,6 +711,8 @@ function mockCancelApi(string $mode = 'success'): MockInterface
         $mockApi->shouldReceive('cancel')->andReturn(['code' => 1]);
     } elseif ($mode === 'throw') {
         $mockApi->shouldReceive('cancel')->andThrow(new ApiResponseException('CA取消失败', ['reason' => 'upstream']));
+    } elseif ($mode === 'throw-detailed') {
+        $mockApi->shouldReceive('cancel')->andThrow(new ApiResponseException('上游拒绝取消', ['reason' => 'refund-window']));
     } elseif ($mode === 'never') {
         $mockApi->shouldNotReceive('cancel');
     }
@@ -860,6 +862,30 @@ test('cancelLocked reissue 上游 cancel 失败 → 回滚、无退款、不置 
     expect($reissueCert->fresh()->status)->toBe('cancelling');
     expect($oldCert->fresh()->status)->toBe('reissued');
     expect(Cert::where('id', $reissueCert->id)->exists())->toBeTrue();
+});
+
+test('cancelLocked 透传上游取消错误消息和详情', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    [$order] = makeReissueCancelling();
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-20.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
+
+    mockCancelApi('throw-detailed');
+
+    try {
+        $this->service->cancel($order->id);
+        test()->fail('期望抛出 ApiResponseException 但未抛出');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse())->toBe([
+            'code' => 0,
+            'msg' => '上游拒绝取消',
+            'errors' => ['reason' => 'refund-window'],
+        ]);
+    }
 });
 
 // —— 收窄后新增：订单终结门 + last_cert_id 保留 + 未签发仍退增量 ——
@@ -1125,6 +1151,27 @@ test('[通知②a] 前驱订单产品已删除时取消仍成功且通知类型�
     $intents = renewCancelledIntents($captured);
     expect($intents)->toHaveCount(1)
         ->and($intents[0]->context['expires_at'])->toBe('')
+        ->and($intents[0]->context['product_type'])->toBe(Product::TYPE_SSL);
+});
+
+test('[通知②b] 前驱订单已删除时取消仍成功且通知类型回落 SSL', function () {
+    Queue::fake();
+    test()->product->update(['refund_period' => 30]);
+
+    [$renewOrder, $sourceCert, $renewCert] = makeRenewCancelling();
+    Order::whereKey($sourceCert->order_id)->delete();
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $renewOrder->id,
+        'amount' => '-100.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
+
+    $captured = captureRenewCancelledDispatch();
+    mockCancelApi('success');
+    expectOrderApiSuccess(fn () => $this->service->cancel($renewOrder->id));
+
+    expect($renewCert->fresh()->status)->toBe('cancelled');
+    $intents = renewCancelledIntents($captured);
+    expect($intents)->toHaveCount(1)
         ->and($intents[0]->context['product_type'])->toBe(Product::TYPE_SSL);
 });
 

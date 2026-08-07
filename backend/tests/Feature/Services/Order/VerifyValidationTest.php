@@ -112,24 +112,67 @@ test('dnsTools 应答但校验失败 → code=0 无 dns_tools_down 标记', func
         ->and($result['dns_tools_down'] ?? false)->toBeFalse();
 });
 
-// 5. 含 file 方法项（非 DNS）→ 本地不可判定 → dnsTools 全挂时 code=0 + dns_tools_down
-test('含 file 非 DNS 项 + dnsTools 全挂 → 本地不可判定 → code=0 + dns_tools_down', function () {
+// 5. file 方法由本机直接读取验证文件，dnsTools 全挂时仍可通过
+test('dnsTools 全挂 + 本地文件内容命中 → code=1 + dns_tools_down', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'dnstool1.test/*' => fn () => throw new ConnectionException('conn fail 1'),
+        'dnstool2.test/*' => fn () => throw new ConnectionException('conn fail 2'),
+        'http://93.184.216.34/*' => Http::response("line-1\r\nline-2\r\n"),
+    ]);
+
+    $validation = [
+        [
+            'domain' => '93.184.216.34',
+            'method' => 'file',
+            'name' => 'x.txt',
+            'content' => "line-1\nline-2\n",
+            'link' => '//93.184.216.34/.well-known/pki-validation/x.txt',
+        ],
+    ];
+
+    $result = VerifyUtil::verifyValidation($validation);
+
+    expect($result['code'])->toBe(1)
+        ->and($result['dns_tools_down'] ?? false)->toBeTrue();
+});
+
+test('dnsTools 全挂 + 本地文件内容不匹配 → code=0 + dns_tools_down', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'dnstool1.test/*' => fn () => throw new ConnectionException('conn fail 1'),
+        'dnstool2.test/*' => fn () => throw new ConnectionException('conn fail 2'),
+        'https://93.184.216.34/*' => Http::response('wrong-content'),
+    ]);
+
+    $result = VerifyUtil::verifyValidation([[
+        'domain' => '93.184.216.34',
+        'method' => 'https',
+        'content' => 'expected-content',
+        'link' => 'https://93.184.216.34/.well-known/pki-validation/x.txt',
+    ]]);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['dns_tools_down'] ?? false)->toBeTrue();
+});
+
+test('文件本地兜底拒绝私网地址且不发起请求', function () {
     Http::preventStrayRequests();
     Http::fake([
         'dnstool1.test/*' => fn () => throw new ConnectionException('conn fail 1'),
         'dnstool2.test/*' => fn () => throw new ConnectionException('conn fail 2'),
     ]);
-    stubDnsResolver(txt: ['expected-token']); // 即便 txt 命中，含 file 项仍不可判定
 
-    $validation = [
-        ['domain' => 'example.com', 'method' => 'txt', 'host' => '_dnsauth.example.com', 'value' => 'expected-token'],
-        ['domain' => 'example.com', 'method' => 'file', 'name' => 'x.txt', 'content' => 'c', 'link' => 'http://x'],
-    ];
-
-    $result = VerifyUtil::verifyValidation($validation);
+    $result = VerifyUtil::verifyValidation([[
+        'domain' => '127.0.0.1',
+        'method' => 'http',
+        'content' => 'expected-content',
+        'link' => 'http://127.0.0.1/.well-known/pki-validation/x.txt',
+    ]]);
 
     expect($result['code'])->toBe(0)
         ->and($result['dns_tools_down'] ?? false)->toBeTrue();
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), '127.0.0.1'));
 });
 
 // 6. 裸前缀 host（_certum 无点，主力 CA 真实形态）→ 本地兜底用 domain 补全成 FQDN 再核对 → code=1

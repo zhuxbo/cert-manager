@@ -83,15 +83,13 @@ Schedule::command('schedule:auto-renew')
     ->description('自动续费/重签即将到期的证书')
     ->onFailure($logScheduleFailure('schedule:auto-renew'));
 
-// 自动部署/签发持续未解决失败提醒 - 每天 08:00（错开 auto-renew 00:00 / purge 02:00 / stuck-orders 06:30 / expire 09:00）
-// 事件驱动告警在失败发生时按订单去重发一封；本命令基于「订单最后一条上报仍为 failure」状态判定，
-// 复用同一 per-order 去重键 + 固定指纹，由 TTL 裁决「TTL 内一封、到期仍未解决再一封」，覆盖客户端触顶静默期
+// 自动部署/签发失败小时聚合 - 每个整点汇总上一个完整小时，跨订单至多一封管理员告警
 Schedule::command('schedule:deploy-failure-reminder')
-    ->dailyAt('08:00')
+    ->hourly()
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('deploy-failure-reminder')
-    ->description('自动部署/签发持续未解决失败提醒（订单终态或证书过期后停止）');
+    ->description('按完整小时聚合自动部署/签发失败');
 
 // 余额前瞻预警 - 每周一 09:30 执行（未来 30 天自动续费余额不足则每用户一封，预估上限）
 // 周一 09:30：错开 auto-renew 00:00 / backup 02:00 / audit 03:00，且避开 schedule:expire 的 09:00
@@ -169,21 +167,13 @@ Schedule::command('schedule:ca-healthcheck')
     ->name('ca-healthcheck')
     ->description('上游 CA 凭证健康心跳（凭证失效告警）');
 
-// E2 产品属性漂移同步 - 每天 04:30（错开 auto-renew 00:00 / backup 02:00 / finance 03:00）
-Schedule::command('schedule:import-product')
-    ->dailyAt('04:30')
-    ->withoutOverlapping()
-    ->skip($skipWhenFrozen)
-    ->name('import-product')
-    ->description('逐来源同步产品属性漂移（仅 update，失败聚合告警）');
-
-// E3 充值渠道健康 - 每天 05:00（支付证书 notAfter + 配置完整性）
+// E3 充值渠道健康 - 每天 05:00（仅检查已配置支付证书的 notAfter 与可解析性）
 Schedule::command('schedule:payment-health')
     ->dailyAt('05:00')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('payment-health')
-    ->description('充值渠道支付证书到期与配置完整性监控');
+    ->description('充值渠道已配置支付证书到期与解析监控');
 
 // E4 服务器时钟监控 - 每小时（HTTP Date 头 + 法定人数 ≥2 源一致）
 Schedule::command('schedule:clock-check')

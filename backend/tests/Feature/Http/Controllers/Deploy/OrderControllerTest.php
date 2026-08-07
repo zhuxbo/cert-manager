@@ -9,7 +9,6 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
-use App\Services\Notification\SystemAlert;
 use App\Services\Order\Api\Api;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -772,26 +771,9 @@ test('callback 参数验证', function () {
     ])->assertOk()->assertJson(['code' => 0]);
 });
 
-test('callback 失败入表并触发按订单固定指纹去重告警（不写 error_logs）', function () {
+test('callback 失败只入表并等待小时聚合告警', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'active');
-
-    // 记录全量之上做通知消噪：失败触发一封 SystemAlert，per-order dedupeKey + 固定指纹 + TTL 168h
-    $alert = Mockery::mock(SystemAlert::class);
-    $alert->shouldReceive('send')->once()
-        ->with(
-            'deploy_failure',
-            Mockery::type('string'),
-            Mockery::type('string'),
-            Mockery::on(fn ($details) => (int) $details['order_id'] === $order->id
-                && (int) $details['user_id'] === $user->id),
-            "deploy_failure_{$order->id}",
-            168,
-            'deploy_failure',
-        )
-        ->andReturnTrue();
-    $alert->shouldNotReceive('clearDedupe');
-    app()->instance(SystemAlert::class, $alert);
 
     deployPost($token, '/api/deploy/callback', [
         'order_id' => $order->id,
@@ -803,47 +785,9 @@ test('callback 失败入表并触发按订单固定指纹去重告警（不写 e
         ->and(ErrorLog::query()->where('exception', 'DeployCallbackFailure')->exists())->toBeFalse();
 });
 
-test('callback 成功入表并清除该订单失败告警去重键（复发即恢复）', function () {
+test('callback 成功正常入表', function () {
     [$user, $token] = createDeployAuth();
     [$order] = createDeployOrder($user, 'active');
-
-    $alert = Mockery::mock(SystemAlert::class);
-    $alert->shouldReceive('clearDedupe')->once()->with("deploy_failure_{$order->id}");
-    $alert->shouldNotReceive('send');
-    app()->instance(SystemAlert::class, $alert);
-
-    deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id,
-        'status' => 'success',
-    ])->assertOk()->assertJson(['code' => 1]);
-
-    expect(AutoDeployReport::query()->where('order_id', $order->id)->where('status', 'success')->count())->toBe(1);
-});
-
-test('callback 失败告警异常不影响上报响应且记录只写一次', function () {
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active');
-
-    $alert = Mockery::mock(SystemAlert::class);
-    $alert->shouldReceive('send')->once()->andThrow(new RuntimeException('cache-down'));
-    app()->instance(SystemAlert::class, $alert);
-
-    deployPost($token, '/api/deploy/callback', [
-        'order_id' => $order->id,
-        'status' => 'failure',
-        'message' => '部署失败',
-    ])->assertOk()->assertJson(['code' => 1]);
-
-    expect(AutoDeployReport::query()->where('order_id', $order->id)->count())->toBe(1);
-});
-
-test('callback 成功清键异常不影响上报响应且成功记录保留', function () {
-    [$user, $token] = createDeployAuth();
-    [$order] = createDeployOrder($user, 'active');
-
-    $alert = Mockery::mock(SystemAlert::class);
-    $alert->shouldReceive('clearDedupe')->once()->andThrow(new RuntimeException('cache-down'));
-    app()->instance(SystemAlert::class, $alert);
 
     deployPost($token, '/api/deploy/callback', [
         'order_id' => $order->id,

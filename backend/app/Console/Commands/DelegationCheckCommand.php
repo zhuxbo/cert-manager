@@ -49,9 +49,9 @@ class DelegationCheckCommand extends Command
     private const CIRCUIT_BREAKER_RATIO = 0.5;
 
     /** 全局熔断样本下限：总数 < 此值不熔断（防小基数误熔断；冻结层仍独立生效）。 */
-    private const CIRCUIT_BREAKER_MIN_SAMPLE = 5;
+    private const CIRCUIT_BREAKER_MIN_SAMPLE = 20;
 
-    /** 熔断告警去重键（与 F2-1 实际键 dnstools_outage 不同键、不冲突）。 */
+    /** 委托巡检熔断告警的独立去重键。 */
     private const PATROL_OUTAGE_KEY = 'delegation_patrol_outage';
 
     /** 熔断告警固定指纹（不可达轮数逐轮波动，固定指纹防 churn 击穿去重刷屏）。 */

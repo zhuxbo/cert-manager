@@ -179,7 +179,7 @@ class AutoRenewCommand extends Command
                 $this->error("订单 #{$order->id} {$action} 失败: {$e->getMessage()}");
                 $this->sendFailureNotification($order, $action, self::FALLBACK_REASON);
 
-                // pull scheduler 自动重签/续费失败：服务端自写一行 status=failure 记录 + 按订单去重告警
+                // pull scheduler 自动重签/续费失败：服务端自写 status=failure，交小时聚合告警
                 // （客户端零参与）。message 归一（不泄露原始异常）、以「自动{续费|重签}失败：」开头，与客户端
                 // 部署失败天然可辨。跳过类（IP/委托/缺价/余额）不进本 catch，保持既有仅用户兜底通知语义不变。
                 app(AutoDeployReportService::class)->recordServerFailure(

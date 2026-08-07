@@ -39,16 +39,12 @@ function bindProductCostImportApi(array $items): void
     app()->instance(Api::class, $mock);
 }
 
-function runProductCostImport(string $type = 'new', bool $resilient = false): ?ApiResponseException
+function runProductCostImport(string $type = 'new'): ApiResponseException
 {
     try {
-        app(Action::class)->importProduct('cost-source', '', '', $type, $resilient);
+        app(Action::class)->importProduct('cost-source', '', '', $type);
     } catch (ApiResponseException $e) {
         return $e;
-    }
-
-    if ($resilient) {
-        return null;
     }
 
     throw new RuntimeException('导入路径应通过 ApiResponseException 返回结果');
@@ -184,26 +180,6 @@ test('导入缺少适用 SAN 成本时仍成功并原样保存', function () {
         ->firstOrFail();
 
     expect($response->getApiResponse()['code'])->toBe(1)
-        ->and(json_decode($product->getRawOriginal('cost'), true))->toBe($cost);
-});
-
-test('resilient 导入原样保存内层畸形的数组成本且不记录失败', function () {
-    $cost = [
-        'price' => '100',
-        'alternative_standard_price' => ['12' => '10'],
-    ];
-    bindProductCostImportApi([
-        productCostUpstreamItem('COST-BAD-SHAPE', $cost),
-    ]);
-
-    $action = app(Action::class);
-    $action->importProduct('cost-source', '', '', 'new', true);
-
-    $product = Product::where('source', 'cost-source')
-        ->where('api_id', 'COST-BAD-SHAPE')
-        ->firstOrFail();
-
-    expect($action->getImportIssues())->toBe([])
         ->and(json_decode($product->getRawOriginal('cost'), true))->toBe($cost);
 });
 

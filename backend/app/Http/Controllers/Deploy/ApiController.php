@@ -546,15 +546,6 @@ class ApiController extends Controller
             'message' => $message,
         ]);
 
-        // 记录全量之上做通知消噪：失败触发按订单去重的 SystemAlert；成功即清去重键，
-        // 复发时立即再告警（healthy 分支清键，与服务端自写签发失败共用同一 per-order 去重）。
-        $reportService = app(AutoDeployReportService::class);
-        if ($params['status'] === 'failure') {
-            $reportService->notifyFailure($order, $message);
-        } else {
-            $reportService->clearFailureAlert($order);
-        }
-
         $this->success([
             'order_id' => $params['order_id'],
             'status' => $params['status'],

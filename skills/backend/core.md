@@ -391,6 +391,7 @@ python3 skills/scripts/mutation-shards.py probe \
 - **`$this->error()` 方法**：来自 `ApiResponse` trait，调用后抛出异常终止执行，不会继续后续代码
 - **Action 无 userId 构造参数**：`Acme\Action` 和 `Order\Action` 均无 `userId` 构造参数，通过 `app(Action::class)` 获取实例。用户隔离由 UserScope 全局作用域保证（`Authenticate`/`ApiAuthenticate` 中间件注册 Acme、ApiToken、Callback、CnameDelegation、Order、Fund、Transaction、Organization、Contact、OrderDocument），控制器在创建方法的 params 中传入 `user_id`。UserScope `apply()` 无条件执行 `where('user_id', ...)`，不做零值跳过
 - **无验证信息订单的定时同步**：`schedule:validate`（每分钟，`ValidateCommand`）只纳入 dcv **且** validation 都非空的 processing/approving 订单；dcv 或 validation 为 **NULL** 的订单（codesign/docsign/smime 等无 DCV 产品，验证靠 CA 人工审核/邮件）被其查询排除、无法自动同步，由独立的 `schedule:sync`（每天 9/15/21 点 `0 9,15,21 * * *`，`SyncCommand`）兜底——查 dcv 或 validation 为 NULL 的 processing/approving 订单并 `createTask(id,'sync')`。两查询条件互为补集、同一订单只被其一处理；频率低因无 DCV 产品订单量小（空数组 `[]` 非 NULL、仍归 validate）
+- **dnsTools 全挂时的 DCV 本地兜底**：`VerifyUtil::verifyValidationLocal` 对 TXT/CNAME 经 `DnsResolver` 核对，对 file/http/https 从本机读取验证链接并核对内容；文件请求只允许 validation domain 自身的公网 80/443，拒绝私网/保留 IP、跨域链接、重定向和超过 8 KiB 的响应。邮箱/admin 验证不经过 dnsTools 检测，本机也无法判断收件人是否已确认；`ValidateCommand` 对这类方法直接创建 sync，由 CA 状态作为权威结果。
 
 ## 队列与 Job 约定
 
