@@ -448,7 +448,7 @@ class ApiController extends Controller
         $status = $order->latestCert->status;
         $refund_period = $order->product->refund_period ?? 0;
 
-        if ($order->created_at->timestamp < time() - 86400 * $refund_period) {
+        if ($order->created_at->timestamp < now()->timestamp - 86400 * $refund_period) {
             $this->error("Order cannot be cancelled after $refund_period days");
         }
 

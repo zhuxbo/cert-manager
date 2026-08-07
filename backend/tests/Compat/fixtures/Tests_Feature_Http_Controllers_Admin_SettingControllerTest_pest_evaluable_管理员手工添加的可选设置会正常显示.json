@@ -1,0 +1,78 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingControllerTest::__pest_evaluable_管理员手工添加的可选设置会正常显示",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/setting",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "groups": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "name": "string",
+                            "title": "string",
+                            "description": "string",
+                            "weight": "integer",
+                            "created_at": "string",
+                            "updated_at": "string",
+                            "settings": {
+                                "__list_of__": {
+                                    "id": "integer",
+                                    "group_id": "integer",
+                                    "key": "string",
+                                    "type": "string",
+                                    "options": "null",
+                                    "is_multiple": "boolean",
+                                    "value": "boolean",
+                                    "description": "string",
+                                    "weight": "integer",
+                                    "created_at": "string",
+                                    "updated_at": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/setting/group/{groupId}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "group": {
+                        "id": "integer",
+                        "name": "string",
+                        "title": "string",
+                        "description": "string",
+                        "weight": "integer",
+                        "created_at": "string",
+                        "updated_at": "string",
+                        "settings": {
+                            "__list_of__": {
+                                "id": "integer",
+                                "group_id": "integer",
+                                "key": "string",
+                                "type": "string",
+                                "options": "null",
+                                "is_multiple": "boolean",
+                                "value": "boolean",
+                                "description": "string",
+                                "weight": "integer",
+                                "created_at": "string",
+                                "updated_at": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

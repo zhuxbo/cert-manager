@@ -35,6 +35,32 @@ test('管理员可以获取指定组的设置', function () {
     $response->assertJsonStructure(['data' => ['group']]);
 });
 
+test('管理员手工添加的可选设置会正常显示', function () {
+    $group = SettingGroup::factory()->create(['name' => 'site']);
+    Setting::factory()->create([
+        'group_id' => $group->id,
+        'key' => 'autoRefundOnSync',
+        'type' => 'boolean',
+        'value' => true,
+    ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->getJson('/api/admin/setting')
+        ->assertOk()
+        ->assertJsonFragment([
+            'key' => 'autoRefundOnSync',
+            'value' => true,
+        ]);
+
+    $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/setting/group/$group->id")
+        ->assertOk()
+        ->assertJsonFragment([
+            'key' => 'autoRefundOnSync',
+            'value' => true,
+        ]);
+});
+
 test('获取不存在的设置组返回错误', function () {
     $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/setting/group/99999');
 

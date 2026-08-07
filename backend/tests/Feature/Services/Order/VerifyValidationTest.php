@@ -4,7 +4,9 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Delegation\DnsResolver;
 use App\Services\Order\Utils\VerifyUtil;
+use GuzzleHttp\Psr7\PumpStream;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
@@ -95,11 +97,11 @@ test('5xx 故障转移：首节点 500 被跳过，取次节点 200 结果', fun
         ->and($result['dns_tools_down'] ?? false)->toBeFalse();
 });
 
-// 4. dnsTools 有应答但校验失败（code=0）→ 无 dns_tools_down 标记（DNS 未就绪，正常）
-test('dnsTools 应答但校验失败 → code=0 无 dns_tools_down 标记', function () {
+test('dnsTools 首节点未通过时继续轮询，采用下一节点成功结果', function () {
     Http::preventStrayRequests();
     Http::fake([
         'dnstool1.test/*' => Http::response(['code' => 0, 'msg' => 'DNS 未就绪', 'errors' => []], 200),
+        'dnstool2.test/*' => Http::response(['code' => 1, 'msg' => '第二节点通过', 'errors' => []], 200),
     ]);
 
     $validation = [
@@ -108,8 +110,96 @@ test('dnsTools 应答但校验失败 → code=0 无 dns_tools_down 标记', func
 
     $result = VerifyUtil::verifyValidation($validation);
 
-    expect($result['code'])->toBe(0)
+    expect($result['code'])->toBe(1)
+        ->and($result['msg'])->toBe('第二节点通过')
         ->and($result['dns_tools_down'] ?? false)->toBeFalse();
+});
+
+test('dnsTools 均返回未通过但本地实时命中时采用本地结果', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'dnstool1.test/*' => Http::response(['code' => 0, 'msg' => '节点一缓存未更新', 'errors' => []], 200),
+        'dnstool2.test/*' => Http::response(['code' => 0, 'msg' => '节点二缓存未更新', 'errors' => []], 200),
+    ]);
+    stubDnsResolver(txt: ['tok']);
+
+    $result = VerifyUtil::verifyValidation([[
+        'domain' => 'example.com',
+        'method' => 'txt',
+        'host' => '_dnsauth.example.com',
+        'value' => 'tok',
+    ]]);
+
+    expect($result['code'])->toBe(1)
+        ->and($result['msg'])->toBe('本地 DCV 验证通过')
+        ->and($result['dns_tools_down'] ?? false)->toBeFalse();
+});
+
+// dnsTools 有应答且本地也未命中 → 保留远端未通过结果，不打 infra-down 标记。
+test('dnsTools 均未通过且本地未命中 → code=0 无 dns_tools_down 标记', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'dnstool1.test/*' => Http::response(['code' => 0, 'msg' => '节点一未就绪', 'errors' => []], 200),
+        'dnstool2.test/*' => Http::response(['code' => 0, 'msg' => '节点二未就绪', 'errors' => []], 200),
+    ]);
+    stubDnsResolver(txt: []);
+
+    $result = VerifyUtil::verifyValidation([[
+        'domain' => 'example.com',
+        'method' => 'txt',
+        'host' => '_dnsauth.example.com',
+        'value' => 'tok',
+    ]]);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['msg'])->toBe('节点二未就绪')
+        ->and($result['dns_tools_down'] ?? false)->toBeFalse();
+});
+
+test('dnsTools 未配置时直接本地检测且不标记基础设施故障', function () {
+    setDnsToolsUrls([]);
+    Http::preventStrayRequests();
+    Http::fake();
+
+    $mock = Mockery::mock(DnsResolver::class);
+    $mock->shouldReceive('txt')
+        ->twice()
+        ->with('_dnsauth.example.com')
+        ->andReturn(['expected-token']);
+    app()->instance(DnsResolver::class, $mock);
+
+    $validation = [
+        ['domain' => 'example.com', 'method' => 'txt', 'host' => '_dnsauth.example.com', 'value' => 'expected-token'],
+    ];
+
+    $first = VerifyUtil::verifyValidation($validation);
+    $second = VerifyUtil::verifyValidation($validation);
+
+    expect($first['code'])->toBe(1)
+        ->and($first['msg'])->toBe('本地 DCV 验证通过')
+        ->and($first['dns_tools_down'] ?? false)->toBeFalse()
+        ->and($second['code'])->toBe(1)
+        ->and($second['dns_tools_down'] ?? false)->toBeFalse();
+    Http::assertNothingSent();
+});
+
+test('dnsTools 未配置且本地未命中时正常返回待验证而非节点故障', function () {
+    setDnsToolsUrls([]);
+    Http::preventStrayRequests();
+    Http::fake();
+    stubDnsResolver(txt: []);
+
+    $result = VerifyUtil::verifyValidation([[
+        'domain' => 'example.com',
+        'method' => 'txt',
+        'host' => '_dnsauth.example.com',
+        'value' => 'expected-token',
+    ]]);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['msg'])->toBe('本地 DCV 验证未通过')
+        ->and($result['dns_tools_down'] ?? false)->toBeFalse();
+    Http::assertNothingSent();
 });
 
 // 5. file 方法由本机直接读取验证文件，dnsTools 全挂时仍可通过
@@ -135,6 +225,64 @@ test('dnsTools 全挂 + 本地文件内容命中 → code=1 + dns_tools_down', f
 
     expect($result['code'])->toBe(1)
         ->and($result['dns_tools_down'] ?? false)->toBeTrue();
+});
+
+test('未配置 dnsTools 时文件检测每次重新请求且发送禁用缓存请求头', function () {
+    setDnsToolsUrls([]);
+    Http::preventStrayRequests();
+    $requestCount = 0;
+    Http::fake([
+        'http://93.184.216.34/*' => function () use (&$requestCount) {
+            $requestCount++;
+
+            return Http::response("line-1\nline-2\n");
+        },
+    ]);
+
+    $validation = [[
+        'domain' => '93.184.216.34',
+        'method' => 'http',
+        'content' => "line-1\nline-2\n",
+        'link' => 'http://93.184.216.34/.well-known/pki-validation/x.txt',
+    ]];
+
+    $first = VerifyUtil::verifyValidation($validation);
+    $second = VerifyUtil::verifyValidation($validation);
+
+    expect($first['code'])->toBe(1)
+        ->and($second['code'])->toBe(1)
+        ->and($requestCount)->toBe(2);
+    Http::assertSent(fn (Request $request) => $request->hasHeader('Cache-Control', 'no-cache, no-store, max-age=0')
+        && $request->hasHeader('Pragma', 'no-cache'));
+});
+
+test('本地文件检测有界读取会拼接完整分块响应', function () {
+    $chunks = ['line-', "1\nline", "-2\n"];
+    $stream = new PumpStream(function () use (&$chunks) {
+        return array_shift($chunks) ?? false;
+    });
+    $method = new ReflectionMethod(VerifyUtil::class, 'readLimitedBody');
+
+    expect($method->invoke(null, $stream, 8192))->toBe("line-1\nline-2\n");
+});
+
+test('本地文件检测拒绝超过 8 KiB 的响应', function () {
+    setDnsToolsUrls([]);
+    Http::preventStrayRequests();
+    $oversized = str_repeat('a', 8193);
+    Http::fake([
+        'https://93.184.216.34/*' => Http::response($oversized),
+    ]);
+
+    $result = VerifyUtil::verifyValidation([[
+        'domain' => '93.184.216.34',
+        'method' => 'https',
+        'content' => $oversized,
+        'link' => 'https://93.184.216.34/.well-known/pki-validation/x.txt',
+    ]]);
+
+    expect($result['code'])->toBe(0)
+        ->and($result['dns_tools_down'] ?? false)->toBeFalse();
 });
 
 test('dnsTools 全挂 + 本地文件内容不匹配 → code=0 + dns_tools_down', function () {

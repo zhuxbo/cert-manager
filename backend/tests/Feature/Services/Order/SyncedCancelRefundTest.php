@@ -136,11 +136,23 @@ test('#2 开关开 + 上游 cancelled + action=new + cert.status=processing：�
     createOrderTransaction($user->id, $order->id, '-100.00');
     mockOrderApiGet('cancelled');
 
+    $lockedTaskTypes = [];
+    DB::listen(function ($query) use (&$lockedTaskTypes) {
+        $sql = strtolower($query->sql);
+        if (str_contains($sql, 'from `tasks`') && str_contains($sql, 'for update')) {
+            $lockedTaskTypes = array_values(array_intersect(
+                ['commit', 'sync', 'revalidate'],
+                array_map('strval', $query->bindings),
+            ));
+        }
+    });
+
     syncOrder(app(Action::class), $order->id);
 
     expect($order->latestCert()->first()->status)->toBe('cancelled');
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
     expect($user->refresh()->balance)->toBe('100.00');
+    expect($lockedTaskTypes)->toBe(['commit', 'sync', 'revalidate']);
 });
 
 test('#3 开关开 + 上游 cancelled + action=new + cert.status=approving：触发退款', function () {
@@ -745,9 +757,12 @@ test('#15 force=true 退款分支静默返回：V1/V2 get 直调 sync(force) 不
 // ==================== ③ 通用写回通知收口（refundForSyncedCancel 分支未覆盖的路径）====================
 
 test('#16 开关关 + 上游 cancelled + renew 有前驱：通用写回落 cancelled + 发 cert_renew_cancelled（无退款是开关语义）', function () {
-    // ③ 默认部署常态（autoRefundOnSync 种子默认 false）：renew 上游取消经 sync 通用写回落 cancelled，
+    // ③ 默认部署常态（隐藏设置 autoRefundOnSync 缺失即 false）：renew 上游取消经 sync 通用写回落 cancelled，
     // 前驱保持 renewed 脱离 cert_expire/AutoRenew/cert_renew_stalled 三重监控。补一次性通知止血。
-    // 开关关（beforeEach 默认 false，不设 true）。
+    // 删除测试预置项，直接覆盖默认部署下该隐藏设置不存在的场景。
+    Setting::where('key', 'autoRefundOnSync')->firstOrFail()->delete();
+    Setting::clearAllCache();
+
     $user = $this->createTestUser(['balance' => '80.00']);
     $product = $this->createTestProduct(['refund_period' => 30]);
 

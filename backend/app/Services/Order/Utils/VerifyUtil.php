@@ -13,6 +13,7 @@ use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Psr\Http\Message\StreamInterface;
 
 class VerifyUtil
 {
@@ -25,8 +26,14 @@ class VerifyUtil
     {
         $urls = get_system_setting('site', 'dnsTools');
 
-        // 确保返回数组格式
-        return is_array($urls) ? $urls : [];
+        if (! is_array($urls)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            fn (mixed $url): ?string => is_string($url) && trim($url) !== '' ? trim($url) : null,
+            $urls,
+        )));
     }
 
     /**
@@ -131,24 +138,26 @@ class VerifyUtil
      * 迁移非行为等价，按逐差异对齐：Guzzle 默认对 4xx/5xx 抛异常 → 故障转移，Laravel Http 默认不抛，
      * 故循环内显式 `$response->failed()` continue，保「错误状态码也转移」；连接级异常改 catch ConnectionException。
      *
-     * dnsTools 全部节点不可达时在本机兜底：
-     *  - 本地命中期望值 → code=1（走既有 revalidate 自愈），并带 dns_tools_down（infra 挂，供 sync 安全网计数）。
+     * dnsTools 可选：未配置时直接在本机检测；已配置时依次尝试各节点，均未通过再回落本机。
+     * 本机检测不缓存结果，每次调用都重新查询。
+     *
+     * dnsTools 节点均未通过时在本机兜底：
+     *  - 本地命中期望值 → code=1（走既有 revalidate 自愈）；仅全部节点不可达时带 dns_tools_down。
      *  - TXT/CNAME 经 DnsResolver 核对；file/http/https 直接读取公网验证文件并核对内容。
      *  - 不可判定（含邮箱验证、本地未命中或外联失败）→ code=0 + dns_tools_down=true（触发连续 N 建 sync 安全网）。
-     * dnsTools 有节点应答（成功或 DCV 失败）时不打 dns_tools_down 标记（DNS 确实未就绪，维持现状）。
+     * dnsTools 有节点应答时不打 dns_tools_down 标记；本地也未命中时保留最后一个远端失败诊断。
      */
     public static function verifyValidation(array $validation): array
     {
         $urls = self::getDnsToolsUrls();
 
-        // 检查是否有可用的 DNS Tools URLs
+        // dnsTools 是可选增强渠道；未配置是正常的纯本地模式，不应记录故障或触发 infra-down 安全网。
         if (empty($urls)) {
-            Log::error('DNS Tools URLs 未配置');
-
-            return self::localFallbackResult($validation, 'DNS Tools URLs 未配置，无法进行域名验证');
+            return self::localValidationResult($validation, '本地 DCV 验证未通过');
         }
 
         $lastError = '';
+        $lastRemoteFailure = null;
         foreach ($urls as $url) {
             try {
                 $response = Http::withoutVerifying() // 关闭 SSL 证书验证（对齐原 verify:false）
@@ -167,19 +176,25 @@ class VerifyUtil
 
                 $result = $response->json();
 
-                if ($result === null) {
+                if (! is_array($result)) {
                     Log::error('DNS Tools API 返回无效 JSON', ['url' => $url]);
                     $lastError = 'API 返回无效数据';
 
                     continue;
                 }
 
-                // dnsTools 节点有应答（成功或 DCV 失败）→ 不打 infra-down 标记
-                return [
+                $normalizedResult = [
                     'code' => $result['code'] ?? 0,
                     'msg' => $result['msg'] ?? '',
                     'errors' => $result['errors'] ?? [],
                 ];
+
+                if ($normalizedResult['code'] == 1) {
+                    return $normalizedResult;
+                }
+
+                // 该节点有应答但可能仍受 DNS 负缓存影响：记录结果后继续轮询其余节点，最后用本地解析复核。
+                $lastRemoteFailure = $normalizedResult;
             } catch (ConnectionException $e) {
                 // 仅连接级异常做节点故障转移；其余罕见 Guzzle 异常（如重定向环）逸出本方法，
                 // 交 ValidateCommand 外层 catch(Throwable) 兜底：该单本轮跳过、next_check_at 不前移、下轮重试
@@ -193,26 +208,50 @@ class VerifyUtil
             }
         }
 
-        // 全部节点不可达 → 本地 DCV 兜底 + infra-down 信号
-        return self::localFallbackResult($validation, 'DNS Tools API 请求失败: '.$lastError);
+        $localResult = self::localValidationResult(
+            $validation,
+            'DNS Tools API 请求失败: '.$lastError,
+            dnsToolsDown: $lastRemoteFailure === null,
+        );
+
+        if ($localResult['code'] == 1 || $lastRemoteFailure === null) {
+            return $localResult;
+        }
+
+        // 至少一个节点给出明确未通过且本地也未命中：保留远端诊断，不标记基础设施故障。
+        return $lastRemoteFailure;
     }
 
     /**
-     * dnsTools 全挂时的本地兜底结果（F2-1）。均带 dns_tools_down=true 供 sync 安全网计数。
+     * 本地 DCV 检测结果。仅已配置 dnsTools 且全部节点不可达时附带 dns_tools_down=true，
+     * 供 sync 安全网计数；未配置时是正常的纯本地模式。
      *
-     * @param  string  $downMsg  不可判定时的错误文案
+     * @param  string  $failureMsg  不可判定时的错误文案
      */
-    private static function localFallbackResult(array $validation, string $downMsg): array
-    {
+    private static function localValidationResult(
+        array $validation,
+        string $failureMsg,
+        bool $dnsToolsDown = false,
+    ): array {
         $local = self::verifyValidationLocal($validation);
 
         if ($local === true) {
             // 本地 DNS 确认有效 → 走既有 revalidate 自愈（CA 权威复核，本地 false-pass 仅多一次 revalidate、不误签）
-            return ['code' => 1, 'msg' => '本地 DCV 兜底验证通过', 'errors' => [], 'dns_tools_down' => true];
+            $result = [
+                'code' => 1,
+                'msg' => $dnsToolsDown ? '本地 DCV 兜底验证通过' : '本地 DCV 验证通过',
+                'errors' => [],
+            ];
+        } else {
+            // 不可判定（含邮箱验证、本地未命中或外联失败）→ code=0，等待下轮或 CA 同步复核。
+            $result = ['code' => 0, 'msg' => $failureMsg];
         }
 
-        // 不可判定（含邮箱验证、本地未命中或外联失败）→ code=0 + infra-down 标记
-        return ['code' => 0, 'msg' => $downMsg, 'dns_tools_down' => true];
+        if ($dnsToolsDown) {
+            $result['dns_tools_down'] = true;
+        }
+
+        return $result;
     }
 
     /**
@@ -328,6 +367,10 @@ class VerifyUtil
                 $response = Http::withoutVerifying()
                     ->connectTimeout(3)
                     ->timeout(5)
+                    ->withHeaders([
+                        'Cache-Control' => 'no-cache, no-store, max-age=0',
+                        'Pragma' => 'no-cache',
+                    ])
                     ->withOptions($requestOptions)
                     ->get($url);
 
@@ -335,8 +378,8 @@ class VerifyUtil
                     continue;
                 }
 
-                $actual = $response->toPsrResponse()->getBody()->read(8193);
-                if (strlen($actual) > 8192) {
+                $actual = self::readLimitedBody($response->toPsrResponse()->getBody(), 8192);
+                if ($actual === null) {
                     continue;
                 }
 
@@ -355,6 +398,29 @@ class VerifyUtil
         }
 
         return false;
+    }
+
+    /**
+     * 有界读取流式响应。单次 StreamInterface::read() 允许返回少于请求长度的数据，
+     * 必须循环到 EOF；超过上限返回 null，避免为验证文件无界占用内存。
+     */
+    private static function readLimitedBody(StreamInterface $body, int $limit): ?string
+    {
+        $content = '';
+
+        while (! $body->eof()) {
+            $chunk = $body->read(min(8192, $limit + 1 - strlen($content)));
+            if ($chunk === '') {
+                break;
+            }
+
+            $content .= $chunk;
+            if (strlen($content) > $limit) {
+                return null;
+            }
+        }
+
+        return $content;
     }
 
     /**

@@ -614,18 +614,14 @@ class Action
             $order->period_till = max($data['expires_at'], $periodTill);
         }
 
-        // 状态是否变化（事务外粗筛，仅用于决定是否进入 refundForSyncedCancel 分支；
-        // 该分支自身锁 order 行并在锁内二次校验四条件，外层粗筛不会造成误退款）
-        $hasStatusChanged = isset($data['status']) && $data['status'] !== $cert->status;
-
         // 同步退款分支：上游 cancelled + 过渡态 + new/renew/reissue + 开关开 → 专用 helper 处理退款。
         // reissue 走增量退款口径（refundForSyncedCancel 内按 action 分流，对齐 cancelLocked：只退当次增量、
-        // 前驱不恢复保持 reissued），避免 getCancelTransaction 求和超退原始全额。
-        if ($hasStatusChanged
-            && ($data['status'] ?? null) === 'cancelled'
+        // 前驱不恢复保持 reissued），避免 getCancelTransaction 求和超退原始全额。上游 cancelled 与本地
+        // 三个过渡态天然保证状态已变化，无需额外维护等价的 hasStatusChanged 粗筛。
+        if (($data['status'] ?? null) === 'cancelled'
             && in_array($cert->status, ['processing', 'approving', 'cancelling'])
             && in_array($cert->action, ['new', 'renew', 'reissue'])
-            && get_system_setting('site', 'autoRefundOnSync')
+            && get_system_setting('site', 'autoRefundOnSync') === true
         ) {
             // helper 内自锁 order 行完成 cert.update / order.save / callback / deleteTask 所有副作用，提前结束 sync
             $this->refundForSyncedCancel($order, $data, $suppressCallback);
@@ -1081,8 +1077,9 @@ class Action
                 in_array($lockedStatus, ['processing', 'approving', 'active'])
                 || $this->error('订单状态不是可取消状态');
 
-                $refundPeriod = $product->refund_period ?? 0;
-                $order->created_at->timestamp < time() - 86400 * $refundPeriod
+                // products.refund_period 是非空列（默认 30），直接使用避免掩盖非法模型状态。
+                $refundPeriod = $product->refund_period;
+                $order->created_at->timestamp < now()->timestamp - 86400 * $refundPeriod
                 && $this->error("订单已超过 $refundPeriod 天不能取消");
 
                 // 2分钟后取消
@@ -1220,11 +1217,11 @@ class Action
             $product = FindUtil::Product($order->product_id);
 
             // 退款期严格以 created_at 计算，超过则不退款（卡 cancelling 为预期行为）
-            $order->created_at->timestamp < time() - 86400 * $product->refund_period
+            $order->created_at->timestamp < now()->timestamp - 86400 * $product->refund_period
             && $this->error('订单已超过'.$product->refund_period.'天');
 
             $order->latestCert->status === 'cancelled' && $this->error('订单已取消');
-            $order->latestCert->status != 'cancelling' && $this->error('订单状态不是取消中');
+            $order->latestCert->status !== 'cancelling' && $this->error('订单状态不是取消中');
 
             $cert = $order->latestCert;
             $isReissue = $cert->action === 'reissue';
@@ -1398,7 +1395,7 @@ class Action
             if (! in_array($cert->action, ['new', 'renew', 'reissue'])) {
                 return;
             }
-            if (! get_system_setting('site', 'autoRefundOnSync')) {
+            if (get_system_setting('site', 'autoRefundOnSync') !== true) {
                 return;
             }
 

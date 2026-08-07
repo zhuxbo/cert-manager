@@ -841,6 +841,7 @@ test('markRenewed 只允许精确的到期前三十天窗口', function (bool $i
 ]);
 
 test('cancel 退款期在精确边界内允许而早一秒拒绝', function (bool $insideWindow) {
+    Carbon::setTestNow('2026-07-31 12:00:00');
     [$order, $cert, $product, $user] = orderMutationFixture('cancelling', [], [
         'amount' => '123.45',
         'action' => 'new',
@@ -863,10 +864,7 @@ test('cancel 退款期在精确边界内允许而早一秒拒绝', function (boo
     }
     injectOrderMutationApi($this->orderMutationAction, $api);
     Order::where('id', $order->id)->update([
-        'created_at' => Carbon::createFromTimestamp(
-            time() - 86400 * 30 - ($insideWindow ? 0 : 1),
-            config('app.timezone'),
-        ),
+        'created_at' => now()->subDays(30)->subSecond($insideWindow ? 0 : 1),
     ]);
 
     if ($insideWindow) {
@@ -888,14 +886,12 @@ test('cancel 退款期在精确边界内允许而早一秒拒绝', function (boo
 ]);
 
 test('commitCancel 退款期在精确边界内创建取消任务而早一秒拒绝', function (bool $insideWindow) {
+    Carbon::setTestNow('2026-07-31 12:00:00');
     [$order, $cert, $product] = orderMutationFixture('active', [], [], [
         'refund_period' => 30,
     ]);
     Order::where('id', $order->id)->update([
-        'created_at' => Carbon::createFromTimestamp(
-            time() - 86400 * 30 - ($insideWindow ? 0 : 1),
-            config('app.timezone'),
-        ),
+        'created_at' => now()->subDays(30)->subSecond($insideWindow ? 0 : 1),
     ]);
 
     if ($insideWindow) {

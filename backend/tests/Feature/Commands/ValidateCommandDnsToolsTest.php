@@ -102,6 +102,9 @@ test('dnsTools 全挂 + 本地不可判定 → 连续 3 轮后建 sync 任务，
 // 护栏：dnsTools 应答但校验失败（code=0 无 infra-down）→ 不建 sync、不计数
 test('dnsTools 应答但校验失败 → 多轮也不建 sync（回归护栏）', function () {
     Http::fake(['dnstool1.test/*' => Http::response(['code' => 0, 'msg' => 'DNS 未就绪', 'errors' => []], 200)]);
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('txt')->times(4)->andReturn([]);
+    app()->instance(DnsResolver::class, $resolver);
 
     $order = makeProcessingTxtOrder();
 
@@ -116,6 +119,33 @@ test('dnsTools 应答但校验失败 → 多轮也不建 sync（回归护栏）'
     $runDue();
 
     expect(Task::where('order_id', $order->id)->where('action', 'sync')->exists())->toBeFalse();
+});
+
+test('dnsTools 未配置且本地未命中 → 不按节点故障累计 sync 安全网', function () {
+    $siteGroup = SettingGroup::where('name', 'site')->firstOrFail();
+    $dnsTools = Setting::where('group_id', $siteGroup->id)
+        ->where('key', 'dnsTools')
+        ->firstOrFail();
+    $dnsTools->value = [];
+    $dnsTools->save();
+    Setting::clearGroupCache($siteGroup->id);
+    Cache::flush();
+    Http::preventStrayRequests();
+
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('txt')->times(4)->andReturn([]);
+    app()->instance(DnsResolver::class, $resolver);
+
+    $order = makeProcessingTxtOrder();
+
+    for ($i = 0; $i < 4; $i++) {
+        DomainValidationRecord::where('order_id', $order->id)->update(['next_check_at' => now()->subMinute()]);
+        $this->artisan('schedule:validate')->assertSuccessful();
+    }
+
+    expect(Task::where('order_id', $order->id)->where('action', 'sync')->exists())->toBeFalse()
+        ->and(Cache::has("validate:dnstools_down:{$order->id}"))->toBeFalse();
+    Http::assertNothingSent();
 });
 
 test('dnsTools 持续全挂也不发送管理员告警', function () {
