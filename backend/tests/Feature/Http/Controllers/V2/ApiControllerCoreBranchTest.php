@@ -5,6 +5,7 @@ use App\Http\Controllers\V2\ApiController;
 use App\Models\Order;
 use App\Services\Order\Action;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Tests\Traits\CreatesTestData;
 
@@ -65,4 +66,23 @@ test('v2 cancel 对已取消订单直接返回成功（幂等）', function () {
     $response = captureApiResponse(fn () => $controller->cancel());
 
     expect($response['code'])->toBe(1);
+});
+
+test('v2 cancel 精确退款期边界允许取消', function () {
+    Carbon::setTestNow('2026-08-07 12:00:00');
+
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct(['refund_period' => 30]);
+    $order = $this->createTestOrder($user, $product);
+    $order->forceFill(['created_at' => now()->subDays(30)])->saveQuietly();
+    $this->createTestCert($order, ['status' => 'active']);
+
+    $mockAction = Mockery::mock(Action::class);
+    $mockAction->shouldReceive('deleteTask')->once()->with($order->id, 'sync,revalidate,cancel');
+    $mockAction->shouldReceive('cancel')->once()->with($order->id);
+
+    $controller = buildV2Controller(['order_id' => $order->id], 'POST', $mockAction, $user->id);
+    $controller->cancel();
+
+    expect($order->latestCert()->first()->status)->toBe('cancelling');
 });

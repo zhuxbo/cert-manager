@@ -284,6 +284,76 @@ test('applyBackendUpgrade 动态发现顶层目录（新增目录不再被白名
     }
 });
 
+test('applyBackendUpgrade 同步后补齐核心运行目录且保留 storage 数据', function () {
+    $sourceDir = "$this->testDir/pkg/backend";
+    File::makeDirectory("$sourceDir/bootstrap", 0755, true);
+    File::put("$sourceDir/bootstrap/app.php", '<?php // bootstrap marker');
+
+    $installDir = "$this->testDir/install";
+    File::makeDirectory("$installDir/bootstrap/cache", 0755, true);
+    File::makeDirectory("$installDir/storage/app/private", 0755, true);
+    File::put("$installDir/storage/app/private/keep.txt", 'runtime-data');
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        $directories = [
+            "$installDir/bootstrap/cache",
+            "$installDir/storage",
+            "$installDir/storage/logs",
+            "$installDir/storage/framework",
+            "$installDir/storage/framework/cache/data",
+            "$installDir/storage/framework/sessions",
+            "$installDir/storage/framework/views",
+            "$installDir/storage/app/public",
+            "$installDir/storage/app/private",
+            dirname($installDir).'/backups/upgrades',
+        ];
+        foreach ($directories as $directory) {
+            expect($directory)->toBeDirectory()
+                ->and(is_writable($directory))->toBeTrue();
+        }
+        expect(File::get("$installDir/storage/app/private/keep.txt"))->toBe('runtime-data');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 核心运行目录不可写时立即报错', function () {
+    $sourceDir = "$this->testDir/pkg-unwritable/backend";
+    File::makeDirectory("$sourceDir/bootstrap", 0755, true);
+    File::put("$sourceDir/bootstrap/app.php", '<?php // bootstrap marker');
+
+    $installDir = "$this->testDir/install-unwritable";
+    File::makeDirectory($installDir, 0755, true);
+    $blockedPath = "$installDir/storage/framework/views";
+    $extractor = new class extends PackageExtractor
+    {
+        public string $blockedPath = '';
+
+        protected function isWritableDirectory(string $directory): bool
+        {
+            return $directory !== $this->blockedPath && parent::isWritableDirectory($directory);
+        }
+    };
+    $extractor->blockedPath = $blockedPath;
+
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($extractor))->getMethod('applyBackendUpgrade');
+
+        expect(fn () => $method->invoke($extractor, $sourceDir))
+            ->toThrow(RuntimeException::class, "运行目录不可写: $blockedPath");
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
 test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态、空目录）', function () {
     $sourceDir = "$this->testDir/pkg/backend";
     File::makeDirectory("$sourceDir/app", 0755, true);

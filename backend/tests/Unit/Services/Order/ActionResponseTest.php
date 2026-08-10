@@ -17,7 +17,6 @@ use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -221,65 +220,6 @@ test('importProductItem new 精确准备必填默认值并持久化成本', func
     ])->and($product->cost)->toBe(['price' => ['12' => '77.00']]);
 });
 
-test('importProduct resilient 精确收集单产品错误并记录可定位告警', function () {
-    $api = Mockery::mock(Api::class);
-    $api->shouldReceive('getProducts')
-        ->once()
-        ->with('mutation-import', '', '')
-        ->andReturn(['code' => 1, 'data' => [['code' => '']]]);
-    injectOrderMutationApi($this->orderMutationAction, $api);
-    Log::spy();
-
-    $this->orderMutationAction->importProduct('mutation-import', '', '', 'update', true);
-
-    expect($this->orderMutationAction->getImportIssues())->toBe(['产品 code 不能为空']);
-    Log::shouldHaveReceived('warning')
-        ->once()
-        ->with('[import_product] 单产品同步失败，跳过', [
-            'source' => 'mutation-import',
-            'code' => '',
-            'msg' => '产品 code 不能为空',
-        ]);
-});
-
-test('importProduct resilient 对缺失 code 的脏产品使用空字符串日志占位', function () {
-    $api = Mockery::mock(Api::class);
-    $api->shouldReceive('getProducts')
-        ->once()
-        ->with('mutation-import', '', '')
-        ->andReturn(['code' => 1, 'data' => [[]]]);
-    injectOrderMutationApi($this->orderMutationAction, $api);
-    Log::spy();
-
-    $this->orderMutationAction->importProduct('mutation-import', '', '', 'update', true);
-
-    expect($this->orderMutationAction->getImportIssues())->toBe(['产品 code 不能为空']);
-    Log::shouldHaveReceived('warning')
-        ->once()
-        ->with('[import_product] 单产品同步失败，跳过', [
-            'source' => 'mutation-import',
-            'code' => '',
-            'msg' => '产品 code 不能为空',
-        ]);
-});
-
-test('importProduct resilient 空来源结果必须记录可定位告警', function () {
-    $api = Mockery::mock(Api::class);
-    $api->shouldReceive('getProducts')
-        ->once()
-        ->with('mutation-import', '', '')
-        ->andReturn(['code' => 1, 'data' => []]);
-    injectOrderMutationApi($this->orderMutationAction, $api);
-    Log::spy();
-
-    $this->orderMutationAction->importProduct('mutation-import', '', '', 'update', true);
-
-    expect($this->orderMutationAction->getImportIssues())->toBe([]);
-    Log::shouldHaveReceived('warning')
-        ->once()
-        ->with('[import_product] 未获取到产品，跳过来源', ['source' => 'mutation-import']);
-});
-
 test('importProduct 必须同时满足成功码和非空数据才导入', function () {
     $product = Product::factory()->create([
         'source' => 'mutation-import',
@@ -296,7 +236,10 @@ test('importProduct 必须同时满足成功码和非空数据才导入', functi
         ]);
     injectOrderMutationApi($this->orderMutationAction, $api);
 
-    $this->orderMutationAction->importProduct('mutation-import', '', '', 'update', true);
+    orderMutationError(
+        fn () => $this->orderMutationAction->importProduct('mutation-import', '', '', 'update'),
+        '没有获取到产品',
+    );
 
     expect($product->fresh()->weight)->toBe(0);
 });
@@ -898,6 +841,7 @@ test('markRenewed 只允许精确的到期前三十天窗口', function (bool $i
 ]);
 
 test('cancel 退款期在精确边界内允许而早一秒拒绝', function (bool $insideWindow) {
+    Carbon::setTestNow('2026-07-31 12:00:00');
     [$order, $cert, $product, $user] = orderMutationFixture('cancelling', [], [
         'amount' => '123.45',
         'action' => 'new',
@@ -920,10 +864,7 @@ test('cancel 退款期在精确边界内允许而早一秒拒绝', function (boo
     }
     injectOrderMutationApi($this->orderMutationAction, $api);
     Order::where('id', $order->id)->update([
-        'created_at' => Carbon::createFromTimestamp(
-            time() - 86400 * 30 - ($insideWindow ? 0 : 1),
-            config('app.timezone'),
-        ),
+        'created_at' => now()->subDays(30)->subSecond($insideWindow ? 0 : 1),
     ]);
 
     if ($insideWindow) {
@@ -945,14 +886,12 @@ test('cancel 退款期在精确边界内允许而早一秒拒绝', function (boo
 ]);
 
 test('commitCancel 退款期在精确边界内创建取消任务而早一秒拒绝', function (bool $insideWindow) {
+    Carbon::setTestNow('2026-07-31 12:00:00');
     [$order, $cert, $product] = orderMutationFixture('active', [], [], [
         'refund_period' => 30,
     ]);
     Order::where('id', $order->id)->update([
-        'created_at' => Carbon::createFromTimestamp(
-            time() - 86400 * 30 - ($insideWindow ? 0 : 1),
-            config('app.timezone'),
-        ),
+        'created_at' => now()->subDays(30)->subSecond($insideWindow ? 0 : 1),
     ]);
 
     if ($insideWindow) {

@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_成功清键异常不影响上报响应且成功记录保留",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Deploy\\OrderControllerTest::__pest_evaluable_callback_成功正常入表",
     "version": "1.0.0",
     "calls": [
         {

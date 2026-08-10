@@ -113,9 +113,10 @@ fi
 reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "环境配置文件" '/backend/\.env($|\.)'
 
 # 运行数据、凭据、备份与缓存目录可以保留空目录，但绝不能携带文件。
-FULL_RUNTIME_PATTERN='/backend/storage/(app|backups|databak|debugbar|framework/(cache|sessions|testing|views)|logs|pail|pay|temp-certs|upgrades)/|/backend/storage/[^/]+\.(crt|der|jks|key|pem|pfx)$|/backend/bootstrap/cache/'
+FULL_RUNTIME_PATTERN='/backend/storage/(app|backups|databak|debugbar|framework/(cache|sessions|testing|views)|logs|pail|pay|temp-certs|upgrades)/|/backend/storage/[^/]+\.(crt|der|jks|key|pem|pfx)$|/backend/bootstrap/cache/|/backups/'
 reject_file_matches "$FULL_PACKAGE" "$FULL_LIST" "运行数据、凭据、备份或缓存文件" "$FULL_RUNTIME_PATTERN"
 reject_file_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "storage、bootstrap/cache 或 vendor 文件" '/backend/(storage|bootstrap/cache|vendor)/'
+reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "storage 目录项" '/backend/storage(/|$)'
 reject_file_matches "$FULL_PACKAGE" "$FULL_LIST" "vendor 文件" '/backend/vendor/'
 
 reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "仅安装期文件" '/backend/public/install\.php$|/backend/public/install-assets/|/frontend/user/(logo\.svg|qrcode\.png)$'
@@ -124,9 +125,19 @@ for required in \
     full/backend/.ssl-manager \
     full/backend/.env.example \
     full/backend/artisan \
+    full/backend/bootstrap/cache/ \
     full/backend/composer.json \
     full/backend/composer.lock \
+    full/backend/storage/ \
+    full/backend/storage/app/private/ \
+    full/backend/storage/app/public/ \
+    full/backend/storage/framework/ \
+    full/backend/storage/framework/cache/data/ \
+    full/backend/storage/framework/sessions/ \
+    full/backend/storage/framework/views/ \
+    full/backend/storage/logs/ \
     full/backend/storage/domain-rules/public_suffix_list.dat \
+    full/backups/upgrades/ \
     full/frontend/admin/index.html \
     full/frontend/user/index.html \
     full/frontend/user/login.svg \
@@ -144,6 +155,7 @@ done
 for required in \
     upgrade/backend/.ssl-manager \
     upgrade/backend/artisan \
+    upgrade/backend/bootstrap/cache/ \
     upgrade/backend/composer.json \
     upgrade/backend/composer.lock \
     upgrade/frontend/admin/index.html \

@@ -104,10 +104,9 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 - **锁序 task→acme（防 acme→task 反序死锁）**：上游响应终态判据用**事务外 HTTP 响应快照**（`$upstreamTerminal`，非本地行状态）决定是否先 `Task::lockForMutation($acmeId, ['cancel_acme'])`，再锁 acme 行。高频 `get` 常态 active 零 task 锁开销（仅上游终态才锁 cancel_acme，与执行条件对齐、无冗余锁）。
 - **终态判据前置 + 读写同行**：锁内重取 acme 行自身判 `status===cancelling && $upstreamTerminal`（ACME 无 latestCert 切换，天然满足「读=写同一行」红线）→ 预检 `acme_cancel` 未存在则 `refund` + 清孤儿 cancel_acme 任务（executing/stopped 二态）+ 写终态（`cancelled_at ??= now()`；有意不合并 vendor_id/period 等非状态字段，终态元数据以取消时刻为准）。
-- **N1（MUST-FIX）并发错误 rethrow 不告警**：`refund` catch 内，并发错误（`DeadlockException` 1213 / `MutationBusyException` 1205 / `causedByConcurrencyError`）**直接 rethrow、不置告警标记**，由 `runTaskMutationTransaction`（attempts=3）静默重试——**重试期零告警红线**（见 order-fund.md）。仅「终态失败」（非并发）才置 `$refundAlert`，延后到事务外一次性 SystemAlert `acme_refund`（事务已回滚、置键立即可达）。`Acme\Action` 因此 `use DetectsConcurrencyErrors`；`refund` 由 `private` 改 `protected` 供测试 Mockery 注入并发/终态异常。
-- **告警覆盖边界**：仅保证「refund 自身终态异常且重试耗尽」即时可见；其余回滚形态（refund 成功后 update 死锁耗尽）无专项告警，由 `finance:audit` daily 全量对账 + TaskJob sync failed 落库兜底。告警自身抛异常不得替换原始 `$e`（否则 TaskJob 收到的异常类型变化、破坏并发错误 release 判定）。
+- **退款失败治理与传统订单对齐**：`refund` 异常直接从事务逸出，退款流水、余额和 ACME 状态整体回滚；并发错误由 `runTaskMutationTransaction`（attempts=3）按框架规则静默重试。退款失败不发送 ACME 专属 `SystemAlert`；异步取消/同步最终失败统一走 `TaskJob::failed` 的 `task_failed` 管理员通知，并由每天 03:00 的 `finance:audit` 全量账本对账兜底。
 
-**测试**：`ReconcileAcmeCommandTest`（T6 两段式 + maxed 不占 limit 仍告警）、`Unit/Services/Acme/ActionTest`（T7 并发错误零告警 + 终态失败事务外告警 + SQLSTATE 1213 模拟直击红线）。
+**测试**：`ReconcileAcmeCommandTest`（T6 两段式 + maxed 不占 limit 仍告警）、`Unit/Services/Acme/ActionTest`（T7 退款成功闭合、终态异常与 SQLSTATE 1213 均整体回滚）。
 
 ## 提交通道 channel
 

@@ -11,6 +11,19 @@ use ZipArchive;
 
 class PackageExtractor
 {
+    private const RUNTIME_RELATIVE_DIRECTORIES = [
+        'backend/bootstrap/cache',
+        'backend/storage',
+        'backend/storage/logs',
+        'backend/storage/framework',
+        'backend/storage/framework/cache/data',
+        'backend/storage/framework/sessions',
+        'backend/storage/framework/views',
+        'backend/storage/app/public',
+        'backend/storage/app/private',
+        'backups/upgrades',
+    ];
+
     protected string $downloadPath;
 
     public function __construct()
@@ -200,6 +213,10 @@ class PackageExtractor
             $this->syncDirectory($sourcePath, "$targetDir/$name");
         }
 
+        // bootstrap 同步会清理空目录；同时补齐存量安装可能缺失的 storage/backups 核心目录。
+        // 只创建和验写目录，不清理或覆盖任何运行数据。
+        $this->ensureRuntimeDirectories($targetDir);
+
         // 同步 vendor 目录（如果存在）
         $vendorSource = "$sourceDir/vendor";
         if (File::isDirectory($vendorSource)) {
@@ -325,6 +342,35 @@ class PackageExtractor
             File::put($filePath, $content);
             Log::info("恢复前端静态资源: $type/$file");
         }
+    }
+
+    /**
+     * 补齐 Composer、Artisan 和主要运行功能依赖的可写目录。
+     */
+    protected function ensureRuntimeDirectories(string $targetDir): void
+    {
+        foreach (self::RUNTIME_RELATIVE_DIRECTORIES as $relativeDirectory) {
+            $directory = str_starts_with($relativeDirectory, 'backend/')
+                ? $targetDir.'/'.substr($relativeDirectory, strlen('backend/'))
+                : dirname($targetDir)."/$relativeDirectory";
+            File::ensureDirectoryExists($directory, 0755, true);
+            if (! $this->isWritableDirectory($directory)) {
+                $webUser = $this->detectWebUser();
+
+                throw new RuntimeException(
+                    "运行目录不可写: {$directory}。".
+                    "请确保 Web 服务用户 ($webUser) 对该目录有写权限。"
+                );
+            }
+        }
+    }
+
+    /**
+     * 单独封装，便于在 root 测试容器中可靠覆盖不可写分支。
+     */
+    protected function isWritableDirectory(string $directory): bool
+    {
+        return is_dir($directory) && is_writable($directory);
     }
 
     /**

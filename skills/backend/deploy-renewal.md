@@ -1,8 +1,8 @@
 # 自动部署上报与签发失败记录
 
-本域主体是服务端记录与告警消噪，`auto_deploy_reports` 表结构零改动（不加列、不建新表、不给 orders 加列）。Deploy API 的请求/响应契约见下方「Deploy API 边界契约」。
+本域主体是服务端记录与小时聚合告警，`auto_deploy_reports` 表结构零改动（不加列、不建新表、不给 orders 加列）。Deploy API 的请求/响应契约见下方「Deploy API 边界契约」。
 
-**核心原则（记录全量、通知消噪）**：每次失败照常逐条入表，记录层零抑制；通知层按订单固定指纹去重，避免续签每天重试对同一问题刷屏。
+**核心原则（记录全量、通知聚合）**：每次失败照常逐条入表，记录层零抑制；失败请求不即时发信，由小时命令跨订单聚合上一个完整小时，至多发送一封管理员告警。
 
 ## 报告表用途（`auto_deploy_reports`）
 
@@ -17,25 +17,26 @@
 1. **local CSR 提交后的服务端处理失败** — `Deploy\ApiController::update()` active 分支携 CSR（`renew_mode=local`）时，服务端续费/重签处理抛 `ApiResponseException` → 自写「本地签发失败：…」行后重抛（客户端仍收到同步错误响应）。非本地路径（服务端生成 CSR）不重复留痕。
 2. **pull scheduler 自动重签失败** — `AutoRenewCommand::processOrders` catch（真实 renew/reissue 尝试异常）→ 自写「自动续费/重签失败：…」归一行。跳过类（IP/委托/缺价/余额）保持既有仅用户兜底通知语义、**不入本表**。
 
-写行 + 告警统一经 `App\Services\Order\AutoDeployReportService`（`recordServerFailure` 自写行并触发告警；`notifyFailure` 只告警；`clearFailureAlert` 成功清键；`recordServerRecovery` 重签成功恢复行）。
+服务端写行统一经 `App\Services\Order\AutoDeployReportService`（`recordServerFailure` 写失败行；`recordServerRecovery` 在纯签发失败恢复时写成功行）。客户端回调直接逐条写 `auto_deploy_reports`。告警只由 `DeployFailureReminderCommand` 的完整小时聚合产生。
 
-**恢复侧必须对称（防持续误提醒）**：`AutoRenewCommand` 同订单 reissue 成功后调 `recordServerRecovery`——仅当最后一条在案报告为 failure 时自写一行 `status=success`（ip 留空、`cert_id` 回读切换后的 `latest_cert_id`）并清去重键。否则无客户端回调的 web 订单重签恢复后「最后一条报告」永远停在 failure，`schedule:deploy-failure-reminder` 会按 TTL 持续误提醒直到订单终局。renew 成功建新单、旧订单证书翻 `renewed` 终态、提醒天然停止，不写恢复行。
+**恢复侧状态链**：`AutoRenewCommand` 同订单 reissue 成功后调 `recordServerRecovery`——仅当最后一条在案报告为 failure 时自写一行 `status=success`（ip 留空、`cert_id` 回读切换后的 `latest_cert_id`）。它用于保持报告视图的失败/恢复状态完整，不参与小时窗口内既有失败事件的撤销。renew 成功建新单、旧订单证书翻 `renewed` 终态时不写恢复行。
 
-**恢复来源门（重签成功 ≠ 部署恢复）**：最近一条**客户端上报行**（ip 非空）仍为 failure 时（含最后一条本身即客户端部署失败、以及「客户端失败 → 后叠服务端签发失败」交错形态），`recordServerRecovery` 不写恢复行、不清键——部署侧失败只能由客户端 success 回调解除，触顶（CAPPED）静默客户端正是靠 reminder 持续提醒兜底，恢复行若掩蔽它会在到期前关键窗口丢掉本机制的核心承诺。恢复行仅在纯签发侧失败（服务端自写、无未解除的客户端失败）时写入。延时 commit 尚未执行时恢复行即写：commit 终局失败由 `cert_renew_stalled` + reconcile 体系接手，不归本域。
+**恢复来源门（重签成功 ≠ 部署恢复）**：最近一条**客户端上报行**（ip 非空）仍为 failure 时（含最后一条本身即客户端部署失败、以及「客户端失败 → 后叠服务端签发失败」交错形态），`recordServerRecovery` 不写恢复行——部署侧失败只能由客户端 success 回调解除。恢复行仅在纯签发侧失败（服务端自写、无未解除的客户端失败）时写入。延时 commit 尚未执行时恢复行即写：commit 终局失败由 `cert_renew_stalled` + reconcile 体系接手，不归本域。
 
 ### scheduler 防御（与客户端过期静默对齐）
 
 - **过期防御**：`getRenewOrders`/`getReissueOrders` 加 `expires_at >= now()` 下界——证书已过期不再自动续费/重签，堵 00:00 auto-renew 早于 09:00 `ExpireCommand`（active→expired）翻转的时序缝，交人工处理。
 - **开关防御**：重签选单要求 `auto_reissue` 有效（true 或用户默认回落）——local setup 关闭 `auto_reissue`，故 local 订单天然被 scheduler 排除，不生成服务端私钥。
 
-## 告警消噪规则
+## 小时聚合告警规则
 
-任一 `status=failure` 行（不分部署/签发来源）触发一封 `SystemAlert`（category `deploy_failure`）：
+`schedule:deploy-failure-reminder` 每个整点执行，查询上一个封闭小时窗口 `[startOfHour-1h, startOfHour)` 内所有 `status=failure` 行（不分部署/签发来源）：
 
-- **per-order 固定指纹去重**：dedupeKey `deploy_failure_{order_id}` + 固定指纹 `deploy_failure`（防内容/来源 churn 击穿），TTL `config('deploy.failure_alert.dedupe_ttl_hours')` 默认 168h（7 天）。TTL 内同一订单重复失败只入表不再通知。
-- **成功清键**：部署成功回调 `clearFailureAlert` 清去重键，复发时立即再告警（healthy 分支清键，防旧键把复发静默压掉）。
-- **持续未解决提醒**：`schedule:deploy-failure-reminder`（每天 08:00）扫描「订单最新一行（MAX(id)）仍为 failure」的订单，复用同一去重键 + 固定指纹调 `notifyFailure`——由 TTL 裁决「TTL 内一封、到期仍未解决再一封」，**基于状态而非新失败行**，覆盖客户端触顶后不再上报的静默期；证书已过期或订单终态后停止提醒。
-- 一个问题完整生命周期至多数封：初次失败一封、此后每 TTL 周期一封，直到解决或订单终局。SystemAlert 本体契约见 `notification.md`。
+- **跨订单单封**：同一窗口不按订单拆信，邮件包含失败报告数、订单去重数、客户端/服务端来源分档和最多 20 个订单 ID 样本。
+- **边界稳定**：更早历史和当前未结束小时不进入本轮；整点之后写入的失败自然归下一窗口。
+- **重跑去重**：dedupeKey 固定为 `deploy_failure_hourly`，fingerprint 使用窗口起点 `deploy_failure_YYYYMMDDHH`，同一窗口命令重跑不重复发；TTL 48h 仅保存窗口指纹，下一小时指纹变化立即放行。
+- **请求链零发信**：客户端 callback 和服务端自写失败只入表，不解析管理员、不调用 `SystemAlert`，避免并发失败按订单刷屏。
+- **空窗口不发**：没有新失败报告时只输出命令日志。当前设计不对无新增报告的历史未解决问题周期重发，人工排查以自动部署记录为准。SystemAlert 本体契约见 `notification.md`。
 
 ## 报告清理（挂入现有 purge 机制）
 

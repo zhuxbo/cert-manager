@@ -226,15 +226,15 @@ test('同 user 两条失效委托也不由周巡检派发通知', function () {
     expect($state->count)->toBe(0);
 });
 
-test('熔断轮：≥5 条全 unreachable → 零落库/零删除/零通知 + SystemAlert 告警', function () {
+test('熔断轮：≥20 条全 unreachable → 零落库/零删除/零通知 + SystemAlert 告警', function () {
     $user = User::factory()->create();
     $ids = [];
-    for ($i = 0; $i < 5; $i++) {
+    for ($i = 0; $i < 20; $i++) {
         $ids[] = checkDelegationRow($user, ['zone' => "outage$i.com"])->id;
     }
 
     // 全 unreachable → 熔断；落库方法绝不被调（写库前拦截）
-    $this->delegationService->shouldReceive('probeValidity')->times(5)->andReturn('unreachable');
+    $this->delegationService->shouldReceive('probeValidity')->times(20)->andReturn('unreachable');
     $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->never();
 
     $systemAlert = Mockery::mock(SystemAlert::class);
@@ -245,8 +245,8 @@ test('熔断轮：≥5 条全 unreachable → 零落库/零删除/零通知 + Sy
                 && $dedupeKey === 'delegation_patrol_outage'
                 && $ttl === 504
                 && $fingerprint === 'patrol_outage'
-                && $details['total'] === 5
-                && $details['unreachable'] === 5;
+                && $details['total'] === 20
+                && $details['unreachable'] === 20;
         })
         ->andReturn(true);
     $systemAlert->shouldReceive('clearDedupe')->never(); // 熔断轮不清键
@@ -256,8 +256,8 @@ test('熔断轮：≥5 条全 unreachable → 零落库/零删除/零通知 + Sy
 
     $this->artisan('delegation:check')->assertSuccessful();
 
-    // 零删除（5 条全在）+ 零通知
-    expect(CnameDelegation::whereIn('id', $ids)->count())->toBe(5)
+    // 零删除（20 条全在）+ 零通知
+    expect(CnameDelegation::whereIn('id', $ids)->count())->toBe(20)
         ->and($state->count)->toBe(0);
 });
 
@@ -276,13 +276,15 @@ test('未熔断 healthy 轮 → SystemAlert clearDedupe 复位（恢复清键契
     $this->artisan('delegation:check')->assertSuccessful();
 });
 
-test('小基数全 unreachable（<样本下限）不熔断，冻结层独立生效', function () {
+test('19 条全 unreachable（<样本下限）不熔断，冻结层独立生效', function () {
     $user = User::factory()->create();
-    checkDelegationRow($user, ['zone' => 'small.com']);
+    for ($i = 0; $i < 19; $i++) {
+        checkDelegationRow($user, ['zone' => "small$i.com"]);
+    }
 
-    // total=1 <5 → 不熔断；仍走落库（applyProbeOutcome unreachable 冻结）
-    $this->delegationService->shouldReceive('probeValidity')->once()->andReturn('unreachable');
-    $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->once()->andReturn(true);
+    // total=19 <20 → 不熔断；仍逐条落库（unreachable 由服务层冻结计数）
+    $this->delegationService->shouldReceive('probeValidity')->times(19)->andReturn('unreachable');
+    $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->times(19)->andReturn(true);
 
     $systemAlert = Mockery::mock(SystemAlert::class);
     $systemAlert->shouldReceive('clearDedupe')->once(); // 未熔断 → 清键
@@ -297,23 +299,22 @@ test('小基数全 unreachable（<样本下限）不熔断，冻结层独立生�
 test('增量熔断：达样本下限后立即命中 → 提前终止本轮探测（不对满表逐条付满价）', function () {
     $user = User::factory()->create();
     $ids = [];
-    for ($i = 0; $i < 6; $i++) {
+    for ($i = 0; $i < 21; $i++) {
         $ids[] = checkDelegationRow($user, ['zone' => "burst$i.com"])->id;
     }
 
-    // 6 条全 unreachable：达 MIN_SAMPLE=5 即熔断 → 第 5 条后提前终止，第 6 条不再探测。
-    // 收敛前（扫完再判）probeValidity 被调 6 次 → times(5) 期望失败=红。
-    $this->delegationService->shouldReceive('probeValidity')->times(5)->andReturn('unreachable');
+    // 21 条全 unreachable：达 MIN_SAMPLE=20 即熔断 → 第 20 条后提前终止，第 21 条不再探测。
+    $this->delegationService->shouldReceive('probeValidity')->times(20)->andReturn('unreachable');
     $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->never(); // 熔断轮零落库
 
     $systemAlert = Mockery::mock(SystemAlert::class);
     $systemAlert->shouldReceive('send')
         ->once()
         ->withArgs(function ($category, $title, $message, $details) {
-            // 提前终止 → partial 计数（只探测了 5 条），方向正确
+            // 提前终止 → partial 计数（只探测了 20 条），方向正确
             return $category === 'delegation_patrol'
-                && $details['total'] === 5
-                && $details['unreachable'] === 5;
+                && $details['total'] === 20
+                && $details['unreachable'] === 20;
         })
         ->andReturn(true);
     $systemAlert->shouldReceive('clearDedupe')->never();
@@ -323,21 +324,21 @@ test('增量熔断：达样本下限后立即命中 → 提前终止本轮探测
 
     $this->artisan('delegation:check')->assertSuccessful();
 
-    // 6 条全在（零删除）+ 零通知
-    expect(CnameDelegation::whereIn('id', $ids)->count())->toBe(6)
+    // 21 条全在（零删除）+ 零通知
+    expect(CnameDelegation::whereIn('id', $ids)->count())->toBe(21)
         ->and($state->count)->toBe(0);
 });
 
 test('增量熔断边界：占比未达阈值不提前终止 → 全量探测 + 正常落库（不误熔断）', function () {
     $user = User::factory()->create();
-    for ($i = 0; $i < 6; $i++) {
+    for ($i = 0; $i < 20; $i++) {
         checkDelegationRow($user, ['zone' => "mix$i.com"]);
     }
 
-    // 前 2 条 unreachable + 后 4 条 valid：任一检查点占比 ≤ 2/5=0.4 < 0.5 → 不熔断、全量探测
-    $this->delegationService->shouldReceive('probeValidity')->times(6)
-        ->andReturnValues(['unreachable', 'unreachable', 'valid', 'valid', 'valid', 'valid']);
-    $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->times(6)->andReturn(true);
+    // 9 条 unreachable + 11 条 valid：达到 20 条时占比 45% < 50%，不熔断、全量落库。
+    $this->delegationService->shouldReceive('probeValidity')->times(20)
+        ->andReturnValues(array_merge(array_fill(0, 9, 'unreachable'), array_fill(0, 11, 'valid')));
+    $this->delegationService->shouldReceive('applyProbeOutcomeIfUnchanged')->times(20)->andReturn(true);
 
     $systemAlert = Mockery::mock(SystemAlert::class);
     $systemAlert->shouldReceive('send')->never();      // 未熔断

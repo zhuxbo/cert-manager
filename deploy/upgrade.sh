@@ -48,6 +48,45 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+# Laravel/升级流程共用的核心可写目录。upgrade 包不携带 storage，且 zip 可能丢失空目录，
+# 所以在首次 Artisan 前及代码替换后都必须由脚本主动补齐并以 www 身份验写。
+_ensure_runtime_directories() {
+    local -a runtime_rel_dirs=(
+        "backend/bootstrap/cache"
+        "backend/storage"
+        "backend/storage/logs"
+        "backend/storage/framework"
+        "backend/storage/framework/cache/data"
+        "backend/storage/framework/sessions"
+        "backend/storage/framework/views"
+        "backend/storage/app/public"
+        "backend/storage/app/private"
+        "backups/upgrades"
+    )
+    local rel_path abs_path
+
+    for rel_path in "${runtime_rel_dirs[@]}"; do
+        abs_path="$INSTALL_DIR/$rel_path"
+        if ! mkdir -p "$abs_path"; then
+            log_error "无法创建运行目录: $abs_path"
+            return 1
+        fi
+        if ! chown www:www "$abs_path"; then
+            log_error "无法设置运行目录属主为 www:www: $abs_path"
+            return 1
+        fi
+        if ! chmod 775 "$abs_path"; then
+            log_error "无法设置运行目录权限为 775: $abs_path"
+            return 1
+        fi
+        if ! sudo -u www test -w "$abs_path"; then
+            log_error "Web 用户 www 无法写入运行目录: $abs_path"
+            log_error "请执行: chown www:www '$abs_path' && chmod 775 '$abs_path'"
+            return 1
+        fi
+    done
+}
+
 # upgrade.sh 所在目录 + 同级 scripts/ 子目录（用于 source bt-automate.sh 等）
 UPGRADE_SH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="$UPGRADE_SH_DIR/scripts"
@@ -1758,6 +1797,12 @@ perform_upgrade() {
     #    必须在 create_backup / down / freeze / 任何 mv 之前拦截（拦截时零服务扰动）。
     _check_stranded_preserve
 
+    # 上次失败可能已留下缺失的 bootstrap/cache；先补齐全部核心目录，确保备份及首次
+    # artisan down/freeze 能启动。此处失败尚未备份、down 或 freeze，原服务状态不变。
+    if ! _ensure_runtime_directories; then
+        exit 1
+    fi
+
     # 1. 记录旧版本 composer.json 和 composer.lock hash
     local old_composer_json_hash=""
     local old_composer_lock_hash=""
@@ -2002,16 +2047,16 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     # 9.1 预先修复权限（在执行 artisan 命令前）
     log_step "预设权限..."
 
+    # 新代码的 bootstrap 可能不带空 cache 目录；storage 虽已恢复，也要补齐旧安装缺失的
+    # 核心子目录。此处失败保持 freeze + 维护模式，由 cleanup 输出恢复指引。
+    if ! _ensure_runtime_directories; then
+        exit 1
+    fi
+
     # backend/storage（Laravel storage）和根目录 backups（备份、升级包）
     local backend_storage="$INSTALL_DIR/backend/storage"
     local backups_dir="$INSTALL_DIR/backups"
     local version_file="$INSTALL_DIR/version.json"
-
-    # 确保目录存在（宿主机上创建）
-    for subdir in logs framework/cache framework/sessions framework/views app/public; do
-        mkdir -p "$backend_storage/$subdir" 2>/dev/null || true
-    done
-    mkdir -p "$backups_dir" "$backups_dir/upgrades" 2>/dev/null || true
 
     # 宝塔模式
     chown -R www:www "$backend_storage" 2>/dev/null || true

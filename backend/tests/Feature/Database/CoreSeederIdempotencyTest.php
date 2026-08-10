@@ -94,10 +94,9 @@ dataset('core_seeders', [
                 'secretKey' => '',
             ]);
             $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
-            expect($dnsTools?->value)->toBe([
-                'https://dns-tools-cn.cnssl.com',
-                'https://dns-tools-us.cnssl.com',
-            ]);
+            expect($dnsTools)->toBeNull();
+            $autoRefundOnSync = Setting::where('group_id', $siteGroup->id)->where('key', 'autoRefundOnSync')->first();
+            expect($autoRefundOnSync)->toBeNull();
             $expandedLogo = Setting::where('group_id', $siteGroup->id)->where('key', 'logoExpanded')->first();
             expect($expandedLogo?->type)->toBe('image')
                 ->and($expandedLogo?->value)->toBe('');
@@ -162,6 +161,14 @@ dataset('core_seeders', [
                 'description' => '自定义 DNS 工具',
                 'weight' => 6,
             ]);
+            Setting::create([
+                'group_id' => $siteGroup->id,
+                'key' => 'autoRefundOnSync',
+                'type' => 'boolean',
+                'value' => true,
+                'description' => '隐藏设置',
+                'weight' => 99,
+            ]);
 
             $callbackGroup = SettingGroup::firstOrCreate(
                 ['name' => 'callback'],
@@ -196,6 +203,8 @@ dataset('core_seeders', [
             expect((int) $delegation->weight)->toBe(99);
             $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
             expect($dnsTools?->value)->toBe(['custom' => 'https://dns.example.com']);
+            $autoRefundOnSync = Setting::where('group_id', $siteGroup->id)->where('key', 'autoRefundOnSync')->first();
+            expect($autoRefundOnSync?->value)->toBeTrue();
 
             $callbackGroup = SettingGroup::where('name', 'callback')->first();
             $defaultCallback = $callbackGroup?->settings()->where('key', 'default')->first();

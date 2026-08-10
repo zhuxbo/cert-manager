@@ -26,6 +26,9 @@ BUILD_CONFIG="$ROOT/build/config.json"
 CONTAINER_BUILD="$ROOT/build/scripts/container-build.sh"
 COLLECT_ARTIFACTS="$ROOT/build/scripts/collect-artifacts.sh"
 PACKAGE_SCRIPT="$ROOT/build/scripts/package.sh"
+PACKAGE_AUDITOR="$ROOT/build/scripts/audit-package.sh"
+BT_INSTALL="$ROOT/deploy/scripts/bt-install.sh"
+PACKAGE_EXTRACTOR="$ROOT/backend/app/Services/Upgrade/PackageExtractor.php"
 PASS=0
 FAIL=0
 
@@ -37,6 +40,44 @@ extract_fn() {
         p && index($0, "-r ") > 0 && substr($0, length($0), 1) == sq { inq = 1; next }
         p && inq && substr($0, 1, 1) == sq { inq = 0; next }
         p && inq == 0 && $0 == "}" { exit }
+    ' "$1"
+}
+
+# 抽取 perform_upgrade 中第 N 个运行目录失败闸，测试真实调用位点是否仍以 exit 终止。
+extract_runtime_guard() {
+    awk -v target="$2" '
+        /^[[:space:]]*if ! _ensure_runtime_directories; then$/ {
+            seen++
+            if (seen == target) {
+                printing = 1
+            }
+        }
+        printing { print }
+        printing && /^[[:space:]]*fi$/ { exit }
+    ' "$1"
+}
+
+extract_shell_runtime_dirs() {
+    awk '
+        /^[[:space:]]*(local -a )?runtime_rel_dirs=\($/ { printing = 1; next }
+        printing && /^[[:space:]]*\)$/ { exit }
+        printing {
+            line = $0
+            gsub(/^[[:space:]]*"|"[[:space:]]*$/, "", line)
+            if (line != "") print line
+        }
+    ' "$1"
+}
+
+extract_php_runtime_dirs() {
+    awk '
+        /private const RUNTIME_RELATIVE_DIRECTORIES = \[/ { printing = 1; next }
+        printing && /^[[:space:]]*\];$/ { exit }
+        printing {
+            line = $0
+            gsub(/^[[:space:]]*\047|\047,[[:space:]]*$/, "", line)
+            if (line != "") print line
+        }
     ' "$1"
 }
 
@@ -64,10 +105,12 @@ eval "$(extract_fn "$UPGRADE" _check_stranded_preserve)"
 eval "$(extract_fn "$UPGRADE" _restore_preserved_storage)"
 eval "$(extract_fn "$UPGRADE" _restore_preserved_extras)"
 eval "$(extract_fn "$UPGRADE" _need_composer_install)"
+eval "$(extract_fn "$UPGRADE" _ensure_runtime_directories)"
+eval "$(extract_fn "$UPGRADE" _print_recovery_runbook)"
 
 # 抽取健全性校验：任一函数未抽出即整体失败（防 upgrade.sh 改结构后静默失测）
 for fn in _fs_device _assert_storage_same_fs _check_stranded_preserve _restore_preserved_storage \
-    _restore_preserved_extras _need_composer_install; do
+    _restore_preserved_extras _need_composer_install _ensure_runtime_directories; do
     if ! declare -f "$fn" >/dev/null 2>&1; then
         echo "✗ 抽取失败：$fn 未从 $UPGRADE 提取到（函数结构变化？）"
         exit 1
@@ -472,6 +515,112 @@ test_a12() {
     rm -rf "$base"
 }
 
+# A13 核心运行目录：完整清单可创建/验写，任一权限步骤失败立即返回非零。
+test_a13() {
+    local base
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base"
+
+    local rc_success rc_failure
+    (
+        chown() { return 0; }
+        chmod() { return 0; }
+        sudo() {
+            local last=""
+            for last in "$@"; do :; done
+            test -w "$last"
+        }
+        _ensure_runtime_directories
+    )
+    rc_success=$?
+
+    local -a expected=(
+        backend/bootstrap/cache
+        backend/storage
+        backend/storage/logs
+        backend/storage/framework
+        backend/storage/framework/cache/data
+        backend/storage/framework/sessions
+        backend/storage/framework/views
+        backend/storage/app/public
+        backend/storage/app/private
+        backups/upgrades
+    )
+    local rel ok=1
+    [ "$rc_success" -eq 0 ] || ok=0
+    for rel in "${expected[@]}"; do
+        [ -d "$INSTALL_DIR/$rel" ] || ok=0
+    done
+
+    (
+        chown() { return 0; }
+        chmod() {
+            [ "${2:-}" = "$INSTALL_DIR/backend/storage/app/private" ] && return 1
+            return 0
+        }
+        sudo() { return 0; }
+        _ensure_runtime_directories
+    )
+    rc_failure=$?
+    [ "$rc_failure" -ne 0 ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A13 核心运行目录清单完整，权限步骤失败即停"
+    else
+        fail "A13 核心运行目录创建/失败语义（success=${rc_success}, failure=${rc_failure}）"
+    fi
+    rm -rf "$base"
+}
+
+# A14 两个生产调用位点失败都必须真正退出：首次不能进入备份/维护，第二次由 EXIT
+# 清理路径输出恢复指引且不能继续 Composer/unfreeze/up。
+test_a14() {
+    local first_guard second_guard first_marker second_marker runbook_marker
+    first_guard="$(extract_runtime_guard "$UPGRADE" 1)"
+    second_guard="$(extract_runtime_guard "$UPGRADE" 2)"
+    first_marker="$(mktemp)"
+    second_marker="$(mktemp)"
+    runbook_marker="$(mktemp)"
+
+    (
+        _ensure_runtime_directories() { return 1; }
+        eval "$first_guard"
+        printf '%s\n' create_backup artisan_down upgrade_freeze >"$first_marker"
+    )
+    local first_rc=$?
+
+    (
+        _ensure_runtime_directories() { return 1; }
+        log_error() { printf '%s\n' "$*" >>"$runbook_marker"; }
+        INSTALL_DIR="/tmp/runtime-directory-probe"
+        PHP_CMD="php"
+        UPGRADE_DONE=0
+        FREEZE_FIRED=1
+        cleanup_runtime_probe() {
+            if [ "$UPGRADE_DONE" -eq 0 ] && [ "$FREEZE_FIRED" -eq 1 ]; then
+                _print_recovery_runbook
+            fi
+        }
+        trap cleanup_runtime_probe EXIT
+
+        eval "$second_guard"
+        printf '%s\n' composer artisan_unfreeze artisan_up >"$second_marker"
+    )
+    local second_rc=$?
+
+    if [ -n "$first_guard" ] && [ -n "$second_guard" ] &&
+        [ "$first_rc" -ne 0 ] && [ ! -s "$first_marker" ] &&
+        [ "$second_rc" -ne 0 ] && [ ! -s "$second_marker" ] &&
+        grep -qF '升级未完成，系统仍处于 freeze + 维护模式' "$runbook_marker" &&
+        grep -qF 'artisan upgrade:unfreeze' "$runbook_marker"; then
+        pass "A14 两阶段运行目录失败均在真实调用闸终止并保持既定恢复语义"
+    else
+        fail "A14 两阶段调用位点失败语义（first=${first_rc}, second=${second_rc}）"
+    fi
+
+    rm -f "$first_marker" "$second_marker" "$runbook_marker"
+}
+
 test_a1
 test_a2
 test_a3
@@ -484,6 +633,8 @@ test_a9
 test_a10
 test_a11
 test_a12
+test_a13
+test_a14
 
 # ========================================================================
 # B. 信号注入（子进程 harness，直接复现验收⑦）
@@ -728,6 +879,52 @@ if grep -qF '"storage/app/"' "$BUILD_CONFIG" &&
 else
     fail "C 运行数据缺少构建清理、统一排除或发布包内容审计"
 fi
+
+ensure_calls=$(grep -nE '^[[:space:]]*if ! _ensure_runtime_directories; then' "$UPGRADE" || true)
+ensure_count=$(printf '%s\n' "$ensure_calls" | grep -c . || true)
+first_ensure_line=$(printf '%s\n' "$ensure_calls" | sed -n '1s/:.*//p')
+second_ensure_line=$(printf '%s\n' "$ensure_calls" | sed -n '2s/:.*//p')
+stranded_line=$(grep -nE '^[[:space:]]*_check_stranded_preserve$' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+backup_line=$(grep -nF 'local backup_path=$(create_backup)' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+down_line=$(grep -nF 'artisan down --retry=60' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+composer_line=$(grep -nF 'log_step "检测依赖变化..."' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+
+if grep -qF 'mkdir -p "$UPGRADE_DIR/backend/bootstrap/cache"' "$PACKAGE_SCRIPT" &&
+    [ "$ensure_count" -eq 2 ] &&
+    [ -n "$stranded_line" ] && [ -n "$first_ensure_line" ] && [ -n "$backup_line" ] && [ -n "$down_line" ] &&
+    [ "$stranded_line" -lt "$first_ensure_line" ] && [ "$first_ensure_line" -lt "$backup_line" ] &&
+    [ "$first_ensure_line" -lt "$down_line" ] &&
+    [ -n "$second_ensure_line" ] && [ -n "$composer_line" ] && [ "$second_ensure_line" -lt "$composer_line" ] &&
+    grep -qF 'backend/storage/framework/cache/data' "$UPGRADE" &&
+    grep -qF 'backend/storage/app/private' "$UPGRADE" &&
+    grep -qF 'sudo -u www test -w "$abs_path"' "$UPGRADE"; then
+    pass "C upgrade 包保留 cache 空目录，Shell 两阶段补齐并以 www 验写核心目录"
+else
+    fail "C upgrade 包或 upgrade.sh 核心运行目录清单、两阶段顺序或 www 验写缺失"
+fi
+
+runtime_contract_tmp="$(mktemp -d)"
+extract_shell_runtime_dirs "$UPGRADE" | sort -u >"$runtime_contract_tmp/upgrade"
+extract_shell_runtime_dirs "$BT_INSTALL" | sort -u >"$runtime_contract_tmp/install"
+extract_shell_runtime_dirs "$PACKAGE_SCRIPT" | sort -u >"$runtime_contract_tmp/package"
+extract_php_runtime_dirs "$PACKAGE_EXTRACTOR" | sort -u >"$runtime_contract_tmp/backend"
+runtime_contract_ok=1
+cmp -s "$runtime_contract_tmp/upgrade" "$runtime_contract_tmp/install" || runtime_contract_ok=0
+cmp -s "$runtime_contract_tmp/upgrade" "$runtime_contract_tmp/package" || runtime_contract_ok=0
+cmp -s "$runtime_contract_tmp/upgrade" "$runtime_contract_tmp/backend" || runtime_contract_ok=0
+while IFS= read -r rel_path; do
+    grep -qF "full/$rel_path/" "$PACKAGE_AUDITOR" || runtime_contract_ok=0
+done <"$runtime_contract_tmp/upgrade"
+
+if [ "$runtime_contract_ok" -eq 1 ] && [ "$(wc -l <"$runtime_contract_tmp/upgrade" | tr -d ' ')" -eq 10 ]; then
+    pass "C 安装、Shell 升级、后台升级、完整包与审计的核心运行目录集合等价"
+else
+    fail "C 核心运行目录跨生产路径或制包审计发生漂移"
+    diff -u "$runtime_contract_tmp/upgrade" "$runtime_contract_tmp/install" || true
+    diff -u "$runtime_contract_tmp/upgrade" "$runtime_contract_tmp/package" || true
+    diff -u "$runtime_contract_tmp/upgrade" "$runtime_contract_tmp/backend" || true
+fi
+rm -rf "$runtime_contract_tmp"
 
 QRCODE_PNG="$ROOT/frontend/user/public/qrcode.png"
 QRCODE_PNG_HEADER="$(od -An -tx1 -N24 "$QRCODE_PNG" 2>/dev/null | tr -d ' \n')"

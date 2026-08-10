@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Services\Acme;
 
 use App\Exceptions\ApiResponseException;
-use App\Exceptions\MutationBusyException;
 use App\Jobs\TaskJob;
 use App\Models\Acme;
 use App\Models\Product;
@@ -13,22 +12,17 @@ use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Acme\Api\Api;
-use App\Services\Notification\SystemAlert;
 use App\Services\Order\Utils\OrderUtil;
 use App\Support\MutexLock;
 use App\Traits\ApiResponse;
 use App\Traits\RunsTaskMutationTransaction;
-use Illuminate\Database\DeadlockException;
-use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class Action
 {
     use ApiResponse;
-    use DetectsConcurrencyErrors;
     use MutexLock;
     use RunsTaskMutationTransaction;
 
@@ -551,12 +545,6 @@ class Action
         // 慢 IO（上游 Guzzle）放在行锁之外，避免长时间持锁。
         // 占位回滚：上游调用/写回失败时必须 Cache::forget 占位，否则 10s 内重试命中占位直接返回 success，
         // 把"实际未同步"的失败伪装成成功。成功路径不回滚（占位正是为了 10s 内防重复上游请求）。
-        // T7：退款失败告警穿透标记（声明在 try 外，catch 恒可读）。仅"终态失败"置值 → 事务外告警；
-        // 并发错误（1213/1205）不置值、由 runTaskMutationTransaction 静默重试（重试期零告警红线）。
-        // @var 注解：闭包经 use(&$refundAlert) 引用改写，phpstan 不追踪闭包副作用，显式标注可空。
-        /** @var array{acme_id: int, error: string}|null $refundAlert */
-        $refundAlert = null;
-
         try {
             $result = (new Api)->get($acme->id);
             $data = $result['data'] ?? [];
@@ -571,9 +559,7 @@ class Action
                 [Acme::STATUS_CANCELLED, Acme::STATUS_REVOKED, Acme::STATUS_EXPIRED],
                 true
             );
-            $ca = $this->runTaskMutationTransaction(function () use ($acmeId, $data, $upstreamTerminal, &$refundAlert) {
-                $refundAlert = null; // 每次重试进入闭包重置（attempts=3 重试后成功不残留旧标记）
-
+            $ca = $this->runTaskMutationTransaction(function () use ($acmeId, $data, $upstreamTerminal) {
                 if ($upstreamTerminal) {
                     // 锁序 1：先锁 cancel_acme task（镜像 revokeCancel），仅上游终态才触发（与执行条件对齐、无冗余锁）
                     Task::lockForMutation($acmeId, ['cancel_acme'])->get();
@@ -595,20 +581,9 @@ class Action
                         ->where('transaction_id', $acme->id)
                         ->exists();
                     if (! $alreadyRefunded) {
-                        try {
-                            $this->refund($acme);
-                        } catch (\Throwable $e) {
-                            // N1（MUST-FIX）：并发错误（死锁 1213 / 锁等待 1205 / 序列化失败）不置告警标记、直接 rethrow，
-                            // 由 runTaskMutationTransaction（DB::transaction attempts=3）静默重试——重试期零告警红线
-                            // （order-fund.md:75-81）。仅"终态失败"（非并发）才置标记，延后到事务外一次性告警。
-                            if ($e instanceof DeadlockException
-                                || $e instanceof MutationBusyException
-                                || $this->causedByConcurrencyError($e)) {
-                                throw $e;
-                            }
-                            $refundAlert = ['acme_id' => $acme->id, 'error' => $e->getMessage()];
-                            throw $e; // 回滚整个事务，退款不落；告警延后到外层 catch（事务外）
-                        }
+                        // 与传统订单一致：退款异常直接回滚并沿任务失败链暴露；
+                        // 每日 finance:audit 负责账本对账，不发送 ACME 专属即时告警。
+                        $this->refund($acme);
                     }
                     // 清孤儿 cancel_acme 任务（lockForMutation 已覆盖 executing/stopped 二态，锁与删同界）
                     Task::where('order_id', $acme->id)
@@ -662,29 +637,6 @@ class Action
             }); // runTaskMutationTransaction 统一 attempts=3：与 Order sync 对齐；上游 get 在事务外，重试只重跑锁+写回，不重复调上游
         } catch (\Throwable $e) {
             Cache::forget($cacheKey);
-            if ($refundAlert !== null) {
-                // 退款失败即时告警（reachability I-1 发出点）：事务已回滚、无事务上下文，SystemAlert 置键立即执行、可达。
-                // 覆盖边界：仅保证"refund 调用自身终态异常且重试耗尽"即时可见；其余回滚形态（如 refund 成功后
-                // 的 update 死锁耗尽，此时 $refundAlert 为 null 不发本告警）无专项告警，由 finance:audit daily 全量
-                // 对账事后兜底 + TaskJob sync failed 落库留痕。refund 自身并发错误经 N1 直接 rethrow、不置标记，故无 stale 告警。
-                try {
-                    app(SystemAlert::class)->send(
-                        'acme_refund',
-                        'ACME sync 完成取消的退款失败',
-                        "acme #{$refundAlert['acme_id']} 上游已取消但本地退款异常：{$refundAlert['error']}",
-                        ['acme_id' => $refundAlert['acme_id']],
-                        "acme_sync_refund_failed_$acmeId",
-                        24,
-                        "refund_failed_$acmeId"
-                    );
-                } catch (\Throwable $alertError) {
-                    // N2：告警自身抛异常不得替换原始 $e（否则 TaskJob 收到的异常类型变化，破坏并发错误 release 判定）
-                    Log::warning('ACME sync 退款失败告警派发异常', [
-                        'acme_id' => $acmeId,
-                        'error' => $alertError->getMessage(),
-                    ]);
-                }
-            }
             throw $e;
         }
 
@@ -969,8 +921,8 @@ class Action
     /**
      * 退费处理（内部方法）
      *
-     * protected 而非 private：供 T7 sync 退款失败路径测试用 Mockery partial 注入并发/终态异常
-     * （验证 N1 并发错误重试期零告警 + 终态失败事务外告警）。无外部调用，封装不受影响。
+     * protected 而非 private：供 T7 sync 退款回滚与并发重试测试用 Mockery partial 注入异常。
+     * 无外部调用，封装不受影响。
      */
     protected function refund(Acme $acme): void
     {

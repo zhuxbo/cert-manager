@@ -8,7 +8,7 @@ return [
     |
     | 每条监控命令均可经 enabled 独立开关；告警统一走 SystemAlert（code=system_alert）
     | 的状态指纹去重，dedupe_ttl_hours 契约：必须 ≥ 3× 该命令巡检周期（防 TTL≈周期时
-    | 去重形同虚设）。停用单一 system_alert 模板（status=0）会令 6 条监控同时静默盲，
+    | 去重形同虚设）。停用单一 system_alert 模板（status=0）会令 5 条监控同时静默盲，
     | 这是单 code 复用的固有属性，需知情。
     |
     */
@@ -21,12 +21,6 @@ return [
         'dedupe_ttl_hours' => (int) env('MONITORING_CA_HEALTHCHECK_TTL_HOURS', 24),
         'connectivity_threshold' => (int) env('MONITORING_CA_CONNECTIVITY_THRESHOLD', 3),
         'connectivity_ttl_hours' => (int) env('MONITORING_CA_CONNECTIVITY_TTL_HOURS', 6),
-    ],
-
-    // E2 产品属性漂移同步 cron（schedule:import-product，周期 1d）
-    'import_product' => [
-        'enabled' => env('MONITORING_IMPORT_PRODUCT_ENABLED', true),
-        'dedupe_ttl_hours' => (int) env('MONITORING_IMPORT_PRODUCT_TTL_HOURS', 72),
     ],
 
     // E3 充值渠道健康（schedule:payment-health，周期 1d，周提醒）

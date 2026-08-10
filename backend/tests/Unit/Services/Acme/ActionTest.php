@@ -3,7 +3,6 @@
 use App\Exceptions\ApiResponseException;
 use App\Jobs\TaskJob;
 use App\Models\Acme;
-use App\Models\Admin;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\Setting;
@@ -11,8 +10,6 @@ use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Services\Acme\Action;
-use App\Services\Notification\DTOs\NotificationIntent;
-use App\Services\Notification\NotificationCenter;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -2195,12 +2192,11 @@ test('T7 ⑦：上游 active（高频 get 常态）不触发 cancel_acme 锁路�
     expect($acme->fresh()->status)->toBe(Acme::STATUS_ACTIVE);
 });
 
-test('T7：退款终态异常 → sync 抛出 + SystemAlert acme_refund 发出（事务外可达）', function () {
+test('T7：退款终态异常 → sync 抛出并回滚且不发送专属告警', function () {
     Queue::fake();
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
     createAcmeProductPrice($product->id, $user);
-    Admin::factory()->create(['email' => 'ops@example.test']);
 
     $acme = createAcmeOrder($user, $product);
     expectApiSuccess(fn () => $this->service->pay($acme->id, false));
@@ -2212,15 +2208,6 @@ test('T7：退款终态异常 → sync 抛出 + SystemAlert acme_refund 发出�
     $service = Mockery::mock(Action::class)->makePartial()->shouldAllowMockingProtectedMethods();
     $service->shouldReceive('refund')->andThrow(new RuntimeException('refund boom'));
 
-    $intents = [];
-    $ncMock = Mockery::mock(NotificationCenter::class);
-    $ncMock->shouldReceive('dispatch')->with(Mockery::on(function (NotificationIntent $intent) use (&$intents) {
-        $intents[] = $intent;
-
-        return true;
-    }));
-    $this->app->instance(NotificationCenter::class, $ncMock);
-
     setupGatewaySettings();
     Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
 
@@ -2231,22 +2218,16 @@ test('T7：退款终态异常 → sync 抛出 + SystemAlert acme_refund 发出�
         expect($e->getMessage())->toBe('refund boom');
     }
 
-    // 退款失败即时告警（事务外可达）
-    $alerted = collect($intents)->contains(
-        fn (NotificationIntent $i) => $i->code === 'system_alert' && ($i->context['category'] ?? null) === 'acme_refund'
-    );
-    expect($alerted)->toBeTrue();
     // 事务回滚：退款未落、状态仍 cancelling
     expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0);
     expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
 });
 
-test('T7 N1：refund 抛并发错误 → 重试期不置告警标记 → SystemAlert 未发（重试期零告警红线）', function () {
+test('T7：refund 抛并发错误 → 异常继续抛出且状态回滚', function () {
     Queue::fake();
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
     createAcmeProductPrice($product->id, $user);
-    Admin::factory()->create(['email' => 'ops@example.test']);
 
     $acme = createAcmeOrder($user, $product);
     expectApiSuccess(fn () => $this->service->pay($acme->id, false));
@@ -2255,20 +2236,12 @@ test('T7 N1：refund 抛并发错误 → 重试期不置告警标记 → SystemA
     expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
 
     // partial mock：refund 恒抛并发错误（deadlock message → causedByConcurrencyError=true）→
-    // runTaskMutationTransaction(attempts=3) 重试耗尽。并发分支不置 refundAlert，重试期零告警。
+    // 真实 MySQL 连接由 runTaskMutationTransaction(attempts=3) 识别并发错误并重试；
+    // 测试环境只验证异常不会被吞掉且事务整体回滚。
     $service = Mockery::mock(Action::class)->makePartial()->shouldAllowMockingProtectedMethods();
-    $service->shouldReceive('refund')->andThrow(
+    $service->shouldReceive('refund')->once()->andThrow(
         new RuntimeException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction')
     );
-
-    $intents = [];
-    $ncMock = Mockery::mock(NotificationCenter::class);
-    $ncMock->shouldReceive('dispatch')->with(Mockery::on(function (NotificationIntent $intent) use (&$intents) {
-        $intents[] = $intent;
-
-        return true;
-    }));
-    $this->app->instance(NotificationCenter::class, $ncMock);
 
     setupGatewaySettings();
     Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
@@ -2279,9 +2252,6 @@ test('T7 N1：refund 抛并发错误 → 重试期不置告警标记 → SystemA
         // 重试耗尽后抛并发错误（预期）
     }
 
-    // 关键红线：并发错误重试期不发 acme_refund 告警（order-fund.md:75-81 重试期零告警）
-    $refundAlerted = collect($intents)->contains(
-        fn (NotificationIntent $i) => $i->code === 'system_alert' && ($i->context['category'] ?? null) === 'acme_refund'
-    );
-    expect($refundAlerted)->toBeFalse();
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0)
+        ->and($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
 });

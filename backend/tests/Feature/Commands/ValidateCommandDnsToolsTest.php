@@ -1,6 +1,5 @@
 <?php
 
-use App\Models\Admin;
 use App\Models\Cert;
 use App\Models\DomainValidationRecord;
 use App\Models\Order;
@@ -10,30 +9,25 @@ use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\Delegation\DnsResolver;
-use App\Services\Notification\NotificationCenter;
+use App\Services\Notification\SystemAlert;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 
 /**
- * F2-1 ValidateCommand dnsTools 全挂安全网（连续 N 建 sync）+ 连挂 admin 告警（连续 M）。
+ * F2-1 ValidateCommand dnsTools 全挂安全网（连续 N 建 sync）。
  */
 
-/** 配置 site.dnsTools + adminEmail */
-function setupDnsToolsAndAdmin(): void
+/** 配置 site.dnsTools */
+function setupDnsTools(): void
 {
     $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点', 'weight' => 1]);
     Setting::updateOrCreate(
         ['group_id' => $group->id, 'key' => 'dnsTools'],
         ['type' => 'array', 'value' => ['http://dnstool1.test'], 'weight' => 0]
     );
-    Setting::updateOrCreate(
-        ['group_id' => $group->id, 'key' => 'adminEmail'],
-        ['type' => 'string', 'value' => 'ops@corp.example', 'weight' => 0]
-    );
     Setting::clearGroupCache($group->id);
-    Admin::factory()->create(['email' => 'ops@corp.example']);
     Cache::flush();
 }
 
@@ -71,7 +65,7 @@ function makeProcessingTxtOrder(): Order
 
 beforeEach(function () {
     Queue::fake(); // 拦截 createTask 派发的 TaskJob，只留 Task 行供断言
-    setupDnsToolsAndAdmin();
+    setupDnsTools();
 });
 
 afterEach(function () {
@@ -108,6 +102,9 @@ test('dnsTools 全挂 + 本地不可判定 → 连续 3 轮后建 sync 任务，
 // 护栏：dnsTools 应答但校验失败（code=0 无 infra-down）→ 不建 sync、不计数
 test('dnsTools 应答但校验失败 → 多轮也不建 sync（回归护栏）', function () {
     Http::fake(['dnstool1.test/*' => Http::response(['code' => 0, 'msg' => 'DNS 未就绪', 'errors' => []], 200)]);
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('txt')->times(4)->andReturn([]);
+    app()->instance(DnsResolver::class, $resolver);
 
     $order = makeProcessingTxtOrder();
 
@@ -124,19 +121,38 @@ test('dnsTools 应答但校验失败 → 多轮也不建 sync（回归护栏）'
     expect(Task::where('order_id', $order->id)->where('action', 'sync')->exists())->toBeFalse();
 });
 
-// M 告警：连续 5 轮 infra-down → 派 system_alert 一次；恢复应答 → 清零
-test('dnsTools 连续 5 轮全挂 → 派 system_alert 一次，恢复应答后清零', function () {
-    $state = new class
-    {
-        public int $systemAlertCount = 0;
-    };
-    $center = Mockery::mock(NotificationCenter::class);
-    $center->shouldReceive('dispatch')->andReturnUsing(function ($intent) use ($state) {
-        if ($intent->code === 'system_alert' && ($intent->context['details']['reason'] ?? null) === 'dnstools_outage') {
-            $state->systemAlertCount++;
-        }
-    });
-    app()->instance(NotificationCenter::class, $center);
+test('dnsTools 未配置且本地未命中 → 不按节点故障累计 sync 安全网', function () {
+    $siteGroup = SettingGroup::where('name', 'site')->firstOrFail();
+    $dnsTools = Setting::where('group_id', $siteGroup->id)
+        ->where('key', 'dnsTools')
+        ->firstOrFail();
+    $dnsTools->value = [];
+    $dnsTools->save();
+    Setting::clearGroupCache($siteGroup->id);
+    Cache::flush();
+    Http::preventStrayRequests();
+
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('txt')->times(4)->andReturn([]);
+    app()->instance(DnsResolver::class, $resolver);
+
+    $order = makeProcessingTxtOrder();
+
+    for ($i = 0; $i < 4; $i++) {
+        DomainValidationRecord::where('order_id', $order->id)->update(['next_check_at' => now()->subMinute()]);
+        $this->artisan('schedule:validate')->assertSuccessful();
+    }
+
+    expect(Task::where('order_id', $order->id)->where('action', 'sync')->exists())->toBeFalse()
+        ->and(Cache::has("validate:dnstools_down:{$order->id}"))->toBeFalse();
+    Http::assertNothingSent();
+});
+
+test('dnsTools 持续全挂也不发送管理员告警', function () {
+    $alert = Mockery::mock(SystemAlert::class);
+    $alert->shouldNotReceive('send');
+    $alert->shouldNotReceive('clearDedupe');
+    app()->instance(SystemAlert::class, $alert);
 
     fakeDnsToolsDown();
     $resolver = Mockery::mock(DnsResolver::class);
@@ -146,31 +162,35 @@ test('dnsTools 连续 5 轮全挂 → 派 system_alert 一次，恢复应答后�
 
     $order = makeProcessingTxtOrder();
 
-    $runDue = function () use ($order) {
+    for ($i = 0; $i < 6; $i++) {
         DomainValidationRecord::where('order_id', $order->id)->update(['next_check_at' => now()->subMinute()]);
         $this->artisan('schedule:validate')->assertSuccessful();
-    };
-
-    // 前 4 轮：未达 M=5，不告警
-    for ($i = 0; $i < 4; $i++) {
-        $runDue();
     }
-    expect($state->systemAlertCount)->toBe(0);
+});
 
-    // 第 5 轮：达 M → 告警一次
-    $runDue();
-    expect($state->systemAlertCount)->toBe(1);
+test('邮箱验证不请求 dnsTools 而是直接创建 sync 任务读取 CA 状态', function () {
+    Http::preventStrayRequests();
 
-    // 第 6 轮仍 infra-down：dedup（固定指纹）→ 不再发
-    $runDue();
-    expect($state->systemAlertCount)->toBe(1);
+    $user = User::factory()->create();
+    $product = Product::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id, 'product_id' => $product->id]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'processing',
+        'dcv' => ['method' => 'admin'],
+        'validation' => [
+            ['domain' => 'example.com', 'method' => 'admin', 'email' => 'admin@example.com'],
+        ],
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+    DomainValidationRecord::create([
+        'order_id' => $order->id,
+        'last_check_at' => now()->subMinutes(5),
+        'next_check_at' => now()->subMinute(),
+    ]);
 
-    // 恢复：dnsTools 应答（code=0，有节点应答）→ 清零 + 清去重
-    Http::fake(['dnstool1.test/*' => Http::response(['code' => 0, 'msg' => 'DNS 未就绪', 'errors' => []], 200)]);
-    $runDue();
+    $this->artisan('schedule:validate')->assertSuccessful();
 
-    // 再次全挂：清零后需重新累计，单轮不触发
-    fakeDnsToolsDown();
-    $runDue();
-    expect($state->systemAlertCount)->toBe(1);
+    Http::assertNothingSent();
+    expect(Task::where('order_id', $order->id)->where('action', 'sync')->exists())->toBeTrue();
 });

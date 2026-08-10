@@ -7,36 +7,9 @@ use Illuminate\Validation\Validator;
 
 class UpdateRequest extends BaseProductRequest
 {
-    private ?int $productId = null;
-
-    /**
-     * 导入场景可跳过 SSL 域名数量校验
-     */
-    private bool $skipSslDomainValidation = false;
-
-    /**
-     * 设置产品 ID
-     */
-    public function setProductId(int $productId): self
-    {
-        $this->productId = $productId;
-
-        return $this;
-    }
-
-    /**
-     * 设置是否跳过 SSL 域名数量校验
-     */
-    public function skipSslDomainValidation(bool $skip = true): self
-    {
-        $this->skipSslDomainValidation = $skip;
-
-        return $this;
-    }
-
     public function rules(): array
     {
-        $productId = $this->productId ?? $this->route('id', 0);
+        $productId = $this->route('id', 0);
 
         return [
             'code' => 'nullable|string|max:100|unique:products,code,'.$productId,
@@ -112,7 +85,7 @@ class UpdateRequest extends BaseProductRequest
     {
         $validator->after(function ($validator) {
             $data = $validator->getData();
-            $productId = $this->productId ?? $this->route('id', 0);
+            $productId = $this->route('id', 0);
 
             // 检查 source 和 api_id 组合的唯一性（排除当前记录）
             if (isset($data['source']) && isset($data['api_id'])) {
@@ -126,12 +99,11 @@ class UpdateRequest extends BaseProductRequest
                 }
             }
 
-            // 导入更新场景可跳过 SSL 域名数量校验
             // 仅在传入域名相关字段时才校验
             $hasDomainFields = isset($data['standard_max']) || isset($data['wildcard_max'])
                 || isset($data['standard_min']) || isset($data['wildcard_min'])
                 || isset($data['total_min']) || isset($data['total_max']);
-            if (! $this->skipSslDomainValidation && $hasDomainFields && $this->needsDomainConfig()) {
+            if ($hasDomainFields && $this->needsDomainConfig()) {
                 $this->validateSSLProductDomains($validator, $data);
             }
         });

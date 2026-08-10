@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\User;
 use App\Services\Order\Action;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 
 /**
@@ -37,6 +38,28 @@ function buildV1Controller(array $input, string $method, Action $action, int $us
 
     return $controller;
 }
+
+test('V1 cancel 精确退款期边界允许取消', function () {
+    Carbon::setTestNow('2026-08-07 12:00:00');
+
+    $user = User::factory()->create();
+    $product = Product::factory()->create(['refund_period' => 30]);
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+    ]);
+    $order->forceFill(['created_at' => now()->subDays(30)])->saveQuietly();
+    $cert = Cert::factory()->create(['order_id' => $order->id, 'status' => 'active']);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $action = Mockery::mock(Action::class);
+    $action->shouldReceive('deleteTask')->once()->with($order->id, 'sync,revalidate,cancel');
+    $action->shouldReceive('cancel')->once()->with($order->id);
+
+    buildV1Controller(['oid' => $order->id], 'POST', $action, $user->id)->cancel();
+
+    expect($order->latestCert()->first()->status)->toBe('cancelling');
+});
 
 test('V1 健康检查', function () {
     $user = User::factory()->create();

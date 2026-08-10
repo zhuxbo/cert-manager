@@ -781,7 +781,7 @@ test('pull scheduler 自动重签失败 → 服务端自写 ip 留空的签发�
         ->and($report->message)->toStartWith('自动重签失败：');
 });
 
-test('pull scheduler 自动重签成功且失败在案 → 服务端自写恢复行并清去重键', function () {
+test('pull scheduler 自动重签成功且失败在案 → 服务端自写恢复行', function () {
     $user = User::factory()->create(['auto_settings' => ['auto_renew' => false, 'auto_reissue' => true]]);
     $product = Product::factory()->create(['status' => 1, 'reissue' => 1]);
     $order = Order::factory()->create([
@@ -798,7 +798,7 @@ test('pull scheduler 自动重签成功且失败在案 → 服务端自写恢复
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
-    // 失败在案：前一轮失败行 + 去重键已置（M1 场景：无客户端回调的 web 订单）
+    // 失败在案：前一轮失败行（无客户端回调的 web 订单）
     AutoDeployReport::create([
         'order_id' => $order->id,
         'cert_id' => $cert->id,
@@ -806,8 +806,6 @@ test('pull scheduler 自动重签成功且失败在案 → 服务端自写恢复
         'ip' => null,
         'message' => '自动重签失败：系统处理异常',
     ]);
-    Cache::put("system_alert:deploy_failure_{$order->id}", 'deploy_failure', 3600);
-
     $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
     // reissue 成功信号：ApiResponseException code=1 携 data.order_id（同订单）→ pay → createTask 延时 commit
@@ -820,13 +818,12 @@ test('pull scheduler 自动重签成功且失败在案 → 服务端自写恢复
 
     $this->artisan('schedule:auto-renew')->assertSuccessful();
 
-    // 恢复行已写（最后一条转 success，reminder 状态判定收敛）+ 去重键已清（复发立即再告警）
+    // 恢复行已写（最后一条转 success）
     $recovery = AutoDeployReport::where('order_id', $order->id)->orderByDesc('id')->first();
     expect($recovery->status)->toBe('success')
         ->and($recovery->ip)->toBeNull()
         ->and($recovery->message)->toBe('自动重签成功：前次失败已恢复')
-        ->and(AutoDeployReport::where('order_id', $order->id)->count())->toBe(2)
-        ->and(Cache::get("system_alert:deploy_failure_{$order->id}"))->toBeNull();
+        ->and(AutoDeployReport::where('order_id', $order->id)->count())->toBe(2);
 });
 
 test('pull scheduler 自动重签成功但无失败在案 → 不写恢复行（避免全量成功噪音）', function () {

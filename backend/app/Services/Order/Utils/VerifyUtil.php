@@ -7,11 +7,13 @@ namespace App\Services\Order\Utils;
 use App\Models\Order;
 use App\Services\Delegation\DnsResolver;
 use App\Traits\ApiResponseStatic;
+use App\Utils\IpUtil;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Psr\Http\Message\StreamInterface;
 
 class VerifyUtil
 {
@@ -24,8 +26,14 @@ class VerifyUtil
     {
         $urls = get_system_setting('site', 'dnsTools');
 
-        // 确保返回数组格式
-        return is_array($urls) ? $urls : [];
+        if (! is_array($urls)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            fn (mixed $url): ?string => is_string($url) && trim($url) !== '' ? trim($url) : null,
+            $urls,
+        )));
     }
 
     /**
@@ -130,23 +138,26 @@ class VerifyUtil
      * 迁移非行为等价，按逐差异对齐：Guzzle 默认对 4xx/5xx 抛异常 → 故障转移，Laravel Http 默认不抛，
      * 故循环内显式 `$response->failed()` continue，保「错误状态码也转移」；连接级异常改 catch ConnectionException。
      *
-     * dnsTools 全部节点不可达时经 DnsResolver 本地兜底：
-     *  - 本地命中期望值 → code=1（走既有 revalidate 自愈），并带 dns_tools_down（infra 挂，供 admin 告警计数）。
-     *  - 不可判定（含 file/http 项或本地未命中）→ code=0 + dns_tools_down=true（触发连续 N 建 sync 安全网）。
-     * dnsTools 有节点应答（成功或 DCV 失败）时不打 dns_tools_down 标记（DNS 确实未就绪，维持现状）。
+     * dnsTools 可选：未配置时直接在本机检测；已配置时依次尝试各节点，均未通过再回落本机。
+     * 本机检测不缓存结果，每次调用都重新查询。
+     *
+     * dnsTools 节点均未通过时在本机兜底：
+     *  - 本地命中期望值 → code=1（走既有 revalidate 自愈）；仅全部节点不可达时带 dns_tools_down。
+     *  - TXT/CNAME 经 DnsResolver 核对；file/http/https 直接读取公网验证文件并核对内容。
+     *  - 不可判定（含邮箱验证、本地未命中或外联失败）→ code=0 + dns_tools_down=true（触发连续 N 建 sync 安全网）。
+     * dnsTools 有节点应答时不打 dns_tools_down 标记；本地也未命中时保留最后一个远端失败诊断。
      */
     public static function verifyValidation(array $validation): array
     {
         $urls = self::getDnsToolsUrls();
 
-        // 检查是否有可用的 DNS Tools URLs
+        // dnsTools 是可选增强渠道；未配置是正常的纯本地模式，不应记录故障或触发 infra-down 安全网。
         if (empty($urls)) {
-            Log::error('DNS Tools URLs 未配置');
-
-            return self::localFallbackResult($validation, 'DNS Tools URLs 未配置，无法进行域名验证');
+            return self::localValidationResult($validation, '本地 DCV 验证未通过');
         }
 
         $lastError = '';
+        $lastRemoteFailure = null;
         foreach ($urls as $url) {
             try {
                 $response = Http::withoutVerifying() // 关闭 SSL 证书验证（对齐原 verify:false）
@@ -165,19 +176,25 @@ class VerifyUtil
 
                 $result = $response->json();
 
-                if ($result === null) {
+                if (! is_array($result)) {
                     Log::error('DNS Tools API 返回无效 JSON', ['url' => $url]);
                     $lastError = 'API 返回无效数据';
 
                     continue;
                 }
 
-                // dnsTools 节点有应答（成功或 DCV 失败）→ 不打 infra-down 标记
-                return [
+                $normalizedResult = [
                     'code' => $result['code'] ?? 0,
                     'msg' => $result['msg'] ?? '',
                     'errors' => $result['errors'] ?? [],
                 ];
+
+                if ($normalizedResult['code'] == 1) {
+                    return $normalizedResult;
+                }
+
+                // 该节点有应答但可能仍受 DNS 负缓存影响：记录结果后继续轮询其余节点，最后用本地解析复核。
+                $lastRemoteFailure = $normalizedResult;
             } catch (ConnectionException $e) {
                 // 仅连接级异常做节点故障转移；其余罕见 Guzzle 异常（如重定向环）逸出本方法，
                 // 交 ValidateCommand 外层 catch(Throwable) 兜底：该单本轮跳过、next_check_at 不前移、下轮重试
@@ -191,49 +208,84 @@ class VerifyUtil
             }
         }
 
-        // 全部节点不可达 → 本地 DNS 兜底 + infra-down 信号
-        return self::localFallbackResult($validation, 'DNS Tools API 请求失败: '.$lastError);
+        $localResult = self::localValidationResult(
+            $validation,
+            'DNS Tools API 请求失败: '.$lastError,
+            dnsToolsDown: $lastRemoteFailure === null,
+        );
+
+        if ($localResult['code'] == 1 || $lastRemoteFailure === null) {
+            return $localResult;
+        }
+
+        // 至少一个节点给出明确未通过且本地也未命中：保留远端诊断，不标记基础设施故障。
+        return $lastRemoteFailure;
     }
 
     /**
-     * dnsTools 全挂时的本地兜底结果（F2-1）。均带 dns_tools_down=true 供 admin 告警计数。
+     * 本地 DCV 检测结果。仅已配置 dnsTools 且全部节点不可达时附带 dns_tools_down=true，
+     * 供 sync 安全网计数；未配置时是正常的纯本地模式。
      *
-     * @param  string  $downMsg  不可判定时的错误文案
+     * @param  string  $failureMsg  不可判定时的错误文案
      */
-    private static function localFallbackResult(array $validation, string $downMsg): array
-    {
+    private static function localValidationResult(
+        array $validation,
+        string $failureMsg,
+        bool $dnsToolsDown = false,
+    ): array {
         $local = self::verifyValidationLocal($validation);
 
         if ($local === true) {
             // 本地 DNS 确认有效 → 走既有 revalidate 自愈（CA 权威复核，本地 false-pass 仅多一次 revalidate、不误签）
-            return ['code' => 1, 'msg' => '本地 DNS 兜底验证通过', 'errors' => [], 'dns_tools_down' => true];
+            $result = [
+                'code' => 1,
+                'msg' => $dnsToolsDown ? '本地 DCV 兜底验证通过' : '本地 DCV 验证通过',
+                'errors' => [],
+            ];
+        } else {
+            // 不可判定（含邮箱验证、本地未命中或外联失败）→ code=0，等待下轮或 CA 同步复核。
+            $result = ['code' => 0, 'msg' => $failureMsg];
         }
 
-        // 不可判定（含 file/http 项或本地未命中）→ code=0 + infra-down 标记
-        return ['code' => 0, 'msg' => $downMsg, 'dns_tools_down' => true];
+        if ($dnsToolsDown) {
+            $result['dns_tools_down'] = true;
+        }
+
+        return $result;
     }
 
     /**
-     * 本地 DNS 兜底判定（F2-1）：仅对 DNS 类项（txt/cname）经 DnsResolver 直查本地核对期望值。
+     * 本地 DCV 兜底判定（F2-1）。
      *
-     * 钉死本地 dns_get_record（DnsResolver），绝不复用 queryTxtRecords（后者会先重打全部 dnsTools 各 3s，
-     * 在停摆场景成倍放大延迟）。全部 DNS 项命中 → true；任一无法确认或含非 DNS 项（file/http/https/email）→ null
-     * （不可判定，不 false-negative：本地可能滞后，交 CA 权威复核）。
+     * TXT/CNAME 钉死 DnsResolver，绝不复用会重打 dnsTools 的 queryTxtRecords；file/http/https
+     * 直接读取验证链接，拒绝私网/保留地址、跨域链接、重定向和超大响应。全部项目命中才返回 true。
+     * 邮箱验证无法从本地观测 CA 收件人是否已确认，保持不可判定并交同步任务读取 CA 权威状态。
      *
      * @return bool|null true=全部命中；null=不可判定
      */
     private static function verifyValidationLocal(array $validation): ?bool
     {
-        $resolver = app(DnsResolver::class);
-        $sawDnsItem = false;
+        $resolver = null;
+        $sawVerifiableItem = false;
 
         foreach ($validation as $item) {
             $method = strtolower($item['method'] ?? '');
 
-            // 含 file/http/https/email/admin 等非 DNS 项 → 本地不可判定
+            if (in_array($method, ['file', 'http', 'https'], true)) {
+                if (! self::verifyFileValidationLocal($item, $method)) {
+                    return null;
+                }
+                $sawVerifiableItem = true;
+
+                continue;
+            }
+
+            // 邮箱/admin 等验证依赖 CA 侧确认状态，本机无法直接判定
             if (! in_array($method, ['txt', 'cname'], true)) {
                 return null;
             }
+
+            $resolver ??= app(DnsResolver::class);
 
             $expected = (string) ($item['value'] ?? '');
             $host = (string) ($item['host'] ?? '');
@@ -252,7 +304,7 @@ class VerifyUtil
                 $host = $host.'.'.$domain;
             }
 
-            $sawDnsItem = true;
+            $sawVerifiableItem = true;
 
             if ($method === 'txt') {
                 $hit = false;
@@ -280,7 +332,148 @@ class VerifyUtil
             }
         }
 
-        return $sawDnsItem ? true : null;
+        return $sawVerifiableItem ? true : null;
+    }
+
+    /**
+     * 本机读取 HTTP DCV 文件并核对内容。
+     *
+     * file 是历史的协议无关方法，生成 link 时为 //domain/path，按 HTTP、HTTPS 顺序尝试；
+     * 显式 http/https 方法只请求对应协议。任何失败均返回 false（不可判定），不制造 false-negative。
+     */
+    private static function verifyFileValidationLocal(array $item, string $method): bool
+    {
+        $link = trim((string) ($item['link'] ?? ''));
+        $expected = (string) ($item['content'] ?? '');
+        $domain = strtolower(rtrim(ltrim((string) ($item['domain'] ?? ''), '*.'), '.'));
+
+        if ($link === '' || $expected === '' || $domain === '') {
+            return false;
+        }
+
+        if (str_starts_with($link, '//')) {
+            $urls = $method === 'file' ? ['http:'.$link, 'https:'.$link] : [$method.':'.$link];
+        } else {
+            $urls = [$link];
+        }
+
+        foreach ($urls as $url) {
+            $requestOptions = self::publicValidationRequestOptions($url, $domain, $method);
+            if ($requestOptions === null) {
+                continue;
+            }
+
+            try {
+                $response = Http::withoutVerifying()
+                    ->connectTimeout(3)
+                    ->timeout(5)
+                    ->withHeaders([
+                        'Cache-Control' => 'no-cache, no-store, max-age=0',
+                        'Pragma' => 'no-cache',
+                    ])
+                    ->withOptions($requestOptions)
+                    ->get($url);
+
+                if ($response->status() !== 200) {
+                    continue;
+                }
+
+                $actual = self::readLimitedBody($response->toPsrResponse()->getBody(), 8192);
+                if ($actual === null) {
+                    continue;
+                }
+
+                if (hash_equals(
+                    self::normalizeValidationFileContent($expected),
+                    self::normalizeValidationFileContent($actual)
+                )) {
+                    return true;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('本地文件验证请求失败', [
+                    'host' => parse_url($url, PHP_URL_HOST),
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 有界读取流式响应。单次 StreamInterface::read() 允许返回少于请求长度的数据，
+     * 必须循环到 EOF；超过上限返回 null，避免为验证文件无界占用内存。
+     */
+    private static function readLimitedBody(StreamInterface $body, int $limit): ?string
+    {
+        $content = '';
+
+        while (! $body->eof()) {
+            $chunk = $body->read(min(8192, $limit + 1 - strlen($content)));
+            if ($chunk === '') {
+                break;
+            }
+
+            $content .= $chunk;
+            if (strlen($content) > $limit) {
+                return null;
+            }
+        }
+
+        return $content;
+    }
+
+    /**
+     * 校验 DCV URL 并生成请求选项。域名解析结果必须全部为公网地址；有 curl 时固定首个已校验 IP，
+     * 缩小 DNS 重绑定窗口。禁止重定向，避免公网 URL 302 到内网。
+     */
+    private static function publicValidationRequestOptions(string $url, string $domain, string $method): ?array
+    {
+        $parts = parse_url($url);
+        if (! is_array($parts)) {
+            return null;
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower(rtrim(trim((string) ($parts['host'] ?? ''), '[]'), '.'));
+        $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+        $allowedSchemes = $method === 'file' ? ['http', 'https'] : [$method];
+
+        if (! in_array($scheme, $allowedSchemes, true)
+            || $host === ''
+            || $host !== $domain
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || ! in_array($port, [80, 443], true)) {
+            return null;
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return IpUtil::isPrivateOrReserved($host) ? null : ['allow_redirects' => false, 'stream' => true];
+        }
+
+        $addresses = gethostbynamel($host);
+        if ($addresses === false || $addresses === []) {
+            return null;
+        }
+
+        foreach ($addresses as $address) {
+            if (IpUtil::isPrivateOrReserved($address)) {
+                return null;
+            }
+        }
+
+        $options = ['allow_redirects' => false, 'stream' => true];
+        if (defined('CURLOPT_RESOLVE')) {
+            $options['curl'] = [CURLOPT_RESOLVE => ["{$host}:{$port}:{$addresses[0]}"]];
+        }
+
+        return $options;
+    }
+
+    private static function normalizeValidationFileContent(string $content): string
+    {
+        return rtrim(str_replace(["\r\n", "\r"], "\n", $content), "\n");
     }
 
     /**

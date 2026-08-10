@@ -4,9 +4,11 @@ use App\Models\Admin;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Notification\NotificationCenter;
+use App\Services\Payment\PayConfigCache;
 use Illuminate\Support\Facades\Cache;
 
 afterEach(function () {
+    PayConfigCache::forgetAll();
     Mockery::close();
 });
 
@@ -51,6 +53,14 @@ function makePayCert(int $days): string
     return $pem;
 }
 
+function makePayPublicKey(): string
+{
+    $privateKey = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $details = openssl_pkey_get_details($privateKey);
+
+    return $details['key'];
+}
+
 /** 字段 type 与 SettingSeeder 同源：证书/密钥字段生产为 base64 型（存 base64_encode、读经 accessor base64_decode） */
 function paySettingType(string $key): string
 {
@@ -85,11 +95,24 @@ function healthyAlipay(array $overrides = []): array
     ], $overrides);
 }
 
+function writePaymentRuntimeCert(string $configKey, string $pem): void
+{
+    $path = config('pay.alipay.default.'.$configKey);
+    if (! is_dir(dirname($path))) {
+        mkdir(dirname($path), 0755, true);
+    }
+    file_put_contents($path, $pem);
+}
+
 beforeEach(function () {
     paymentSetupAdmin();
     config()->set('monitoring.payment_health.enabled', true);
     config()->set('monitoring.payment_health.cert_warn_days', 30);
     config()->set('monitoring.payment_health.dedupe_ttl_hours', 168);
+    config()->set('pay.alipay.default.app_public_cert_path', storage_path('pay/alipayAppCertPublicKey.crt'));
+    config()->set('pay.alipay.default.alipay_public_cert_path', storage_path('pay/alipayCertPublicKeyRSA2.crt'));
+    config()->set('pay.alipay.default.alipay_root_cert_path', storage_path('pay/alipayRootCert.crt'));
+    config()->set('pay.wechat.default.mch_public_cert_path', storage_path('pay/wechatApiclientCert.pem'));
 });
 
 test('① 未配置渠道（无 app_id/mch_id）→ 无告警', function () {
@@ -129,15 +152,40 @@ test('③ 证书 <30 天 → 告警（含字段名，不含 PEM）', function ()
         ->and($detailsJson)->not->toContain('BEGIN CERTIFICATE');
 });
 
-test('④ 缺必填字段 → 完整性告警', function () {
-    setPaymentGroup('alipay', healthyAlipay(['app_secret_cert' => '']));
+test('④ 渠道身份已填写但支付证书未配置 → 视为未启用、不告警', function () {
+    setPaymentGroup('alipay', [
+        'app_id' => '2021000000000000',
+        'app_secret_cert' => 'dummy-private-key',
+    ]);
     $state = paymentCaptureCenter();
 
     $this->artisan('schedule:payment-health')->assertSuccessful();
 
-    expect($state->count)->toBe(1);
-    $detailsJson = json_encode($state->captured->context['details']);
-    expect($detailsJson)->toContain('app_secret_cert');
+    expect($state->count)->toBe(0);
+});
+
+test('仅配置一张远期支付证书时忽略其他空证书字段', function () {
+    setPaymentGroup('alipay', [
+        'app_id' => '2021000000000000',
+        'certPublicKeyRSA2' => makePayCert(400),
+    ]);
+    $state = paymentCaptureCenter();
+
+    $this->artisan('schedule:payment-health')->assertSuccessful();
+
+    expect($state->count)->toBe(0);
+});
+
+test('支付宝 RSA2 公钥按 SDK 验签公钥口径检查', function () {
+    setPaymentGroup('alipay', [
+        'app_id' => '2021000000000000',
+        'certPublicKeyRSA2' => makePayPublicKey(),
+    ]);
+    $state = paymentCaptureCenter();
+
+    $this->artisan('schedule:payment-health')->assertSuccessful();
+
+    expect($state->count)->toBe(0);
 });
 
 test('⑤ 坏证书串 → 告警不 crash', function () {
@@ -147,6 +195,33 @@ test('⑤ 坏证书串 → 告警不 crash', function () {
     $this->artisan('schedule:payment-health')->assertSuccessful();
 
     expect($state->count)->toBe(1);
+});
+
+test('已落盘证书优先于设置值，检测口径与支付 SDK 一致', function () {
+    setPaymentGroup('alipay', healthyAlipay([
+        'appCertPublicKey' => 'stale-invalid-setting',
+        'certPublicKeyRSA2' => 'stale-invalid-setting',
+    ]));
+    writePaymentRuntimeCert('app_public_cert_path', makePayCert(400));
+    writePaymentRuntimeCert('alipay_public_cert_path', makePayCert(400));
+    $state = paymentCaptureCenter();
+
+    $this->artisan('schedule:payment-health')->assertSuccessful();
+
+    expect($state->count)->toBe(0);
+});
+
+test('已配置的支付宝根证书无法解析时告警', function () {
+    setPaymentGroup('alipay', [
+        'app_id' => '2021000000000000',
+        'rootCert' => 'invalid-root-bundle',
+    ]);
+    $state = paymentCaptureCenter();
+
+    $this->artisan('schedule:payment-health')->assertSuccessful();
+
+    expect($state->count)->toBe(1)
+        ->and($state->captured->context['details']['alipay_invalid'])->toContain('rootCert(解析失败)');
 });
 
 test('⑥ 连续两日同状态 → 第二日不重发（状态指纹）', function () {
@@ -192,7 +267,7 @@ test('⑧ 恢复后清键、再异常立即发', function () {
     expect($state->count)->toBe(2);
 });
 
-test('⑨ rootCert 到期不触发（跳过 notAfter，只查非空）', function () {
+test('⑨ rootCert 到期不触发（只校验 bundle 可解析，不检查 notAfter）', function () {
     setPaymentGroup('alipay', healthyAlipay(['rootCert' => makePayCert(5)]));
     $state = paymentCaptureCenter();
 

@@ -412,9 +412,9 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 ### 开关
 
-- 分组：`site`，key：`autoRefundOnSync`，type：`boolean`，默认 `false`
-- 后端读取：`get_system_setting('site', 'autoRefundOnSync')`
-- 前端：admin 站点设置页面自动按 SettingGroup 渲染 boolean toggle
+- 可选设置，不进入 Seeder；缺失时默认 `false`
+- 如需开启，管理员手工新增：分组 `site`，key `autoRefundOnSync`，type `boolean`，value `true`；新增后会在普通系统设置页面显示并可编辑
+- 后端仅在 `get_system_setting('site', 'autoRefundOnSync') === true` 时开启
 
 ### 触发条件（四个必须全部成立）
 
