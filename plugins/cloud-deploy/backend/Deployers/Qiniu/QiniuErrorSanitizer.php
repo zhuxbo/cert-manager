@@ -13,7 +13,7 @@ use Throwable;
  * 在 curl_errno≠0 时把 curl_error 拼进 Response->error）的 message 可能含请求 URL → 仅暴露类名。
  *
  * 策略（与 Aliyun/Tencent sanitizer 对称）：
- *   - QiniuApiException（结构化 API 错误，QiniuRestClient 由 HTTP 非 2xx / 响应体 code≠0 归一）：
+ *   - QiniuApiException（结构化 API 错误，QiniuRestClient 由 HTTP 非 2xx / 响应体非成功 code 归一）：
  *     取七牛错误码 + 七牛自带描述（均来自响应体）拼安全文案。
  *   - 其余（本地/网络/未知 Throwable）：只给错误类名 + 通用文案，绝不回传 getMessage()。
  * 末尾统一过 CredentialScrubber 兜底再扫一遍 AK/SK/签名/私钥 pattern（纵深防御）。

@@ -2,9 +2,11 @@
 
 namespace Plugins\CloudDeploy\Deployers\Qiniu;
 
+use Closure;
 use Qiniu\Auth;
 use Qiniu\Http\Client;
 use Qiniu\Http\Response;
+use RuntimeException;
 
 /**
  * 七牛云 REST 薄客户端（SSL 证书 / 融合 CDN / 对象存储 Kodo / 直播 Pili）。
@@ -17,9 +19,9 @@ use Qiniu\Http\Response;
  * 鉴权：Qiniu V2（管理凭证签名），签名串含 method+path+query+Host+Content-Type+body，故签名用的 body
  * 与实际发送 body 必须是**同一字符串**（本类先 json_encode 一次再分别喂签名与发送）。
  *
- * 错误归一：HTTP 非 2xx 或 响应体 code≠0 → 抛 QiniuApiException（携七牛错误码 + 响应体 error 描述，
- * 均来自响应体、不含凭证）。curl 本身失败（statusCode<0）→ 同样抛 QiniuApiException 但用通用描述
- * （不回传可能含 URL 的 curl_error，由 sanitizer 再兜底）。
+ * 错误归一：HTTP 非 2xx 或响应体 code 不在成功码 0/200 → 抛 QiniuApiException（携七牛错误码 +
+ * 响应体 error 描述，均来自响应体、不含凭证）。curl 本身失败（statusCode<0）→ 同样抛
+ * QiniuApiException 但用通用描述（不回传可能含 URL 的 curl_error，由 sanitizer 再兜底）。
  *
  * 此类是 deployer 的 makeClient('api', …) 唯一产物 —— 测试 override makeClient 返回 mock 即覆盖全部
  * REST 调用，无需打 curl。
@@ -30,7 +32,11 @@ class QiniuRestClient
 
     private const PILI_HOST = 'https://pili.qiniuapi.com';
 
-    public function __construct(private readonly Auth $auth) {}
+    /** @param null|Closure(string,string,string,array<string,string>):Response $requester */
+    public function __construct(
+        private readonly Auth $auth,
+        private readonly ?Closure $requester = null,
+    ) {}
 
     /**
      * 上传 SSL 证书到七牛证书中心。
@@ -125,34 +131,56 @@ class QiniuRestClient
      */
     private function put(string $url, array $body, string $method = 'PUT'): Response
     {
-        $payload = (string) json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $payload = $this->encodeJson($body);
         // 签名用的 body 必须与发送 body 同串（Qiniu V2 签名串含 body）
         $headers = $this->auth->authorizationV2($url, $method, $payload, 'application/json');
 
-        $resp = $method === 'POST'
-            ? Client::post($url, $payload, $headers)
-            : Client::PUT($url, $payload, $headers);
-
-        return $this->ensureOk($resp);
+        return $this->ensureOk($this->request($method, $url, $payload, $headers));
     }
 
     private function get(string $url): Response
     {
         $headers = $this->auth->authorizationV2($url, 'GET', '', null);
 
-        return $this->ensureOk(Client::get($url, $headers));
+        return $this->ensureOk($this->request('GET', $url, '', $headers));
+    }
+
+    /** @param array<string,mixed> $body */
+    private function encodeJson(array $body): string
+    {
+        return (string) json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    /** @param array<string,string> $headers */
+    private function request(string $method, string $url, string $payload, array $headers): Response
+    {
+        if ($this->requester !== null) {
+            $response = ($this->requester)($method, $url, $payload, $headers);
+            if (! $response instanceof Response) {
+                throw new RuntimeException('七牛云请求器未返回有效响应');
+            }
+
+            return $response;
+        }
+
+        return match ($method) {
+            'GET' => Client::get($url, $headers),
+            'POST' => Client::post($url, $payload, $headers),
+            'PUT' => Client::PUT($url, $payload, $headers),
+            default => throw new RuntimeException('不支持的七牛云请求方法'),
+        };
     }
 
     /**
-     * HTTP 非 2xx 或 响应体 code≠0 → 抛 QiniuApiException（仅响应体来源的 code + 描述，无凭证/URL）。
+     * HTTP 非 2xx 或响应体 code 不在 0/200 → 抛 QiniuApiException（仅响应体来源的 code + 描述，无凭证/URL）。
      */
     private function ensureOk(Response $resp): Response
     {
         $json = is_array($resp->json()) ? $resp->json() : [];
 
-        // 七牛业务错误：HTTP 2xx 但响应体 code 非 0（部分端点如此约定）
+        // 七牛端点成功码不统一：部分返回 code=0，部分返回 code=200。
         $bodyCode = $json['code'] ?? null;
-        if (is_int($bodyCode) && $bodyCode !== 0) {
+        if (is_int($bodyCode) && ! in_array($bodyCode, [0, 200], true)) {
             $err = is_string($json['error'] ?? null) && $json['error'] !== '' ? $json['error'] : '七牛云接口返回错误';
             throw new QiniuApiException((string) $bodyCode, $err);
         }
