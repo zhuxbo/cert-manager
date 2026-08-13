@@ -270,7 +270,7 @@ test('commit 业务失败不触发 fail()（action 白名单未扩散，commit �
 // ==================== Imp-1：取消类幂等拒绝不误报 admin 告警 ====================
 
 test('cancel 幂等拒绝（本地已 cancelled 且已退款）视为 no-op：task 标 failed 但不触发 fail() 告警', function () {
-    // Imp-1 复现：refundForSyncedCancel 退款置 cancelled 后刻意保留的 cancel task 被 TaskJob 唤醒，
+    // Imp-1 复现：并发/历史遗留的 cancel task 在订单已退款并置 cancelled 后被 TaskJob 唤醒，
     // 撞 cancelLocked 锁内 status===cancelled → error('订单已取消')（code=0）。退款已发生，属幂等 no-op，
     // 绝不能再发 admin task_failed 假告警。修复前 C1 无差别对 cancel 失败 fail() → 假告警（本断言 RED）。
     // ②修复后：cancelled 豁免需以「已退款（有 cancel 流水）」为真实前提 —— 本用例补建 cancel 流水
@@ -460,9 +460,9 @@ test('cancel 撞已 cancelled 的 0 元订单（应退=0 本就不建流水）�
     expect($task->fresh()->result['msg'])->toContain('订单已取消');
 });
 
-test('cancel 撞已 cancelled 的 reissue 零增量单（应退=cert.amount=0）：仍豁免、不告警', function () {
-    // ② 反向边界：reissue 应退金额 = 当次增量 cert.amount（非 order.amount）。零增量 reissue 取消
-    // 本就不建 cancel 流水，即便原始订单付过费（order.amount>0）也必须豁免 —— 判据按 action 取正确应退口径。
+test('cancel 撞已 cancelled 的 reissue 零增量单但订单金额大于 0：未退款必须告警', function () {
+    // 已提交上游的 reissue 取消恢复订单全额退款口径；即使本次增量为 0，只要 order.amount>0，
+    // cancelled 且无 cancel 流水仍代表整单退款缺失，不能按 cert.amount=0 误判为合法幂等。
     $user = $this->createTestUser();
     $product = $this->createTestProduct(['source' => 'default']);
     $order = $this->createTestOrder($user, $product, ['amount' => '100.00']); // 原始订单付费
@@ -480,7 +480,7 @@ test('cancel 撞已 cancelled 的 reissue 零增量单（应退=cert.amount=0）
 
     $job->handle();
 
-    $job->assertNotFailed(); // reissue 零增量取消无流水属合法幂等
+    $job->assertFailed();
     expect($task->fresh()->result['msg'])->toContain('订单已取消');
 });
 

@@ -63,14 +63,12 @@ return [
     |  - unpaid（stale > unpaid_stale_minutes）→ Action::delete（恢复旧证书、无退款、无流水）
     |  - pending（reconcile 已到顶转人工、非产品缺失）→ Action::cancelPending（退款 + 恢复旧证书）
     |
-    | 分级金丝雀（资金重手术）：unpaid 分支默认开（P0 修复即刻生效、无资金面）；pending 退款分支
-    | 语义反转为 arm-switch 默认关，首轮生产观察 T5 每日快照确认到顶集正确后手动置 true 开启。
-    | pending 到顶判据复用顶层 max_attempts（与 reconcile/T5 同源，绝不另设）。
+    | unpaid 分支保留开关（P0 修复默认生效、无资金面）；pending 已确认未提交上游且重试到顶，
+    | 必须退款收尾，不提供关闭开关。pending 到顶判据复用顶层 max_attempts（与 reconcile/T5 同源）。
     |
     */
     'orphan' => [
         'unpaid_enabled' => (bool) env('RECONCILE_ORPHAN_UNPAID_ENABLED', true),
-        'pending_enabled' => (bool) env('RECONCILE_ORPHAN_PENDING_ENABLED', false),
         'unpaid_stale_minutes' => (int) env('RECONCILE_ORPHAN_UNPAID_STALE_MINUTES', 60),
         'batch' => (int) env('RECONCILE_ORPHAN_BATCH', 50),
     ],

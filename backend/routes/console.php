@@ -147,7 +147,7 @@ Schedule::command('schedule:reconcile-acme')
     ->onFailure($logScheduleFailure('schedule:reconcile-acme'));
 
 // O4 孤儿单清理 - 每小时（恢复类清理非紧急，freeze 期 skip、结束后追平；hourly 保证每 5min 的 T5
-// 转人工先于 pending 收尾接手，防两自动化拆台）。unpaid delete 默认开、pending 退款默认关（arm-switch）。
+// 转人工先于 pending 收尾接手，防两自动化拆台）。unpaid delete 可配置；pending 未提交上游且到顶后必须退款。
 Schedule::command('schedule:sweep-orphan-orders')
     ->hourly()
     ->withoutOverlapping()

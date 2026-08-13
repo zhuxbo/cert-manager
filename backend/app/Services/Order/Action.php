@@ -34,6 +34,7 @@ use App\Services\Order\Utils\VerifyUtil;
 use App\Support\MutexLock;
 use App\Traits\ApiResponse;
 use App\Traits\RunsTaskMutationTransaction;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
@@ -538,6 +539,8 @@ class Action
      */
     public function sync(int $orderId, bool $force = false, bool $suppressCallback = false): void
     {
+        $cacheKey = 'sync_'.md5(json_encode([$orderId]));
+
         // 10秒内仅请求一次 API 避免重复请求
         if ($this->checkDuplicate('sync', [$orderId], 10)) {
             if ($force) {
@@ -547,6 +550,23 @@ class Action
             }
         }
 
+        try {
+            $this->performSync($orderId, $force, $suppressCallback);
+        } catch (Throwable $e) {
+            $response = $e instanceof ApiResponseException ? $e->getApiResponse() : null;
+            if (($response['code'] ?? 0) !== 1) {
+                Cache::forget($cacheKey);
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * 执行单次同步；防重复占位由 sync() 统一管理。
+     */
+    private function performSync(int $orderId, bool $force, bool $suppressCallback): void
+    {
         $order = Order::with(['user', 'product', 'latestCert'])
             ->whereHas('user')
             ->whereHas('product')
@@ -615,8 +635,8 @@ class Action
         }
 
         // 同步退款分支：上游 cancelled + 过渡态 + new/renew/reissue + 开关开 → 专用 helper 处理退款。
-        // reissue 走增量退款口径（refundForSyncedCancel 内按 action 分流，对齐 cancelLocked：只退当次增量、
-        // 前驱不恢复保持 reissued），避免 getCancelTransaction 求和超退原始全额。上游 cancelled 与本地
+        // 已提交上游的 reissue 会终结整个订单，与 new/renew 统一按订单口径退款；pending reissue 的增量退款
+        // 属于恢复前驱路径，不经过这里。上游 cancelled 与本地
         // 三个过渡态天然保证状态已变化，无需额外维护等价的 hasStatusChanged 粗筛。
         if (($data['status'] ?? null) === 'cancelled'
             && in_array($cert->status, ['processing', 'approving', 'cancelling'])
@@ -1226,9 +1246,14 @@ class Action
             $cert = $order->latestCert;
             $isReissue = $cert->action === 'reissue';
 
-            // F1+F4 前置只读预检（reissue 专属，必须在 api->cancel 之前：失败即回滚且上游从未被调用）。
-            // 挡住"二次 reissue-cancel 在上游取消成功后撞 cancel 唯一索引 → 卡 cancelling 无退款"形态。
-            $lastTransaction = $isReissue ? $this->prepareReissueRefund($order, $cert) : null;
+            // reissue 可能在恢复前驱后再次进入取消；必须在调用上游前挡住已有退款流水，
+            // 避免上游取消成功后才撞 cancel 唯一索引，导致本地回滚并卡在 cancelling。
+            if ($isReissue) {
+                $alreadyRefunded = Transaction::where('type', 'cancel')
+                    ->where('transaction_id', $order->id)
+                    ->exists();
+                $alreadyRefunded && $this->error('该订单已存在取消退款流水，请人工处理');
+            }
 
             try {
                 $this->api->cancel($orderId);
@@ -1238,14 +1263,15 @@ class Action
                 $this->error($msg, $errors);
             }
 
-            if ($isReissue) {
-                // 语义1：增量退款——对所有 reissue 取消入口生效（Purge/手动 commitCancel/batchCommitCancel）。
-                // reissue 只更 cert.amount 不更 order.amount、交易含 原始new+reissue增量 两笔，若走
-                // getCancelTransaction 求和会超退原始全额（latent over-refund）。改增量口径只退当次 reissue。
-                // $lastTransaction=null（amount=0）跳过退款块。
-                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
+            // 已提交上游的订单取消统一按订单口径退款：以 order.amount 为基准，
+            // 并由 getCancelTransaction 核对该订单全部 order/cancel 流水净额；不一致时以流水净额为准并告警。
+            // 防双退底线：锁内 status 校验先挡住已 cancelled；transactions_dedup_unique
+            // 再从数据库层保证同一订单只有一条 cancel 流水。
+            $transaction = OrderUtil::getCancelTransaction($order->toArray());
+            Transaction::create($transaction);
 
-                // 语义2：订单终结——已提交上游（processing/approving，含已签发 active）取消一律不恢复前驱。
+            if ($isReissue) {
+                // 订单终结——已提交上游（processing/approving，含已签发 active）取消一律不恢复前驱。
                 // 上游各家取消政策不一，恢复前驱 active 存在「被上游 supersede 后本地状态与实际不符」风险，
                 // 故 reissue cert 置 cancelled、前驱不恢复/不回切/不删（前驱保持 reissued 终态）。
                 // last_cert_id 保留不置 null：订单经 latestCert=cancelled 终结（重签/续费/取消前置门齐闭）后
@@ -1255,22 +1281,6 @@ class Action
                 $order->cancelled_at = now();
                 $order->save();
             } else {
-                // new/renew：原逻辑逐字不变（getCancelTransaction 求和单笔口径，触点唯一、零影响）
-                //
-                // 获取交易信息
-                $transaction = OrderUtil::getCancelTransaction($order->toArray());
-
-                // 创建交易记录并退款
-                //
-                // 防双退底线（与 refundForSyncedCancel 注释互引，二者协作不可单独删除）：
-                //   - 锁内 status 校验：上面「status===cancelled → error('订单已取消')」是第一道。
-                //     refundForSyncedCancel 已退款并置 cancelled 后刻意保留的残留 cancel task，被
-                //     TaskJob 唤醒调用本方法时，会在锁内撞上该校验抛错回滚，不会走到此处二次退款。
-                //   - DB 唯一索引 transactions_dedup_unique（type,transaction_id WHERE type!='order'，
-                //     迁移 2026_05_07_120000）是物理底线：即便锁校验被某条并发路径绕过，此 INSERT 也会
-                //     因唯一冲突抛错回滚。应用层校验仅是预检，删除唯一索引会破坏底线。
-                Transaction::create($transaction);
-
                 // 更新订单状态
                 $order->latestCert->update(['status' => 'cancelled']);
 
@@ -1356,25 +1366,20 @@ class Action
     /**
      * 同步发现上游已取消时的退款入口
      *
-     * 调用前提：sync 已校验触发四条件（status=cancelled + 过渡态 + new/renew + 开关开）。
+     * 调用前提：sync 已校验触发四条件（status=cancelled + 过渡态 + new/renew/reissue + 开关开）。
      * 与 cancel() 的区别：不调用上游 api->cancel（上游已是 cancelled 态）；不检查 refund_period（以上游状态为权威）。
      *
      * 锁序 task→order：与 commitCancel(active)/revokeCancel/sync 统一。本方法由 sync 调用，
-     * 同样要删除 commit/sync/revalidate task，故在锁 order 前先按 task→order 顺序锁住这批 task
+     * 同样要删除 cancel/commit/sync/revalidate task，故在锁 order 前先按 task→order 顺序锁住这批 task
      * （与下面 deleteTask 删除范围一致），避免与 commitCancel 反序触发 InnoDB 死锁。
-     *
-     * cancel task 残留说明：当 cert.status=cancelling 时可能存在 cancel task。
-     * 此处仍不主动删除 cancel task（仅删 commit/sync/revalidate），与既有行为保持一致，
-     * 不扩大本次修复范围。安全性：残留的 cancel task 被 TaskJob 调用 Action::cancel() 时，
-     * 锁内检查 status===cancelled 会抛错回滚，不会重复退款。
      *
      * @throws Throwable
      */
     private function refundForSyncedCancel(Order $order, array $certData, bool $suppressCallback = false): void
     {
         $this->runTaskMutationTransaction(function () use ($order, $certData, $suppressCallback) {
-            // 锁顺序 1：先锁 commit/sync/revalidate task（与 deleteTask 删除范围、commitCancel 的 task→order 顺序一致）
-            Task::lockForMutation($order->id, ['commit', 'sync', 'revalidate'])->get();
+            // 锁顺序 1：先锁 cancel/commit/sync/revalidate task（与 deleteTask 删除范围、项目 task→order 锁序一致）
+            Task::lockForMutation($order->id, ['cancel', 'commit', 'sync', 'revalidate'])->get();
 
             // 锁顺序 2：再锁 order 行（防并发 sync 同时进入）
             $order = Order::with(['latestCert'])
@@ -1399,29 +1404,28 @@ class Action
                 return;
             }
 
-            if ($cert->action === 'reissue') {
-                // reissue 增量退款口径（对齐 cancelLocked reissue）：只退当次增量、前驱不恢复保持 reissued。
-                // prepareReissueRefund 内含 F1 exists 预检（已退款→error 转人工）+ 金额校验，是防双退第一道；
-                // 物理底线仍为 transactions_dedup_unique 唯一索引。amount=0（零增量）返回 null → 跳过退款、不建流水。
-                $lastTransaction = $this->prepareReissueRefund($order, $cert);
-                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
-            } else {
-                // new/renew：getCancelTransaction 单笔求和口径（原逻辑不变）。
-                // 防双退两道协作（详见下方 cancel() 注释，二者必须同时保留）：
-                //   ① 应用层 exists 仅作预检（锁外 exists+INSERT 非原子，并发 sync 仍可能两条都通过），非物理底线；
-                //   ② 物理底线 = transactions 表 DB 唯一索引 transactions_dedup_unique（虚拟列
-                //      dedup_key=CONCAT(type,':',transaction_id) WHERE type!='order'，迁移
-                //      2026_05_07_120000_add_fund_transaction_unique_indexes）+ Transaction::creating 钩子二次 exists。
-                // 重构者注意：删除应用层 exists 不会双退（索引兜底），但删除唯一索引会破坏物理底线。
-                $alreadyRefunded = Transaction::where('type', 'cancel')
-                    ->where('transaction_id', $order->id)
-                    ->exists();
+            // new/renew/reissue 统一使用订单退款口径。getCancelTransaction 以 order.amount 为基准，
+            // 核对该订单全部 order/cancel 流水净额；不一致时以流水净额为准并告警。
+            // 防双退两道协作（详见下方 cancel() 注释，二者必须同时保留）：
+            //   ① 应用层 exists 仅作预检（锁外 exists+INSERT 非原子，并发 sync 仍可能两条都通过），非物理底线；
+            //   ② 物理底线 = transactions 表 DB 唯一索引 transactions_dedup_unique（虚拟列
+            //      dedup_key=CONCAT(type,':',transaction_id) WHERE type!='order'，迁移
+            //      2026_05_07_120000_add_fund_transaction_unique_indexes）+ Transaction::creating 钩子二次 exists。
+            $alreadyRefunded = Transaction::where('type', 'cancel')
+                ->where('transaction_id', $order->id)
+                ->exists();
 
-                if (! $alreadyRefunded) {
-                    $transaction = OrderUtil::getCancelTransaction($order->toArray());
-                    // amount=0 时 Transaction::creating 钩子返回 false 短路，不创建记录
-                    Transaction::create($transaction);
-                }
+            // pending reissue 可能已产生一笔增量 cancel 流水并恢复前驱，之后同一订单再次 reissue。
+            // 此时既有流水不能证明本次已按整单退款；受 cancel 唯一索引约束也不能再补第二笔。
+            // 与主动 cancelLocked 的 F1 fail-safe 对齐：整笔同步收尾回滚，保留状态/task 转人工。
+            if ($alreadyRefunded && $cert->action === 'reissue') {
+                $this->error('该订单已存在取消退款流水，请人工处理');
+            }
+
+            if (! $alreadyRefunded) {
+                $transaction = OrderUtil::getCancelTransaction($order->toArray());
+                // amount=0 时 Transaction::creating 钩子返回 false 短路，不创建记录
+                Transaction::create($transaction);
             }
 
             // 更新 cert（合并上游数据 + 强制 status=cancelled + cancelled_at）
@@ -1429,7 +1433,7 @@ class Action
             $certData['cancelled_at'] = now();
             $cert->update($certData);
 
-            // 记录取消时间（reissue 的 purchased_* 增量递减随此 save 持久化）
+            // 记录取消时间
             $order->cancelled_at = now();
             $order->save();
 
@@ -1446,7 +1450,7 @@ class Action
                     $this->createTask($order->id, 'callback');
                 }
             }
-            $this->deleteTask($order->id, 'commit,sync,revalidate');
+            $this->deleteTask($order->id, 'cancel,commit,sync,revalidate');
         }); // attempts=3：与 sync 主事务一致；本事务无上游 HTTP，退款由 transactions 唯一索引保证幂等，重试不双退
     }
 
