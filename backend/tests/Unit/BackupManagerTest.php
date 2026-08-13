@@ -41,6 +41,25 @@ beforeEach(function () {
     ]);
 });
 
+test('addDirectoryToZip 包含 vendor 下的隐藏 lock 标记', function () {
+    $manager = new BackupManager;
+    $source = "$this->testBackupPath/vendor-source";
+    File::makeDirectory("$source/composer", 0755, true);
+    File::put("$source/autoload.php", '<?php');
+    File::put("$source/composer/.ssl-manager-lock.sha256", str_repeat('a', 64));
+    $zipPath = "$this->testBackupPath/vendor.zip";
+    $zip = new ZipArchive;
+    $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+
+    $method = new ReflectionMethod($manager, 'addDirectoryToZip');
+    $method->invoke($manager, $zip, $source, 'vendor');
+    $zip->close();
+
+    $zip->open($zipPath);
+    expect($zip->locateName('vendor/composer/.ssl-manager-lock.sha256'))->not->toBeFalse();
+    $zip->close();
+});
+
 afterEach(function () {
     // 清理测试备份目录
     if (File::isDirectory($this->testBackupPath)) {

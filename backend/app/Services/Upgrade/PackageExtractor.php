@@ -2,6 +2,7 @@
 
 namespace App\Services\Upgrade;
 
+use App\Services\Composer\ComposerVendorBundle;
 use App\Services\Nginx\NginxRenderer;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
@@ -11,6 +12,8 @@ use ZipArchive;
 
 class PackageExtractor
 {
+    protected bool $appliedBundledVendor = false;
+
     private const RUNTIME_RELATIVE_DIRECTORIES = [
         'backend/bootstrap/cache',
         'backend/storage',
@@ -117,6 +120,10 @@ class PackageExtractor
             }
         }
 
+        if (File::isDirectory("$backendDir/vendor")) {
+            ComposerVendorBundle::assertMatchesLock($backendDir);
+        }
+
         // 3. version.json 必须存在且含 version 字段（applyUpgrade 依赖）
         $versionFile = $this->findVersionConfig($extractedPath);
         if (! $versionFile) {
@@ -194,47 +201,115 @@ class PackageExtractor
     protected function applyBackendUpgrade(string $sourceDir): void
     {
         $targetDir = base_path();
+        $this->appliedBundledVendor = false;
 
-        // 保护自定义 API 适配器：先备份
-        $preservedApiAdapters = $this->preserveCustomApiAdapters($targetDir);
-
-        // 动态发现 source 顶层目录逐个同步，替代硬编码白名单 —— 新增目录永不再漏
-        // （曾因白名单漏 resources 导致对外 API 文档 yaml 不随升级更新 → 404）。
-        // skip storage（运行时数据 + 升级状态 upgrade.lock/status，绝不能碰，且
-        // syncDirectory 末尾的 removeEmptyDirectories 会误删其空目录）；vendor 单独处理。
-        // 仍只覆盖不删除：本服务在被升级的代码内运行、不能全量删自身；旧版删除的文件
-        // 残留无害（路由是显式白名单不扫目录），需彻底清理时用 upgrade.sh 全量升级。
-        $skipDirs = ['storage', 'vendor'];
-        foreach (File::directories($sourceDir) as $sourcePath) {
-            $name = basename($sourcePath);
-            if (in_array($name, $skipDirs, true)) {
-                continue;
-            }
-            $this->syncDirectory($sourcePath, "$targetDir/$name");
-        }
-
-        // bootstrap 同步会清理空目录；同时补齐存量安装可能缺失的 storage/backups 核心目录。
-        // 只创建和验写目录，不清理或覆盖任何运行数据。
-        $this->ensureRuntimeDirectories($targetDir);
-
-        // 同步 vendor 目录（如果存在）
         $vendorSource = "$sourceDir/vendor";
+        $stagedVendor = null;
         if (File::isDirectory($vendorSource)) {
-            $this->syncDirectory($vendorSource, "$targetDir/vendor");
+            // 大体量 vendor 必须在覆盖任何运行代码前完成复制和二次校验。
+            // 磁盘满、权限变化等失败应保持旧代码与旧 vendor 原样可用。
+            ComposerVendorBundle::assertMatchesLock($sourceDir);
+            $stagedVendor = $this->stageBundledVendor($vendorSource, "$targetDir/vendor", $sourceDir);
         }
 
-        // 同步根目录文件（artisan 之前遗漏，补齐；version.json 由 updateVersionJsonWithPreservedFields 单独处理）
-        $rootFiles = ['artisan', 'composer.json', 'composer.lock', 'php-requirements.json'];
-        foreach ($rootFiles as $file) {
-            $sourceFile = "$sourceDir/$file";
-            $targetFile = "$targetDir/$file";
-            if (File::exists($sourceFile)) {
-                File::copy($sourceFile, $targetFile);
+        try {
+            // 保护自定义 API 适配器：先备份
+            $preservedApiAdapters = $this->preserveCustomApiAdapters($targetDir);
+
+            // 动态发现 source 顶层目录逐个同步，替代硬编码白名单 —— 新增目录永不再漏
+            // （曾因白名单漏 resources 导致对外 API 文档 yaml 不随升级更新 → 404）。
+            // skip storage（运行时数据 + 升级状态 upgrade.lock/status，绝不能碰，且
+            // syncDirectory 末尾的 removeEmptyDirectories 会误删其空目录）；vendor 单独处理。
+            // 仍只覆盖不删除：本服务在被升级的代码内运行、不能全量删自身；旧版删除的文件
+            // 残留无害（路由是显式白名单不扫目录），需彻底清理时用 upgrade.sh 全量升级。
+            $skipDirs = ['storage', 'vendor'];
+            foreach (File::directories($sourceDir) as $sourcePath) {
+                $name = basename($sourcePath);
+                if (in_array($name, $skipDirs, true)) {
+                    continue;
+                }
+                $this->syncDirectory($sourcePath, "$targetDir/$name");
+            }
+
+            // bootstrap 同步会清理空目录；同时补齐存量安装可能缺失的 storage/backups 核心目录。
+            // 只创建和验写目录，不清理或覆盖任何运行数据。
+            $this->ensureRuntimeDirectories($targetDir);
+
+            // 包内 vendor 已在覆盖代码前完整复制并校验，此处只做同文件系统目录切换。
+            if ($stagedVendor !== null) {
+                $this->activateStagedVendor($stagedVendor, "$targetDir/vendor");
+                $this->appliedBundledVendor = true;
+            }
+
+            // 同步根目录文件（artisan 之前遗漏，补齐；version.json 由 updateVersionJsonWithPreservedFields 单独处理）
+            $rootFiles = ['artisan', 'composer.json', 'composer.lock', 'php-requirements.json'];
+            foreach ($rootFiles as $file) {
+                $sourceFile = "$sourceDir/$file";
+                $targetFile = "$targetDir/$file";
+                if (File::exists($sourceFile)) {
+                    File::copy($sourceFile, $targetFile);
+                }
+            }
+
+            // 恢复自定义 API 适配器
+            $this->restoreCustomApiAdapters($targetDir, $preservedApiAdapters);
+        } finally {
+            if ($stagedVendor !== null && File::isDirectory($stagedVendor)) {
+                File::deleteDirectory($stagedVendor);
             }
         }
+    }
 
-        // 恢复自定义 API 适配器
-        $this->restoreCustomApiAdapters($targetDir, $preservedApiAdapters);
+    public function appliedBundledVendor(): bool
+    {
+        return $this->appliedBundledVendor;
+    }
+
+    protected function stageBundledVendor(string $source, string $target, string $sourceBackend): string
+    {
+        $suffix = bin2hex(random_bytes(6));
+        $staged = dirname($target).'/.vendor-next-'.$suffix;
+        File::deleteDirectory($staged);
+
+        try {
+            if (! File::copyDirectory($source, $staged)) {
+                throw new RuntimeException('发布包 vendor 复制失败');
+            }
+
+            ComposerVendorBundle::assertVendorMatchesLock($staged, "$sourceBackend/composer.lock");
+
+            return $staged;
+        } catch (\Throwable $e) {
+            File::deleteDirectory($staged);
+            throw $e;
+        }
+    }
+
+    protected function activateStagedVendor(string $staged, string $target): void
+    {
+        $suffix = bin2hex(random_bytes(6));
+        $previous = dirname($target).'/.vendor-previous-'.$suffix;
+        File::deleteDirectory($previous);
+
+        try {
+            if (File::isDirectory($target) && ! rename($target, $previous)) {
+                throw new RuntimeException('旧 vendor 备份失败');
+            }
+
+            if (! rename($staged, $target)) {
+                if (File::isDirectory($previous)) {
+                    rename($previous, $target);
+                }
+                throw new RuntimeException('新 vendor 启用失败');
+            }
+
+            File::deleteDirectory($previous);
+        } finally {
+            File::deleteDirectory($staged);
+            if (! File::isDirectory($target) && File::isDirectory($previous)) {
+                rename($previous, $target);
+            }
+        }
     }
 
     /**

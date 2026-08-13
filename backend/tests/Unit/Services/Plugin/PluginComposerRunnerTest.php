@@ -76,6 +76,22 @@ test('lockHash 返回 composer.lock 的 sha256，不存在返回空串', functio
     expect($runner->lockHash($withLockB))->not->toBe($runner->lockHash($withLock));
 });
 
+test('bundledVendorMatchesLock 仅接受 autoload 和锁文件标记完整的包内 vendor', function () {
+    $runner = new PluginComposerRunner(Mockery::mock(BinaryLocator::class), passingPreflight());
+    $pluginDir = makePluginDir(lockContent: 'LOCK-A');
+    File::ensureDirectoryExists("$pluginDir/backend/vendor/composer");
+    File::put("$pluginDir/backend/vendor/autoload.php", '<?php return true;');
+    File::put(
+        "$pluginDir/backend/vendor/composer/.ssl-manager-lock.sha256",
+        hash('sha256', 'LOCK-A')."\n"
+    );
+
+    expect($runner->bundledVendorMatchesLock($pluginDir))->toBeTrue();
+
+    File::put("$pluginDir/backend/composer.lock", 'LOCK-B');
+    expect($runner->bundledVendorMatchesLock($pluginDir))->toBeFalse();
+});
+
 // ==================== install — 命令构造（不真跑 composer）====================
 
 test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路径已 escape', function () {

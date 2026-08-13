@@ -53,11 +53,17 @@ build/
 
 | 文件                                | 说明                                             |
 | ----------------------------------- | ------------------------------------------------ |
-| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor，安装期生成）            |
-| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级保留现有依赖）          |
+| `ssl-manager-full-{version}.zip`    | 完整安装包（含已锁定的生产 vendor）              |
+| `ssl-manager-upgrade-{version}.zip` | 升级包（含已锁定的生产 vendor）                  |
 | `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/） |
 
 > 包清单与 sha256 写入 release 站根目录的 `releases.json`（由 `release.sh` 上传时生成），install/upgrade 链路统一从该文件读 `assets[].sha256` 强校验。包内暂时保留最简 `manifest.json` 兼容旧版 PackageExtractor。
+
+完整包和升级包长期携带与 `composer.lock` 对齐的生产 vendor；含 Composer 依赖的插件包遵循
+相同规则。这使目标服务器无需访问 Composer 镜像、官方 Packagist 或 GitHub，避免国内镜像同步
+延迟和网络失败造成同一版本依赖不一致或升级半成品。包内
+`vendor/composer/.ssl-manager-lock.sha256` 必须与对应 lock 的 SHA-256 一致，内容审计不通过时
+不得发布。联网 `composer install` 只保留为历史无 vendor 包的兼容路径。
 
 本地发布与 GitHub Release 统一使用 `collect-artifacts.sh` + `package.sh`。后端测试/开发文件以及 `storage/app`、`storage/databak`、`storage/pay`、Laravel 缓存等机器运行数据由 `build/config.json` 统一排除；三个 zip 生成后还会执行失败即停的内容审计。
 

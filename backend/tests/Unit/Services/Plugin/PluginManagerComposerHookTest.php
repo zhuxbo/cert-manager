@@ -81,6 +81,7 @@ test('installFromZip 无 composer.json 的插件跳过 composer（runner.install
 test('installFromZip 有 composer.json 的插件触发 composer install', function () {
     $runner = Mockery::mock(PluginComposerRunner::class);
     $runner->shouldReceive('pluginHasComposer')->andReturn(true);
+    $runner->shouldReceive('bundledVendorMatchesLock')->andReturn(false);
     // 关键：有 composer.json → install 必被调用一次（带插件名）
     $runner->shouldReceive('install')
         ->once()
@@ -98,6 +99,7 @@ test('installFromZip 有 composer.json 的插件触发 composer install', functi
 test('installFromZip composer install 失败时清理半装目录 + 异常冒泡', function () {
     $runner = Mockery::mock(PluginComposerRunner::class);
     $runner->shouldReceive('pluginHasComposer')->andReturn(true);
+    $runner->shouldReceive('bundledVendorMatchesLock')->andReturn(false);
     $runner->shouldReceive('install')
         ->once()
         ->andThrow(new RuntimeException('插件 broken-plugin 依赖安装失败（composer install 退出码 1）'));
@@ -253,10 +255,36 @@ test('installPluginComposerDeps 无 composer.json 跳过、有则触发', functi
     // case B: 有 composer.json
     $runnerB = Mockery::mock(PluginComposerRunner::class);
     $runnerB->shouldReceive('pluginHasComposer')->andReturn(true);
+    $runnerB->shouldReceive('bundledVendorMatchesLock')->andReturn(false);
     $runnerB->shouldReceive('install')->once()->with('/tmp/whatever-b', 'plug-b');
     [$managerB, $refB] = makeManagerWithRunner($runnerB);
     $methodB = $refB->getMethod('installPluginComposerDeps');
     $methodB->invoke($managerB, 'plug-b', '/tmp/whatever-b');
+});
+
+test('installPluginComposerDeps 包内 vendor 已与 lock 对齐时不调用 composer', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('pluginHasComposer')->andReturn(true);
+    $runner->shouldReceive('bundledVendorMatchesLock')->once()->andReturn(true);
+    $runner->shouldNotReceive('install');
+    [$manager, $reflection] = makeManagerWithRunner($runner);
+
+    $method = $reflection->getMethod('installPluginComposerDeps');
+    $method->invoke($manager, 'cloud-deploy', '/tmp/cloud-deploy');
+});
+
+test('installPluginComposerDeps 包内 vendor 存在但校验失败时不尝试联网修复', function () {
+    $pluginDir = sys_get_temp_dir().'/pmch-invalid-vendor-'.uniqid();
+    File::ensureDirectoryExists("$pluginDir/backend/vendor");
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('pluginHasComposer')->andReturn(true);
+    $runner->shouldReceive('bundledVendorMatchesLock')->once()->andReturn(false);
+    $runner->shouldNotReceive('install');
+    [$manager, $reflection] = makeManagerWithRunner($runner);
+
+    $method = $reflection->getMethod('installPluginComposerDeps');
+    expect(fn () => $method->invoke($manager, 'cloud-deploy', $pluginDir))
+        ->toThrow(RuntimeException::class, '包内 vendor 与 composer.lock 不匹配');
 });
 
 // ==================== update — 按 composer.lock 哈希决定是否重装 ====================
@@ -268,8 +296,11 @@ test('installPluginComposerDeps 无 composer.json 跳过、有则触发', functi
  * 真实 PluginComposerRunner 注入（用其 pluginHasComposer/lockHash 真实实现），
  * 但 install() 被覆盖为「记录调用次数」——避免真跑 composer，同时验证决策正确。
  */
-function makeUpdateManager(string $newLockContent): array
-{
+function makeUpdateManager(
+    string $newLockContent,
+    bool $withBundledVendor = false,
+    bool $withInvalidBundledVendor = false,
+): array {
     $installCalls = new stdClass;
     $installCalls->count = 0;
     $installCalls->reporterWasPassed = false;
@@ -304,6 +335,14 @@ function makeUpdateManager(string $newLockContent): array
     $zip->addFromString('lock-plugin/plugin.json', json_encode(['name' => 'lock-plugin', 'version' => '2.0.0']));
     $zip->addFromString('lock-plugin/backend/composer.json', json_encode(['require' => ['php' => '^8.3']]));
     $zip->addFromString('lock-plugin/backend/composer.lock', $newLockContent);
+    if ($withBundledVendor || $withInvalidBundledVendor) {
+        $zip->addFromString('lock-plugin/backend/vendor/autoload.php', '<?php return true;');
+        $zip->addFromString(
+            'lock-plugin/backend/vendor/composer/.ssl-manager-lock.sha256',
+            ($withInvalidBundledVendor ? hash('sha256', 'OTHER-LOCK') : hash('sha256', $newLockContent))."\n"
+        );
+        $zip->addFromString('lock-plugin/backend/vendor/new-package.php', 'new');
+    }
     $zip->close();
 
     $manager = new class($versionManager, $runner, $newZip) extends PluginManager
@@ -387,6 +426,37 @@ test('update composer.lock 变化时触发 composer install', function () {
     expect($result['version'])->toBe('2.0.0');
     // lock 内容变化 → 哈希不同 → install 被调用一次
     expect($installCalls->count)->toBe(1);
+});
+
+test('update composer.lock 变化但新包自带对齐 vendor 时不运行 composer', function () {
+    [$manager, $pluginsPath, $installCalls] = makeUpdateManager(
+        newLockContent: 'NEW-LOCK',
+        withBundledVendor: true,
+    );
+    seedInstalledPlugin($pluginsPath, lockContent: 'OLD-LOCK');
+
+    $result = $manager->update('lock-plugin');
+
+    expect($result['version'])->toBe('2.0.0')
+        ->and($installCalls->count)->toBe(0)
+        ->and("$pluginsPath/lock-plugin/backend/vendor/new-package.php")->toBeFile()
+        ->and("$pluginsPath/lock-plugin/backend/vendor/.runtime-installed")->not->toBeFile();
+});
+
+test('update 在删除旧插件前拒绝不匹配的包内 vendor', function () {
+    [$manager, $pluginsPath, $installCalls] = makeUpdateManager(
+        newLockContent: 'NEW-LOCK',
+        withInvalidBundledVendor: true,
+    );
+    seedInstalledPlugin($pluginsPath, lockContent: 'OLD-LOCK');
+
+    expect(fn () => $manager->update('lock-plugin'))
+        ->toThrow(RuntimeException::class, '包内 vendor 与 composer.lock 不匹配');
+
+    $manifest = json_decode(file_get_contents("$pluginsPath/lock-plugin/plugin.json"), true);
+    expect($manifest['version'])->toBe('1.0.0')
+        ->and("$pluginsPath/lock-plugin/backend/vendor/.runtime-installed")->toBeFile()
+        ->and($installCalls->count)->toBe(0);
 });
 
 test('update 重装 composer 依赖时传递进度 reporter', function () {

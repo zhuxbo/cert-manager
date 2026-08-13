@@ -18,6 +18,24 @@ for command_name in unzip grep; do
     fi
 done
 
+archive_stream_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+verify_vendor_marker() {
+    local archive="$1" prefix="$2" expected actual
+    expected="$(unzip -p "$archive" "$prefix/backend/composer.lock" | archive_stream_sha256)"
+    actual="$(unzip -p "$archive" "$prefix/backend/vendor/composer/.ssl-manager-lock.sha256" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+    if [ "$expected" != "$actual" ]; then
+        audit_error "$(basename "$archive") 的 vendor 标记与 composer.lock 不匹配"
+        return 1
+    fi
+}
+
 AUDIT_TMP="$(mktemp -d)"
 trap 'rm -rf "$AUDIT_TMP"' EXIT
 
@@ -115,9 +133,8 @@ reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "环境配置文件" '/backend
 # 运行数据、凭据、备份与缓存目录可以保留空目录，但绝不能携带文件。
 FULL_RUNTIME_PATTERN='/backend/storage/(app|backups|databak|debugbar|framework/(cache|sessions|testing|views)|logs|pail|pay|temp-certs|upgrades)/|/backend/storage/[^/]+\.(crt|der|jks|key|pem|pfx)$|/backend/bootstrap/cache/|/backups/'
 reject_file_matches "$FULL_PACKAGE" "$FULL_LIST" "运行数据、凭据、备份或缓存文件" "$FULL_RUNTIME_PATTERN"
-reject_file_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "storage、bootstrap/cache 或 vendor 文件" '/backend/(storage|bootstrap/cache|vendor)/'
+reject_file_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "storage 或 bootstrap/cache 文件" '/backend/(storage|bootstrap/cache)/'
 reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "storage 目录项" '/backend/storage(/|$)'
-reject_file_matches "$FULL_PACKAGE" "$FULL_LIST" "vendor 文件" '/backend/vendor/'
 
 reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "仅安装期文件" '/backend/public/install\.php$|/backend/public/install-assets/|/frontend/user/(logo\.svg|qrcode\.png)$'
 
@@ -128,6 +145,8 @@ for required in \
     full/backend/bootstrap/cache/ \
     full/backend/composer.json \
     full/backend/composer.lock \
+    full/backend/vendor/autoload.php \
+    full/backend/vendor/composer/.ssl-manager-lock.sha256 \
     full/backend/storage/ \
     full/backend/storage/app/private/ \
     full/backend/storage/app/public/ \
@@ -151,6 +170,7 @@ for required in \
     full/scripts/common.sh; do
     require_entry "$FULL_PACKAGE" "$FULL_LIST" "$required"
 done
+verify_vendor_marker "$FULL_PACKAGE" full
 
 for required in \
     upgrade/backend/.ssl-manager \
@@ -158,6 +178,8 @@ for required in \
     upgrade/backend/bootstrap/cache/ \
     upgrade/backend/composer.json \
     upgrade/backend/composer.lock \
+    upgrade/backend/vendor/autoload.php \
+    upgrade/backend/vendor/composer/.ssl-manager-lock.sha256 \
     upgrade/frontend/admin/index.html \
     upgrade/frontend/user/index.html \
     upgrade/frontend/user/login.svg \
@@ -171,6 +193,7 @@ for required in \
     upgrade/scripts/common.sh; do
     require_entry "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "$required"
 done
+verify_vendor_marker "$UPGRADE_PACKAGE" upgrade
 
 for required in \
     script-deploy/install.sh \

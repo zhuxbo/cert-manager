@@ -97,6 +97,13 @@ log_error() { :; }
 log_warning() { :; }
 log_step() { :; }
 _print_recovery_runbook() { :; }
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
 
 # 抽取守卫函数进当前 shell（A 组直接驱动）
 eval "$(extract_fn "$UPGRADE" _fs_device)"
@@ -105,12 +112,16 @@ eval "$(extract_fn "$UPGRADE" _check_stranded_preserve)"
 eval "$(extract_fn "$UPGRADE" _restore_preserved_storage)"
 eval "$(extract_fn "$UPGRADE" _restore_preserved_extras)"
 eval "$(extract_fn "$UPGRADE" _need_composer_install)"
+eval "$(extract_fn "$UPGRADE" _bundled_vendor_matches_lock)"
+eval "$(extract_fn "$UPGRADE" _vendor_dir_matches_lock)"
+eval "$(extract_fn "$UPGRADE" _stage_bundled_vendor)"
 eval "$(extract_fn "$UPGRADE" _ensure_runtime_directories)"
 eval "$(extract_fn "$UPGRADE" _print_recovery_runbook)"
 
 # 抽取健全性校验：任一函数未抽出即整体失败（防 upgrade.sh 改结构后静默失测）
 for fn in _fs_device _assert_storage_same_fs _check_stranded_preserve _restore_preserved_storage \
-    _restore_preserved_extras _need_composer_install _ensure_runtime_directories; do
+    _restore_preserved_extras _need_composer_install _bundled_vendor_matches_lock _vendor_dir_matches_lock \
+    _stage_bundled_vendor _ensure_runtime_directories; do
     if ! declare -f "$fn" >/dev/null 2>&1; then
         echo "✗ 抽取失败：$fn 未从 $UPGRADE 提取到（函数结构变化？）"
         exit 1
@@ -409,6 +420,84 @@ test_a9() {
     rm -rf "$base"
 }
 
+test_a9b() {
+    local base expected ok=1
+    base="$(mktemp -d)"
+    mkdir -p "$base/vendor/composer"
+    printf 'LOCK' >"$base/composer.lock"
+    printf 'AUTOLOAD' >"$base/vendor/autoload.php"
+    expected="$(file_sha256 "$base/composer.lock")"
+    printf '%s\n' "$expected" >"$base/vendor/composer/.ssl-manager-lock.sha256"
+
+    _bundled_vendor_matches_lock "$base" || ok=0
+    printf 'BROKEN' >"$base/vendor/composer/.ssl-manager-lock.sha256"
+    if _bundled_vendor_matches_lock "$base"; then ok=0; fi
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A9b 包内 vendor 仅在 autoload 与 lock SHA-256 标记对齐时通过"
+    else
+        fail "A9b 包内 vendor 完整性校验"
+    fi
+    rm -rf "$base"
+}
+
+test_a9c() {
+    local base expected ok=1
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base/install"
+    BUNDLED_VENDOR_STAGE=""
+    mkdir -p "$INSTALL_DIR/backend" "$base/source/vendor/composer"
+    printf 'LOCK' >"$base/source/composer.lock"
+    printf 'AUTOLOAD' >"$base/source/vendor/autoload.php"
+    printf 'PACKAGE' >"$base/source/vendor/package.php"
+    expected="$(file_sha256 "$base/source/composer.lock")"
+    printf '%s\n' "$expected" >"$base/source/vendor/composer/.ssl-manager-lock.sha256"
+
+    _stage_bundled_vendor "$base/source" || ok=0
+    [ -d "$BUNDLED_VENDOR_STAGE" ] || ok=0
+    [ -f "$BUNDLED_VENDOR_STAGE/composer/.ssl-manager-lock.sha256" ] || ok=0
+    [ ! -d "$base/source/vendor" ] || ok=0
+    _vendor_dir_matches_lock "$BUNDLED_VENDOR_STAGE" "$base/source/composer.lock" || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A9c 新 vendor 在安装盘完整预拷贝并校验后，源 vendor 才被隔离"
+    else
+        fail "A9c 新 vendor 原子启用预备"
+    fi
+    rm -rf "$base"
+    BUNDLED_VENDOR_STAGE=""
+}
+
+test_a9d() {
+    local base ok=1 rc
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base/install"
+    BUNDLED_VENDOR_STAGE=""
+    mkdir -p "$INSTALL_DIR/backend/vendor" "$base/source/vendor/composer"
+    printf 'OLD-AUTOLOAD' >"$INSTALL_DIR/backend/vendor/autoload.php"
+    printf 'LOCK' >"$base/source/composer.lock"
+    printf 'NEW-AUTOLOAD' >"$base/source/vendor/autoload.php"
+    printf 'BROKEN\n' >"$base/source/vendor/composer/.ssl-manager-lock.sha256"
+
+    _stage_bundled_vendor "$base/source"
+    rc=$?
+    [ "$rc" -ne 0 ] || ok=0
+    [ "$(cat "$INSTALL_DIR/backend/vendor/autoload.php" 2>/dev/null || true)" = "OLD-AUTOLOAD" ] || ok=0
+    [ -d "$base/source/vendor" ] || ok=0
+    [ -z "$BUNDLED_VENDOR_STAGE" ] || ok=0
+    if find "$INSTALL_DIR/backend" -maxdepth 1 -name '.vendor-next-*' -print -quit | grep -q .; then
+        ok=0
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A9d 新 vendor 校验失败时，旧 vendor 未触碰且临时预拷贝已清理"
+    else
+        fail "A9d 新 vendor 校验失败的覆盖前保护（rc=${rc}）"
+    fi
+    rm -rf "$base"
+    BUNDLED_VENDOR_STAGE=""
+}
+
 # A10 cleanup 删 preserve 前还原 extras（⑨ 集成）：模拟中断在「rm 原件 ~ step9 还原」窗内，
 # preserve 存自定义适配器唯一副本、原件已删 → cleanup 触发后适配器还原到位 + preserve 清理（不静默销毁）
 test_a10() {
@@ -630,6 +719,9 @@ test_a6
 test_a7
 test_a8
 test_a9
+test_a9b
+test_a9c
+test_a9d
 test_a10
 test_a11
 test_a12

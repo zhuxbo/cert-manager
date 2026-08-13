@@ -31,7 +31,7 @@ function cloudDeployPluginVendorReal(): string|false
 }
 
 test('加载插件后 GuzzleHttp\\Client 仍来自主系统 vendor 而非插件 vendor', function () {
-    // 触发主系统对 Guzzle 的解析路径（主系统锁 guzzle 7.10 / psr7 2.9）
+    // 触发主系统对 Guzzle 的解析路径（主系统锁 guzzle 7.15.2 / psr7 2.13）
     expect(class_exists(Client::class))->toBeTrue();
 
     $resolved = (new ReflectionClass(Client::class))->getFileName();

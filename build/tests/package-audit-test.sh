@@ -19,6 +19,7 @@ make_valid_packages() {
     rm -rf "$STAGE" "$FULL_ZIP" "$UPGRADE_ZIP" "$SCRIPT_ZIP"
     mkdir -p \
         "$STAGE/full/backend" \
+        "$STAGE/full/backend/vendor/composer" \
         "$STAGE/full/backend/bootstrap/cache" \
         "$STAGE/full/backend/storage/app/private" \
         "$STAGE/full/backend/storage/app/public" \
@@ -33,6 +34,7 @@ make_valid_packages() {
         "$STAGE/full/nginx" \
         "$STAGE/full/scripts" \
         "$STAGE/upgrade/backend" \
+        "$STAGE/upgrade/backend/vendor/composer" \
         "$STAGE/upgrade/backend/bootstrap/cache" \
         "$STAGE/upgrade/frontend/admin" \
         "$STAGE/upgrade/frontend/user" \
@@ -46,6 +48,7 @@ make_valid_packages() {
         "$STAGE/full/backend/artisan" \
         "$STAGE/full/backend/composer.json" \
         "$STAGE/full/backend/composer.lock" \
+        "$STAGE/full/backend/vendor/autoload.php" \
         "$STAGE/full/backend/storage/domain-rules/public_suffix_list.dat" \
         "$STAGE/full/frontend/admin/index.html" \
         "$STAGE/full/frontend/user/index.html" \
@@ -62,6 +65,7 @@ make_valid_packages() {
         "$STAGE/upgrade/backend/artisan" \
         "$STAGE/upgrade/backend/composer.json" \
         "$STAGE/upgrade/backend/composer.lock" \
+        "$STAGE/upgrade/backend/vendor/autoload.php" \
         "$STAGE/upgrade/frontend/admin/index.html" \
         "$STAGE/upgrade/frontend/user/index.html" \
         "$STAGE/upgrade/frontend/user/login.svg" \
@@ -80,6 +84,15 @@ make_valid_packages() {
         "$STAGE/script-deploy/scripts/bt-deps.sh" \
         "$STAGE/script-deploy/scripts/common.sh"
 
+    local empty_lock_hash
+    if command -v sha256sum >/dev/null 2>&1; then
+        empty_lock_hash="$(sha256sum "$STAGE/full/backend/composer.lock" | awk '{print $1}')"
+    else
+        empty_lock_hash="$(shasum -a 256 "$STAGE/full/backend/composer.lock" | awk '{print $1}')"
+    fi
+    printf '%s\n' "$empty_lock_hash" >"$STAGE/full/backend/vendor/composer/.ssl-manager-lock.sha256"
+    printf '%s\n' "$empty_lock_hash" >"$STAGE/upgrade/backend/vendor/composer/.ssl-manager-lock.sha256"
+
     (cd "$STAGE" && zip -rq "$FULL_ZIP" full && zip -rq "$UPGRADE_ZIP" upgrade && zip -rq "$SCRIPT_ZIP" script-deploy)
 }
 
@@ -93,6 +106,15 @@ expect_rejected() {
 
 make_valid_packages
 "$AUDITOR" "$FULL_ZIP" "$UPGRADE_ZIP" "$SCRIPT_ZIP" >/dev/null
+
+printf 'BROKEN\n' >"$STAGE/full/backend/vendor/composer/.ssl-manager-lock.sha256"
+(cd "$STAGE" && zip -q "$FULL_ZIP" full/backend/vendor/composer/.ssl-manager-lock.sha256)
+expect_rejected "完整包 vendor 标记与 composer.lock 不匹配"
+
+make_valid_packages
+printf 'BROKEN\n' >"$STAGE/upgrade/backend/vendor/composer/.ssl-manager-lock.sha256"
+(cd "$STAGE" && zip -q "$UPGRADE_ZIP" upgrade/backend/vendor/composer/.ssl-manager-lock.sha256)
+expect_rejected "升级包 vendor 标记与 composer.lock 不匹配"
 
 for required_dir in \
     backend/bootstrap/cache \

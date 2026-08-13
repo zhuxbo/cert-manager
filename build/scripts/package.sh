@@ -120,6 +120,8 @@ validate_production_dir() {
         "backend/artisan"
         "backend/composer.json"
         "backend/composer.lock"
+        "backend/vendor/autoload.php"
+        "backend/vendor/composer/.ssl-manager-lock.sha256"
         "backend/.env.example"
         "frontend/admin/index.html"
         "frontend/user/index.html"
@@ -210,7 +212,6 @@ EOF
         # 包类型特定排除
         if [ "$pkg_type" = "full" ]; then
             cat >>"$output_file" <<EOF
-vendor/
 deploy/
 storage/upgrades/
 storage/backups/
@@ -221,7 +222,6 @@ EOF
             cat >>"$output_file" <<EOF
 storage/*
 bootstrap/cache/*
-vendor/*
 EOF
         fi
     fi
@@ -422,7 +422,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 UPGRADE_DIR="$WORK_DIR/upgrade"
 mkdir -p "$UPGRADE_DIR"
 
-# 升级包只包含代码，不包含 vendor、配置和用户数据
+# 升级包包含代码与已锁定的 vendor，不包含配置和用户数据
 # 创建后端排除列表文件（过滤 backend/ 前缀的规则）
 UPGRADE_BACKEND_EXCLUDE="$WORK_DIR/upgrade-backend-exclude.txt"
 create_exclude_file "upgrade" "$UPGRADE_BACKEND_EXCLUDE" "backend/"
@@ -435,8 +435,6 @@ rm -rf "$UPGRADE_DIR/backend/storage"
 
 # 升级会整体替换 bootstrap；缓存文件不入包，但 Laravel 启动前空目录必须存在。
 mkdir -p "$UPGRADE_DIR/backend/bootstrap/cache"
-
-# 升级包不需要 vendor 目录（升级时会保留现有的 vendor）
 
 # 前端：保持 frontend/ 目录结构
 # 使用统一的 upgrade.exclude 配置，过滤 frontend/ 前缀的规则
@@ -513,7 +511,7 @@ cat >"$UPGRADE_DIR/UPGRADE.md" <<EOF
 
 1. 备份当前版本
 2. 解压升级包覆盖文件
-3. 安装 PHP 依赖: composer install --no-dev
+3. 校验并启用升级包内 PHP 依赖
 4. 运行数据库迁移: php artisan migrate --force
 5. 补齐和整理基础数据: php artisan db:seed --force
 6. 清理缓存: php artisan optimize:clear
@@ -521,7 +519,7 @@ cat >"$UPGRADE_DIR/UPGRADE.md" <<EOF
 
 ## 注意事项
 
-- 升级包不包含 vendor 目录，需要运行 composer install 安装依赖
+- 升级包已包含与 composer.lock 对齐的 vendor，升级时无需联网安装依赖
 - 升级包不包含 .env 配置文件，不会覆盖现有配置
 - 升级包不包含 storage 目录，不会影响上传的文件
 - 建议在升级前备份数据库

@@ -1,6 +1,6 @@
 # cloud-deploy 开发规范
 
-证书自动推送各大云平台。certimate 式封装：每个 `(provider, product)` 一个 deployer，schema 驱动前端表单 + 后端校验，凭证脱敏，插件独立 vendor（不 scoping，不入库，安装/更新时主系统 composer install）。所有路径相对 `plugins/cloud-deploy/backend/`。
+证书自动推送各大云平台。certimate 式封装：每个 `(provider, product)` 一个 deployer，schema 驱动前端表单 + 后端校验，凭证脱敏，插件独立 vendor（不 scoping，不入库，随发布包交付）。所有路径相对 `plugins/cloud-deploy/backend/`。
 
 ## 一、核心架构速览
 
@@ -38,15 +38,15 @@
 - **`AliyunErrorSanitizer` / `TencentErrorSanitizer`**（各 provider 目录）：多分支提取厂商错误码（不同 SDK 异常结构不同）。deployer 的 `sanitize(Throwable): string` 通常 `return <Provider>ErrorSanitizer::sanitize($e);`。
 - **`CredentialScrubber`**（`Deployers/Contracts/`）：兜底扫描字符串里的 AK/SK/PEM 子串并打码。
 
-### 独立 vendor（运行时安装，不 scoping，不入库）
+### 独立 vendor（发布包携带，不 scoping，不入库）
 
-插件依赖阿里/腾讯官方云 SDK（约 80M）。**vendor 不入 git、不进发布 zip**——改为**运行时安装**：主系统 `PluginManager` 安装/更新本插件时，检测到 `backend/composer.json` 即自动 `composer install --no-dev`（封装在 `App\Services\Plugin\PluginComposerRunner`，复用 `BinaryLocator::composer()` + `UpgradePreflight` 探测 + 阿里云镜像自动切换）。发布包只含 `backend/composer.json` + `backend/composer.lock`（`build.json` 的 `exclude` 排除 `backend/vendor/`，保留 composer.{json,lock}）。
+插件依赖阿里/腾讯官方云 SDK。**vendor 不入 git，但进入发布 zip**：发布脚本执行生产 `composer install`，写入 `vendor/composer/.ssl-manager-lock.sha256`；主系统安装/更新时校验标记与 lock 后直接使用。`PluginComposerRunner` 仅作为历史不带 vendor 插件包的兼容回落。
 
-**对目标机要求**：composer 可执行 + PHP CLI 未禁 `proc_open`/`exec` + 能访问 packagist（GitHub 不可达自动切阿里云镜像）。不满足则安装失败并提示（install 清半装目录、update 回滚备份）。
+**对目标机要求**：新发布包无需 Composer/Packagist/GitHub 网络。只有安装历史不带 vendor 的插件包时，才需 Composer 和 PHP CLI 子进程能力。
 
 `CloudDeployServiceProvider::register()` `require` 插件 vendor autoload 后，把插件 `ClassLoader` `unregister()` 再 `register(false)` **挂 SPL 自动加载栈尾**——共享类（GuzzleHttp/Psr 等）回落主系统版本、插件独有类（AlibabaCloud/TencentCloud 等主 loader `findFile` 返回 false）从插件 vendor 解析。**不做 Strauss scoping**（实测不 scoping 正常、scoping 反 fatal）。幂等守护，缺 vendor 不 fatal（is_file 守卫 + `CloudDeployJob::guardSdk` 把缺 SDK 转 per-target 失败日志）。
 
-**跨大版本共享依赖必须 `replace`（挂栈尾兜不住）**：挂栈尾只对**同大版本**共享依赖可靠（API 兼容、回落主系统无害）。**跨大版本**冲突在 PHP-FPM 多 worker + opcache 下挂栈尾隔离会失效——某 worker 把插件旧版类解析进主系统、与主系统新版编译时签名不兼容 fatal → **全站 500**（连 login 都崩）。0.0.1 首发踩此坑：古董 `baidubce/bce-sdk-php`（`php>=5.3.3`）拖入 `psr/log 1.x`（vs 主系统 3.x，`LoggerInterface::log` 无类型 → 主系统 Monolog 3.x 的 `emergency()` 签名不兼容）+ `guzzle/guzzle 3.x`（再拖 `symfony/event-dispatcher 2.x` vs 主系统 7.x）。**根治**：插件 `composer.json` 用 `"replace": {"psr/log":"*","guzzle/guzzle":"*","symfony/event-dispatcher":"*"}` 把这些古董挡在插件 vendor 外、运行时回落主系统版本（百度 SDK 仅 type-hint `psr/log`，3.x 超集兼容）；`BaiduRestClient` 改用主系统 `GuzzleHttp\Client` 发请求、**弃用 SDK 自带 `BceHttpClient`**（底层古董 Guzzle 3.x），仅复用 `BceV1Signer` 签名（纯算法、无第三方依赖）。守护测试 `VendorCoexistenceTest`「插件 vendor 不得携带跨大版本冲突共享依赖」遍历插件↔主系统重叠包断言无 major 冲突、防复发。**改 `replace` 后移除被锁定依赖必须 `composer update -W` 全量重解析**（定向 update 对 replaced 包无效），`-W` 会重开 guzzlehttp 历史公告，故 `composer.json` 设 `policy.advisories.block=false`（仅影响本地生成 lock；生产 `PluginComposerRunner` 走 `composer install` 按 lock 不检查公告，guzzle 仍锁 7.10 最新已修复版）。
+**跨大版本共享依赖必须 `replace`（挂栈尾兜不住）**：挂栈尾只对**同大版本**共享依赖可靠（API 兼容、回落主系统无害）。**跨大版本**冲突在 PHP-FPM 多 worker + opcache 下挂栈尾隔离会失效——某 worker 把插件旧版类解析进主系统、与主系统新版编译时签名不兼容 fatal → **全站 500**（连 login 都崩）。0.0.1 首发踩此坑：古董 `baidubce/bce-sdk-php`（`php>=5.3.3`）拖入 `psr/log 1.x`（vs 主系统 3.x，`LoggerInterface::log` 无类型 → 主系统 Monolog 3.x 的 `emergency()` 签名不兼容）+ `guzzle/guzzle 3.x`（再拖 `symfony/event-dispatcher 2.x` vs 主系统 7.x）。**根治**：插件 `composer.json` 用 `"replace": {"psr/log":"*","guzzle/guzzle":"*","symfony/event-dispatcher":"*"}` 把这些古董挡在插件 vendor 外、运行时回落主系统版本（百度 SDK 仅 type-hint `psr/log`，3.x 超集兼容）；`BaiduRestClient` 改用主系统 `GuzzleHttp\Client` 发请求、**弃用 SDK 自带 `BceHttpClient`**（底层古董 Guzzle 3.x），仅复用 `BceV1Signer` 签名（纯算法、无第三方依赖）。守护测试 `VendorCoexistenceTest`「插件 vendor 不得携带跨大版本冲突共享依赖」遍历插件↔主系统重叠包断言无 major 冲突、防复发。**改 `replace` 后移除被锁定依赖必须 `composer update -W` 全量重解析**（定向 update 对 replaced 包无效），`-W` 会重开 guzzlehttp 历史公告，故 `composer.json` 设 `policy.advisories.block=false`（仅影响本地生成 lock；生产 `PluginComposerRunner` 走 `composer install` 按 lock 不检查公告，当前 Guzzle 锁定 7.15.2）。
 
 **本地开发**：vendor 不入库，clone 后需先 `composer install -d plugins/cloud-deploy/backend` 把 SDK 拉下来再跑插件测试（CI 同此，已在 `ci-job-snippet.yml` 加 plugin composer install 步骤）。
 
@@ -56,7 +56,7 @@
 
 ### 主系统足迹
 
-插件功能侧主系统 backend **0 改动**，仅复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`，order 详情 SSL 卡片显示「云部署」区域 + 当前订单目标状态）。schema 驱动 → 新增端点前端零改动。（vendor 运行时安装所需的 `PluginManager` composer hook 是**通用主系统能力**，非本插件专属代码，见上「独立 vendor」节。）
+插件功能侧主系统 backend **0 改动**，仅复用既有 widget 插槽 2 个（`admin-order-detail-ssl-actions` / `user-order-detail-ssl-actions`，order 详情 SSL 卡片显示「云部署」区域 + 当前订单目标状态）。schema 驱动 → 新增端点前端零改动。（包内 vendor 校验及历史包 Composer 回落所需的 `PluginManager` hook 是**通用主系统能力**，非本插件专属代码，见上「独立 vendor」节。）
 
 ---
 
@@ -79,7 +79,7 @@
 ```
 composer require <vendor/sdk> -d plugins/cloud-deploy/backend   # 例：alibabacloud/esa-20240910
 # composer install 已随 require 跑，本地 vendor 就位供测试
-git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer.json/lock；vendor 不入库（运行时安装）
+git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer.json/lock；vendor 不入库，由发布脚本打包
 ```
 
 阿里各产品 SDK 包形如 `alibabacloud/<product>-<version>`；腾讯统一 `tencentcloud/tencentcloud-sdk-php`（一个包含全产品 client，多数新端点**无需** require）。
@@ -120,7 +120,7 @@ git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer
 ### AWS ✅（已实现，8 端点：acm/iam/alb/nlb/clb/cloudfront/amplify/apigateway）
 
 - **包**：`aws/aws-sdk-php` ^3.0（实锁 3.337.3，单包全服务，v3 `src/` 布局）。client 构造 `new Aws\Acm\AcmClient(['version'=>'latest','region'=>$r,'credentials'=>['key'=>,'secret'=>]])`，调用 `$c->importCertificate([...])` 返回 `Aws\Result`（数组式）。
-- **composer 公告坑（已解，记录避免重复）**：composer 2.10 默认 `policy.advisories.block=true` 挡住 aws v3 全版本。已在 `composer.json` 加 `config.policy.advisories.ignore-id` 忽略 3 个**本插件不可达**公告：PKSA-4t1p（CloudFront 签名 URL/Policy 注入，只用 UpdateDistribution 不生成签名）、PKSA-dxyf（S3 加密客户端，完全不用 S3）、PKSA-mnyp（jmespath <2.9.1 表达式编译注入，仅 aws-sdk 内部静态表达式、不传用户输入）。原策略**不带 `-W`**（保持 guzzle 7.10 锁定不重开 guzzle 公告），composer 自动回溯到 aws 3.337.3 + jmespath 2.7（阿里云镜像有）。**注：0.0.1 修复引入 `replace`（挡 psr/log 等跨大版本古董，见「独立 vendor」节末）后，移除 replaced 包必须 `-W` 全量重解析、会重开 guzzlehttp 公告，故改用 `policy.advisories.block=false`**——guzzle 仍锁 7.10（最新已修复版），block 仅影响本地生成 lock、生产 install 按 lock 不检查。
+- **composer 公告坑（已解，记录避免重复）**：composer 2.10 默认 `policy.advisories.block=true` 挡住 aws v3 全版本。已在 `composer.json` 加 `config.policy.advisories.ignore-id` 忽略 3 个**本插件不可达**公告：PKSA-4t1p（CloudFront 签名 URL/Policy 注入，只用 UpdateDistribution 不生成签名）、PKSA-dxyf（S3 加密客户端，完全不用 S3）、PKSA-mnyp（jmespath <2.9.1 表达式编译注入，仅 aws-sdk 内部静态表达式、不传用户输入）。原策略**不带 `-W`**（保持 Guzzle 锁定不重开历史公告），composer 自动回溯到 aws 3.337.3 + jmespath 2.7（阿里云镜像有）。**注：0.0.1 修复引入 `replace`（挡 psr/log 等跨大版本古董，见「独立 vendor」节末）后，移除 replaced 包必须 `-W` 全量重解析、会重开 guzzlehttp 公告，故改用 `policy.advisories.block=false`**——当前 Guzzle 锁定 7.15.2，block 仅影响本地生成 lock、生产 install 按 lock 不检查。
 - **两个上传器**：`AwsAcmUploader`（ImportCertificate→CertificateArn，storeKind=`acm:{region}`，region 隔离）、`AwsIamUploader`（UploadServerCertificate→Arn，storeKind=`iam`，ELB 系传 Path=/elb/）。均返回 **ARN** 作 remote_cert_id（AWS 所有绑定点吃 ARN，单值契约统一）。
 - **绑定**：cloudfront→getDistributionConfig+updateDistribution(ViewerCertificate.ACMCertificateArn, IfMatch=ETag, 证书须 us-east-1)；alb/nlb→ELBv2 modifyListener/addListenerCertificates(校验 Type)；clb→经典 ELB setLoadBalancerListenerSSLCertificate；amplify→updateDomainAssociation(certificateSettings 小驼峰)；apigateway→ApiGatewayV2 updateDomainName。`acm`/`iam` 纯上传 no-op。
 - **偏差**：cloudfront 仅 ACM 源（IAM 源需 ServerCertificateId≠ARN，单值契约取舍）；alb/nlb/clb 保留 ACM/IAM 双源（`certificate_source` 默认 ACM，皆用 ARN）；仅 exact 绑定。

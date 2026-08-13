@@ -13,9 +13,10 @@ set -e
 # ========================================
 TEMP_DIR="/tmp/ssl-manager-upgrade-$$"
 # 危险窗守卫状态（trap handler 依赖；见 cleanup / perform_upgrade）
-PRESERVE_DIR="" # 保留目录绝对路径（安装目录同文件系统，非 TEMP_DIR 内）；perform_upgrade 内设定
-FREEZE_FIRED=0  # upgrade:freeze 已点火（决定失败路径是否打印恢复 runbook）
-UPGRADE_DONE=0  # 升级成功走到 artisan up 之后（避免尾部步骤失败误打 runbook）
+PRESERVE_DIR=""         # 保留目录绝对路径（安装目录同文件系统，非 TEMP_DIR 内）；perform_upgrade 内设定
+BUNDLED_VENDOR_STAGE="" # 新 vendor 先在安装盘完整预拷贝，启用时使用同文件系统 rename
+FREEZE_FIRED=0          # upgrade:freeze 已点火（决定失败路径是否打印恢复 runbook）
+UPGRADE_DONE=0          # 升级成功走到 artisan up 之后（避免尾部步骤失败误打 runbook）
 # 入口 _check_stranded_preserve 回迁了中断升级遗留的旧 vendor → 置 1，强制 composer 重装对齐新 lock
 # （backend/composer.json 已是新版本时新旧 hash 相等会误跳过 composer，回迁的旧 vendor 可能陈旧）
 NEED_COMPOSER_FORCE=0
@@ -129,7 +130,7 @@ _check_stranded_preserve() {
             exit 1
         fi
         # vendor-only 残留回迁：storage 已排除（上面命中即 exit），但中断落在「storage 移回 ~ vendor 移回」
-        # 窄窗时 preserve 仍留 vendor 唯一副本（备份 zip 不含 vendor）、backend/vendor 缺失。直接当空壳 rm
+        # 窄窗时 preserve 仍留当前在线 vendor 的唯一副本、backend/vendor 缺失。直接当空壳 rm
         # 会毁唯一副本，且后续 composer 因 backend/composer.json 已是新版本、新旧 hash 相等而误跳过 →
         # artisan fatal 砖机自循环。回迁保命并置 NEED_COMPOSER_FORCE，让后续 composer 强制重装对齐新 lock。
         if [ -d "$dir/vendor" ] && [ ! -d "$INSTALL_DIR/backend/vendor" ]; then
@@ -328,6 +329,10 @@ cleanup() {
         # 守卫自身失败绝不吞：保留 PRESERVE_DIR（唯一副本）、只删 TEMP_DIR、非零退出
         [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
         exit 1
+    fi
+
+    if [ -n "$BUNDLED_VENDOR_STAGE" ] && [ -d "$BUNDLED_VENDOR_STAGE" ]; then
+        rm -rf "$BUNDLED_VENDOR_STAGE"
     fi
 
     # 升级未完成且已冻结 → 打印运维恢复 runbook（不自动 up，见 _print_recovery_runbook）
@@ -1010,8 +1015,8 @@ create_backup() {
     local backend_tmp="$TEMP_DIR/backup_backend"
     mkdir -p "$backend_tmp"
 
-    # 只复制与 PHP BackupManager 相同的目录：app, config, database, routes, bootstrap
-    for dir in app config database routes bootstrap; do
+    # 备份代码与已安装依赖；回滚不再依赖 Composer 重建 vendor。
+    for dir in app config database routes bootstrap vendor; do
         if [ -d "$INSTALL_DIR/backend/$dir" ]; then
             cp -r "$INSTALL_DIR/backend/$dir" "$backend_tmp/"
         fi
@@ -1760,6 +1765,53 @@ _need_composer_install() {
     return 1
 }
 
+# 发布包 vendor 完整性契约：autoload 和构建阶段写入的 lock SHA-256 标记必须同时匹配。
+_bundled_vendor_matches_lock() {
+    local backend_dir="$1"
+    _vendor_dir_matches_lock "$backend_dir/vendor" "$backend_dir/composer.lock"
+}
+
+_vendor_dir_matches_lock() {
+    local vendor_dir="$1"
+    local lock="$2"
+    local autoload="$vendor_dir/autoload.php"
+    local marker="$vendor_dir/composer/.ssl-manager-lock.sha256"
+    [ -f "$lock" ] && [ -f "$autoload" ] && [ -f "$marker" ] || return 1
+
+    local expected actual
+    expected=$(file_sha256 "$lock" | tr 'A-F' 'a-f') || return 1
+    actual=$(tr -d '[:space:]' <"$marker" | tr 'A-F' 'a-f')
+    [[ "$actual" =~ ^[a-f0-9]{64}$ ]] && [ "$actual" = "$expected" ]
+}
+
+# 在服务仍在线、旧代码完全未动时，把包内 vendor 复制到安装盘同文件系统并再次校验。
+# 后续仅用 rename 启用；磁盘满/权限/复制失败均在 maintenance/freeze/rm 之前结束。
+_stage_bundled_vendor() {
+    local source_backend="$1"
+    local source_vendor="$source_backend/vendor"
+    local stage="$INSTALL_DIR/backend/.vendor-next-$$"
+
+    rm -rf "$stage"
+    if ! mkdir -p "$stage" || ! cp -a "$source_vendor/." "$stage/"; then
+        rm -rf "$stage"
+        log_error "升级包 vendor 预拷贝失败，已在覆盖代码前中止"
+        return 1
+    fi
+    if ! _vendor_dir_matches_lock "$stage" "$source_backend/composer.lock"; then
+        rm -rf "$stage"
+        log_error "预拷贝 vendor 与 composer.lock 不匹配，已在覆盖代码前中止"
+        return 1
+    fi
+
+    # 防止步骤 8 的整树复制直接写入在线 vendor；新快照只允许从安装盘 stage 原子启用。
+    if ! rm -rf "$source_vendor"; then
+        rm -rf "$stage"
+        log_error "无法隔离升级包内 vendor，已在覆盖代码前中止"
+        return 1
+    fi
+    BUNDLED_VENDOR_STAGE="$stage"
+}
+
 # 在 PHP-FPM reload 前完成最终权限修正，避免新 master / worker 在文件树仍变动时加载代码。
 _finalize_install_permissions() {
     log_step "确认文件权限..."
@@ -1844,6 +1896,19 @@ perform_upgrade() {
     # 4. PHP 环境检测（必须在 maintenance mode / mv storage / rm 旧代码之前；
     # 不达标立即 exit 1 → trap cleanup 只删 TEMP_DIR，原安装目录完整未动）
     check_php_environment "$src_dir"
+
+    local bundled_vendor=false
+    if [ -d "$src_dir/backend/vendor" ]; then
+        if ! _bundled_vendor_matches_lock "$src_dir/backend"; then
+            log_error "升级包内 vendor 与 composer.lock 不匹配，已在覆盖代码前中止"
+            exit 1
+        fi
+        if ! _stage_bundled_vendor "$src_dir/backend"; then
+            exit 1
+        fi
+        bundled_vendor=true
+        log_success "升级包内 Composer 依赖已在安装盘预拷贝并通过完整性校验"
+    fi
 
     # 5. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
@@ -2030,8 +2095,16 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         }
     fi
 
-    # 恢复 vendor
-    if [ -d "$PRESERVE_DIR/vendor" ]; then
+    # 新包已携带与 lock 配套的 vendor 时使用新快照；老包仍恢复旧 vendor。
+    if [ "$bundled_vendor" = true ]; then
+        if [ -z "$BUNDLED_VENDOR_STAGE" ] || [ ! -d "$BUNDLED_VENDOR_STAGE" ] ||
+            ! mv "$BUNDLED_VENDOR_STAGE" "$INSTALL_DIR/backend/vendor"; then
+            log_error "新 vendor 原子启用失败，交 cleanup 恢复旧 vendor"
+            exit 1
+        fi
+        BUNDLED_VENDOR_STAGE=""
+        rm -rf "$PRESERVE_DIR/vendor"
+    elif [ -d "$PRESERVE_DIR/vendor" ]; then
         mv "$PRESERVE_DIR/vendor" "$INSTALL_DIR/backend/"
     fi
 
@@ -2080,92 +2153,97 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
         log_info "新版本 composer.lock hash: ${new_composer_lock_hash:0:16}..."
     fi
 
-    # 依赖变化判定收口到 _need_composer_install（vendor 缺失 / 回迁强制 / hash 变化 → 需要安装）
-    local need_composer=false
-    if _need_composer_install "$old_composer_json_hash" "$new_composer_json_hash" \
-        "$old_composer_lock_hash" "$new_composer_lock_hash"; then
-        need_composer=true
-    fi
-
-    # 探测 composer phar 路径（无论 install/dump-autoload 都要用，提前到 if 块外）
-    # 用 $PHP_CMD 显式驱动，避免 shebang #!/usr/bin/env php 走错版本
-    local composer_bin=""
-    if [ -x "/usr/local/bin/composer" ]; then
-        composer_bin="/usr/local/bin/composer"
-    elif command -v composer &>/dev/null; then
-        composer_bin="$(command -v composer)"
+    if [ "$bundled_vendor" = true ]; then
+        log_success "使用发布包内已优化 vendor，跳过 Composer install 和 dump-autoload"
+        chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
     else
-        log_error "未找到 composer（已检查 /usr/local/bin/composer 和 PATH）"
-        exit 1
-    fi
-    log_info "使用 composer: $composer_bin"
-
-    if [ "$need_composer" = true ]; then
-        log_step "安装 Composer 依赖..."
-
-        # 从 version.json 读取网络配置（安装时用户选择）
-        local use_china_mirror=false
-        if [ -f "$INSTALL_DIR/version.json" ]; then
-            local network=$(grep -o '"network"[[:space:]]*:[[:space:]]*"[^"]*"' "$INSTALL_DIR/version.json" 2>/dev/null | head -1 | cut -d'"' -f4)
-            if [ "$network" = "china" ]; then
-                use_china_mirror=true
-                log_info "从 version.json 读取网络配置: 使用国内镜像"
-            fi
+        # 依赖变化判定收口到 _need_composer_install（vendor 缺失 / 回迁强制 / hash 变化 → 需要安装）
+        local need_composer=false
+        if _need_composer_install "$old_composer_json_hash" "$new_composer_json_hash" \
+            "$old_composer_lock_hash" "$new_composer_lock_hash"; then
+            need_composer=true
         fi
 
-        # 临时 COMPOSER_HOME（一次性，跑完即删；不污染持久目录，不进宝塔备份）
-        local tmp_home
-        tmp_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
-
-        cd "$INSTALL_DIR/backend"
-        # 镜像配置写到 tmp_home（不污染项目 composer.json）
-        if [ "$use_china_mirror" = true ]; then
-            env HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
-                "$PHP_CMD" "$composer_bin" config -g repo.packagist composer https://mirrors.aliyun.com/composer/
-        fi
-
-        # 与后台 UpgradeService::runComposerInstall 不对称：此处保留 scripts（不加 --no-scripts）。
-        # 原因：upgrade.sh 是 root SSH 入口，调用时 web 流量已隔离 / 维护模式生效，
-        #       即使 package:discover 加载老代码 fatal，也只在终端报错而非死锁前端轮询；
-        #       而后台升级走 PHP-FPM www 用户，必须 --no-scripts 防止 fatal 让 vendor 半成品。
-        # 同时下方有无条件 dump-autoload --no-scripts 作为兜底，覆盖 classmap 漂移场景。
-        local rc=0
-        COMPOSER_ALLOW_SUPERUSER=1 HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
-            "$PHP_CMD" "$composer_bin" install --no-dev --optimize-autoloader || rc=$?
-
-        rm -rf "$tmp_home"
-
-        if [ "$rc" -ne 0 ]; then
-            log_error "composer install 失败"
+        # 探测 composer phar 路径（无论 install/dump-autoload 都要用，提前到 if 块外）
+        # 用 $PHP_CMD 显式驱动，避免 shebang #!/usr/bin/env php 走错版本
+        local composer_bin=""
+        if [ -x "/usr/local/bin/composer" ]; then
+            composer_bin="/usr/local/bin/composer"
+        elif command -v composer &>/dev/null; then
+            composer_bin="$(command -v composer)"
+        else
+            log_error "未找到 composer（已检查 /usr/local/bin/composer 和 PATH）"
             exit 1
         fi
+        log_info "使用 composer: $composer_bin"
 
-        # vendor/ 由 root 重建，统一 chown 给 www
+        if [ "$need_composer" = true ]; then
+            log_step "安装 Composer 依赖..."
+
+            # 从 version.json 读取网络配置（安装时用户选择）
+            local use_china_mirror=false
+            if [ -f "$INSTALL_DIR/version.json" ]; then
+                local network=$(grep -o '"network"[[:space:]]*:[[:space:]]*"[^"]*"' "$INSTALL_DIR/version.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+                if [ "$network" = "china" ]; then
+                    use_china_mirror=true
+                    log_info "从 version.json 读取网络配置: 使用国内镜像"
+                fi
+            fi
+
+            # 临时 COMPOSER_HOME（一次性，跑完即删；不污染持久目录，不进宝塔备份）
+            local tmp_home
+            tmp_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
+
+            cd "$INSTALL_DIR/backend"
+            # 镜像配置写到 tmp_home（不污染项目 composer.json）
+            if [ "$use_china_mirror" = true ]; then
+                env HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
+                    "$PHP_CMD" "$composer_bin" config -g repo.packagist composer https://mirrors.aliyun.com/composer/
+            fi
+
+            # 与后台 UpgradeService::runComposerInstall 不对称：此处保留 scripts（不加 --no-scripts）。
+            # 原因：upgrade.sh 是 root SSH 入口，调用时 web 流量已隔离 / 维护模式生效，
+            #       即使 package:discover 加载老代码 fatal，也只在终端报错而非死锁前端轮询；
+            #       而后台升级走 PHP-FPM www 用户，必须 --no-scripts 防止 fatal 让 vendor 半成品。
+            # 同时下方有无条件 dump-autoload --no-scripts 作为兜底，覆盖 classmap 漂移场景。
+            local rc=0
+            COMPOSER_ALLOW_SUPERUSER=1 HOME="$tmp_home" COMPOSER_HOME="$tmp_home" \
+                "$PHP_CMD" "$composer_bin" install --no-dev --optimize-autoloader || rc=$?
+
+            rm -rf "$tmp_home"
+
+            if [ "$rc" -ne 0 ]; then
+                log_error "composer install 失败"
+                exit 1
+            fi
+
+            # vendor/ 由 root 重建，统一 chown 给 www
+            chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
+        fi
+
+        # 无条件重新生成 autoload（修复 classmap 漂移；对健康部署无害，秒级完成）
+        # 场景：跨小版本升级未触发 composer install，但 vendor 内文件路径/PSR-4 映射可能已变
+        # （如 Laravel 13.8.0 ReflectsClosures 跨目录），旧 classmap 还指向旧路径会撞 Failed to open stream。
+        # 这里强制重建一次保证 autoload 与 vendor 现状一致。
+        log_step "重新生成 autoload..."
+        local autoload_home
+        autoload_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
+        cd "$INSTALL_DIR/backend"
+        local dump_rc=0
+        COMPOSER_ALLOW_SUPERUSER=1 HOME="$autoload_home" COMPOSER_HOME="$autoload_home" \
+            "$PHP_CMD" "$composer_bin" dump-autoload --optimize --no-scripts || dump_rc=$?
+        rm -rf "$autoload_home"
+        if [ "$dump_rc" -ne 0 ]; then
+            # 与 backend UpgradeService::runDumpAutoload 对齐：autoload 不一致让后续 migrate 加载到
+            # 不存在的类，必须 fail-fast。此时 storage/vendor 已通过"恢复保留文件"步骤移回 INSTALL_DIR，
+            # trap cleanup 仅删 TEMP_DIR 不会丢数据；用户修好后重跑 upgrade.sh 即可（dump-autoload 幂等）
+            log_error "dump-autoload 失败（autoload 不一致后续 migrate 必然 ClassNotFound，已中止）"
+            log_info "请手工执行: cd $INSTALL_DIR/backend && composer dump-autoload --optimize --no-scripts"
+            log_info "然后重跑 bash upgrade.sh"
+            exit 1
+        fi
         chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
     fi
-
-    # 无条件重新生成 autoload（修复 classmap 漂移；对健康部署无害，秒级完成）
-    # 场景：跨小版本升级未触发 composer install，但 vendor 内文件路径/PSR-4 映射可能已变
-    # （如 Laravel 13.8.0 ReflectsClosures 跨目录），旧 classmap 还指向旧路径会撞 Failed to open stream。
-    # 这里强制重建一次保证 autoload 与 vendor 现状一致。
-    log_step "重新生成 autoload..."
-    local autoload_home
-    autoload_home="$(mktemp -d /tmp/composer-home-XXXXXX)"
-    cd "$INSTALL_DIR/backend"
-    local dump_rc=0
-    COMPOSER_ALLOW_SUPERUSER=1 HOME="$autoload_home" COMPOSER_HOME="$autoload_home" \
-        "$PHP_CMD" "$composer_bin" dump-autoload --optimize --no-scripts || dump_rc=$?
-    rm -rf "$autoload_home"
-    if [ "$dump_rc" -ne 0 ]; then
-        # 与 backend UpgradeService::runDumpAutoload 对齐：autoload 不一致让后续 migrate 加载到
-        # 不存在的类，必须 fail-fast。此时 storage/vendor 已通过"恢复保留文件"步骤移回 INSTALL_DIR，
-        # trap cleanup 仅删 TEMP_DIR 不会丢数据；用户修好后重跑 upgrade.sh 即可（dump-autoload 幂等）
-        log_error "dump-autoload 失败（autoload 不一致后续 migrate 必然 ClassNotFound，已中止）"
-        log_info "请手工执行: cd $INSTALL_DIR/backend && composer dump-autoload --optimize --no-scripts"
-        log_info "然后重跑 bash upgrade.sh"
-        exit 1
-    fi
-    chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
 
     # 11. 运行数据库迁移
     log_step "运行数据库迁移..."
@@ -2358,8 +2436,8 @@ rollback() {
         mkdir -p "$restore_tmp"
         unzip -qo "$latest_backup/backend.zip" -d "$restore_tmp"
 
-        # 恢复后端目录（保留 storage 和 vendor）
-        for dir in app config database routes bootstrap; do
+        # 恢复后端目录（storage 始终保留；新格式备份含 vendor 时一并恢复）
+        for dir in app config database routes bootstrap vendor; do
             if [ -d "$restore_tmp/$dir" ]; then
                 rm -rf "$INSTALL_DIR/backend/$dir"
                 cp -r "$restore_tmp/$dir" "$INSTALL_DIR/backend/"

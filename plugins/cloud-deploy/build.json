@@ -7,7 +7,6 @@
   "exclude": [
     ".gitignore",
     "backend/tests/",
-    "backend/phpstan.neon",
-    "backend/vendor/"
+    "backend/phpstan.neon"
   ]
 }

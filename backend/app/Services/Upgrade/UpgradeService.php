@@ -205,13 +205,17 @@ class UpgradeService
             $this->packageExtractor->applyUpgrade($extractedPath);
             $statusManager->completeStep('apply');
 
+            $bundledVendorApplied = $this->packageExtractor->appliedBundledVendor();
+
             // 步骤 8: 安装 Composer 依赖（比较 hash 决定是否需要安装）
             $newComposerHashes = $this->getComposerHashes(base_path());
             Log::info('[Upgrade] New composer hashes', $newComposerHashes);
 
             $needComposerInstall = $this->hasComposerChanges($oldComposerHashes, $newComposerHashes);
 
-            if ($needComposerInstall) {
+            if ($bundledVendorApplied) {
+                Log::info('[Upgrade] 发布包 vendor 已与 composer.lock 对齐，跳过 Composer install');
+            } elseif ($needComposerInstall) {
                 $statusManager->startStep('composer_install');
                 Log::info('[Upgrade] Detected composer changes, running composer install');
                 if (! $this->runComposerInstall()) {
@@ -222,8 +226,8 @@ class UpgradeService
                 Log::info('[Upgrade] No composer changes detected, skipping composer install');
             }
 
-            // 无条件重建 autoload（修复跨小版本升级时 classmap 漂移；对齐 upgrade.sh 策略）
-            if (! $this->runDumpAutoload()) {
+            // 包内 vendor 在发布构建时已优化 autoload，运行时不再要求 Composer 或网络。
+            if (! $bundledVendorApplied && ! $this->runDumpAutoload()) {
                 throw new RuntimeException('Composer autoload 重建失败');
             }
 

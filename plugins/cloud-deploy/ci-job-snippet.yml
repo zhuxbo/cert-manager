@@ -2,7 +2,7 @@
 # cloud-deploy 插件 CI job 片段（独立文件，待合并主仓时手动并入 .github/workflows/ci.yml）
 # ----------------------------------------------------------------------------
 # 镜像主仓 backend-invoice-plugin-test 的结构（matrix 5.7 / 8.4 + migrate + 跑插件测试）。
-# 差异：cloud-deploy 的 backend/vendor 不入库（阿里/腾讯官方 SDK 约 80M，改为运行时安装）。
+# 差异：cloud-deploy 的 backend/vendor 不入库；CI 安装依赖，发布脚本再把生产 vendor 打进插件包。
 #       故 CI 跑插件测试前必须先在 plugins/cloud-deploy/backend 跑 composer install 把 SDK 拉下来
 #       （deployer 测试引用 AlibabaCloud/TencentCloud 类）；不 scoping，运行期 PluginServiceProvider
 #       把插件 ClassLoader 挂 SPL 栈尾。主系统 composer install 仍需要（提供 Laravel/larastan）。
@@ -25,8 +25,8 @@ backend-cloud-deploy-plugin-test:
     fail-fast: false
     matrix:
       include:
-        - { mysql: '5.7', collation: 'utf8mb4_unicode_520_ci' }
-        - { mysql: '8.4', collation: 'utf8mb4_0900_ai_ci' }
+        - { mysql: "5.7", collation: "utf8mb4_unicode_520_ci" }
+        - { mysql: "8.4", collation: "utf8mb4_0900_ai_ci" }
 
   services:
     mysql:
@@ -50,7 +50,7 @@ backend-cloud-deploy-plugin-test:
     - name: Setup PHP
       uses: shivammathur/setup-php@v2
       with:
-        php-version: '8.3'
+        php-version: "8.3"
         extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, redis, zip, gd, bcmath
         coverage: none
       env:
@@ -68,7 +68,7 @@ backend-cloud-deploy-plugin-test:
         key: ${{ runner.os }}-composer-${{ hashFiles('backend/composer.lock') }}
         restore-keys: ${{ runner.os }}-composer-
 
-    # 主系统依赖（Laravel + larastan）。插件 vendor 单独在下方 install（不入库，运行时安装）。
+    # 主系统依赖（Laravel + larastan）。插件 vendor 单独在下方 install（不入库）。
     - name: Install Composer dependencies
       working-directory: backend
       run: composer install --prefer-dist --no-progress --no-interaction
@@ -102,7 +102,7 @@ backend-cloud-deploy-plugin-test:
       run: |
         php artisan tinker --execute="foreach (['cloud_deploy_accesses','cloud_deploy_targets','cloud_deploy_remote_certs','cloud_deploy_logs'] as \$t) { if (! \Illuminate\Support\Facades\Schema::hasTable(\$t)) { fwrite(STDERR, \$t.' table not created'); exit(1); } } echo 'cloud-deploy schema OK';"
 
-    # 插件 vendor 不入库：安装插件自身 composer 依赖（阿里/腾讯官方 SDK），供 deployer 测试加载。
+    # 插件 vendor 不入库：安装插件自身 composer 依赖（阿里/腾讯官方 SDK），供测试与发布构建使用。
     # 独立缓存键按插件 composer.lock 哈希（与主系统 composer 缓存分离，避免互相失效）。
     - name: Cache Cloud-Deploy plugin Composer dependencies
       uses: actions/cache@v5

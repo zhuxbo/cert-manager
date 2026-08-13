@@ -86,6 +86,12 @@ touch bootstrap/cache/.keep
 
 # 验证构建结果
 if [ -d "vendor" ]; then
+    if [ ! -f "vendor/autoload.php" ] || [ ! -f "composer.lock" ]; then
+        log_error "后端构建失败：vendor/autoload.php 或 composer.lock 缺失"
+        exit 1
+    fi
+    mkdir -p vendor/composer
+    printf '%s\n' "$CURRENT_HASH" >vendor/composer/.ssl-manager-lock.sha256
     VENDOR_SIZE=$(du -sh vendor | cut -f1)
     VENDOR_PACKAGES=$(find vendor -name "composer.json" | wc -l)
     log_info "Vendor 大小: $VENDOR_SIZE"

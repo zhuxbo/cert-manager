@@ -385,6 +385,94 @@ test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态�
     }
 });
 
+test('applyBackendUpgrade 校验锁文件标记后整体替换包内 vendor', function () {
+    $sourceDir = "$this->testDir/pkg-vendor/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'NEW-LOCK')."\n");
+    File::put("$sourceDir/vendor/new-package.php", 'new');
+
+    $installDir = "$this->testDir/install-vendor";
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/vendor/stale-package.php", 'stale');
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        expect($this->extractor->appliedBundledVendor())->toBeTrue()
+            ->and("$installDir/vendor/new-package.php")->toBeFile()
+            ->and("$installDir/vendor/stale-package.php")->not->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 拒绝标记与 composer lock 不匹配的 vendor 且保留旧依赖', function () {
+    $sourceDir = "$this->testDir/pkg-invalid-vendor/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'OTHER-LOCK'));
+
+    $installDir = "$this->testDir/install-invalid-vendor";
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/vendor/old-package.php", 'old');
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        expect(fn () => $method->invoke($this->extractor, $sourceDir))
+            ->toThrow(RuntimeException::class, '发布包 vendor 与 composer.lock 不匹配');
+        expect("$installDir/vendor/old-package.php")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 在 vendor 预暂存失败时不覆盖现有代码和依赖', function () {
+    $sourceDir = "$this->testDir/pkg-stage-failure/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/app/Marker.php", 'new-code');
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'NEW-LOCK'));
+
+    $installDir = "$this->testDir/install-stage-failure";
+    File::makeDirectory("$installDir/app", 0755, true);
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/app/Marker.php", 'old-code');
+    File::put("$installDir/vendor/old-package.php", 'old-vendor');
+
+    $extractor = new class extends PackageExtractor
+    {
+        protected function stageBundledVendor(string $source, string $target, string $sourceBackend): string
+        {
+            throw new RuntimeException('模拟 vendor 预暂存失败');
+        }
+    };
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($extractor))->getMethod('applyBackendUpgrade');
+
+        expect(fn () => $method->invoke($extractor, $sourceDir))
+            ->toThrow(RuntimeException::class, '模拟 vendor 预暂存失败');
+        expect(File::get("$installDir/app/Marker.php"))->toBe('old-code')
+            ->and(File::get("$installDir/vendor/old-package.php"))->toBe('old-vendor');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
 test('applyFrontendUpgrade 更新 platform config 且不保留 admin logo', function () {
     $sourceDir = "$this->testDir/pkg/frontend/admin";
     File::makeDirectory($sourceDir, 0755, true);

@@ -180,8 +180,8 @@ find_config() {
 # ========================================
 # zip 不变量守卫
 # ========================================
-# ① backend/vendor/ 不进发布包（硬不变量：插件 vendor 由主系统 PluginComposerRunner 运行时安装）
-# ② 含 backend/composer.json 时必须同含 backend/composer.lock
+# ① 含 backend/composer.json 时必须同含 backend/composer.lock 和已锁定 vendor
+# ② vendor 标记必须与 composer.lock SHA-256 一致
 #    （缺 lock 会使 PluginComposerRunner::lockHash 恒返回 '' 破坏更新检测，composer install 退化为非锁定解析）
 verify_zip_invariants() {
     local zip="$1"
@@ -197,21 +197,37 @@ verify_zip_invariants() {
         exit 1
     }
 
-    if echo "$listing" | grep -q 'backend/vendor/'; then
-        log_error "发布包含 backend/vendor/，违反不变量（vendor 不入发布包）: $zip"
-        log_info "请在 build.json 的 exclude 中排除 backend/vendor/"
-        exit 1
-    fi
-
     if echo "$listing" | grep -qE 'backend/composer\.json$'; then
         if ! echo "$listing" | grep -qE 'backend/composer\.lock$'; then
             log_error "发布包含 backend/composer.json 但缺 backend/composer.lock: $zip"
             log_info "缺 lock 会破坏 PluginComposerRunner 更新检测，请将 backend/composer.lock 加入 build.json 的 include"
             exit 1
         fi
+        for required in 'backend/vendor/autoload\.php$' 'backend/vendor/composer/\.ssl-manager-lock\.sha256$'; do
+            if ! echo "$listing" | grep -qE "$required"; then
+                log_error "Composer 插件发布包缺少完整 vendor: $zip"
+                exit 1
+            fi
+        done
+
+        local lock_hash marker
+        lock_hash=$(unzip -p "$zip" '*/backend/composer.lock' | sha256_stream)
+        marker=$(unzip -p "$zip" '*/backend/vendor/composer/.ssl-manager-lock.sha256' | tr -d '[:space:]' | tr 'A-F' 'a-f')
+        if [ "$lock_hash" != "$marker" ]; then
+            log_error "插件 vendor 标记与 composer.lock 不匹配: $zip"
+            exit 1
+        fi
     fi
 
-    log_success "zip 不变量校验通过（无 backend/vendor/，composer.json/lock 配对）"
+    log_success "zip 不变量校验通过（composer.json/lock/vendor 配对）"
+}
+
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
 }
 
 # ========================================
@@ -293,6 +309,25 @@ EOF
             log_success "$side 端构建完成"
         fi
     done
+
+    if [ -f "backend/composer.json" ]; then
+        if [ ! -f "backend/composer.lock" ]; then
+            log_error "Composer 插件缺少 backend/composer.lock"
+            exit 1
+        fi
+        local lock_hash vendor_marker
+        lock_hash=$(sha256_stream <backend/composer.lock)
+        vendor_marker=$(tr -d '[:space:]' <backend/vendor/composer/.ssl-manager-lock.sha256 2>/dev/null || true)
+        if [ -f "backend/vendor/autoload.php" ] && [ "$lock_hash" = "$vendor_marker" ]; then
+            log_success "插件 PHP 生产依赖已与 lock 对齐"
+        else
+            log_step "构建插件 PHP 生产依赖..."
+            (cd backend && COMPOSER_ALLOW_SUPERUSER=1 composer install \
+                --no-dev --no-scripts --no-interaction --prefer-dist --optimize-autoloader)
+            mkdir -p backend/vendor/composer
+            printf '%s\n' "$lock_hash" >backend/vendor/composer/.ssl-manager-lock.sha256
+        fi
+    fi
 
     # 读取 build.json 打包配置
     if [ ! -f "build.json" ]; then

@@ -215,7 +215,14 @@ bash nginx/render.sh /www/wwwroot/ssl-manager --reload
 
 ## Composer 依赖安装
 
-发行包不包含 `backend/vendor`。`bt-install.sh::run_composer_install` 在宿主机执行 `composer install --no-dev --optimize-autoloader`。
+发行包包含与 `composer.lock` 锁定的 `backend/vendor`，并以
+`vendor/composer/.ssl-manager-lock.sha256` 校验完整性。安装脚本优先使用包内依赖；
+仅为兼容不带 vendor 的历史安装包才运行 `composer install`。
+
+这是长期部署契约：生产服务器不负责解析新版本依赖。国内镜像同步延迟或官方源/GitHub
+不可达时，安装与升级仍应只依赖已下载并通过 SHA-256 校验的发布包。vendor 必须在构建环境由
+对应 lock 生成，随完整包、升级包和含 Composer 依赖的插件包一起交付；后台与 Shell 消费端都
+必须先验 lock marker，再替换现有 vendor。
 
 ### PHP / Composer 路径约定
 
@@ -356,7 +363,7 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 二维码占位图不进入升级包：升级时原样保留安装目录已有的 `qrcode.png`，用户端在后台未上传二维码时直接使用该 PNG；完整安装包携带默认的 400×400 PNG。
 
-- **vendor 砖机兜底**：vendor 以 `mv` 进 preserve（备份 zip 不含 vendor）。若中断丢了 vendor 唯一副本，重跑时入口 `_check_stranded_preserve` 优先把 vendor-only 残留**回迁**到原位；即便回迁不上（preserve 已被 rm），composer 触发判定 `_need_composer_install` 见 `vendor/autoload.php` 缺失即**强制重装**（不因新旧 hash 相等误跳过），把原先「artisan fatal + 每次重跑必失败」的砖机自循环化为「重跑即自愈」。
+- **vendor 砖机兜底**：当前 vendor 以 `mv` 进 preserve，同时新升级包也携带可校验的 vendor。若切换窄窗中断导致在线 vendor 缺失，重跑时入口 `_check_stranded_preserve` 优先把 vendor-only 残留**回迁**到原位；即便历史升级包或异常环境没有可用的包内 vendor，composer 触发判定 `_need_composer_install` 见 `vendor/autoload.php` 缺失仍会**强制重装**（不因新旧 hash 相等误跳过），避免「artisan fatal + 每次重跑必失败」的砖机自循环。
 - **搁浅数据入口拦截**：SIGKILL/断电后 storage 滞留 `.upgrade-preserve-*/storage` 而 `backend/storage` 缺失时，**重跑 `upgrade.sh` 会在入口被拦截并中止**（否则会新建空 storage 把真数据连同 databak 静默埋掉）。按终端指引先手工把 storage 移回、删除残留目录，再重跑：
 
   ```bash

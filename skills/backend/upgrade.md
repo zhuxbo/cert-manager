@@ -57,7 +57,7 @@
 | `BackupManager`        | 备份和恢复                                                             |
 | `VersionManager`       | 版本比较，环境检测                                                     |
 
-**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：**遍历 source backend 顶层目录**逐个 `syncDirectory`（**只覆盖不删除**），`skipDirs` 排除 `storage`（运行时数据 + 升级自身状态 `upgrade.lock`/status；且 `removeEmptyDirectories` 会误删其空目录）和 `vendor`（单独同步）；根文件按清单 `artisan`+`composer.json/lock`+`php-requirements.json` 复制，`version.json` 由 `updateVersionJsonWithPreservedFields` 单独处理（保留 `release_url`/`network`）。早期用硬编码白名单，曾漏 `resources` 导致 `resources/docs/api/*.yaml`（对外 API 文档 `MetaController::apiDoc` 读取）等代码资源不随升级更新，症状是「代码更新了（app/routes → 路由注册，POST 405）但资源 404」；**改动态发现后新增顶层目录永不再漏**（upgrade 包打包已 exclude `storage/*`/`vendor/`/`tests/`，source 有什么同步什么天然安全）。
+**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：普通顶层目录动态同步，`storage` 始终排除；包内 `vendor` 必须在覆盖任何代码前复制到安装盘同级临时目录并再次通过 lock SHA-256 标记校验，磁盘满或权限失败时旧代码与旧 vendor 都保持不变；随后用同文件系统目录切换整体替换，不与旧 vendor 合并。升级成功后跳过运行时 Composer；不带 vendor 的历史包仍走原 Composer 兼容路径。
 
 **两条升级路径删除语义不同、且都正确**：后台升级（PHP，在被升级代码内运行、不能全量删自身）→ 只覆盖不删除，旧版删除的文件会残留（本项目路由是显式白名单不扫目录，残留基本无害）；需彻底清理残留时走 `upgrade.sh`（外部 shell，`rm -rf` 各目录 + 整体 `cp` 全量替换、天然无残留）。一致性目标是「都不漏应更新的目录」，删除策略因运行环境不同而必须不同。
 
@@ -99,7 +99,7 @@
   - 等待期间每 2 秒输出旧 worker 剩余数、当前 worker 数、master 与健康入口状态，30 秒仅作故障上限。原本无 worker 的 ondemand `0/0` 空闲态无法直接比较代际：upgrade.sh 按安装目录反查本站 vhost/普通域名，`bt_reload_php_fpm` **在发送 reload 前**通过 `curl --resolve <domain>:443|80:127.0.0.1` 请求维护态放行的 `/api/health`（HTTP 200/503 均可）生成并记录旧 worker 身份，再发送 reload。既建不起代际基线、master 也未换代时不宣告成功：等满 `BT_PHP_FPM_WAIT_TIMEOUT` 后如实告警交人工（非阻断，upgrade.sh 只 `log_warning`）。非宝塔 PHP 路径跳过
 - **OPcache 清理统一走 `App\Support\Opcache::reset()`**：换代码后必须清，否则 `opcache.validate_timestamps=0` 的机器继续跑旧字节码。三种"没清成"语义不同，不能一律当失败：①扩展未加载 → skipped；②当前 SAPI 未启用（CLI 下 `opcache.enable_cli` 默认 0，这是命令行常态）→ 含义是"本来就没缓存可清"；裸调时它与真失败一样表现为 `opcache_reset()` 返回 false，故 `Opcache` 先用 `opcache_get_status()` 探测再决定是否 reset，把它归为 skipped 而非 failed；③配了 `opcache.restrict_api` 且调用脚本路径不匹配 → PHP 发 `E_WARNING`，Laravel 引导后 `error_reporting = -1`，`HandleExceptions` 会转成 `ErrorException`——**裸调会中断升级**（实测容器内带完整 bootstrap 复现），故由 `Opcache::reset()` 就地接住并返回结构化结果，`UpgradeService` 只记账不阻断。**命令行进程只能清自己的 OPcache，够不到 PHP-FPM 常驻进程**：`cache:clear-all` 在 CLI 下即使 reset 成功也必须提示"FPM 不受影响"，否则是假成功信号；线上真正换掉字节码只能靠后台「清除缓存」按钮（`Artisan::call` 与 FPM worker 同进程）或重载 PHP-FPM。
 - **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function` → `handleFatalShutdown`（静态、注入 `error_get_last()`，便于直测），捕获 `E_ERROR / E_PARSE` 等 fatal：双守卫（非 fatal / 非 running 早退）后 `unfreeze` → `artisan up` → `fail`（序契约见「freeze 接入」节；fail 放最后让 up 二次 fatal 时 status 留 running 交 watchdog 接管），避免卡 running 死锁 + freeze 滞留
-- **classmap 自愈**：upgrade.sh composer 块后**无条件**跑 `dump-autoload --optimize --no-scripts`，修复跨小版本升级时 vendor 路径变更（如 `Pdo\Mysql` polyfill / `ReflectsClosures` 跨目录）导致的 classmap 漂移
+- **classmap 自愈**：新包的 autoload 在构建时优化生成；仅历史不带 vendor 的兼容路径会跑 `dump-autoload --optimize --no-scripts`。
 - **composer 触发收口 `_need_composer_install`**：依赖变化判定统一走此函数，判据「`vendor/autoload.php` 缺失 ∨ `NEED_COMPOSER_FORCE=1`（入口回迁旧 vendor）∨ composer.json/lock hash 变化」任一即装。**vendor 缺失必装是砖机兜底**——中断丢 vendor 后重跑时 `backend/composer.json` 已是新版本、新旧 hash 相等会误跳过 composer → artisan fatal 自循环，runbook 的「重跑」指引失效；从新 lock 重建始终正确幂等，宁可多装一次
 
 ### 数据库结构校验

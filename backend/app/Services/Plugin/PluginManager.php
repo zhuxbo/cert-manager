@@ -249,6 +249,9 @@ class PluginManager
             throw new RuntimeException("插件 $name 已安装，请使用更新功能");
         }
 
+        // 保留“已安装/不兼容”错误优先级，同时确保包内依赖在任何落盘修改前完成校验。
+        $this->validateBundledPluginVendor($name, $pluginSourceDir);
+
         if ($releaseUrl) {
             $this->updatePluginManifest($pluginSourceDir, ['release_url' => $releaseUrl]);
         }
@@ -377,6 +380,7 @@ class PluginManager
             $pluginSourceDir = $this->findPluginDir($extractDir, $name);
             $this->report('validating', '正在校验插件包...');
             $this->validatePlugin($pluginSourceDir, $name);
+            $this->validateBundledPluginVendor($name, $pluginSourceDir);
 
             // 保留原有 release_url
             $releaseUrlValue = $currentManifest['release_url'] ?? '';
@@ -387,8 +391,8 @@ class PluginManager
             // 删除旧版本 → 移入新版本（校验路径归属，防止 symlink 攻击）
             $this->validatePluginPath($pluginDir);
 
-            // 删目录前把运行时装的 vendor 移出暂存：发布包不含 vendor，若直接删掉旧目录后
-            // 又因 lock 未变跳过 install，vendor 会永久丢失（备份也随成功路径删除无法恢复）。
+            // 删目录前暂存旧 vendor：新包自带 vendor 时会丢弃该暂存；历史包仍可在
+            // lock 未变时复用，避免无意丢失已安装依赖。
             $oldVendorDir = "$pluginDir/backend/vendor";
             if (is_dir($oldVendorDir)) {
                 $vendorStash = "$this->downloadPath/vendor-stash-$name-".bin2hex(random_bytes(6));
@@ -400,11 +404,21 @@ class PluginManager
             $this->applyPlugin($pluginSourceDir, $pluginDir);
 
             // 安装 composer 依赖：仅当插件自带 composer.json。
-            // lock 未变且有可复用的旧 vendor → 移回复用（避免重拉大体量 vendor）；
-            // lock 有变 或 无 vendor 可复用（缺失 / 上次半装）→ 必须安装，否则 vendor 永久缺失。
+            // 新发布包携带完整 vendor 时直接使用；老包继续兼容“lock 未变复用旧
+            // vendor / lock 变化运行 Composer”的历史路径。
             if ($this->composerRunner->pluginHasComposer($pluginDir)) {
                 $newLockHash = $this->composerRunner->lockHash($pluginDir);
-                if ($newLockHash === $oldLockHash && $vendorStash && is_dir($vendorStash)) {
+                $bundledVendorMatches = $this->composerRunner->bundledVendorMatchesLock($pluginDir);
+                if (is_dir("$pluginDir/backend/vendor") && ! $bundledVendorMatches) {
+                    throw new RuntimeException("插件 $name 的包内 vendor 与 composer.lock 不匹配");
+                }
+                if ($bundledVendorMatches) {
+                    Log::info("[Plugin] 使用发布包内 vendor: $name");
+                    if ($vendorStash && is_dir($vendorStash)) {
+                        File::deleteDirectory($vendorStash);
+                        $vendorStash = null;
+                    }
+                } elseif ($newLockHash === $oldLockHash && $vendorStash && is_dir($vendorStash)) {
                     Log::info("[Plugin] composer.lock 未变化，复用原 vendor: $name");
                     File::moveDirectory($vendorStash, "$pluginDir/backend/vendor");
                     $vendorStash = null;
@@ -887,6 +901,16 @@ class PluginManager
             return;
         }
 
+        if ($this->composerRunner->bundledVendorMatchesLock($pluginDir)) {
+            Log::info("[Plugin] 包内 vendor 已与 composer.lock 对齐，跳过 Composer: $name");
+
+            return;
+        }
+
+        if (is_dir("$pluginDir/backend/vendor")) {
+            throw new RuntimeException("插件 $name 的包内 vendor 与 composer.lock 不匹配");
+        }
+
         if ($this->progressReporter === null) {
             $this->composerRunner->install($pluginDir, $name);
 
@@ -894,6 +918,21 @@ class PluginManager
         }
 
         $this->composerRunner->install($pluginDir, $name, $this->progressReporter);
+    }
+
+    /**
+     * 在安装目录被修改前校验插件包内的 Composer 依赖快照。
+     */
+    protected function validateBundledPluginVendor(string $name, string $pluginSourceDir): void
+    {
+        if (! $this->composerRunner->pluginHasComposer($pluginSourceDir)) {
+            return;
+        }
+
+        $vendorDir = "$pluginSourceDir/backend/vendor";
+        if (is_dir($vendorDir) && ! $this->composerRunner->bundledVendorMatchesLock($pluginSourceDir)) {
+            throw new RuntimeException("插件 $name 的包内 vendor 与 composer.lock 不匹配");
+        }
     }
 
     /**

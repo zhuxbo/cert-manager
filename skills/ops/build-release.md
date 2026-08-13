@@ -66,13 +66,32 @@ bash build/build.sh --clear-cache
 
 ### 输出文件
 
-| 文件                                | 说明                                                         |
-| ----------------------------------- | ------------------------------------------------------------ |
-| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor；宝塔脚本会运行 `composer install`） |
-| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级时保留现有 `backend/vendor`）       |
-| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）             |
+| 文件                                | 说明                                                             |
+| ----------------------------------- | ---------------------------------------------------------------- |
+| `ssl-manager-full-{version}.zip`    | 完整安装包（含已锁定的生产 vendor，目标机无需联网安装 PHP 依赖） |
+| `ssl-manager-upgrade-{version}.zip` | 升级包（含已锁定的生产 vendor，兼容历史无 vendor 包）            |
+| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）                 |
 
 > 包内 `manifest.json` 已弃用。包清单与 sha256 由 `release.sh` 上传时写入 release 站根目录的 `releases.json`（GitHub Release API 风格 + `assets[].sha256` 字段），install/upgrade 链路统一从该文件强校验。
+
+### Vendor 长期发布策略
+
+完整安装包和升级包长期携带由同一份 `composer.lock` 生成的生产
+`backend/vendor`；插件存在 `backend/composer.json` 时，其发布包同样必须携带配套的
+`composer.lock` 与 `backend/vendor`。这不是临时兼容措施，后续版本不得恢复为在目标服务器
+在线解析生产依赖。
+
+原因：国内 Composer 镜像同步存在不可控延迟，目标服务器访问官方 Packagist 或 GitHub 也可能
+失败；若安装或升级阶段再解析依赖，同一版本会因时间、镜像和网络环境得到不同结果，甚至在代码
+已覆盖后留下半成品 vendor。构建阶段统一解析并打包 vendor，可让发布包成为可重复、可审计的完整
+运行快照，也使目标服务器在无外网时仍能完成安装、升级与回滚。
+
+构建和消费端必须共同遵守以下不变量：
+
+- `composer.json`、`composer.lock`、`vendor` 三者配套出现，不允许只打包其中一部分；
+- `vendor/composer/.ssl-manager-lock.sha256` 必须等于对应 `composer.lock` 的 SHA-256；
+- 安装、Shell 升级、后台升级和插件安装/更新必须在覆盖现有代码前校验该标记；
+- Composer 联网安装仅用于兼容历史上不含 vendor 的旧发布包，不是新包的正常路径。
 
 ### releases.json 字段（唯一真相源）
 
