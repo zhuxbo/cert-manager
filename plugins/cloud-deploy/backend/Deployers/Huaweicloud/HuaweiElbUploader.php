@@ -32,11 +32,16 @@ class HuaweiElbUploader implements CertUploaderInterface
         private readonly string $region,
         private readonly Closure $iamFactory,
         private readonly Closure $elbFactory,
+        private readonly string $replaceCertificateId = '',
     ) {}
 
     public function storeKind(): string
     {
         // region 维度隔离（ELB 证书是 region 服务）。空 region（探活）回落 default，真实 region 由 bind 校验。
+        if ($this->replaceCertificateId !== '') {
+            return 'huawei-elb-r:'.substr(hash('sha256', $this->region."\0".$this->replaceCertificateId), 0, 18);
+        }
+
         return 'huawei_elb:'.($this->region !== '' ? $this->region : 'default');
     }
 
@@ -63,6 +68,19 @@ class HuaweiElbUploader implements CertUploaderInterface
                 throw new HuaweicloudApiException('ProjectNotFound', "未找到 region '{$this->region}' 对应的华为云项目 ID");
             }
 
+            /** @var HuaweicloudRestClient $elb */
+            $elb = ($this->elbFactory)($credentials, $projectId);
+            if ($this->replaceCertificateId !== '') {
+                $elb->put("/v3/$projectId/elb/certificates/{$this->replaceCertificateId}", [
+                    'certificate' => [
+                        'certificate' => $fullChain,
+                        'private_key' => trim($keyPem),
+                    ],
+                ]);
+
+                return $this->replaceCertificateId;
+            }
+
             // 2. ELB CreateCertificate（basic 凭证 + projectId）。
             $certificate = [
                 'name' => $certName,
@@ -74,8 +92,6 @@ class HuaweiElbUploader implements CertUploaderInterface
                 $certificate['enterprise_project_id'] = $enterpriseProjectId;
             }
 
-            /** @var HuaweicloudRestClient $elb */
-            $elb = ($this->elbFactory)($credentials, $projectId);
             $result = $elb->post("/v3/$projectId/elb/certificates", ['certificate' => $certificate]);
         } catch (Throwable $e) {
             throw new RuntimeException(HuaweicloudErrorSanitizer::sanitize($e), 0);

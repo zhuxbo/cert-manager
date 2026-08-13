@@ -33,7 +33,7 @@ test('天翼云 LVDN：证书服务型（product key=lvdn + storeKind ctcccloud_
     // product key 用 lvdn（非 provider.go 笔误的 ldvn）
     expect($deployer->product())->toBe('lvdn');
     expect($deployer->label())->toBe('天翼云视频直播加速');
-    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain']);
+    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain_match_pattern', 'domain']);
 });
 
 test('uploader.upload 走 LVDN create-cert /cert/creat-cert（无 /v1 前缀）返回 CertName', function () {

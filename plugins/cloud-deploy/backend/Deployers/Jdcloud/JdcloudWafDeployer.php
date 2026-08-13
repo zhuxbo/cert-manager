@@ -77,6 +77,7 @@ class JdcloudWafDeployer extends AbstractDeployer
         return match ($kind) {
             'ssl' => JdcloudClientFactory::ssl($credentials),
             'waf' => JdcloudClientFactory::waf($credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

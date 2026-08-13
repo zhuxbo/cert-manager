@@ -43,8 +43,32 @@ test('AWS ACM 元信息 + 走证书服务（region 维度 storeKind）', functio
     expect($deployer->product())->toBe('acm');
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader(['region' => 'us-east-1'])->storeKind())->toBe('acm:us-east-1');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('certificate_arn');
+    $replaceArn = 'arn:aws:acm:us-east-1:123:certificate/existing';
+    expect($deployer->certUploader([
+        'region' => 'us-east-1',
+        'certificate_arn' => $replaceArn,
+    ])->storeKind())->toBe('acm-replace:'.substr(hash('sha256', $replaceArn), 0, 16));
     // 空 config 不崩（RegistryCompletenessTest 会以 [] 调用）
     expect($deployer->certUploader([])->storeKind())->toBe('acm:');
+});
+
+test('certificate_arn 非空时 ImportCertificate 原地替换同一 ARN', function () {
+    $captured = null;
+    $acm = Mockery::mock(AcmClient::class);
+    $acm->shouldReceive('importCertificate')->once()->andReturnUsing(function (array $req) use (&$captured) {
+        $captured = $req;
+
+        return new Result(['CertificateArn' => $req['CertificateArn']]);
+    });
+
+    $arn = 'arn:aws:acm:us-east-1:123:certificate/existing';
+    $deployer = awsAcmDeployerWith(fn () => $acm);
+    $id = $deployer->certUploader(['region' => 'us-east-1', 'certificate_arn' => $arn])
+        ->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', ['access_key_id' => 'AK', 'secret_access_key' => 'SK']);
+
+    expect($captured['CertificateArn'])->toBe($arn);
+    expect($id)->toBe($arn);
 });
 
 test('uploader.upload 调 acm.importCertificate（Certificate/CertificateChain/PrivateKey）返回 CertificateArn', function () {

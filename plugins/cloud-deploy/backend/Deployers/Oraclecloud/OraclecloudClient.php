@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Oraclecloud;
 
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface;
+use InvalidArgumentException;
 
 /**
  * Oracle Cloud Certificates Management REST 薄客户端（OCI 签名）。
@@ -39,10 +40,15 @@ class OraclecloudClient
         string $region,
         ?ClientInterface $http = null,
     ) {
+        if (! OracleResourcePrincipalProvider::validRegion($region)) {
+            throw new InvalidArgumentException('Oracle Cloud region 无效');
+        }
         $this->host = 'certificatesmanagement.'.$region.'.oci.oraclecloud.com';
         $this->http = $http ?? new GuzzleClient([
             'base_uri' => 'https://'.$this->host,
             'timeout' => 30,
+            'allow_redirects' => false,
+            'proxy' => null,
         ]);
     }
 
@@ -86,6 +92,8 @@ class OraclecloudClient
         $resp = $this->http->request($method, $path, [
             'headers' => $signedHeaders + ['Accept' => 'application/json'],
             'body' => $bodyJson,
+            'allow_redirects' => false,
+            'proxy' => null,
             'http_errors' => false,
         ]);
 
@@ -104,7 +112,22 @@ class OraclecloudClient
         $message = is_string($json['message'] ?? null) && $json['message'] !== ''
             ? $json['message']
             : "Oracle Cloud 接口返回 HTTP $status";
+        $message = $this->sanitizeApiError($message, $signedHeaders['Authorization']);
 
         throw new OraclecloudApiException($code, $message);
+    }
+
+    private function sanitizeApiError(string $message, string $authorization): string
+    {
+        $keyId = $this->signer->keyId();
+        $secrets = [$authorization];
+        if (str_starts_with($keyId, 'ST$')) {
+            $secrets[] = $keyId;
+            $secrets[] = substr($keyId, 3);
+        }
+        $message = str_replace(array_filter($secrets), '[REDACTED]', $message);
+        $message = preg_replace('/Signature\s+version\s*=\s*"1".*$/i', '[REDACTED]', $message);
+
+        return is_string($message) && $message !== '' ? $message : 'Oracle Cloud 接口返回错误';
     }
 }

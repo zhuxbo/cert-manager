@@ -25,7 +25,7 @@ class TencentSslUploader implements CertUploaderInterface
     }
 
     /**
-     * @param  array{secret_id:string,secret_key:string}  $credentials
+     * @param  array{secret_id:string,secret_key:string,project_id?:int|string}  $credentials
      */
     public function upload(string $certPem, string $keyPem, string $chainPem, array $credentials): string
     {
@@ -35,11 +35,16 @@ class TencentSslUploader implements CertUploaderInterface
             $client = ($this->clientFactory)($credentials);
             // 腾讯 AbstractModel 无数组构造（区别于阿里 Tea\Model），必须经 deserialize 填充
             $req = new UploadCertificateRequest;
-            $req->deserialize([
+            $payload = [
                 'CertificatePublicKey' => $fullChain,
                 'CertificatePrivateKey' => $keyPem,
                 'CertificateType' => 'SVR',
-            ]);
+                'Repeatable' => false,
+            ];
+            if (isset($credentials['project_id']) && is_numeric($credentials['project_id']) && (int) $credentials['project_id'] > 0) {
+                $payload['ProjectId'] = (int) $credentials['project_id'];
+            }
+            $req->deserialize($payload);
             $resp = $client->UploadCertificate($req);
         } catch (Throwable $e) {
             throw new RuntimeException(TencentErrorSanitizer::sanitize($e), 0);

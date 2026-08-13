@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Volcengine;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -17,8 +18,9 @@ use Throwable;
  * region 透传：certUploader($config) 与 bind($config) 都从 config 解析 region 经 makeClient 第三参传入，
  * 使「上传到证书中心」与「绑定 DCDN」用同一 region（certimate 二者共用 config.Region）。
  */
-class VolcDcdnDeployer extends AbstractDeployer
+class VolcDcdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesVolcDomains;
     use ResolvesVolcRegion;
 
     public function provider(): string
@@ -40,7 +42,8 @@ class VolcDcdnDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'region', 'label' => '地域（默认 cn-beijing）', 'type' => 'string', 'required' => false],
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -60,27 +63,67 @@ class VolcDcdnDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  证书中心 InstanceId
-     * @param  array{access_key_id?:string,secret_access_key?:string}  $credentials
-     * @param  array{domain:string,region?:string}  $config
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  证书中心 InstanceId 与可选证书材料
+     * @param  array{access_key_id?:string,secret_access_key?:string,project_name?:string}  $credentials
+     * @param  array{domain_match_pattern?:string,domain?:string,region?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         $region = $this->resolveRegion($config, 'cn-beijing');
-        $domain = (string) $this->requireConfig($config, 'domain');
-        // exact：去掉前导 "*"（"*.example.com" → ".example.com"）
-        $domain = preg_replace('/^\*/', '', $domain) ?? $domain;
-        $certId = (string) $certRef;
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $domain = (string) ($config['domain'] ?? '');
+        [$certId, $certificate] = $this->volcCertificateReference($certRef);
+        if (in_array($pattern, ['', 'exact', 'wildcard'], true) && $domain === '') {
+            $this->fail('缺少配置 domain');
+        }
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId, $region) {
+        $this->guardSdk(function () use ($credentials, $domain, $certId, $certificate, $pattern, $region) {
             /** @var VolcRestClient $client */
             $client = $this->makeClient('dcdn', $credentials, $region);
+            $candidates = in_array($pattern, ['wildcard', 'certsan'], true)
+                ? $this->listDcdnDomains($client, $credentials)
+                : [];
+            $domains = $this->matchVolcDomains($candidates, $pattern, $domain, $certificate);
+            if (in_array($pattern, ['', 'exact'], true)) {
+                $domains = array_map(fn (string $item): string => preg_replace('/^\*/', '', $item) ?? $item, $domains);
+            }
+            if ($domains === []) {
+                $this->fail('未找到匹配的 DCDN 域名');
+            }
             $client->callJson('CreateCertBind', '2021-04-01', [
                 'CertSource' => 'volc',
                 'CertId' => $certId,
-                'DomainNames' => [$domain],
+                'DomainNames' => $domains,
             ]);
         });
+    }
+
+    /** @return list<string> */
+    private function listDcdnDomains(VolcRestClient $client, array $credentials): array
+    {
+        $domains = [];
+        $page = 1;
+        do {
+            $body = ['PageNumber' => $page, 'PageSize' => 100];
+            $project = (string) ($credentials['project_name'] ?? '');
+            if ($project !== '') {
+                $body['ProjectName'] = [$project];
+            }
+            $result = $client->callJson('ListDomainConfig', '2021-04-01', $body);
+            $items = is_array($result['DomainList'] ?? null) ? $result['DomainList'] : [];
+            foreach ($items as $item) {
+                if (! is_array($item) || ($item['Status'] ?? null) === 'Stop') {
+                    continue;
+                }
+                $candidate = (string) ($item['Domain'] ?? '');
+                if ($candidate !== '') {
+                    $domains[] = $candidate;
+                }
+            }
+            $page++;
+        } while (count($items) >= 100);
+
+        return $domains;
     }
 
     protected function makeClient(string $kind, array $credentials, string $region = 'cn-beijing'): object
@@ -100,6 +143,7 @@ class VolcDcdnDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

@@ -36,7 +36,9 @@ class KsyunKcmDeployer extends AbstractDeployer implements UploadOnlyDeployerInt
 
     public function configSchema(): array
     {
-        return [];
+        return [
+            ['key' => 'project_id', 'label' => '项目 ID（选填）', 'type' => 'string', 'required' => false],
+        ];
     }
 
     public function usesRemoteCertStore(): bool
@@ -46,7 +48,10 @@ class KsyunKcmDeployer extends AbstractDeployer implements UploadOnlyDeployerInt
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new KsyunKcmUploader(fn (array $credentials): object => $this->makeClient('kcm', $credentials));
+        return new KsyunKcmUploader(
+            fn (array $credentials): object => $this->makeClient('kcm', $credentials),
+            isset($config['project_id']) ? (string) $config['project_id'] : '',
+        );
     }
 
     /**

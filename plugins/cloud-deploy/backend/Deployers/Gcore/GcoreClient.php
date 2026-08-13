@@ -14,6 +14,7 @@ use GuzzleHttp\ClientInterface;
  *
  * 端点（对齐 gcorelabscdn-go v1.0.37 sslcerts / resources service）：
  *   - POST /cdn/sslData                上传证书（CreateRequest），返回 {id, name}
+ *   - GET/PATCH /cdn/sslData/{id}      查询并替换指定证书
  *   - GET  /cdn/resources/{id}         取 CDN 资源详情
  *   - PUT  /cdn/resources/{id}         更新 CDN 资源（绑定 sslData）
  *
@@ -37,6 +38,18 @@ class GcoreClient
         $id = $json['id'] ?? null;
 
         return is_int($id) ? $id : (is_numeric($id) ? (int) $id : 0);
+    }
+
+    /** @return array<string,mixed> */
+    public function getSslData(int $certificateId): array
+    {
+        return $this->request('GET', "cdn/sslData/$certificateId", null);
+    }
+
+    /** @param array<string,mixed> $body */
+    public function updateSslData(int $certificateId, array $body): void
+    {
+        $this->request('PATCH', "cdn/sslData/$certificateId", $body);
     }
 
     /**

@@ -36,6 +36,7 @@ class UcloudUewafDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'domain', 'label' => '防护域名', 'type' => 'string', 'required' => true],
         ];
     }
@@ -47,6 +48,7 @@ class UcloudUewafDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withUcloudEndpoint($credentials, $config);
         $domain = (string) $this->requireConfig($config, 'domain');
 
         if (! is_array($certRef)) {

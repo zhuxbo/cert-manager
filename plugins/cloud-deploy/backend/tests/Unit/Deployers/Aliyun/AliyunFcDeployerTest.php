@@ -4,6 +4,9 @@ use AlibabaCloud\SDK\FC\V20230330\FC;
 use AlibabaCloud\SDK\FC\V20230330\Models\CertConfig;
 use AlibabaCloud\SDK\FC\V20230330\Models\CustomDomain;
 use AlibabaCloud\SDK\FC\V20230330\Models\GetCustomDomainResponse;
+use AlibabaCloud\SDK\FC\V20230330\Models\ListCustomDomainOutput;
+use AlibabaCloud\SDK\FC\V20230330\Models\ListCustomDomainsRequest;
+use AlibabaCloud\SDK\FC\V20230330\Models\ListCustomDomainsResponse;
 use AlibabaCloud\SDK\FC\V20230330\Models\TLSConfig;
 use AlibabaCloud\SDK\FC\V20230330\Models\UpdateCustomDomainRequest;
 use AlibabaCloud\SDK\FC\V20230330\Models\UpdateCustomDomainResponse;
@@ -49,7 +52,41 @@ test('阿里云 FC 直传，不走证书服务', function () {
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('fc');
     // configSchema 覆盖 bind 实际读取的 domain + region
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain')->toContain('region');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('service_version')->toContain('domain_match_pattern')->toContain('domain')->toContain('region');
+});
+
+test('bind FC3 wildcard：ListCustomDomains 单层匹配后逐个 get/update', function () {
+    $listReq = null;
+    $updated = [];
+    $fc = Mockery::mock(FC::class);
+    $fc->shouldReceive('listCustomDomains')->once()->andReturnUsing(function (ListCustomDomainsRequest $req) use (&$listReq) {
+        $listReq = $req;
+
+        return new ListCustomDomainsResponse(['body' => new ListCustomDomainOutput(['customDomains' => [
+            new CustomDomain(['domainName' => 'a.example.com']),
+            new CustomDomain(['domainName' => 'b.example.com']),
+            new CustomDomain(['domainName' => 'deep.a.example.com']),
+        ]])]);
+    });
+    $fc->shouldReceive('getCustomDomain')->twice()->andReturnUsing(fn (string $domain) => new GetCustomDomainResponse(['body' => new CustomDomain([
+        'domainName' => $domain, 'protocol' => 'HTTPS',
+    ])]));
+    $fc->shouldReceive('updateCustomDomain')->twice()->andReturnUsing(function (string $domain) use (&$updated) {
+        $updated[] = $domain;
+
+        return new UpdateCustomDomainResponse;
+    });
+
+    $deployer = aliyunFcDeployerWith(fn () => $fc);
+    $deployer->bind(['cert' => 'C', 'key' => 'K', 'chain' => 'CH'], ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'cn-hangzhou',
+        'service_version' => '3.0',
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($listReq->limit)->toBe(100);
+    expect($updated)->toBe(['a.example.com', 'b.example.com']);
 });
 
 test('bind get-then-update：灌 CertConfig（Certificate=cert+chain、PrivateKey=key）并保留 protocol/tlsConfig', function () {

@@ -4,9 +4,11 @@ use Plugins\CloudDeploy\Deployers\Tencent\TencentScfDeployer;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Scf\V20180416\Models\GetCustomDomainRequest;
 use TencentCloud\Scf\V20180416\Models\GetCustomDomainResponse;
+use TencentCloud\Scf\V20180416\Models\ListCustomDomainsResponse;
 use TencentCloud\Scf\V20180416\Models\UpdateCustomDomainRequest;
 use TencentCloud\Scf\V20180416\Models\UpdateCustomDomainResponse;
 use TencentCloud\Scf\V20180416\ScfClient;
+use TencentCloud\Ssl\V20191205\Models\DescribeCertificateResponse;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateRequest;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateResponse;
 use TencentCloud\Ssl\V20191205\SslClient;
@@ -143,6 +145,23 @@ test('SCF bind 现有 Protocol 缺失时回落 HTTP&HTTPS', function () {
     ]);
 
     expect($updateReq->Protocol)->toBe('HTTP&HTTPS');
+});
+
+test('SCF certsan 列举自定义域名并按云证书 SAN 批量更新', function () {
+    $scf = Mockery::mock(ScfClient::class);
+    $listed = new ListCustomDomainsResponse;
+    $listed->deserialize(['Domains' => [['Domain' => 'a.example.com'], ['Domain' => 'x.example.net']], 'RequestId' => 'r']);
+    $scf->shouldReceive('ListCustomDomains')->once()->andReturn($listed);
+    $scf->shouldReceive('GetCustomDomain')->once()->withArgs(fn ($request) => $request->Domain === 'a.example.com')->andReturn(scfGetDomainResponse('HTTPS'));
+    $scf->shouldReceive('UpdateCustomDomain')->once()->withArgs(fn ($request) => $request->Domain === 'a.example.com')->andReturn(new UpdateCustomDomainResponse);
+    $ssl = Mockery::mock(SslClient::class);
+    $certificate = new DescribeCertificateResponse;
+    $certificate->deserialize(['SubjectAltName' => ['a.example.com'], 'RequestId' => 'r']);
+    $ssl->shouldReceive('DescribeCertificate')->once()->andReturn($certificate);
+
+    tencentScfDeployerWith(fn (string $kind) => $kind === 'scf' ? $scf : $ssl)->bind(
+        'cert-scf', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['region' => 'ap-guangzhou', 'domain_match_pattern' => 'certsan'],
+    );
 });
 
 test('SCF bind 把 region 透传进 scf client（按 region 实例化）', function () {

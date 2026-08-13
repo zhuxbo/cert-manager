@@ -8,6 +8,8 @@ use AlibabaCloud\SDK\ESA\V20240910\Models\ListCustomHostnamesRequest;
 use AlibabaCloud\SDK\ESA\V20240910\Models\UpdateCustomHostnameRequest;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -17,14 +19,14 @@ use Throwable;
  * 分页 esa.ListCustomHostnames(SiteId) 找到目标 SaaS 域名，调 esa.UpdateCustomHostname 以 CertType=cas
  * + CasId（**纯数字 certId**）+ CasRegion 把证书绑定到该域名。
  *
- * 仅实现 **exact 精确域名匹配**核心路径（对齐 certimate DOMAIN_MATCH_PATTERN_EXACT）；不做 wildcard/certsan
- * 批量匹配（留后续）。跳过 pending/conflicted/offline 状态的域名（对齐 certimate ignoredStatuses）。
+ * 支持 exact 与 wildcard 批量匹配；跳过 pending/conflicted/offline 状态的域名。
  *
- * config：site_id（必填）/ domain（必填，SaaS 域名，不支持泛域名）/ region（选填，ESA endpoint，空回落 cn-hangzhou）。
+ * config：site_id（必填）/ domain（必填，支持泛域名）/ region（选填，ESA endpoint，空回落 cn-hangzhou）。
  */
-class AliyunEsaSaasDeployer extends AbstractDeployer
+class AliyunEsaSaasDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
-    use BuildsAliyunConfig;
+    use BuildsAliyunConfig, MatchesAliyunDomains;
+    use MatchesCertificateHostnames;
     use ParsesCasCertIdentifier;
 
     /** 列表分页每页大小。 */
@@ -55,8 +57,9 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'site_id', 'label' => 'ESA 站点 ID', 'type' => 'string', 'required' => true],
-            ['key' => 'domain', 'label' => 'SaaS 域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain', 'label' => 'SaaS 域名', 'type' => 'string', 'required' => false],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => false],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
         ];
     }
 
@@ -67,7 +70,7 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials));
+        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials), $this->casRegion($config));
     }
 
     /**
@@ -82,26 +85,31 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
             $this->fail('ESA 站点 ID（site_id）必须为数字');
         }
         $siteId = (int) $siteIdRaw;
-        $domain = (string) $this->requireConfig($config, 'domain');
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
         $region = isset($config['region']) ? (string) $config['region'] : '';
-        [$certId, $certRegion] = $this->parseCertIdentifier((string) $certRef);
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $remoteCertId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
+        [$certId, $certRegion] = $this->parseCertIdentifier($remoteCertId);
 
         /** @var ESA $client */
         $client = $this->makeClient('esa', $credentials + ['region' => $region]);
 
-        $hostnameId = $this->guardSdk(fn () => $this->findHostnameId($client, $siteId, $domain));
-        if ($hostnameId === null) {
+        $hostnameIds = $this->guardSdk(fn () => $this->findHostnameIds($client, $siteId, $domain, $pattern, $certificate));
+        if ($hostnameIds === []) {
             $this->fail("未找到 ESA SaaS 域名：$domain");
         }
 
-        $this->guardSdk(function () use ($client, $hostnameId, $certId, $certRegion) {
-            $client->updateCustomHostname(new UpdateCustomHostnameRequest([
-                'hostnameId' => $hostnameId,
-                'sslFlag' => 'on',
-                'certType' => 'cas',
-                'casId' => $certId,
-                'casRegion' => $certRegion,
-            ]));
+        $this->guardSdk(function () use ($client, $hostnameIds, $certId, $certRegion) {
+            foreach ($hostnameIds as $hostnameId) {
+                $client->updateCustomHostname(new UpdateCustomHostnameRequest([
+                    'hostnameId' => $hostnameId,
+                    'sslFlag' => 'on',
+                    'certType' => 'cas',
+                    'casId' => $certId,
+                    'casRegion' => $certRegion,
+                ]));
+            }
         });
     }
 
@@ -110,8 +118,12 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
      *
      * @param  ESA  $client
      */
-    protected function findHostnameId(object $client, int $siteId, string $domain): ?int
+    protected function findHostnameIds(object $client, int $siteId, string $domain, string $pattern, string $certificate = ''): array
     {
+        if (! in_array($pattern, ['exact', 'wildcard', 'certsan'], true)) {
+            $this->fail("Aliyun ESA SaaS 不支持的域名匹配模式: $pattern");
+        }
+        $ids = [];
         for ($page = 1; $page <= $this->maxPages; $page++) {
             $resp = $client->listCustomHostnames(new ListCustomHostnamesRequest([
                 'siteId' => $siteId,
@@ -124,8 +136,16 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
                 if (in_array((string) $item->status, self::IGNORED_STATUSES, true)) {
                     continue;
                 }
-                if ((string) $item->hostname === $domain) {
-                    return (int) $item->hostnameId;
+                $hostname = (string) $item->hostname;
+                if ($pattern === 'certsan') {
+                    $matched = $this->certificateMatchesHostname($certificate, $hostname);
+                } elseif ($pattern === 'exact' || ! str_starts_with($domain, '*.')) {
+                    $matched = $hostname === $domain;
+                } else {
+                    $matched = $this->hostnameMatches($domain, $hostname);
+                }
+                if ($matched) {
+                    $ids[] = (int) $item->hostnameId;
                 }
             }
 
@@ -134,14 +154,14 @@ class AliyunEsaSaasDeployer extends AbstractDeployer
             }
         }
 
-        return null;
+        return $ids;
     }
 
     protected function makeClient(string $kind, array $credentials): object
     {
 
         return match ($kind) {
-            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'cas' => new Cas($this->aliyunConfig($credentials, $this->casEndpoint($credentials))),
             // 接入点：esa.{region}.aliyuncs.com（空 region 回落 cn-hangzhou，对齐 certimate + esa 端点）
             'esa' => new ESA($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };

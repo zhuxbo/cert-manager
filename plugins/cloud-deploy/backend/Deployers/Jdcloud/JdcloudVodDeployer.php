@@ -19,6 +19,8 @@ use Throwable;
  */
 class JdcloudVodDeployer extends AbstractDeployer
 {
+    use MatchesJdcloudCertificateDomains;
+
     public function provider(): string
     {
         return 'jdcloud';
@@ -37,44 +39,56 @@ class JdcloudVodDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '点播加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '点播加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
     /**
      * @param  string|array{cert:string,key:string,chain:string}  $certRef  内联 PEM 三元组
      * @param  array{access_key_id:string,access_key_secret:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
         if (! is_array($certRef)) {
             $this->fail('京东云点播为内联型，需 PEM 三元组');
         }
-        $certPem = rtrim((string) ($certRef['cert'] ?? ''))."\n".trim((string) ($certRef['chain'] ?? ''));
-        $keyPem = (string) ($certRef['key'] ?? '');
+        $certPem = rtrim($certRef['cert'])."\n".trim($certRef['chain']);
+        $keyPem = $certRef['key'];
 
-        // SDK 查询包 guardSdk；"域名未找到" 是业务错误，放 guardSdk 外（否则会被重建成无 previous 的
-        // 通用 SDK 异常、丢 DeployBusinessException 类型，CloudDeployJob 会误判为可重试）。
-        $domainId = $this->guardSdk(fn (): ?int => $this->makeClient('vod', $credentials)->findVodDomainId($domain));
-        if ($domainId === null) {
-            $this->fail("未找到点播域名 $domain");
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        /** @var JdcloudRestClient $client */
+        $client = $this->makeClient('vod', $credentials);
+        if ($pattern === '' || $pattern === 'exact') {
+            $domain = (string) $this->requireConfig($config, 'domain');
+            $domainId = $this->guardSdk(fn (): ?int => $client->findVodDomainId($domain));
+            $targets = $domainId === null ? [] : [['id' => $domainId, 'name' => $domain]];
+        } elseif ($pattern === 'certsan') {
+            $targets = array_values(array_filter($this->guardSdk(fn () => $client->listVodDomains()), fn (array $item): bool => $this->certificateMatches((string) $certRef['cert'], $item['name'])));
+        } else {
+            $this->fail("不支持的域名匹配模式: $pattern");
         }
 
-        $this->guardSdk(function () use ($credentials, $domainId, $certPem, $keyPem) {
-            /** @var JdcloudRestClient $client */
-            $client = $this->makeClient('vod', $credentials);
-            $jumpType = $client->getVodHttpSslJumpType($domainId);
-            $title = 'clouddeploy-'.(int) (microtime(true) * 1000);
-            $client->setVodHttpSsl($domainId, $title, trim($certPem), trim($keyPem), $jumpType);
-        });
+        if ($targets === []) {
+            $this->fail($pattern === 'certsan' ? '未找到证书 SAN 匹配的京东云点播域名' : "未找到点播域名 $domain");
+        }
+
+        foreach ($targets as $target) {
+            $domainId = (int) $target['id'];
+            $this->guardSdk(function () use ($client, $domainId, $certPem, $keyPem) {
+                $jumpType = $client->getVodHttpSslJumpType($domainId);
+                $title = 'clouddeploy-'.(int) (microtime(true) * 1000);
+                $client->setVodHttpSsl($domainId, $title, trim($certPem), trim($keyPem), $jumpType);
+            });
+        }
     }
 
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
             'vod' => JdcloudClientFactory::vod($credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

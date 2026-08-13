@@ -46,6 +46,9 @@ class VolcCdnUploader implements CertUploaderInterface
             'PrivateKey' => $keyPem,
             'Desc' => $certName,
         ];
+        if (is_string($credentials['project_name'] ?? null) && $credentials['project_name'] !== '') {
+            $body['Project'] = $credentials['project_name'];
+        }
 
         try {
             /** @var VolcRestClient $client */

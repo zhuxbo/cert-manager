@@ -58,6 +58,7 @@ class AliyunCasDeployDeployer extends AbstractDeployer implements HasPollBudget,
     public function configSchema(): array
     {
         return [
+            ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => false],
             ['key' => 'resource_ids', 'label' => '云资源 ID 列表（换行或逗号分隔）', 'type' => 'string', 'required' => true],
             ['key' => 'contact_ids', 'label' => '云联系人 ID 列表（选填，留空取首个）', 'type' => 'string', 'required' => false],
         ];
@@ -70,7 +71,12 @@ class AliyunCasDeployDeployer extends AbstractDeployer implements HasPollBudget,
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials));
+        $region = (string) ($config['region'] ?? '');
+
+        return new AliyunCasUploader(
+            fn (array $credentials): object => $this->makeClient('cas', $credentials),
+            $region,
+        );
     }
 
     /**
@@ -88,7 +94,7 @@ class AliyunCasDeployDeployer extends AbstractDeployer implements HasPollBudget,
         [$certId] = $this->parseCertIdentifier((string) $certRef);
 
         /** @var Cas $client */
-        $client = $this->makeClient('cas', $credentials);
+        $client = $this->makeClient('cas', array_replace($credentials, ['region' => (string) ($config['region'] ?? '')]));
 
         // 未指定联系人时取账号下第一个（对齐 certimate ListContact ShowSize=1）
         if ($contactIds === []) {
@@ -129,7 +135,7 @@ class AliyunCasDeployDeployer extends AbstractDeployer implements HasPollBudget,
     public function resumePoll(string $remoteJobId, array $credentials, array $config): void
     {
         /** @var Cas $client */
-        $client = $this->makeClient('cas', $credentials);
+        $client = $this->makeClient('cas', array_replace($credentials, ['region' => (string) ($config['region'] ?? '')]));
         $this->pollDeploymentJob($client, $remoteJobId, $this->resumePollAttempts);
     }
 
@@ -210,8 +216,13 @@ class AliyunCasDeployDeployer extends AbstractDeployer implements HasPollBudget,
 
     protected function makeClient(string $kind, array $credentials): object
     {
+        $region = (string) ($credentials['region'] ?? '');
+        $endpoint = $region === '' || $region === 'cn-hangzhou'
+            ? 'cas.aliyuncs.com'
+            : "cas.$region.aliyuncs.com";
+
         return match ($kind) {
-            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'cas' => new Cas($this->aliyunConfig($credentials, $endpoint)),
         };
     }
 

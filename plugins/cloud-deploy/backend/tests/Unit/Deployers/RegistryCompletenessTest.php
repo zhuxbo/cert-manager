@@ -24,7 +24,7 @@ function expectedCloudDeployCatalog(): array
 {
     return [
         'aliyun' => ['cdn', 'dcdn', 'live', 'vod', 'alb', 'nlb', 'clb', 'ga', 'waf', 'oss', 'fc', 'apigw', 'ddospro', 'esa', 'cas', 'casdeploy', 'esasaas'],
-        'tencent' => ['cdn', 'ecdn', 'eo', 'css', 'vod', 'clb', 'scf', 'waf', 'cos', 'gaap', 'ssl-deploy', 'ssl', 'ssl-update', 'tse', 'ga2'],
+        'tencent' => ['cdn', 'ecdn', 'eo', 'eo-makers', 'css', 'vod', 'clb', 'scf', 'waf', 'cos', 'gaap', 'ssl-deploy', 'ssl', 'ssl-update', 'tse', 'ga2'],
         'qiniu' => ['cdn', 'kodo', 'pili'],
         'baidu' => ['cdn', 'blb', 'appblb', 'cert'],
         'cloudflare' => ['ssl'],
@@ -43,7 +43,7 @@ function expectedCloudDeployCatalog(): array
         'linode' => ['los'],
         'wangsu' => ['cdn', 'cdnpro', 'certificate'],
         'ctcccloud' => ['ao', 'cdn', 'cms', 'elb', 'faas', 'icdn', 'lvdn'],
-        'huaweicloud' => ['scm', 'cdn', 'elb', 'waf', 'live', 'obs', 'apig', 'aad'],
+        'huaweicloud' => ['scm', 'cdn', 'elb', 'waf', 'live', 'vod', 'obs', 'apig', 'aad'],
         'rainyun' => ['rcdn', 'sslcenter'],
         'mohua' => ['mvh'],
         'unicloud' => ['webhost'],
@@ -69,28 +69,32 @@ function expectedCloudDeployCatalog(): array
         'ratpanel' => ['site', 'console'],
         'cpanel' => ['cpanel'],
         'safeline' => ['safeline'],
-        'samwaf' => ['samwaf'],
+        'samwaf' => ['samwaf', 'console'],
         'goedge' => ['goedge'],
         'flexcdn' => ['flexcdn'],
         'lecdn' => ['lecdn'],
         'nginxproxymanager' => ['certificate'],
         'synologydsm' => ['certificate'],
         'proxmoxve' => ['node'],
+        'proxmoxbs' => ['node'],
+        'huaweiibmc' => ['console'],
+        'axisnow' => ['certificate'],
+        'yandexcloud' => ['certificatemanager'],
         'dokploy' => ['certificate'],
         'kong' => ['certificate'],
         'apisix' => ['certificate'],
     ];
 }
 
-test('注册端点总数为 149（非云清洁 + 面板 24；ssh/ftp/local 不实现）', function () {
+test('注册端点总数为 156（非云清洁 + 面板 31；ssh/ftp/local 不实现）', function () {
     $registry = app(Registry::class);
     $all = $registry->allDeployers();
 
-    expect($all)->toHaveCount(149);
+    expect($all)->toHaveCount(156);
 
     $expected = expectedCloudDeployCatalog();
     expect(count($expected['aliyun']))->toBe(17);
-    expect(count($expected['tencent']))->toBe(15);
+    expect(count($expected['tencent']))->toBe(16);
     expect(count($expected['qiniu']))->toBe(3);
     expect(count($expected['baidu']))->toBe(4);
     expect(count($expected['cloudflare']))->toBe(1);
@@ -102,6 +106,7 @@ test('注册端点总数为 149（非云清洁 + 面板 24；ssh/ftp/local 不�
     expect(count($expected['jdcloud']))->toBe(6);
     expect(count($expected['byteplus']))->toBe(7);
     expect(count($expected['ucloud']))->toBe(6);
+    expect(count($expected['huaweicloud']))->toBe(9);
 });
 
 test('实际注册集与期望集逐键一致（无漏注册、无误删/改名）', function () {
@@ -129,7 +134,7 @@ test('实际注册集与期望集逐键一致（无漏注册、无误删/改名�
 test('纯上传部署器显式标记订单级唯一性且资源部署器不误标', function () {
     $registry = app(Registry::class);
     $expectedUploadOnly = [
-        'aliyun.cas', 'aws.acm', 'aws.iam', 'azure.keyvault',
+        'aliyun.cas', 'axisnow.certificate', 'aws.acm', 'aws.iam', 'azure.keyvault',
         'baidu.cert', 'byteplus.certcenter', 'cachefly.certificate',
         'ctcccloud.cms', 'digitalocean.certificate', 'dokploy.certificate',
         'googlecloud.certificatemanager', 'huaweicloud.scm', 'jdcloud.ssl', 'ksyun.kcm',
@@ -193,7 +198,9 @@ test('每个注册端点都能 resolveDeployer 且元信息 + configSchema 合�
             if ($deployer->usesRemoteCertStore()) {
                 $uploader = $deployer->certUploader([]);
                 expect($uploader)->not->toBeNull("$label 证书服务型应有 certUploader");
-                expect($uploader->storeKind())->toBeString()->not->toBe('', "$label storeKind 非空");
+                $storeKind = $uploader->storeKind();
+                expect($storeKind)->toBeString()->not->toBe('', "$label storeKind 非空");
+                expect(strlen($storeKind))->toBeLessThanOrEqual(32, "$label storeKind 不得超过存储列上限");
             }
 
             // configSchema() 是合法 list，每项含 key/label/type/required

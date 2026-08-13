@@ -66,7 +66,7 @@ class VolcAlbDeployer extends AbstractDeployer
 
     /**
      * @param  string  $certRef  证书中心 InstanceId
-     * @param  array{access_key_id?:string,secret_access_key?:string}  $credentials
+     * @param  array{access_key_id?:string,secret_access_key?:string,project_name?:string}  $credentials
      * @param  array{region:string,deploy_target:string,loadbalancer_id?:string,listener_id?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
@@ -74,7 +74,7 @@ class VolcAlbDeployer extends AbstractDeployer
         // 业务校验全在 guardSdk 之外（业务错误不进 guardSdk，否则被重建成无 message 的 SDK 异常）
         $region = (string) $this->requireConfig($config, 'region');
         $deployTarget = (string) $this->requireConfig($config, 'deploy_target');
-        $domain = isset($config['domain']) && is_string($config['domain']) ? $config['domain'] : '';
+        $domain = $config['domain'] ?? '';
         $certId = (string) $certRef;
 
         $loadbalancerId = '';
@@ -89,7 +89,11 @@ class VolcAlbDeployer extends AbstractDeployer
 
         // 枚举监听器（SDK 读，guardSdk 包裹后返回）
         $listenerIds = $deployTarget === 'loadbalancer'
-            ? $this->guardSdk(fn (): array => $this->listHttpsListeners($this->makeClient('alb', $credentials, $region), $loadbalancerId))
+            ? $this->guardSdk(fn (): array => $this->listHttpsListeners(
+                $this->makeClient('alb', $credentials, $region),
+                $loadbalancerId,
+                (string) ($credentials['project_name'] ?? ''),
+            ))
             : [$listenerId];
 
         foreach ($listenerIds as $id) {
@@ -157,18 +161,25 @@ class VolcAlbDeployer extends AbstractDeployer
      *
      * @return list<string>
      */
-    private function listHttpsListeners(VolcRestClient $client, string $loadbalancerId): array
+    private function listHttpsListeners(VolcRestClient $client, string $loadbalancerId, string $projectName): array
     {
+        $client->callQuery('DescribeLoadBalancerAttributes', '2020-04-01', [
+            'LoadBalancerId' => $loadbalancerId,
+        ]);
         $ids = [];
         $page = 1;
         $pageSize = 100;
         do {
-            $result = $client->callQuery('DescribeListeners', '2020-04-01', [
+            $params = [
                 'LoadBalancerId' => $loadbalancerId,
                 'Protocol' => 'HTTPS',
                 'PageNumber' => $page,
                 'PageSize' => $pageSize,
-            ]);
+            ];
+            if ($projectName !== '') {
+                $params['ProjectName'] = $projectName;
+            }
+            $result = $client->callQuery('DescribeListeners', '2020-04-01', $params);
 
             $listeners = is_array($result['Listeners'] ?? null) ? $result['Listeners'] : [];
             foreach ($listeners as $listener) {
@@ -200,6 +211,7 @@ class VolcAlbDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

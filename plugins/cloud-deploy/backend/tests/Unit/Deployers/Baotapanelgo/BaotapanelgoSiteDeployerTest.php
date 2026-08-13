@@ -97,14 +97,29 @@ test('空类型站点：走 datalist.GetDataList(table=sites) 查 ID', function 
     expect($captured)->toBe(30);
 });
 
-test('IIS 服务器：明确报错（PFX 转换不支持）', function () {
+test('IIS 服务器：PEM 转 PFX 后上传并设置站点 PFX SSL', function () {
     $client = Mockery::mock(BaotapanelgoClient::class);
-    $client->shouldReceive('panelGetConfig')->once()->andReturn(['site' => ['webserver' => 'iis']]);
+    $client->shouldReceive('panelGetConfig')->once()->andReturn(['site' => ['webserver' => 'iis'], 'paths' => ['soft' => 'C:/BtSoft']]);
+    $client->shouldReceive('datalistGetDataList')->once()->andReturn([['id' => 9, 'name' => 'a.com']]);
     $client->shouldReceive('siteSetSiteSSL')->never();
+    $client->shouldReceive('filesUpload')->once()->with('C:/BtSoft/temp/ssl/certimate', hash('sha256', 'PFXDATA').'.pfx', 'PFXDATA', true);
+    $client->shouldReceive('siteSetSitePfxSsl')->once()->with(9, Mockery::pattern('#^C:/BtSoft/temp/ssl/certimate/.+\.pfx$#'), 'certimate');
 
-    $deployer = baotapanelgoSiteDeployerWith(fn () => $client);
-    expect(fn () => $deployer->bind(baotagoSiteCertRef(), baotagoSiteCreds(), ['site_names' => 'a.com']))
-        ->toThrow(RuntimeException::class, 'IIS');
+    $deployer = new class(fn () => $client) extends BaotapanelgoSiteDeployer
+    {
+        public function __construct(private $factory) {}
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            return ($this->factory)();
+        }
+
+        protected function buildPfx(string $cert, string $key, string $password): string
+        {
+            return 'PFXDATA';
+        }
+    };
+    $deployer->bind(baotagoSiteCertRef(), baotagoSiteCreds(), ['site_names' => 'a.com']);
 });
 
 test('站点未找到抛错', function () {
@@ -177,6 +192,22 @@ test('线协议：siteSetSiteSSL 发表单 + 签名 request_token=md5(request_ti
     expect($form['key'])->toBe('KEY');
     $expected = md5($form['request_time'].md5('SK-SECRET'));
     expect($form['request_token'])->toBe($expected);
+});
+
+test('线协议：filesUpload multipart 与 siteSetSitePfxSsl 表单路径对齐', function () {
+    $history = new ArrayObject;
+    $client = baotapanelgoClientWithMock([
+        new Response(200, [], json_encode(['status' => true])),
+        new Response(200, [], json_encode(['status' => true])),
+    ], $history);
+    $client->filesUpload('C:/BtSoft/temp/ssl/certimate', 'x.pfx', 'PFXDATA', true);
+    $client->siteSetSitePfxSsl(7, 'C:/BtSoft/temp/ssl/certimate/x.pfx', 'certimate');
+    expect($history[0]['request']->getUri()->getPath())->toBe('/files/upload');
+    expect($history[0]['request']->getHeaderLine('Content-Type'))->toContain('multipart/form-data');
+    expect((string) $history[0]['request']->getBody())->toContain('PFXDATA')->toContain('name="blob"');
+    parse_str((string) $history[1]['request']->getBody(), $form);
+    expect($history[1]['request']->getUri()->getPath())->toBe('/site/set_site_pfx_ssl');
+    expect($form['siteid'])->toBe('7')->and($form['password'])->toBe('certimate');
 });
 
 test('线协议：status=int 非 0 → BaotapanelgoApiException（带 msg）', function () {

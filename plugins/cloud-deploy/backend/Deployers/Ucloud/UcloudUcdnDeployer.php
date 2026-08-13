@@ -39,6 +39,7 @@ class UcloudUcdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'domain_id', 'label' => '加速域名 ID', 'type' => 'string', 'required' => true],
         ];
     }
@@ -51,7 +52,7 @@ class UcloudUcdnDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // USSL 上传器复用 deployer 注入缝：测试 override makeClient('api') 即作用于上传。
-        return new UcloudUsslUploader(fn (array $credentials): object => $this->makeClient('api', $credentials));
+        return new UcloudUsslUploader(fn (array $credentials): object => $this->makeClient('api', $this->withUcloudEndpoint($credentials, $config)));
     }
 
     /**
@@ -61,6 +62,7 @@ class UcloudUcdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withUcloudEndpoint($credentials, $config);
         $domainId = (string) $this->requireConfig($config, 'domain_id');
         [$certIdStr, $certName] = $this->parseCertRef((string) $certRef);
         $certId = (int) $certIdStr;

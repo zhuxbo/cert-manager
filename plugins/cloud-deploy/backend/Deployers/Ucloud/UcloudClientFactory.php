@@ -2,6 +2,8 @@
 
 namespace Plugins\CloudDeploy\Deployers\Ucloud;
 
+use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
+
 /**
  * UCloud deployer 公共 client 构造（注入缝 makeClient 的默认实现 + 共享 builder）。
  *
@@ -35,11 +37,32 @@ trait UcloudClientFactory
      */
     protected function buildUcloudClient(array $credentials, string $region): UcloudRestClient
     {
+        $configuredEndpoint = is_string($credentials['endpoint'] ?? null) ? trim($credentials['endpoint']) : '';
+        $endpoint = 'https://api.ucloud.cn';
+        if ($configuredEndpoint !== '') {
+            $candidate = str_contains($configuredEndpoint, '://')
+                ? $configuredEndpoint
+                : 'https://'.$configuredEndpoint;
+            $endpoint = rtrim(app(OutboundDestinationPolicy::class)->authorize('ucloud', $candidate)->url, '/');
+        }
+
         return new UcloudRestClient(
             is_string($credentials['public_key'] ?? null) ? $credentials['public_key'] : '',
             is_string($credentials['private_key'] ?? null) ? $credentials['private_key'] : '',
             is_string($credentials['project_id'] ?? null) ? $credentials['project_id'] : '',
             $region,
+            null,
+            $endpoint,
         );
+    }
+
+    /** @param array<string,mixed> $credentials @param array<string,mixed> $config */
+    protected function withUcloudEndpoint(array $credentials, array $config): array
+    {
+        if (is_string($config['endpoint'] ?? null) && trim($config['endpoint']) !== '') {
+            $credentials['endpoint'] = trim($config['endpoint']);
+        }
+
+        return $credentials;
     }
 }

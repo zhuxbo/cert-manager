@@ -257,15 +257,20 @@ function contractDeployerFactories(): array
 /**
  * 个别字段是「枚举/受约束值」，在 requireConfig 之前就被业务 gate 校验，generic dummy 串会被早早拒掉
  * （在第一个 requireConfig 执行前抛 → touchedConfigKeys 收不到）。这类字段需给一个能过 gate 的合法值。
- * 仅 apigw.service_type 一例（bind 顶部 service_type gate 早于 requireConfig）。
+ * apigw 的 service_type/domain_match_pattern 两个枚举都在 requireConfig 前做分支选择。
  *
  * @return array<string, array<string,string>> label => [configKey => 合法 dummy 值]
  */
 function contractConfigValueOverrides(): array
 {
     return [
-        // service_type gate（在 requireConfig 前）：必须是合法枚举值，否则 fail 早于任何 requireConfig
-        'aliyun.apigw' => ['service_type' => 'cloudnative'],
+        // service_type/domain_match_pattern gate（在 requireConfig 前）：必须是合法枚举值，否则 fail 早于任何 requireConfig
+        'aliyun.apigw' => ['service_type' => 'cloudnative', 'domain_match_pattern' => 'exact'],
+        // domain_match_pattern gate（在 requireConfig 前）：generic dummy 不是合法枚举值。
+        'tencent.cdn' => ['endpoint' => '', 'domain_match_pattern' => 'exact'],
+        'tencent.css' => ['endpoint' => '', 'domain_match_pattern' => 'exact'],
+        'tencent.ecdn' => ['endpoint' => '', 'domain_match_pattern' => 'exact'],
+        'tencent.vod' => ['endpoint' => '', 'domain_match_pattern' => 'exact'],
     ];
 }
 

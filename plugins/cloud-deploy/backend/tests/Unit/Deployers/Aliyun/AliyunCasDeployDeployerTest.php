@@ -56,7 +56,26 @@ test('阿里云 CAS 托管部署走证书服务（storeKind=cas）+ 元信息', 
     expect($deployer->product())->toBe('casdeploy');
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader()->storeKind())->toBe('cas');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('resource_ids')->toContain('contact_ids');
+    expect($deployer->certUploader(['region' => 'ap-southeast-1'])->storeKind())->toBe('cas:ap-southeast-1');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('resource_ids')->toContain('contact_ids');
+});
+
+test('bind 把 config.region 传入 CAS client 构造缝', function () {
+    $seenRegion = null;
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('createDeploymentJob')->andReturn(casCreateJobResponse(1));
+    $cas->shouldReceive('describeDeploymentJob')->andReturn(casDescribeJobResponse('success'));
+
+    $deployer = aliyunCasDeployDeployerWith(function (string $kind, array $credentials) use (&$seenRegion, $cas) {
+        $seenRegion = $credentials['region'] ?? null;
+
+        return $cas;
+    });
+    $deployer->bind('1-ap-southeast-1', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'ap-southeast-1', 'resource_ids' => 'res-1', 'contact_ids' => 'c-1',
+    ]);
+
+    expect($seenRegion)->toBe('ap-southeast-1');
 });
 
 test('bind 拆数字 certId 调 CreateDeploymentJob（CertIds/ResourceIds/ContactIds/JobType=user）并轮询到 success', function () {

@@ -16,10 +16,15 @@ use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Plugins\CloudDeploy\Deployers\Contracts\CertificateDeliveryMode;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
-use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployerInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
+use Plugins\CloudDeploy\Deployers\Contracts\PersistsOpaqueInlineJobId;
+use Plugins\CloudDeploy\Deployers\Contracts\PreparesCertUploaderForJob;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
+use Plugins\CloudDeploy\Deployers\Contracts\SelectsCertificateDeliveryMode;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
 use Plugins\CloudDeploy\Models\CloudDeployLog;
@@ -43,6 +48,12 @@ class CloudDeployJob implements ShouldQueue
 
     /** pending jobId 的数据库 TTL：> sweep-B 7 天节流 + freeze/延迟余量；每次 catch 续期。 */
     private const PENDING_TTL_DAYS = 10;
+
+    /** 动态内联端点的 bind 已接触私钥；异常消息一律不允许离开 Job。 */
+    private const DYNAMIC_INLINE_FAILURE_MESSAGE = '动态证书部署失败，请检查云端配置或稍后重试';
+
+    /** failed() 无法重新判定交付模式时，绝不回退到可能含私钥的原始异常。 */
+    private const UNRESOLVED_FAILURE_MESSAGE = '部署重试耗尽，无法确认错误详情';
 
     public function __construct(
         public int $targetId,
@@ -130,33 +141,44 @@ class CloudDeployJob implements ShouldQueue
 
         $deployer = app(Registry::class)->resolveDeployer($access->provider, $target->product);
         $credentials = $access->credentials; // encrypted:array → decrypted
+        $config = $target->config ?? [];
+        $deliveryMode = $deployer instanceof SelectsCertificateDeliveryMode
+            ? $deployer->certificateDeliveryMode($config)
+            : ($deployer->usesRemoteCertStore() ? CertificateDeliveryMode::RemoteStore : CertificateDeliveryMode::Inline);
 
         // G2：只从 target 数据库字段读 pending；无效内容先清库再走 bind。
-        $pending = $this->readPending($target, (int) $cert->id, $deployer);
+        $pending = $this->readPending($target, (int) $cert->id, $deployer, $deliveryMode);
         $remoteCertId = is_array($pending) && is_string($pending['remote_cert_id'] ?? null) ? $pending['remote_cert_id'] : null;
 
         try {
             if (is_array($pending) && $deployer instanceof ResumesRemoteJob) {
                 // 续查**同一** jobId（不重建云端任务）：成功收敛 / 终态失败转业务终态 / 仍 pending 再抛续期
-                $deployer->resumePoll((string) $pending['job_id'], $credentials, $target->config ?? []);
+                $deployer->resumePoll((string) $pending['job_id'], $credentials, $config);
                 $target->update(['pending_job' => null, 'last_cert_id' => $cert->id, 'last_status' => 'success', 'last_error' => null, 'last_deployed_at' => now()]);
                 $this->writeLog($target, $cert, $access, 'success', true, $remoteCertId, null, null);
 
                 return;
             }
 
-            if ($deployer->usesRemoteCertStore()) {
+            if ($deliveryMode === CertificateDeliveryMode::RemoteStore) {
                 // 透传 config：region 维度的上传器（SLB）需据 region 构造（endpoint + storeKind/cert_id 编码）
+                $uploader = $deployer instanceof PreparesCertUploaderForJob
+                    ? $deployer->certUploaderForJob($config, $credentials)
+                    : $deployer->certUploader($config);
                 $remoteCertId = app(RemoteCertStore::class)->ensure(
-                    $deployer->certUploader($target->config ?? []), $access->id, $target->user_id, $cert->id, (string) $cert->fingerprint,
+                    $uploader, $access->id, $target->user_id, $cert->id, (string) $cert->fingerprint,
                     (string) $cert->cert, (string) $cert->private_key, (string) $chain, $credentials,
                 );
-                $deployer->bind($remoteCertId, $credentials, $target->config ?? []);
+                // Opt-in deployer 仅获 leaf + 中间链做 SAN/资源匹配；私钥仍只进入 uploader。
+                $bindRef = $deployer instanceof ReceivesRemoteCertificateMaterial
+                    ? ['remote_cert_id' => $remoteCertId, 'cert' => (string) $cert->cert, 'chain' => (string) $chain]
+                    : $remoteCertId;
+                $deployer->bind($bindRef, $credentials, $config);
             } else {
                 $remoteCertId = null;
                 $deployer->bind(
                     ['cert' => (string) $cert->cert, 'key' => (string) $cert->private_key, 'chain' => (string) $chain],
-                    $credentials, $target->config ?? [],
+                    $credentials, $config,
                 );
             }
 
@@ -167,11 +189,33 @@ class CloudDeployJob implements ShouldQueue
             ]);
             $this->writeLog($target, $cert, $access, 'success', true, $remoteCertId, null, null);
         } catch (DeployPollPendingException $e) {
+            $pendingJobId = is_array($pending) ? $pending['job_id'] : $e->remoteJobId;
+
+            // 动态内联 bind 已接触私钥：默认拒绝把上游 jobId 落库。只有显式 opt-in 且能把标识
+            // 规范化为安全 opaque ID 的端点可以沿用 pending/resume 链；APIGW 等其余端点仍 fail closed。
+            if ($deployer instanceof SelectsCertificateDeliveryMode && $deliveryMode === CertificateDeliveryMode::Inline) {
+                $pendingJobId = $deployer instanceof PersistsOpaqueInlineJobId
+                    ? $deployer->canonicalOpaqueInlineJobId((string) $pendingJobId)
+                    : null;
+                if ($pendingJobId === null) {
+                    $msg = self::DYNAMIC_INLINE_FAILURE_MESSAGE;
+                    $target->update([
+                        'pending_job' => null,
+                        'last_status' => 'failed', 'last_cert_id' => $cert->id,
+                        'last_error' => $msg, 'last_deployed_at' => now(),
+                    ]);
+                    $this->writeLog($target, $cert, $access, 'failed', true, null, 'business_error', $msg);
+                    $this->notifyBusinessFailure($target, $access, 'business_error');
+
+                    return;
+                }
+            }
+
             // 云端任务已提交、未在窗口内达终态：持久化 jobId 供重试/sweep-B 续查（不重建），占 attempt 退避重试。
             // 复用 failed 态（不加新枚举/不迁移）；写 last_cert_id + last_deployed_at 使 sweep 走 B（7 天）而非 A（每天）
             $target->update([
                 'pending_job' => [
-                    'job_id' => is_array($pending) ? $pending['job_id'] : $e->remoteJobId,
+                    'job_id' => $pendingJobId,
                     'cert_id' => (int) $cert->id,
                     'remote_cert_id' => is_string($remoteCertId) ? $remoteCertId : null,
                     'expires_at' => now()->addDays(self::PENDING_TTL_DAYS)->timestamp,
@@ -183,7 +227,7 @@ class CloudDeployJob implements ShouldQueue
 
             throw $e; // 占 attempt 走 backoff 重试（下次 resumePoll 续查同一 jobId）
         } catch (DeployBusinessException $e) {
-            $msg = $e->getMessage() ?: $e::class;
+            $msg = $this->safeExceptionMessage($e, $deployer, $deliveryMode);
             $target->update(['pending_job' => null, 'last_status' => 'failed', 'last_cert_id' => $cert->id, 'last_error' => mb_substr($msg, 0, 255), 'last_deployed_at' => now()]);
             $this->writeLog($target, $cert, $access, 'failed', true, null, 'business_error', $msg);
             $this->notifyBusinessFailure($target, $access, 'business_error');
@@ -191,7 +235,7 @@ class CloudDeployJob implements ShouldQueue
             return;
         } catch (Throwable $e) {
             // 瞬态失败：**不清 pending**（若在 resumePoll 阶段网络抖动，pending 须留给下次续查）
-            $msg = $e->getMessage() ?: $e::class;
+            $msg = $this->safeExceptionMessage($e, $deployer, $deliveryMode);
             // 标记 last_cert_id：让重试耗尽后 sweep 走条件 B（7 天节流）而非条件 A（每天），防瞬态失败每天 dispatch + 每天发邮件
             $target->update(['last_status' => 'failed', 'last_cert_id' => $cert->id, 'last_error' => mb_substr($msg, 0, 255), 'last_deployed_at' => now()]);
             $this->writeLog($target, $cert, $access, 'failed', false, null, 'deploy_error', $msg);
@@ -205,7 +249,7 @@ class CloudDeployJob implements ShouldQueue
      *
      * @return array{job_id:string,cert_id:int,remote_cert_id:?string,expires_at:int}|null
      */
-    private function readPending(CloudDeployTarget $target, int $certId, DeployerInterface $deployer): ?array
+    private function readPending(CloudDeployTarget $target, int $certId, DeployerInterface $deployer, CertificateDeliveryMode $deliveryMode): ?array
     {
         if ($target->getRawOriginal('pending_job') === null) {
             return null;
@@ -231,6 +275,18 @@ class CloudDeployJob implements ShouldQueue
             return null;
         }
 
+        if ($deployer instanceof SelectsCertificateDeliveryMode && $deliveryMode === CertificateDeliveryMode::Inline) {
+            $canonicalJobId = $deployer instanceof PersistsOpaqueInlineJobId
+                ? $deployer->canonicalOpaqueInlineJobId($pending['job_id'])
+                : null;
+            if ($canonicalJobId === null) {
+                $target->update(['pending_job' => null]);
+
+                return null;
+            }
+            $pending['job_id'] = $canonicalJobId;
+        }
+
         return $pending;
     }
 
@@ -250,12 +306,12 @@ class CloudDeployJob implements ShouldQueue
 
     public function failed(Throwable $e): void
     {
-        $msg = $e->getMessage() ?: $e::class;
         // poll_pending 耗尽：区分 error_code（通知文案通用，上下文表明「任务已提交云端待确认」降误报感）；
         // **不清 pending_job**——留给 sweep-B 续查同一 jobId（收敛链关键，§G2.2 / §G2.5）。
         $errorCode = $e instanceof DeployPollPendingException ? 'poll_pending' : 'retries_exhausted';
 
         $target = CloudDeployTarget::withoutGlobalScopes()->find($this->targetId);
+        $msg = $this->safeExceptionMessageForTarget($e, $target);
         if ($target) {
             // G4：补写 last_deployed_at——failed() 仅末次 attempt 兑现（SIGALRM 击杀链前几次 attempt
             // handle catch 不跑、target 不写），不补则新 target 的 NULL 落 sweep 条件 A/B 双盲区。
@@ -276,6 +332,40 @@ class CloudDeployJob implements ShouldQueue
             $this->skipLog($errorCode, $msg);
         }
         Log::error('[cloud-deploy.failed] 推送重试耗尽', ['target' => $this->targetId, 'cert' => $this->certId, 'message' => $msg]);
+    }
+
+    private function safeExceptionMessage(Throwable $e, DeployerInterface $deployer, CertificateDeliveryMode $deliveryMode): string
+    {
+        if ($deployer instanceof SelectsCertificateDeliveryMode && $deliveryMode === CertificateDeliveryMode::Inline) {
+            return self::DYNAMIC_INLINE_FAILURE_MESSAGE;
+        }
+
+        return $e->getMessage() ?: $e::class;
+    }
+
+    private function safeExceptionMessageForTarget(Throwable $e, ?CloudDeployTarget $target): string
+    {
+        if ($target === null) {
+            return self::UNRESOLVED_FAILURE_MESSAGE;
+        }
+
+        try {
+            $access = CloudDeployAccess::withoutGlobalScopes()->find($target->access_id);
+            if ($access === null) {
+                return self::UNRESOLVED_FAILURE_MESSAGE;
+            }
+
+            $deployer = app(Registry::class)->resolveDeployer($access->provider, $target->product);
+            $config = $target->config ?? [];
+            $deliveryMode = $deployer instanceof SelectsCertificateDeliveryMode
+                ? $deployer->certificateDeliveryMode($config)
+                : ($deployer->usesRemoteCertStore() ? CertificateDeliveryMode::RemoteStore : CertificateDeliveryMode::Inline);
+
+            return $this->safeExceptionMessage($e, $deployer, $deliveryMode);
+        } catch (Throwable) {
+            // 注册表或动态模式计算失败时，无法排除异常已接触私钥；fail closed。
+            return self::UNRESOLVED_FAILURE_MESSAGE;
+        }
     }
 
     private function skipLog(string $code, string $message): void

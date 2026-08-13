@@ -59,6 +59,11 @@ test('Azure Key Vault 为证书服务型 + 元信息', function () {
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader(['vault_name' => 'myvault']))->toBeInstanceOf(AzureKeyVaultUploader::class);
     expect($deployer->certUploader(['vault_name' => 'myvault'])->storeKind())->toBe('azure_keyvault:myvault');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('certificate_name');
+    expect($deployer->certUploader([
+        'vault_name' => 'myvault',
+        'certificate_name' => 'existing-cert',
+    ])->storeKind())->toBe('azure-kv-r:'.substr(hash('sha256', "myvault\0existing-cert"), 0, 20));
 });
 
 test('cloud env 解析：公有云 / 中国 / 美政府', function () {
@@ -150,10 +155,10 @@ test('uploader.upload 走 OAuth2 + importCertificate（PKCS12 可被空口令解
         ->upload($certPem, $keyPem, '', azureCreds());
 
     [$name, $pkcs12Base64, $tags] = $captured;
-    expect($name)->toStartWith('clouddeploy-');
+    expect($name)->toStartWith('certimate-');
     expect($vaultUrlSeen)->toBe('https://myvault.vault.azure.net');
-    expect($tags)->toHaveKey('clouddeploy/cert-cn');
-    expect($tags['clouddeploy/cert-cn'])->toBe('azure-test.example.com');
+    expect($tags)->toHaveKey('certimate/cert-cn');
+    expect($tags['certimate/cert-cn'])->toBe('azure-test.example.com');
     expect($kid)->toContain('/certificates/');
 
     // PKCS12 round-trip：用空口令解回，确认含证书 + 私钥（证明 PEM→PFX 转换正确）
@@ -162,6 +167,40 @@ test('uploader.upload 走 OAuth2 + importCertificate（PKCS12 可被空口令解
     expect($ok)->toBeTrue();
     expect($certs)->toHaveKey('cert')->toHaveKey('pkey');
     expect(openssl_x509_parse($certs['cert'])['subject']['CN'])->toBe('azure-test.example.com');
+});
+
+test('certificate_name 原地替换且 cloud_name 从凭证选择主权云', function () {
+    [$certPem, $keyPem] = azureSelfSignedCert();
+
+    $oauth = Mockery::mock(AzureOAuth2::class);
+    $oauth->shouldReceive('fetchAccessToken')
+        ->once()
+        ->with('tid', 'cid', 'csecret', 'china')
+        ->andReturn('AAD.TOKEN');
+
+    $vaultUrlSeen = null;
+    $client = Mockery::mock(AzureKeyVaultClient::class);
+    $client->shouldReceive('importCertificate')
+        ->once()
+        ->withArgs(fn (string $name) => $name === 'existing-cert')
+        ->andReturn('https://myvault.vault.azure.cn/certificates/existing-cert/new-version');
+
+    $deployer = azureDeployerWith(function (string $kind, array $cred, string $token, string $vaultBaseUrl) use ($oauth, $client, &$vaultUrlSeen) {
+        if ($kind === 'oauth') {
+            return $oauth;
+        }
+        $vaultUrlSeen = $vaultBaseUrl;
+
+        return $client;
+    });
+
+    $kid = $deployer->certUploader([
+        'vault_name' => 'myvault',
+        'certificate_name' => 'existing-cert',
+    ])->upload($certPem, $keyPem, '', azureCreds() + ['cloud_name' => 'china']);
+
+    expect($vaultUrlSeen)->toBe('https://myvault.vault.azure.cn');
+    expect($kid)->toContain('/existing-cert/new-version');
 });
 
 test('bind 为 no-op：导入已由 RemoteCertStore 完成，不抛异常', function () {

@@ -8,6 +8,7 @@ use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponse;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponseBody;
 use AlibabaCloud\SDK\Dcdn\V20180115\Dcdn;
+use AlibabaCloud\SDK\Dcdn\V20180115\Models\DescribeDcdnUserDomainsRequest;
 use AlibabaCloud\SDK\Dcdn\V20180115\Models\SetDcdnDomainSSLCertificateRequest;
 use AlibabaCloud\SDK\Dcdn\V20180115\Models\SetDcdnDomainSSLCertificateResponse;
 use AlibabaCloud\Tea\Exception\TeaError;
@@ -53,6 +54,40 @@ test('阿里云 DCDN 走证书服务（CAS）', function () {
     expect($deployer->certUploader()->storeKind())->toBe('cas');
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('dcdn');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('domain_match_pattern')->toContain('domain');
+});
+
+test('bind wildcard：DescribeDcdnUserDomains 过滤状态并批量绑定单层子域', function () {
+    $listReq = null;
+    $domains = [];
+    $dcdn = Mockery::mock(Dcdn::class);
+    $dcdn->shouldReceive('describeDcdnUserDomains')->once()->andReturnUsing(function (DescribeDcdnUserDomainsRequest $req) use (&$listReq) {
+        $listReq = $req;
+
+        return (object) ['body' => (object) ['domains' => (object) ['pageData' => [
+            (object) ['domainName' => 'a.example.com', 'domainStatus' => 'online'],
+            (object) ['domainName' => 'b.example.com', 'domainStatus' => 'online'],
+            (object) ['domainName' => 'deep.a.example.com', 'domainStatus' => 'online'],
+            (object) ['domainName' => 'off.example.com', 'domainStatus' => 'offline'],
+        ]]]];
+    });
+    $dcdn->shouldReceive('setDcdnDomainSSLCertificate')->twice()->andReturnUsing(function (SetDcdnDomainSSLCertificateRequest $req) use (&$domains) {
+        $domains[] = $req->domainName;
+
+        return new SetDcdnDomainSSLCertificateResponse;
+    });
+
+    $deployer = aliyunDcdnDeployerWith(fn (string $kind) => $kind === 'dcdn' ? $dcdn : new stdClass);
+    $deployer->bind('123-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK', 'resource_group_id' => 'rg-1'], [
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($listReq->resourceGroupId)->toBe('rg-1');
+    expect($listReq->checkDomainShow)->toBeTrue();
+    expect($listReq->pageNumber)->toBe(1);
+    expect($listReq->pageSize)->toBe(500);
+    expect($domains)->toBe(['a.example.com', 'b.example.com']);
 });
 
 test('uploader.upload 调 cas.UploadUserCertificate + GetUserCertificateDetail 返回 CertIdentifier', function () {

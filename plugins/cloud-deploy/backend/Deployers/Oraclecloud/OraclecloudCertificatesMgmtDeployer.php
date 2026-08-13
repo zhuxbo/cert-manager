@@ -4,7 +4,9 @@ namespace Plugins\CloudDeploy\Deployers\Oraclecloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\PreparesCertUploaderForJob;
 use Plugins\CloudDeploy\Deployers\Contracts\UploadOnlyDeployerInterface;
+use Plugins\CloudDeploy\Support\CloudMetadataHttpClient;
 use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Throwable;
 
@@ -14,17 +16,14 @@ use Throwable;
  * 对齐 certimate oraclecloud-certificatesmgmt：Deploy 把证书导入 OCI 证书管理服务（拿证书 OCID），
  * **不绑定 Load Balancer 等资源**（后续在控制台/其他流程引用证书 OCID）。
  *
- * 插件模型：usesRemoteCertStore=true + OracleCertMgmtUploader（store_kind="oci_certmgmt:{compartment}"），
- * bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader($config)) 完成。
+ * 插件模型：usesRemoteCertStore=true + OracleCertMgmtUploader（认证模式/region/compartment 隔离），
+ * bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploaderForJob(...)) 完成。
  *
- * 鉴权：OCI HTTP Signatures（RSA-SHA256，keyId={tenancy}/{user}/{fingerprint}，私钥本地签名），
- * 纯 GuzzleHttp REST 调 certificatesmanagement.{region}.oci.oraclecloud.com（见 OciRequestSigner /
- * OraclecloudClient）。仅支持 API Key 认证方式（certimate 另有 instanceprincipal/resourceprincipal，
- * 依赖实例元数据/SDK，纯 REST 移植不可靠实现，故不支持）。
+ * 鉴权支持 API Key、OCI Compute instance principal 与 resource principal 2.2。
  *
  * config：compartment_ocid（必填）。region + API Key 走凭证。
  */
-class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
+class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements PreparesCertUploaderForJob, UploadOnlyDeployerInterface
 {
     public function provider(): string
     {
@@ -58,9 +57,31 @@ class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements Up
         $compartmentOcid = isset($config['compartment_ocid']) ? (string) $config['compartment_ocid'] : '';
 
         return new OracleCertMgmtUploader(
-            fn (array $credentials): OciRequestSigner => $this->makeClient('signer', $credentials),
             fn (OciRequestSigner $signer, string $region): object => $this->makeClient('api', [], $signer, $region),
             $compartmentOcid,
+            'apikey',
+            null,
+        );
+    }
+
+    public function certUploaderForJob(array $config, array $credentials): CertUploaderInterface
+    {
+        $compartmentOcid = isset($config['compartment_ocid']) ? (string) $config['compartment_ocid'] : '';
+        $authMethod = (string) ($credentials['auth_method'] ?? 'apikey');
+        $provider = $this->makeClient('provider', $credentials);
+        if (! $provider instanceof OraclecloudCredentialProvider) {
+            throw new \RuntimeException('Oracle Cloud 凭证提供器无效');
+        }
+        $material = $provider->resolve();
+        if ($material->region() === '') {
+            throw new \RuntimeException('Oracle Cloud 缺少区域（region）');
+        }
+
+        return new OracleCertMgmtUploader(
+            fn (OciRequestSigner $signer, string $region): object => $this->makeClient('api', [], $signer, $region),
+            $compartmentOcid,
+            $authMethod,
+            $material,
         );
     }
 
@@ -82,6 +103,7 @@ class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements Up
     protected function makeClient(string $kind, array $credentials, ?OciRequestSigner $signer = null, string $region = ''): object
     {
         return match ($kind) {
+            'provider' => $this->newCredentialProvider($credentials),
             'signer' => new OciRequestSigner(
                 (string) ($credentials['tenancy_ocid'] ?? ''),
                 (string) ($credentials['user_ocid'] ?? ''),
@@ -91,6 +113,18 @@ class OraclecloudCertificatesMgmtDeployer extends AbstractDeployer implements Up
             ),
             // region 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
             'api' => $this->newOracleApiClient($signer ?? new OciRequestSigner('', '', '', ''), $region),
+            default => throw new \InvalidArgumentException('不支持的 Oracle Cloud client 类型'),
+        };
+    }
+
+    /** @param array<string,mixed> $credentials */
+    private function newCredentialProvider(array $credentials): OraclecloudCredentialProvider
+    {
+        return match ((string) ($credentials['auth_method'] ?? 'apikey')) {
+            'apikey' => new OracleApiKeyCredentialProvider($credentials),
+            'instanceprincipal' => new OracleInstancePrincipalProvider(CloudMetadataHttpClient::forOracle()),
+            'resourceprincipal' => new OracleResourcePrincipalProvider,
+            default => throw new \InvalidArgumentException('不支持的 Oracle Cloud 认证方式'),
         };
     }
 

@@ -4,6 +4,7 @@ use Aws\Acm\AcmClient;
 use Aws\CloudFront\CloudFrontClient;
 use Aws\CommandInterface;
 use Aws\Exception\AwsException;
+use Aws\Iam\IamClient;
 use Aws\Result;
 use Plugins\CloudDeploy\Deployers\Aws\AwsCloudFrontDeployer;
 use Tests\TestCase;
@@ -37,6 +38,10 @@ test('AWS CloudFront 元信息 + ACM 源（region 维度）', function () {
     expect($deployer->product())->toBe('cloudfront');
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader(['region' => 'us-east-1'])->storeKind())->toBe('acm:us-east-1');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('certificate_source');
+    expect($deployer->certUploader([
+        'region' => 'us-east-1', 'certificate_source' => 'IAM',
+    ])->storeKind())->toBe('iam-cloudfront-id');
 });
 
 test('bind get→改 ViewerCertificate→UpdateDistribution（ACMCertificateArn=ARN、关闭默认证书、IfMatch=ETag）', function () use ($cfCreds, $cfCfg) {
@@ -107,4 +112,39 @@ test('uploader.upload 经 makeClient(acm) 上传返回 ARN', function () use ($c
     $deployer = awsCloudFrontDeployerWith(fn (string $kind) => $kind === 'acm' ? $acm : new stdClass);
     $id = $deployer->certUploader(['region' => 'us-east-1'])->upload('C', 'K', 'CH', $cfCreds);
     expect($id)->toBe('arn:aws:acm:us-east-1:1:certificate/xyz');
+});
+
+test('IAM 源上传返回 ServerCertificateId 并绑定 IAMCertificateId', function () use ($cfCreds, $cfCfg) {
+    $iam = Mockery::mock(IamClient::class);
+    $iam->shouldReceive('uploadServerCertificate')->once()->andReturn(new Result([
+        'ServerCertificateMetadata' => [
+            'Arn' => 'arn:aws:iam::123:server-certificate/cloudfront/cert',
+            'ServerCertificateId' => 'ASCA-CLOUDFRONT-ID',
+        ],
+    ]));
+
+    $captured = null;
+    $cf = Mockery::mock(CloudFrontClient::class);
+    $cf->shouldReceive('getDistributionConfig')->once()->andReturn(new Result([
+        'DistributionConfig' => ['ViewerCertificate' => ['ACMCertificateArn' => 'old-arn']],
+        'ETag' => 'ETAG-IAM',
+    ]));
+    $cf->shouldReceive('updateDistribution')->once()->andReturnUsing(function (array $request) use (&$captured) {
+        $captured = $request;
+
+        return new Result;
+    });
+
+    $deployer = awsCloudFrontDeployerWith(fn (string $kind) => match ($kind) {
+        'iam' => $iam,
+        'cloudfront' => $cf,
+        default => new stdClass,
+    });
+    $config = $cfCfg + ['certificate_source' => 'IAM'];
+    $certificateId = $deployer->certUploader($config)->upload('C', 'K', 'CH', $cfCreds);
+    $deployer->bind($certificateId, $cfCreds, $config);
+
+    expect($certificateId)->toBe('ASCA-CLOUDFRONT-ID');
+    expect($captured['DistributionConfig']['ViewerCertificate']['IAMCertificateId'])->toBe('ASCA-CLOUDFRONT-ID');
+    expect($captured['DistributionConfig']['ViewerCertificate'])->not->toHaveKey('ACMCertificateArn');
 });

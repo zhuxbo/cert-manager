@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Aws;
 
 use Aws\Acm\AcmClient;
 use Aws\CloudFront\CloudFrontClient;
+use Aws\Iam\IamClient;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Throwable;
@@ -49,6 +50,7 @@ class AwsCloudFrontDeployer extends AbstractDeployer
         return [
             ['key' => 'region', 'label' => '地域（须 us-east-1）', 'type' => 'string', 'required' => true],
             ['key' => 'distribution_id', 'label' => '分发 ID', 'type' => 'string', 'required' => true],
+            ['key' => 'certificate_source', 'label' => '证书来源（ACM/IAM）', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -61,10 +63,15 @@ class AwsCloudFrontDeployer extends AbstractDeployer
     {
         $region = (string) ($config['region'] ?? '');
 
-        return new AwsAcmUploader(
-            fn (array $credentials): object => $this->makeClient('acm', $credentials, $region),
-            $region,
-        );
+        if (strtoupper((string) ($config['certificate_source'] ?? '')) === 'IAM') {
+            return new AwsIamUploader(
+                fn (array $credentials): object => $this->makeClient('iam', $credentials, $region),
+                '/cloudfront/',
+                true,
+            );
+        }
+
+        return new AwsAcmUploader(fn (array $credentials): object => $this->makeClient('acm', $credentials, $region), $region);
     }
 
     /**
@@ -77,6 +84,7 @@ class AwsCloudFrontDeployer extends AbstractDeployer
         $region = (string) $this->requireConfig($config, 'region');
         $distributionId = (string) $this->requireConfig($config, 'distribution_id');
         $certificateArn = (string) $certRef;
+        $source = strtoupper((string) ($config['certificate_source'] ?? '')) === 'IAM' ? 'IAM' : 'ACM';
 
         // CloudFront 是全球服务，client region 不影响（SDK 固定走全球 endpoint）；仍按 config.region 构造。
         /** @var CloudFrontClient $client */
@@ -93,8 +101,13 @@ class AwsCloudFrontDeployer extends AbstractDeployer
         // 设 ViewerCertificate（ACM 源）：关闭默认证书、绑 ACMCertificateArn、清空 IAMCertificateId
         $viewer = is_array($distConfig['ViewerCertificate'] ?? null) ? $distConfig['ViewerCertificate'] : [];
         $viewer['CloudFrontDefaultCertificate'] = false;
-        $viewer['ACMCertificateArn'] = $certificateArn;
-        unset($viewer['IAMCertificateId']);
+        if ($source === 'IAM') {
+            $viewer['IAMCertificateId'] = $certificateArn;
+            unset($viewer['ACMCertificateArn']);
+        } else {
+            $viewer['ACMCertificateArn'] = $certificateArn;
+            unset($viewer['IAMCertificateId']);
+        }
         $distConfig['ViewerCertificate'] = $viewer;
 
         $this->guardSdk(fn () => $client->updateDistribution([
@@ -110,6 +123,7 @@ class AwsCloudFrontDeployer extends AbstractDeployer
 
         return match ($kind) {
             'acm' => new AcmClient($cfg),
+            'iam' => new IamClient($cfg),
             'cloudfront' => new CloudFrontClient($cfg),
         };
     }

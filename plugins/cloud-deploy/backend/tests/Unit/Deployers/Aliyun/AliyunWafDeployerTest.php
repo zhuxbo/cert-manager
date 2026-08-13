@@ -7,8 +7,10 @@ use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailResponseBody;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponse;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponseBody;
+use AlibabaCloud\SDK\Wafopenapi\V20211001\Models\ModifyCloudResourceCertRequest;
 use AlibabaCloud\SDK\Wafopenapi\V20211001\Models\ModifyDefaultHttpsRequest;
 use AlibabaCloud\SDK\Wafopenapi\V20211001\Models\ModifyDefaultHttpsResponse;
+use AlibabaCloud\SDK\Wafopenapi\V20211001\Models\ModifyDomainRequest;
 use AlibabaCloud\SDK\Wafopenapi\V20211001\Wafopenapi;
 use AlibabaCloud\Tea\Exception\TeaError;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunWafDeployer;
@@ -90,6 +92,9 @@ test('uploader.upload 调 cas.UploadUserCertificate + GetUserCertificateDetail �
 test('bind 用完整 CertIdentifier（不拆）调 waf.ModifyDefaultHttps（CertId + InstanceId + RegionId + TLS 默认）', function () {
     $captured = null;
     $waf = Mockery::mock(Wafopenapi::class);
+    $waf->shouldReceive('describeDefaultHttps')->once()->andReturn((object) ['body' => (object) ['defaultHttps' => (object) [
+        'TLSVersion' => 'tlsv1.1', 'enableTLSv3' => false,
+    ]]]);
     $waf->shouldReceive('modifyDefaultHttps')
         ->once()
         ->andReturnUsing(function (ModifyDefaultHttpsRequest $req) use (&$captured) {
@@ -108,14 +113,76 @@ test('bind 用完整 CertIdentifier（不拆）调 waf.ModifyDefaultHttps（Cert
     // 关键：传完整 CertIdentifier（含 region 段），不拆成 bare int（对齐 certimate WAF）
     expect($captured->certId)->toBe('987654-cn-hangzhou');
     expect($captured->regionId)->toBe('cn-hangzhou');
-    // 安全 TLS 默认（不降级）
-    expect($captured->TLSVersion)->toBe('tlsv1.2');
+    expect($captured->TLSVersion)->toBe('tlsv1.1');
+    // Certimate d418b5a 的条件只在返回 nil 时覆盖，因此非 nil false 仍保留种子 true。
     expect($captured->enableTLSv3)->toBeTrue();
+});
+
+test('bind cloudresource：替换同 CN 扩展证书并过滤过期和不存在证书', function () {
+    $captured = null;
+    $waf = Mockery::mock(Wafopenapi::class);
+    $waf->shouldReceive('describeResourceInstanceCerts')->once()->andReturn((object) ['body' => (object) ['certs' => [
+        (object) ['certIdentifier' => '111-cn-hangzhou', 'commonName' => 'api.example.com', 'afterDate' => (time() + 86400) * 1000],
+        (object) ['certIdentifier' => '222-cn-hangzhou', 'commonName' => 'other.example.com', 'afterDate' => (time() + 86400) * 1000],
+        (object) ['certIdentifier' => '333-cn-hangzhou', 'commonName' => 'expired.example.com', 'afterDate' => (time() - 86400) * 1000],
+    ]]]);
+    $waf->shouldReceive('describeCloudResourceAccessPortDetails')->once()->andReturn((object) ['body' => (object) ['accessPortDetails' => [
+        (object) ['cloudResourceId' => 'cloud-res-1', 'certificates' => [
+            (object) ['certificateId' => 'default-cert', 'appliedType' => 'default'],
+            (object) ['certificateId' => '111-cn-hangzhou', 'appliedType' => 'extension'],
+            (object) ['certificateId' => '222-cn-hangzhou', 'appliedType' => 'extension'],
+            (object) ['certificateId' => '333-cn-hangzhou', 'appliedType' => 'extension'],
+            (object) ['certificateId' => '444-cn-hangzhou', 'appliedType' => 'extension'],
+        ]],
+    ]]]);
+    $waf->shouldReceive('modifyCloudResourceCert')->once()->andReturnUsing(function (ModifyCloudResourceCertRequest $req) use (&$captured) {
+        $captured = $req;
+
+        return new stdClass;
+    });
+
+    aliyunWafDeployerWith(fn () => $waf)->bind('new-cert', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'service_version' => '3.0', 'service_type' => 'cloudresource', 'instance_id' => 'waf-1', 'region' => 'cn-hangzhou',
+        'resource_product' => 'clb4', 'resource_id' => 'lb-1', 'resource_port' => 443, 'domain' => 'api.example.com',
+    ]);
+
+    expect($captured->cloudResourceId)->toBe('cloud-res-1');
+    expect(array_map(fn ($c) => [$c->certificateId, $c->appliedType], $captured->certificates))->toBe([
+        ['222-cn-hangzhou', 'extension'], ['new-cert', 'extension'],
+    ]);
+});
+
+test('bind CNAME 扩展域名：ModifyDomain 回填 Listen 与 Redirect 原配置', function () {
+    $captured = null;
+    $waf = Mockery::mock(Wafopenapi::class);
+    $waf->shouldReceive('describeDomainDetail')->once()->andReturn((object) ['body' => (object) [
+        'domainId' => 'd-1',
+        'listen' => (object) ['TLSVersion' => 'tlsv1.1', 'http2Enabled' => true, 'httpPorts' => [80], 'httpsPorts' => [443]],
+        'redirect' => (object) ['loadbalance' => 'roundRobin', 'connectTimeout' => 12, 'backends' => [(object) ['backend' => '1.2.3.4']]],
+    ]]);
+    $waf->shouldReceive('modifyDomain')->once()->andReturnUsing(function (ModifyDomainRequest $req) use (&$captured) {
+        $captured = $req;
+
+        return new stdClass;
+    });
+
+    aliyunWafDeployerWith(fn () => $waf)->bind('new-cert', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'service_version' => '3.0', 'service_type' => 'cname', 'instance_id' => 'waf-1', 'region' => 'cn-hangzhou',
+        'domain' => 'api.example.com',
+    ]);
+
+    expect($captured->domainId)->toBe('d-1');
+    expect($captured->listen->certId)->toBe('new-cert');
+    expect($captured->listen->TLSVersion)->toBe('tlsv1.1');
+    expect($captured->listen->httpPorts)->toBe([80]);
+    expect($captured->redirect->loadbalance)->toBe('roundRobin');
+    expect($captured->redirect->backends)->toBe(['1.2.3.4']);
 });
 
 test('bind 把 region 透传进 waf client endpoint（按 region 实例化）', function () {
     $seenRegion = null;
     $waf = Mockery::mock(Wafopenapi::class);
+    $waf->shouldReceive('describeDefaultHttps')->andReturn((object) ['body' => null]);
     $waf->shouldReceive('modifyDefaultHttps')->andReturn(new ModifyDefaultHttpsResponse);
 
     $deployer = aliyunWafDeployerWith(function (string $kind, array $cred, string $region) use (&$seenRegion, $waf) {
@@ -149,6 +216,7 @@ test('缺 region 配置抛业务错误', function () {
 
 test('bind SDK 抛 TeaError（API 错误）时脱敏重抛（含错误码、无 AK/SK、不挂 previous）', function () {
     $waf = Mockery::mock(Wafopenapi::class);
+    $waf->shouldReceive('describeDefaultHttps')->andReturn((object) ['body' => null]);
     $waf->shouldReceive('modifyDefaultHttps')->andThrow(new TeaError([
         'code' => 'InstanceNotFound',
         'message' => 'code: 404 request id: req-1',

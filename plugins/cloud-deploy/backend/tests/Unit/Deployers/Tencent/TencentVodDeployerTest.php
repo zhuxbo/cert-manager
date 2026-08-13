@@ -5,6 +5,7 @@ use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateRequest;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateResponse;
 use TencentCloud\Ssl\V20191205\SslClient;
+use TencentCloud\Vod\V20180717\Models\DescribeVodDomainsResponse;
 use TencentCloud\Vod\V20180717\Models\SetVodDomainCertificateRequest;
 use TencentCloud\Vod\V20180717\Models\SetVodDomainCertificateResponse;
 use TencentCloud\Vod\V20180717\VodClient;
@@ -73,6 +74,45 @@ test('VOD bind 用 certId 调 vod.SetVodDomainCertificate 设 Domain/Operation/C
     expect($captured->Operation)->toBe('Set');
     // 腾讯点播官方字段为大写 CertID（区别于 cdn 的 CertId），断言其确实被填充
     expect($captured->CertID)->toBe('cert-vod');
+});
+
+test('VOD bind 配置子应用 ID 时透传 SubAppId', function () {
+    $captured = null;
+    $vod = Mockery::mock(VodClient::class);
+    $vod->shouldReceive('SetVodDomainCertificate')
+        ->once()
+        ->andReturnUsing(function (SetVodDomainCertificateRequest $req) use (&$captured) {
+            $captured = $req;
+
+            return new SetVodDomainCertificateResponse;
+        });
+
+    $deployer = tencentVodDeployerWith(fn (string $kind) => $kind === 'vod' ? $vod : new stdClass);
+    $deployer->bind('cert-vod', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+        'domain' => 'vod.example.com',
+        'sub_app_id' => 123456,
+    ]);
+
+    expect($captured->SubAppId)->toBe(123456);
+});
+
+test('VOD certsan 分页列举并跳过 Locked 域名后批量设置证书', function () {
+    $seen = [];
+    $vod = Mockery::mock(VodClient::class);
+    $listed = new DescribeVodDomainsResponse;
+    $listed->deserialize(['DomainSet' => [
+        ['Domain' => 'a.example.com', 'DeployStatus' => 'Online'],
+        ['Domain' => 'locked.example.com', 'DeployStatus' => 'Locked'],
+    ], 'RequestId' => 'r']);
+    $vod->shouldReceive('DescribeVodDomains')->once()->andReturn($listed);
+    $vod->shouldReceive('SetVodDomainCertificate')->once()->andReturnUsing(function ($request) use (&$seen) {
+        $seen[] = $request->Domain;
+
+        return new SetVodDomainCertificateResponse;
+    });
+
+    tencentVodDeployerWith(fn () => $vod)->bind('cert-vod', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['domain_match_pattern' => 'certsan']);
+    expect($seen)->toBe(['a.example.com']);
 });
 
 test('VOD 缺 domain 配置抛业务错误', function () {

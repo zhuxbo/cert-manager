@@ -75,6 +75,34 @@ class QiniuRestClient
         ];
     }
 
+    /** @return list<string> */
+    public function listCdnDomains(): array
+    {
+        $domains = [];
+        $marker = '';
+        do {
+            $query = http_build_query(array_filter([
+                'marker' => $marker,
+                'limit' => 100,
+            ], fn (string|int $value): bool => $value !== ''), '', '&', PHP_QUERY_RFC3986);
+            $resp = $this->get(self::API_HOST.'/domain?'.$query);
+            $json = is_array($resp->json()) ? $resp->json() : [];
+            $items = is_array($json['domains'] ?? null) ? $json['domains'] : [];
+            foreach ($items as $item) {
+                if (! is_array($item) || in_array($item['operatingState'] ?? null, ['frozen', 'offlined'], true)) {
+                    continue;
+                }
+                $name = $item['name'] ?? null;
+                if (is_string($name) && $name !== '') {
+                    $domains[] = $name;
+                }
+            }
+            $marker = is_string($json['marker'] ?? null) ? $json['marker'] : '';
+        } while ($items !== [] && $marker !== '');
+
+        return array_values(array_unique($domains));
+    }
+
     /**
      * 为未启用 HTTPS 的融合 CDN 域名启用 HTTPS 并绑定证书。
      * REF: certimate cdn.go EnableDomainHttps —— PUT /domain/{domain}/sslize {certId, forceHttps, http2Enable}
@@ -124,6 +152,22 @@ class QiniuRestClient
         ], 'POST');
     }
 
+    /** @return list<string> */
+    public function listPiliDomains(string $hub): array
+    {
+        $resp = $this->get(self::PILI_HOST.'/v2/hubs/'.rawurlencode($hub).'/domains');
+        $json = is_array($resp->json()) ? $resp->json() : [];
+        $domains = [];
+        foreach (is_array($json['domains'] ?? null) ? $json['domains'] : [] as $item) {
+            $domain = is_array($item) ? ($item['domain'] ?? null) : null;
+            if (is_string($domain) && $domain !== '') {
+                $domains[] = $domain;
+            }
+        }
+
+        return array_values(array_unique($domains));
+    }
+
     /**
      * 发起带 JSON body 的写请求（默认 PUT，Pili/上传用 POST），统一签名 + 错误归一。
      *
@@ -155,12 +199,7 @@ class QiniuRestClient
     private function request(string $method, string $url, string $payload, array $headers): Response
     {
         if ($this->requester !== null) {
-            $response = ($this->requester)($method, $url, $payload, $headers);
-            if (! $response instanceof Response) {
-                throw new RuntimeException('七牛云请求器未返回有效响应');
-            }
-
-            return $response;
+            return ($this->requester)($method, $url, $payload, $headers);
         }
 
         return match ($method) {

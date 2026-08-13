@@ -1,7 +1,13 @@
 <?php
 
 use Plugins\CloudDeploy\Deployers\Tencent\TencentCdnDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
 use TencentCloud\Cdn\V20180606\CdnClient;
+use TencentCloud\Cdn\V20180606\Models\DescribeCertDomainsRequest;
+use TencentCloud\Cdn\V20180606\Models\DescribeCertDomainsResponse;
+use TencentCloud\Cdn\V20180606\Models\DescribeDomainsConfigResponse;
+use TencentCloud\Cdn\V20180606\Models\DescribeDomainsRequest;
+use TencentCloud\Cdn\V20180606\Models\DescribeDomainsResponse;
 use TencentCloud\Cdn\V20180606\Models\UpdateDomainConfigRequest;
 use TencentCloud\Cdn\V20180606\Models\UpdateDomainConfigResponse;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
@@ -24,7 +30,14 @@ function tencentCdnDeployerWith(callable $clientFactory): TencentCdnDeployer
 
         protected function makeClient(string $kind, array $credentials): object
         {
-            return ($this->factory)($kind, $credentials);
+            $client = ($this->factory)($kind, $credentials);
+            if ($kind === 'cdn' && $client instanceof CdnClient) {
+                $response = new DescribeDomainsConfigResponse;
+                $response->deserialize(['Domains' => [['Domain' => 'unused.example.com']], 'RequestId' => 'r']);
+                $client->shouldReceive('DescribeDomainsConfig')->byDefault()->andReturn($response);
+            }
+
+            return $client;
         }
     };
 }
@@ -64,6 +77,37 @@ test('uploader.upload 调 ssl.UploadCertificate 返回 certId', function () {
     expect($captured->CertificateType)->toBe('SVR');
 });
 
+test('自定义 endpoint 透传 uploader 与 bind client，私网 endpoint 被出站策略拒绝', function () {
+    $seen = [];
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('UploadCertificate')->once()->andReturn(uploadCertResponse('cert-endpoint'));
+    $cdn = Mockery::mock(CdnClient::class);
+    $cdn->shouldReceive('UpdateDomainConfig')->once()->andReturn(new UpdateDomainConfigResponse);
+    $deployer = tencentCdnDeployerWith(function (string $kind, array $credentials) use (&$seen, $ssl, $cdn) {
+        $seen[$kind] = $credentials['endpoint'] ?? null;
+
+        return $kind === 'ssl' ? $ssl : $cdn;
+    });
+    $config = ['domain' => 'cdn.example.com', 'endpoint' => 'cdn.example.net'];
+    $deployer->certUploader($config)->upload('C', 'K', 'CH', ['secret_id' => 'AK', 'secret_key' => 'SK']);
+    $deployer->bind('cert-endpoint', ['secret_id' => 'AK', 'secret_key' => 'SK'], $config);
+    expect($seen)->toBe(['ssl' => 'cdn.example.net', 'cdn' => 'cdn.example.net']);
+
+    $realFactory = new class extends TencentCdnDeployer
+    {
+        public function exposeClient(array $credentials): object
+        {
+            return $this->makeClient('cdn', $credentials);
+        }
+    };
+    try {
+        $realFactory->exposeClient(['secret_id' => 'AK', 'secret_key' => 'SK', 'endpoint' => '127.0.0.1']);
+        expect(false)->toBeTrue('私网 endpoint 应被拒绝');
+    } catch (OutboundDestinationException $e) {
+        expect($e->reasonCode())->toBe('forbidden_address');
+    }
+});
+
 test('upload 未返回 CertificateId 时抛明确异常（非 TypeError）', function () {
     $ssl = Mockery::mock(SslClient::class);
     $ssl->shouldReceive('UploadCertificate')->andReturn(uploadCertResponse(''));
@@ -91,6 +135,54 @@ test('bind 用 certId 调 cdn.UpdateDomainConfig 设 Https.CertInfo.CertId', fun
     expect($captured->Domain)->toBe('cdn.example.com');
     expect($captured->Https->Switch)->toBe('on');
     expect($captured->Https->CertInfo->CertId)->toBe('cert-x');
+});
+
+test('wildcard 分页列举且仅更新单层匹配的 CDN 域名', function () {
+    $cdn = Mockery::mock(CdnClient::class);
+    $list = new DescribeDomainsResponse;
+    $list->deserialize(['Domains' => [
+        ['Domain' => 'a.example.com', 'Product' => 'cdn'],
+        ['Domain' => 'a.b.example.com', 'Product' => 'cdn'],
+        ['Domain' => 'b.example.com', 'Product' => 'ecdn'],
+    ], 'RequestId' => 'r']);
+    $cdn->shouldReceive('DescribeDomains')->once()->andReturnUsing(function (DescribeDomainsRequest $request) use ($list) {
+        expect($request->Filters[0]->Name)->toBe('domain');
+        expect($request->Filters[0]->Value)->toBe(['example.com']);
+        expect($request->Filters[0]->Fuzzy)->toBeTrue();
+
+        return $list;
+    });
+    $cdn->shouldReceive('UpdateDomainConfig')->once()->withArgs(function (UpdateDomainConfigRequest $request) {
+        return $request->Domain === 'a.example.com';
+    })->andReturn(new UpdateDomainConfigResponse);
+
+    tencentCdnDeployerWith(fn () => $cdn)->bind('cert-x', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+        'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+});
+
+test('certsan 使用 DescribeCertDomains 返回的可用域名批量更新', function () {
+    $cdn = Mockery::mock(CdnClient::class);
+    $domains = new DescribeCertDomainsResponse;
+    $domains->deserialize(['Domains' => ['a.example.com', 'b.example.com'], 'RequestId' => 'r']);
+    $cdn->shouldReceive('DescribeCertDomains')->once()->andReturnUsing(function (DescribeCertDomainsRequest $request) use ($domains) {
+        expect($request->CertId)->toBe('cert-x');
+        expect($request->Product)->toBe('cdn');
+
+        return $domains;
+    });
+    $seen = [];
+    $cdn->shouldReceive('UpdateDomainConfig')->twice()->andReturnUsing(function (UpdateDomainConfigRequest $request) use (&$seen) {
+        $seen[] = $request->Domain;
+
+        return new UpdateDomainConfigResponse;
+    });
+
+    tencentCdnDeployerWith(fn () => $cdn)->bind('cert-x', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($seen)->toBe(['a.example.com', 'b.example.com']);
 });
 
 test('缺 domain 配置抛业务错误', function () {

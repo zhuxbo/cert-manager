@@ -65,6 +65,22 @@ test('uploader.upload 托管证书到 KCM 返回 SslCertificateId（同 KCM 上�
     expect($captured['params']['Action'])->toBe('UploadCertificate');
 });
 
+test('SLB project_id 进入 KCM 上传请求并隔离 RemoteCertStore 命名空间', function () {
+    $captured = null;
+    $client = Mockery::mock(KsyunRestClient::class);
+    $client->shouldReceive('post')->once()->andReturnUsing(function (string $path, array $params) use (&$captured) {
+        $captured = $params;
+
+        return ['Success' => true, 'Ret' => ['CertID' => 'kcm-project-2']];
+    });
+
+    $deployer = ksyunSlbDeployerWith(fn () => $client);
+    $uploader = $deployer->certUploader(['project_id' => '67890']);
+    expect($uploader->storeKind())->toBe('ksyun_kcm:67890');
+    expect($uploader->upload('C', 'K', 'CH', ksyunSlbCreds()))->toBe('kcm-project-2');
+    expect($captured['ProjectId'])->toBe('67890');
+});
+
 test('bind：ModifyCertificate 把负载均衡证书指向新 KCM SslCertificateId（带 Region + CertificateId）', function () {
     $captured = null;
     $client = Mockery::mock(KsyunRestClient::class);

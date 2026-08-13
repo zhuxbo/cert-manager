@@ -85,6 +85,31 @@ class BaotapanelgoClient
         ]);
     }
 
+    public function filesUpload(string $path, string $filename, string $blob, bool $force): void
+    {
+        $timestamp = (string) time();
+        $multipart = [
+            ['name' => 'path', 'contents' => $path],
+            ['name' => 'filename', 'contents' => $filename],
+            ['name' => 'start', 'contents' => '0'],
+            ['name' => 'size', 'contents' => (string) strlen($blob)],
+            ['name' => 'force', 'contents' => $force ? '1' : '0'],
+            ['name' => 'request_time', 'contents' => $timestamp],
+            ['name' => 'request_token', 'contents' => md5($timestamp.md5($this->apiKey))],
+            ['name' => 'blob', 'contents' => $blob, 'filename' => $filename],
+        ];
+        $this->request('POST', '/files/upload', ['multipart' => $multipart]);
+    }
+
+    public function siteSetSitePfxSsl(int $siteId, string $pfxPath, string $password): void
+    {
+        $this->postForm('/site/set_site_pfx_ssl', [
+            'siteid' => (string) $siteId,
+            'pfx' => $pfxPath,
+            'password' => $password,
+        ]);
+    }
+
     /**
      * 设置面板自身 SSL。
      * REF: certimate config.SetPanelSSL —— POST /config/set_panel_ssl，表单 ssl_status/ssl_key/ssl_pem
@@ -110,10 +135,17 @@ class BaotapanelgoClient
         $form['request_time'] = $timestamp;
         $form['request_token'] = md5($timestamp.md5($this->apiKey));
 
-        $resp = $this->http->request('POST', ltrim($path, '/'), [
+        return $this->request('POST', $path, [
             'http_errors' => false,
             'form_params' => $form,
         ]);
+    }
+
+    /** @param array<string,mixed> $options @return array<string,mixed> */
+    private function request(string $method, string $path, array $options): array
+    {
+        $options['http_errors'] = false;
+        $resp = $this->http->request($method, ltrim($path, '/'), $options);
 
         $status = $resp->getStatusCode();
         $json = json_decode((string) $resp->getBody(), true);

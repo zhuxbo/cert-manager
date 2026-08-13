@@ -1,6 +1,12 @@
 <?php
 
 use AlibabaCloud\SDK\Alb\V20200616\Alb;
+use AlibabaCloud\SDK\Alb\V20200616\Models\AssociateAdditionalCertificatesWithListenerRequest;
+use AlibabaCloud\SDK\Alb\V20200616\Models\DissociateAdditionalCertificatesFromListenerRequest;
+use AlibabaCloud\SDK\Alb\V20200616\Models\GetListenerAttributeRequest;
+use AlibabaCloud\SDK\Alb\V20200616\Models\GetLoadBalancerAttributeRequest;
+use AlibabaCloud\SDK\Alb\V20200616\Models\ListListenerCertificatesRequest;
+use AlibabaCloud\SDK\Alb\V20200616\Models\ListListenersRequest;
 use AlibabaCloud\SDK\Alb\V20200616\Models\UpdateListenerAttributeRequest;
 use AlibabaCloud\SDK\Alb\V20200616\Models\UpdateListenerAttributeResponse;
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
@@ -46,6 +52,19 @@ function albCasDetailResponse(string $identifier): GetUserCertificateDetailRespo
     ])]);
 }
 
+function aliyunAlbCertificateWithSans(): string
+{
+    $conf = sys_get_temp_dir().'/alialb_san_'.uniqid('', true).'.cnf';
+    file_put_contents($conf, "[req]\ndistinguished_name=dn\n[dn]\n[v3]\nsubjectAltName=DNS:api.example.com,DNS:*.example.com\n");
+    $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'api.example.com'], $key, ['digest_alg' => 'sha256']);
+    $cert = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256', 'config' => $conf, 'x509_extensions' => 'v3']);
+    openssl_x509_export($cert, $pem);
+    @unlink($conf);
+
+    return $pem;
+}
+
 test('阿里云 ALB 走证书服务（CAS）+ 基本元信息', function () {
     $deployer = new AliyunAlbDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -55,7 +74,71 @@ test('阿里云 ALB 走证书服务（CAS）+ 基本元信息', function () {
     expect($deployer->product())->toBe('alb');
     expect($deployer->label())->toBe('阿里云 ALB');
     // configSchema 覆盖 bind 实际读取的 region + listener_id
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('listener_id');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('deploy_target')->toContain('load_balancer_id')->toContain('listener_id')->toContain('domain');
+});
+
+test('bind loadbalancer：列 HTTPS 与 QUIC 监听并批量更新', function () {
+    $protocols = [];
+    $updated = [];
+    $alb = Mockery::mock(Alb::class);
+    $alb->shouldReceive('getLoadBalancerAttribute')->once()->with(Mockery::on(fn (GetLoadBalancerAttributeRequest $r) => $r->loadBalancerId === 'alb-1'))->andReturn(new stdClass);
+    $alb->shouldReceive('listListeners')->twice()->andReturnUsing(function (ListListenersRequest $req) use (&$protocols) {
+        $protocols[] = $req->listenerProtocol;
+
+        return (object) ['body' => (object) ['listeners' => [
+            (object) ['listenerId' => strtolower((string) $req->listenerProtocol).'-1'],
+        ]]];
+    });
+    $alb->shouldReceive('updateListenerAttribute')->twice()->andReturnUsing(function (UpdateListenerAttributeRequest $req) use (&$updated) {
+        $updated[] = $req->listenerId;
+
+        return new UpdateListenerAttributeResponse;
+    });
+
+    $deployer = aliyunAlbDeployerWith(fn (string $kind) => $kind === 'alb' ? $alb : new stdClass);
+    $deployer->bind('cert-1-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'cn-hangzhou', 'deploy_target' => 'loadbalancer', 'load_balancer_id' => 'alb-1',
+    ]);
+
+    expect($protocols)->toBe(['HTTPS', 'QUIC']);
+    expect($updated)->toBe(['https-1', 'quic-1']);
+});
+
+test('bind SNI：关联新证书并解除同 SAN 的旧扩展证书', function () {
+    $associated = null;
+    $dissociated = null;
+    $alb = Mockery::mock(Alb::class);
+    $alb->shouldReceive('listListenerCertificates')->once()->with(Mockery::on(fn (ListListenerCertificatesRequest $r) => $r->listenerId === 'lsr-1' && $r->certificateType === 'Server' && $r->maxResults === 100))->andReturn((object) ['body' => (object) ['certificates' => [
+        (object) ['certificateId' => '111-cn-hangzhou', 'isDefault' => false, 'certificateType' => 'Server', 'status' => 'Associated'],
+    ]]]);
+    $alb->shouldReceive('getListenerAttribute')->twice()->with(Mockery::type(GetListenerAttributeRequest::class))->andReturn((object) ['body' => (object) ['listenerStatus' => 'Active']]);
+    $alb->shouldReceive('associateAdditionalCertificatesWithListener')->once()->andReturnUsing(function (AssociateAdditionalCertificatesWithListenerRequest $req) use (&$associated) {
+        $associated = $req;
+
+        return new stdClass;
+    });
+    $alb->shouldReceive('dissociateAdditionalCertificatesFromListener')->once()->andReturnUsing(function (DissociateAdditionalCertificatesFromListenerRequest $req) use (&$dissociated) {
+        $dissociated = $req;
+
+        return new stdClass;
+    });
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('getCertificateDetail')->once()->andReturn((object) ['body' => (object) [
+        'domain' => 'api.example.com,*.example.com',
+        'notAfter' => (time() + 86400) * 1000,
+    ]]);
+
+    $deployer = aliyunAlbDeployerWith(fn (string $kind) => $kind === 'alb' ? $alb : $cas);
+    $deployer->bind([
+        'remote_cert_id' => '222-cn-hangzhou',
+        'cert' => aliyunAlbCertificateWithSans(),
+        'chain' => '',
+    ], ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'cn-hangzhou', 'listener_id' => 'lsr-1', 'domain' => 'api.example.com',
+    ]);
+
+    expect($associated->certificates[0]->certificateId)->toBe('222-cn-hangzhou');
+    expect($dissociated->certificates[0]->certificateId)->toBe('111-cn-hangzhou');
 });
 
 test('uploader.upload 调 cas.UploadUserCertificate + GetUserCertificateDetail 返回 CertIdentifier', function () {

@@ -19,8 +19,18 @@ use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailResponseBody;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponse;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponseBody;
+use AlibabaCloud\SDK\CloudAPI\V20160714\CloudAPI;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\DescribeApiGroupRequest;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\DescribeApiGroupResponse;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\DescribeApiGroupResponseBody;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\DescribeApiGroupResponseBody\customDomains;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\DescribeApiGroupResponseBody\customDomains\domainItem;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\SetDomainCertificateRequest;
+use AlibabaCloud\SDK\CloudAPI\V20160714\Models\SetDomainCertificateResponse;
 use AlibabaCloud\Tea\Exception\TeaError;
+use Darabonba\OpenApi\Models\Config;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunApigwDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\CertificateDeliveryMode;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -46,6 +56,24 @@ function aliyunApigwDeployerWith(callable $clientFactory): AliyunApigwDeployer
             }
 
             return ($this->factory)($kind, $credentials);
+        }
+    };
+}
+
+function aliyunApigwDeployerWithDomainMatcher(callable $clientFactory, callable $matcher): AliyunApigwDeployer
+{
+    return new class($clientFactory, $matcher) extends AliyunApigwDeployer
+    {
+        public function __construct(private $factory, private $matcher) {}
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            return ($this->factory)($kind, $credentials);
+        }
+
+        protected function certificateMatches(string $certPem, string $hostname): bool
+        {
+            return ($this->matcher)($hostname);
         }
     };
 }
@@ -81,7 +109,31 @@ function apigCasDetailResponse(string $identifier): GetUserCertificateDetailResp
     ])]);
 }
 
-test('阿里云 API 网关走证书服务（CAS）+ 基本元信息 + configSchema 覆盖 bind 读取键', function () {
+function apigTraditionalGroupResponse(array $domains): DescribeApiGroupResponse
+{
+    return new DescribeApiGroupResponse(['body' => new DescribeApiGroupResponseBody([
+        'customDomains' => new customDomains([
+            'domainItem' => array_map(
+                fn (array $domain) => new domainItem([
+                    'domainName' => $domain['name'],
+                    'domainBindingStatus' => $domain['binding'] ?? 'BINDING',
+                ]),
+                $domains,
+            ),
+        ]),
+    ])]);
+}
+
+function apigClientOption(object $client, string $property): mixed
+{
+    $reflection = new ReflectionObject($client);
+    $option = $reflection->getProperty($property);
+    $option->setAccessible(true);
+
+    return $option->getValue($client);
+}
+
+test('阿里云 API 网关按服务类型选择证书交付方式，schema 提供条件必填字段', function () {
     $deployer = new AliyunApigwDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader())->not->toBeNull();
@@ -89,9 +141,14 @@ test('阿里云 API 网关走证书服务（CAS）+ 基本元信息 + configSche
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('apigw');
     expect($deployer->label())->toBe('阿里云 API 网关');
-    // configSchema 覆盖 bind 实际读取的 gateway_id + domain（service_type/region 可选）
-    $keys = array_column($deployer->configSchema(), 'key');
-    expect($keys)->toContain('service_type')->toContain('gateway_id')->toContain('domain')->toContain('region');
+    expect($deployer->certificateDeliveryMode(['service_type' => 'traditional']))->toBe(CertificateDeliveryMode::Inline);
+    expect($deployer->certificateDeliveryMode(['service_type' => 'cloudnative']))->toBe(CertificateDeliveryMode::RemoteStore);
+    expect($deployer->certificateDeliveryMode([]))->toBe(CertificateDeliveryMode::RemoteStore);
+
+    $schema = collect($deployer->configSchema())->keyBy('key');
+    expect($schema->keys()->all())->toContain('service_type')->toContain('gateway_id')->toContain('group_id')->toContain('domain_match_pattern')->toContain('domain')->toContain('region');
+    expect($schema['gateway_id']['required_when'])->toBe(['key' => 'service_type', 'equals' => 'cloudnative']);
+    expect($schema['group_id']['required_when'])->toBe(['key' => 'service_type', 'equals' => 'traditional']);
 });
 
 test('uploader.upload 复用 CAS：UploadUserCertificate + GetUserCertificateDetail 返回 CertIdentifier', function () {
@@ -151,6 +208,7 @@ test('bind cloudnative：ListDomains 精确找域名 ID → GetDomain 读 TLS �
                 'http2Option' => 'Open',
                 'tlsMin' => 'TLSv1.2',
                 'tlsMax' => 'TLSv1.3',
+                'tlsCipherSuitesConfig' => ['cipherSuites' => ['TLS_AES_128_GCM_SHA256']],
                 'certIdentifier' => 'old-cert-1-cn-hangzhou',
             ]);
         });
@@ -185,6 +243,138 @@ test('bind cloudnative：ListDomains 精确找域名 ID → GetDomain 读 TLS �
     expect($updateReq->http2Option)->toBe('Open');
     expect($updateReq->tlsMin)->toBe('TLSv1.2');
     expect($updateReq->tlsMax)->toBe('TLSv1.3');
+    expect($updateReq->tlsCipherSuitesConfig)->toBe(['cipherSuites' => ['TLS_AES_128_GCM_SHA256']]);
+});
+
+test('bind traditional：仅 BINDING 域名参加 wildcard 匹配，并以内联完整链逐个更新', function () {
+    $describeReq = null;
+    $updates = [];
+    $traditional = Mockery::mock(CloudAPI::class);
+    $traditional->shouldReceive('describeApiGroup')->once()->andReturnUsing(function (DescribeApiGroupRequest $request) use (&$describeReq) {
+        $describeReq = $request;
+
+        return apigTraditionalGroupResponse([
+            ['name' => 'a.example.com'],
+            ['name' => 'deep.a.example.com'],
+            ['name' => 'pending.example.com', 'binding' => 'BINDING'],
+            ['name' => 'unbound.example.com', 'binding' => 'UNBOUND'],
+        ]);
+    });
+    $traditional->shouldReceive('setDomainCertificate')->twice()->andReturnUsing(function (SetDomainCertificateRequest $request) use (&$updates) {
+        $updates[] = $request;
+
+        return new SetDomainCertificateResponse;
+    });
+
+    $deployer = aliyunApigwDeployerWith(fn (string $kind) => $kind === 'cloudapi' ? $traditional : new stdClass);
+    $deployer->bind(['cert' => 'LEAFPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'], ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'service_type' => 'traditional',
+        'group_id' => 'group-1',
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($describeReq->groupId)->toBe('group-1');
+    expect(array_map(fn (SetDomainCertificateRequest $request) => $request->domainName, $updates))->toBe(['a.example.com', 'pending.example.com']);
+    foreach ($updates as $request) {
+        expect($request->groupId)->toBe('group-1');
+        expect($request->certificateName)->toStartWith('clouddeploy_');
+        expect($request->certificateBody)->toBe("LEAFPEM\nCHAINPEM");
+        expect($request->certificatePrivateKey)->toBe('KEYPEM');
+    }
+});
+
+test('bind traditional：exact 也必须命中 BINDING 域名', function () {
+    $traditional = Mockery::mock(CloudAPI::class);
+    $traditional->shouldReceive('describeApiGroup')->once()->andReturn(apigTraditionalGroupResponse([
+        ['name' => 'api.example.com', 'binding' => 'BINDING'],
+    ]));
+    $traditional->shouldReceive('setDomainCertificate')->once()->andReturnUsing(function (SetDomainCertificateRequest $request) {
+        expect($request->domainName)->toBe('api.example.com');
+
+        return new SetDomainCertificateResponse;
+    });
+    aliyunApigwDeployerWith(fn (string $kind) => $kind === 'cloudapi' ? $traditional : new stdClass)->bind(
+        ['cert' => 'LEAFPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'],
+        ['access_key_id' => 'AK', 'access_key_secret' => 'SK'],
+        ['service_type' => 'traditional', 'group_id' => 'group-1', 'domain' => 'api.example.com'],
+    );
+});
+
+test('bind traditional：certsan 对 BINDING 域名匹配，零匹配明确失败', function () {
+    $traditional = Mockery::mock(CloudAPI::class);
+    $traditional->shouldReceive('describeApiGroup')->twice()->andReturn(apigTraditionalGroupResponse([
+        ['name' => 'one.example.com'],
+        ['name' => 'two.example.com'],
+        ['name' => 'ignored.example.com', 'binding' => 'UNBOUND'],
+    ]));
+    $traditional->shouldReceive('setDomainCertificate')->once()->andReturn(new SetDomainCertificateResponse);
+    $matchesCertificate = true;
+    $deployer = aliyunApigwDeployerWithDomainMatcher(
+        fn (string $kind) => $kind === 'cloudapi' ? $traditional : new stdClass,
+        function (string $hostname) use (&$matchesCertificate): bool {
+            return $matchesCertificate && $hostname === 'two.example.com';
+        },
+    );
+    $credentials = ['access_key_id' => 'AK', 'access_key_secret' => 'SK'];
+    $certificate = ['cert' => 'LEAFPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'];
+
+    $deployer->bind($certificate, $credentials, [
+        'service_type' => 'traditional', 'group_id' => 'group-1', 'domain_match_pattern' => 'certsan',
+    ]);
+    $matchesCertificate = false;
+    expect(fn () => $deployer->bind($certificate, $credentials, [
+        'service_type' => 'traditional', 'group_id' => 'group-1', 'domain_match_pattern' => 'certsan',
+    ]))->toThrow(RuntimeException::class, '未找到匹配的 API 网关域名');
+});
+
+test('bind cloudnative：wildcard 和 certsan 遍历已发布域名，沿用 GetDomain TLS 全量回填', function () {
+    $updated = [];
+    $allDomainsCalls = 0;
+    $apig = Mockery::mock(APIG::class);
+    $apig->shouldReceive('listDomains')->andReturnUsing(function (ListDomainsRequest $request) use (&$allDomainsCalls) {
+        if ($request->nameLike !== null) {
+            return apigListDomainsResponse([['name' => $request->nameLike, 'id' => $request->nameLike === 'a.example.com' ? 'd-a' : 'd-san']]);
+        }
+        $allDomainsCalls++;
+
+        return apigListDomainsResponse($allDomainsCalls === 1
+            ? [
+                ['name' => 'a.example.com', 'id' => 'd-a'],
+                ['name' => 'deep.a.example.com', 'id' => 'd-deep'],
+                ['name' => 'unpublished.example.com', 'id' => 'd-unpublished', 'status' => 'Unpublished'],
+            ]
+            : [
+                ['name' => 'san.example.com', 'id' => 'd-san'],
+                ['name' => 'unpublished.example.com', 'id' => 'd-unpublished', 'status' => 'Unpublished'],
+            ]);
+    });
+    $apig->shouldReceive('getDomain')->twice()->andReturn(apigGetDomainResponse([
+        'forceHttps' => true, 'mTLSEnabled' => false, 'http2Option' => 'Open',
+        'tlsMin' => 'TLSv1.2', 'tlsMax' => 'TLSv1.3', 'tlsCipherSuitesConfig' => ['cipherSuites' => ['TLS_AES_128_GCM_SHA256']],
+    ]));
+    $apig->shouldReceive('updateDomain')->twice()->andReturnUsing(function (string $domainId, UpdateDomainRequest $request) use (&$updated) {
+        $updated[$domainId] = $request;
+
+        return new UpdateDomainResponse;
+    });
+    $deployer = aliyunApigwDeployerWithDomainMatcher(
+        fn (string $kind) => $kind === 'apig' ? $apig : new stdClass,
+        fn (string $hostname) => $hostname === 'san.example.com',
+    );
+    $credentials = ['access_key_id' => 'AK', 'access_key_secret' => 'SK'];
+
+    $deployer->bind(['remote_cert_id' => '123-cn-hangzhou', 'cert' => 'LEAF', 'chain' => 'CHAIN'], $credentials, [
+        'service_type' => 'cloudnative', 'gateway_id' => 'gw-1', 'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    $deployer->bind(['remote_cert_id' => '456-cn-hangzhou', 'cert' => 'LEAF', 'chain' => 'CHAIN'], $credentials, [
+        'service_type' => 'cloudnative', 'gateway_id' => 'gw-1', 'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect(array_keys($updated))->toBe(['d-a', 'd-san']);
+    expect($updated['d-a']->certIdentifier)->toBe('123-cn-hangzhou');
+    expect($updated['d-san']->certIdentifier)->toBe('456-cn-hangzhou');
+    expect($updated['d-a']->tlsCipherSuitesConfig)->toBe(['cipherSuites' => ['TLS_AES_128_GCM_SHA256']]);
 });
 
 test('bind 默认 service_type（缺省）按 cloudnative 走', function () {
@@ -254,13 +444,66 @@ test('bind 域名未找到抛业务错误（不静默成功）', function () {
     ]))->toThrow(RuntimeException::class, '未找到域名 missing.example.com');
 });
 
-test('bind service_type=traditional 抛明确「暂未实现」业务错误（不走错栈、不调任何 SDK）', function () {
+test('traditional 缺少 group_id 抛业务错误', function () {
     $deployer = aliyunApigwDeployerWith(fn () => new stdClass);
-    expect(fn () => $deployer->bind('1-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+    expect(fn () => $deployer->bind(['cert' => 'CERT', 'key' => 'KEY', 'chain' => 'CHAIN'], ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
         'service_type' => 'traditional',
-        'gateway_id' => 'gw-1',
         'domain' => 'a.com',
-    ]))->toThrow(RuntimeException::class, '经典版（traditional）」暂未实现');
+    ]))->toThrow(RuntimeException::class, '缺少配置 group_id');
+});
+
+test('traditional CloudAPI 按地域使用官方 endpoint 与统一超时', function () {
+    $deployer = new class extends AliyunApigwDeployer
+    {
+        public ?Config $seenConfig = null;
+
+        public function traditionalClient(array $credentials): object
+        {
+            return $this->makeClient('cloudapi', $credentials);
+        }
+
+        protected function aliyunConfig(array $credentials, string $endpoint): Config
+        {
+            return $this->seenConfig = new Config([
+                'accessKeyId' => $credentials['access_key_id'] ?? '',
+                'accessKeySecret' => $credentials['access_key_secret'] ?? '',
+                'endpoint' => $endpoint,
+                'readTimeout' => self::ALIYUN_READ_TIMEOUT_MS,
+                'connectTimeout' => self::ALIYUN_CONNECT_TIMEOUT_MS,
+            ]);
+        }
+    };
+    $client = $deployer->traditionalClient([
+        'access_key_id' => 'AK', 'access_key_secret' => 'SK', 'region' => 'ap-southeast-1',
+    ]);
+
+    expect($client)->toBeInstanceOf(CloudAPI::class);
+    expect($deployer->seenConfig->endpoint)->toBe('apigateway.ap-southeast-1.aliyuncs.com');
+    expect($deployer->seenConfig->readTimeout)->toBe(AliyunApigwDeployer::ALIYUN_READ_TIMEOUT_MS);
+    expect($deployer->seenConfig->connectTimeout)->toBe(AliyunApigwDeployer::ALIYUN_CONNECT_TIMEOUT_MS);
+    expect(apigClientOption($client, '_readTimeout'))->toBe(AliyunApigwDeployer::ALIYUN_READ_TIMEOUT_MS);
+    expect(apigClientOption($client, '_connectTimeout'))->toBe(AliyunApigwDeployer::ALIYUN_CONNECT_TIMEOUT_MS);
+});
+
+test('traditional SDK 抛 TeaError 时同样净化 AK/SK 和签名 URI', function () {
+    $traditional = Mockery::mock(CloudAPI::class);
+    $traditional->shouldReceive('describeApiGroup')->once()->andThrow(new TeaError(
+        [],
+        'cURL https://apigateway.cn-hangzhou.aliyuncs.com/?AccessKeyId=AK-LEAK&Signature=SIG-LEAK',
+        0,
+    ));
+    $deployer = aliyunApigwDeployerWith(fn (string $kind) => $kind === 'cloudapi' ? $traditional : new stdClass);
+
+    try {
+        $deployer->bind(['cert' => 'CERT', 'key' => 'KEY', 'chain' => 'CHAIN'], [
+            'access_key_id' => 'AK-LEAK', 'access_key_secret' => 'SK-LEAK',
+        ], ['service_type' => 'traditional', 'group_id' => 'group-1', 'domain' => 'api.example.com']);
+        expect(false)->toBeTrue('应抛异常');
+    } catch (RuntimeException $e) {
+        expect($e->getMessage())->toContain('阿里云调用失败');
+        expect($e->getMessage())->not->toContain('AK-LEAK')->not->toContain('SK-LEAK')->not->toContain('SIG-LEAK');
+        expect($e->getPrevious())->toBeNull();
+    }
 });
 
 test('bind 未知 service_type 抛业务错误', function () {

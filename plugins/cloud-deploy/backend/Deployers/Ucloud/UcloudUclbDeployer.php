@@ -45,6 +45,7 @@ class UcloudUclbDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
             ['key' => 'deploy_target', 'label' => '部署目标', 'type' => 'string', 'required' => true],
             ['key' => 'loadbalancer_id', 'label' => '负载均衡实例 ID', 'type' => 'string', 'required' => true],
@@ -62,7 +63,7 @@ class UcloudUclbDeployer extends AbstractDeployer
         $region = is_string($config['region'] ?? null) ? $config['region'] : '';
 
         return new UcloudUlbUploader(
-            fn (array $credentials): object => $this->makeClient('api', $credentials, $region),
+            fn (array $credentials): object => $this->makeClient('api', $this->withUcloudEndpoint($credentials, $config), $region),
             $region,
         );
     }
@@ -74,6 +75,7 @@ class UcloudUclbDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withUcloudEndpoint($credentials, $config);
         $region = (string) $this->requireConfig($config, 'region');
         $target = (string) $this->requireConfig($config, 'deploy_target');
         $loadbalancerId = (string) $this->requireConfig($config, 'loadbalancer_id');

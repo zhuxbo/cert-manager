@@ -10,6 +10,8 @@ use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponseBody;
 use AlibabaCloud\SDK\Ddoscoo\V20200101\Ddoscoo;
 use AlibabaCloud\SDK\Ddoscoo\V20200101\Models\AssociateWebCertRequest;
 use AlibabaCloud\SDK\Ddoscoo\V20200101\Models\AssociateWebCertResponse;
+use AlibabaCloud\SDK\Ddoscoo\V20200101\Models\DescribeDomainsResponse;
+use AlibabaCloud\SDK\Ddoscoo\V20200101\Models\DescribeDomainsResponseBody;
 use AlibabaCloud\Tea\Exception\TeaError;
 use Darabonba\OpenApi\Exceptions\ClientException;
 use Darabonba\OpenApi\Exceptions\ServerException;
@@ -63,7 +65,24 @@ test('阿里云 DDoS 高防走证书服务（CAS）+ 基本元信息 + configSch
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('ddospro');
     expect($deployer->label())->toBe('阿里云 DDoS 高防');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain')->toContain('region');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain')->toContain('region')->toContain('domain_match_pattern');
+});
+
+test('wildcard 列举 DDoS 域名并批量关联匹配项', function () {
+    $updated = [];
+    $ddos = Mockery::mock(Ddoscoo::class);
+    $ddos->shouldReceive('describeDomains')->once()->andReturn(new DescribeDomainsResponse([
+        'body' => new DescribeDomainsResponseBody(['domains' => ['a.example.com', 'deep.a.example.com']]),
+    ]));
+    $ddos->shouldReceive('associateWebCert')->once()->andReturnUsing(function ($request) use (&$updated) {
+        $updated[] = $request->domain;
+
+        return new AssociateWebCertResponse;
+    });
+    aliyunDdosproDeployerWith(fn () => $ddos)->bind('1-cn-hangzhou', [
+        'access_key_id' => 'AK', 'access_key_secret' => 'SK',
+    ], ['domain_match_pattern' => 'wildcard', 'domain' => '*.example.com']);
+    expect($updated)->toBe(['a.example.com']);
 });
 
 test('uploader.upload 复用 CAS：UploadUserCertificate + GetUserCertificateDetail 返回 CertIdentifier', function () {

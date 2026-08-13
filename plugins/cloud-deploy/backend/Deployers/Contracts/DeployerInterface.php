@@ -23,7 +23,7 @@ interface DeployerInterface
     /**
      * config 字段 schema，供前端表单渲染 + 后端服务端校验。
      *
-     * @return list<array{key:string,label:string,type?:string,required?:bool}>
+     * @return list<array{key:string,label:string,type?:string,required?:bool,default?:mixed,required_when?:array{key:string,equals:mixed},visible_when?:array{key:string,equals:mixed}}>
      */
     public function configSchema(): array;
 
@@ -45,7 +45,7 @@ interface DeployerInterface
     /**
      * 绑定证书到资源。
      *
-     * @param  string|array{cert:string,key:string,chain:string}  $certRef  remote_cert_id 或内联 PEM 三元组
+     * @param  string|array{cert:string,key:string,chain:string}|array{remote_cert_id:string,cert:string,chain:string}  $certRef  remote_cert_id、内联 PEM 三元组，或 opt-in 的安全远端材料（cert=leaf，chain=中间链，不含私钥）
      * @param  array<string,mixed>  $credentials
      * @param  array<string,mixed>  $config
      */

@@ -154,10 +154,6 @@ class TencentGa2Deployer extends AbstractDeployer
         }
 
         $san = $resp->getSubjectAltName();
-        if (! is_array($san)) {
-            return [];
-        }
-
         $out = [];
         foreach ($san as $domain) {
             $domain = trim((string) $domain);
@@ -237,6 +233,7 @@ class TencentGa2Deployer extends AbstractDeployer
         return match ($kind) {
             'ga2' => new CommonClient(self::GA2_SERVICE, self::GA2_VERSION, $cred, '', $profile),
             'ssl' => new SslClient($cred, '', $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

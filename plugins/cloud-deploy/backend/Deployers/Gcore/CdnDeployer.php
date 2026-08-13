@@ -47,6 +47,7 @@ class CdnDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'resource_id', 'label' => 'CDN 资源 ID', 'type' => 'string', 'required' => true],
+            ['key' => 'certificate_id', 'label' => '证书 ID（选填，填则原位替换）', 'type' => 'number', 'required' => false],
         ];
     }
 
@@ -57,7 +58,10 @@ class CdnDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new GcoreSslUploader(fn (array $credentials): object => $this->makeClient('api', $credentials));
+        return new GcoreSslUploader(
+            fn (array $credentials): object => $this->makeClient('api', $credentials),
+            (int) ($config['certificate_id'] ?? 0),
+        );
     }
 
     /**

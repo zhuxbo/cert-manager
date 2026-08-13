@@ -14,8 +14,8 @@ use Throwable;
  *   - 上传：CDN AddCertificate(source=cert_center) → CertId（certmgr byteplus-cdn）。
  *   - 绑定：BatchDeployCert{CertId, Domain}（updateDomainCertificate）。
  *
- * 仅实现 exact domain 核心路径（对齐插件既有 cdn/qiniu/baidu 约定）；不做 certimate 的
- * wildcard（ListCdnDomains 分页匹配）/ certsan（DescribeCertConfig）多域名遍历。
+ * exact 直接部署；wildcard 经 ListCdnDomains 分页匹配在线域名；certsan 经 DescribeCertConfig
+ * 取得证书可关联但尚未使用相同证书的域名，再逐个 BatchDeployCert。
  *
  * 签名 service / region 对齐 byteplus-sdk-golang service/cdn/config.go：
  *   ServiceName = "CDN"（**大写**）、DefaultRegion = "ap-singapore-1"、host open.byteplusapi.com。
@@ -23,6 +23,8 @@ use Throwable;
  */
 class BytePlusCdnDeployer extends AbstractDeployer
 {
+    use MatchesBytePlusDomains;
+
     /** CDN 签名 service（byteplus-sdk-golang ServiceName，**大写**）。 */
     private const CDN_SERVICE = 'CDN';
 
@@ -47,7 +49,8 @@ class BytePlusCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -66,22 +69,93 @@ class BytePlusCdnDeployer extends AbstractDeployer
     /**
      * @param  string  $certRef  remote_cert_id（CDN CertId）
      * @param  array{access_key_id:string,secret_access_key:string,project_name?:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = (string) ($config['domain'] ?? '');
+        if (($pattern === '' || $pattern === 'exact' || $pattern === 'wildcard') && $domain === '') {
+            $this->requireConfig($config, 'domain');
+        }
         $certId = (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId) {
+        $this->guardSdk(function () use ($credentials, $pattern, $domain, $certId) {
             /** @var BytePlusRestClient $client */
             $client = $this->makeClient('cdn', $credentials);
-            // 关联证书与加速域名：Action=BatchDeployCert Version=2021-03-01 body {CertId, Domain}
-            $client->openApi('POST', 'BatchDeployCert', '2021-03-01', [], [
-                'CertId' => $certId,
-                'Domain' => $domain,
-            ]);
+            $domains = match ($pattern) {
+                '', 'exact' => [$domain],
+                'wildcard' => str_starts_with($domain, '*.')
+                    ? $this->findWildcardDomains($client, $credentials, $domain)
+                    : [$domain],
+                'certsan' => $this->findCertificateDomains($client, $certId),
+                default => throw new BytePlusApiException('UnsupportedDomainMatchPattern', "不支持的域名匹配模式: $pattern"),
+            };
+
+            foreach ($domains as $matchedDomain) {
+                // 关联证书与加速域名：Action=BatchDeployCert Version=2021-03-01 body {CertId, Domain}
+                $client->openApi('POST', 'BatchDeployCert', '2021-03-01', [], [
+                    'CertId' => $certId,
+                    'Domain' => $matchedDomain,
+                ]);
+            }
         });
+    }
+
+    /** @return list<string> */
+    private function findWildcardDomains(BytePlusRestClient $client, array $credentials, string $domain): array
+    {
+        $domains = [];
+        for ($page = 1; ; $page++) {
+            $body = [
+                'Domain' => substr($domain, 2),
+                'Status' => 'online',
+                'PageNum' => $page,
+                'PageSize' => 100,
+            ];
+            $project = (string) ($credentials['project_name'] ?? '');
+            if ($project !== '') {
+                $body['Project'] = $project;
+            }
+            $response = $client->openApi('POST', 'ListCdnDomains', '2021-03-01', [], $body);
+            $items = is_array($response->Result->Data ?? null) ? $response->Result->Data : [];
+            foreach ($items as $item) {
+                $candidate = is_object($item) ? (string) ($item->Domain ?? '') : '';
+                if ($this->hostnameMatches($domain, $candidate)) {
+                    $domains[] = $candidate;
+                }
+            }
+            if (count($items) < 100) {
+                break;
+            }
+        }
+
+        return $domains;
+    }
+
+    /** @return list<string> */
+    private function findCertificateDomains(BytePlusRestClient $client, string $certId): array
+    {
+        $response = $client->openApi('POST', 'DescribeCertConfig', '2021-03-01', [], ['CertId' => $certId]);
+        $result = $response->Result ?? null;
+        $domains = [];
+        foreach (['CertNotConfig', 'OtherCertConfig'] as $field) {
+            $items = is_object($result) && is_array($result->{$field} ?? null) ? $result->{$field} : [];
+            foreach ($items as $item) {
+                $domain = is_object($item) ? (string) ($item->Domain ?? '') : '';
+                if ($domain !== '') {
+                    $domains[] = $domain;
+                }
+            }
+        }
+        $specified = is_object($result) && is_array($result->SpecifiedCertConfig ?? null)
+            ? $result->SpecifiedCertConfig
+            : [];
+        if ($domains === [] && $specified === []) {
+            throw new BytePlusApiException('DomainNotFound', '未找到证书匹配的 CDN 域名');
+        }
+
+        return $domains;
     }
 
     protected function makeClient(string $kind, array $credentials): object
@@ -93,6 +167,7 @@ class BytePlusCdnDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

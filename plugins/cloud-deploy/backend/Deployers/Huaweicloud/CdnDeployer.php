@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Huaweicloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -17,12 +19,11 @@ use Throwable;
  * CDN 为**全局服务**（cdn.myhuaweicloud.com，global 凭证，无 region/projectId），对齐 certimate createSDKClient 用 global.NewCredentialsBuilder。
  * 企业项目 ID 作 enterprise_project_id 查询参数透传（非空才传，对齐 certimate lo.EmptyableToPtr）。
  *
- * 与 certimate 对齐的取舍：certimate 支持 domainMatchPattern（exact/wildcard/certsan）。本端点**仅实现 exact**
- * （domain 必填、精确匹配后单域名绑定），不做 wildcard/certsan 的「列举全部域名再泛/SAN 匹配」——与插件其他端点
- * 「仅 exact」口径一致。如需泛域名批量部署，可逐个域名各配一个 target。
+ * exact 直接绑定；wildcard 经 ListDomains 分页过滤后批量绑定（每请求最多 50 个域名）。
  */
-class CdnDeployer extends AbstractDeployer
+class CdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
     use ResolvesHuaweiProjectId;
 
     public function provider(): string
@@ -43,7 +44,9 @@ class CdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'region', 'label' => '证书地域', 'type' => 'string', 'required' => false],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -54,9 +57,10 @@ class CdnDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        // CDN 证书走 SCM 托管（region-less，回落 cn-north-4）。
+        $region = (string) ($config['region'] ?? '');
+
         return new HuaweiScmUploader(
-            fn (array $credentials): object => $this->makeClient('scm', $credentials),
+            fn (array $credentials): object => $this->makeClient('scm', array_replace($credentials, ['region' => $region])),
         );
     }
 
@@ -67,12 +71,17 @@ class CdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $scmCertId = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        if (! in_array($pattern, ['', 'exact', 'wildcard', 'certsan'], true)) {
+            $this->fail("Huawei CDN 不支持的域名匹配模式: $pattern");
+        }
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $scmCertId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
         $certName = 'clouddeploy_'.(int) (microtime(true) * 1000);
         $enterpriseProjectId = isset($credentials['enterprise_project_id']) ? (string) $credentials['enterprise_project_id'] : '';
 
-        $this->guardSdk(function () use ($credentials, $domain, $scmCertId, $certName, $enterpriseProjectId) {
+        $this->guardSdk(function () use ($credentials, $pattern, $domain, $certificate, $scmCertId, $certName, $enterpriseProjectId) {
             /** @var HuaweicloudRestClient $client */
             $client = $this->makeClient('cdn', $credentials);
 
@@ -81,17 +90,71 @@ class CdnDeployer extends AbstractDeployer
                 $query['enterprise_project_id'] = $enterpriseProjectId;
             }
 
-            // UpdateDomainMultiCertificates：certificate_type=2 表示使用 SCM 托管证书（scm_certificate_id）。
-            $client->put('/v1.0/cdn/domains/config-https-info', [
-                'https' => [
-                    'domain_name' => $domain,
-                    'https_switch' => 1,
-                    'certificate_type' => 2,
-                    'scm_certificate_id' => $scmCertId,
-                    'cert_name' => $certName,
-                ],
-            ], $query);
+            $domains = match (true) {
+                $pattern === 'certsan' => $this->findMatchingDomains($client, $domain, $pattern, $certificate, $query),
+                $pattern === 'wildcard' && str_starts_with($domain, '*.') => $this->findMatchingDomains($client, $domain, $pattern, $certificate, $query),
+                default => [$domain],
+            };
+
+            foreach (array_chunk($domains, 50) as $chunk) {
+                // UpdateDomainMultiCertificates：certificate_type=2 表示使用 SCM 托管证书（scm_certificate_id）。
+                $client->put('/v1.0/cdn/domains/config-https-info', [
+                    'https' => [
+                        'domain_name' => implode(',', $chunk),
+                        'https_switch' => 1,
+                        'certificate_type' => 2,
+                        'scm_certificate_id' => $scmCertId,
+                        'cert_name' => $certName,
+                    ],
+                ], $query);
+            }
         });
+    }
+
+    /** @return list<string> */
+    private function findMatchingDomains(
+        HuaweicloudRestClient $client,
+        string $domain,
+        string $pattern,
+        string $certificate,
+        array $baseQuery,
+    ): array {
+        $domains = [];
+        for ($page = 1; ; $page++) {
+            $response = $client->get('/v1.0/cdn/domains', array_replace($baseQuery, [
+                'page_number' => $page,
+                'page_size' => 100,
+            ]));
+            $items = is_array($response['domains'] ?? null) ? $response['domains'] : [];
+            foreach ($items as $item) {
+                if (! is_array($item)
+                    || in_array((string) ($item['domain_status'] ?? ''), ['offline', 'checking', 'check_failed', 'deleting'], true)) {
+                    continue;
+                }
+                $candidate = (string) ($item['domain_name'] ?? '');
+                if (($pattern === 'wildcard' && $this->hostnameMatches($domain, $candidate))
+                    || ($pattern === 'certsan' && $this->certificateMatchesHostname($certificate, $candidate))) {
+                    $domains[] = $candidate;
+                }
+            }
+            if (count($items) < 100) {
+                break;
+            }
+        }
+
+        return $domains;
+    }
+
+    private function hostnameMatches(string $pattern, string $hostname): bool
+    {
+        $suffix = substr(strtolower(rtrim(trim($pattern), '.')), 2);
+        $hostname = strtolower(rtrim(trim($hostname), '.'));
+        if ($suffix === '' || ! str_ends_with($hostname, '.'.$suffix)) {
+            return false;
+        }
+        $prefix = substr($hostname, 0, -strlen('.'.$suffix));
+
+        return $prefix !== '' && ! str_contains($prefix, '.');
     }
 
     /**
@@ -108,7 +171,7 @@ class CdnDeployer extends AbstractDeployer
             ),
             // SCM 托管走 region 服务（回落 cn-north-4）。
             'scm' => new HuaweicloudRestClient(
-                $this->scmHost(),
+                $this->scmHost((string) ($credentials['region'] ?? '')),
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),

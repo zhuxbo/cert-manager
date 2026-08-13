@@ -61,6 +61,7 @@ class JdcloudSslDeployer extends AbstractDeployer implements UploadOnlyDeployerI
     {
         return match ($kind) {
             'ssl' => JdcloudClientFactory::ssl($credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

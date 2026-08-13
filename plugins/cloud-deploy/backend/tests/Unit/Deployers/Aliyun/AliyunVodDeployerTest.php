@@ -4,6 +4,7 @@ use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailResponse;
 use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailResponseBody;
+use AlibabaCloud\SDK\Vod\V20170321\Models\DescribeVodUserDomainsRequest;
 use AlibabaCloud\SDK\Vod\V20170321\Models\SetVodDomainSSLCertificateRequest;
 use AlibabaCloud\SDK\Vod\V20170321\Models\SetVodDomainSSLCertificateResponse;
 use AlibabaCloud\SDK\Vod\V20170321\Vod;
@@ -40,6 +41,40 @@ test('阿里云 VOD 走证书服务（CAS）', function () {
     expect($deployer->certUploader()->storeKind())->toBe('cas');
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('vod');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('domain_match_pattern')->toContain('domain');
+});
+
+test('bind wildcard：DescribeVodUserDomains 在线分页后批量设置证书', function () {
+    $cas = Mockery::mock(Cas::class);
+    $cas->shouldReceive('getUserCertificateDetail')->once()->andReturn(vodCasDetailResponse('clouddeploy_1'));
+    $listReq = null;
+    $domains = [];
+    $vod = Mockery::mock(Vod::class);
+    $vod->shouldReceive('describeVodUserDomains')->once()->andReturnUsing(function (DescribeVodUserDomainsRequest $req) use (&$listReq) {
+        $listReq = $req;
+
+        return (object) ['body' => (object) ['domains' => (object) ['pageData' => [
+            (object) ['domainName' => 'a.example.com'],
+            (object) ['domainName' => 'b.example.com'],
+            (object) ['domainName' => 'deep.a.example.com'],
+        ]]]];
+    });
+    $vod->shouldReceive('setVodDomainSSLCertificate')->twice()->andReturnUsing(function (SetVodDomainSSLCertificateRequest $req) use (&$domains) {
+        $domains[] = $req->domainName;
+
+        return new SetVodDomainSSLCertificateResponse;
+    });
+
+    $deployer = aliyunVodDeployerWith(fn (string $kind) => $kind === 'cas' ? $cas : $vod);
+    $deployer->bind('123-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($listReq->domainStatus)->toBe('online');
+    expect($listReq->pageNumber)->toBe(1);
+    expect($listReq->pageSize)->toBe(50);
+    expect($domains)->toBe(['a.example.com', 'b.example.com']);
 });
 
 test('bind 反查 CertName + 拆 CertIdentifier 调 vod.SetVodDomainSSLCertificate（CertType=cas、CertId、CertName、CertRegion）', function () {

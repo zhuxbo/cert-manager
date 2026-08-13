@@ -40,13 +40,65 @@ function hwElbConfig(): array
     return ['region' => 'cn-north-4', 'listener_id' => 'listener-1'];
 }
 
-test('华为云 ELB：证书服务型 + region 维度 storeKind + schema(region+listener_id)', function () {
+test('华为云 ELB：证书服务型 + region 维度 storeKind + 三类部署目标 schema', function () {
     $deployer = new ElbDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader(['region' => 'cn-north-4'])->storeKind())->toBe('huawei_elb:cn-north-4');
     expect($deployer->product())->toBe('elb');
     $keys = array_column($deployer->configSchema(), 'key');
-    expect($keys)->toContain('region')->toContain('listener_id');
+    expect($keys)->toContain('region')->toContain('deploy_target')->toContain('load_balancer_id')->toContain('listener_id')->toContain('certificate_id');
+});
+
+test('bind loadbalancer：ShowLoadBalancer 后列 HTTPS 监听并批量更新', function () {
+    $iam = Mockery::mock(HuaweicloudRestClient::class);
+    $iam->shouldReceive('get')->with('/v3/projects', ['name' => 'cn-north-4'])->andReturn(['projects' => [['id' => 'proj-1']]]);
+    $updated = [];
+    $elb = Mockery::mock(HuaweicloudRestClient::class);
+    $elb->shouldReceive('get')->with('/v3/proj-1/elb/loadbalancers/lb-1', [])->andReturn(['loadbalancer' => ['id' => 'lb-1']]);
+    $elb->shouldReceive('get')->with('/v3/proj-1/elb/listeners', Mockery::on(fn (array $q) => ($q['loadbalancer_id'] ?? '') === 'lb-1' && ($q['protocol'] ?? '') === 'HTTPS,TERMINATED_HTTPS'))
+        ->andReturn(['listeners' => [['id' => 'l-1'], ['id' => 'l-2']], 'page_info' => []]);
+    $elb->shouldReceive('get')->twice()->with(Mockery::pattern('#/elb/listeners/l-[12]#'), [])->andReturn(['listener' => []]);
+    $elb->shouldReceive('put')->twice()->andReturnUsing(function (string $path, array $body) use (&$updated) {
+        $updated[] = [$path, $body['listener']['default_tls_container_ref']];
+
+        return [];
+    });
+
+    $deployer = hwElbDeployerWith(fn (string $kind) => $kind === 'iam' ? $iam : $elb);
+    $deployer->bind('elb-cert-99', hwElbCreds(), [
+        'region' => 'cn-north-4', 'deploy_target' => 'loadbalancer', 'load_balancer_id' => 'lb-1',
+    ]);
+
+    expect($updated)->toBe([
+        ['/v3/proj-1/elb/listeners/l-1', 'elb-cert-99'],
+        ['/v3/proj-1/elb/listeners/l-2', 'elb-cert-99'],
+    ]);
+});
+
+test('certificate 目标：uploader 原地 UpdateCertificate，bind 不重复绑定', function () {
+    $iam = Mockery::mock(HuaweicloudRestClient::class);
+    $iam->shouldReceive('get')->with('/v3/projects', ['name' => 'cn-north-4'])->andReturn(['projects' => [['id' => 'proj-1']]]);
+    $captured = null;
+    $elb = Mockery::mock(HuaweicloudRestClient::class);
+    $elb->shouldReceive('put')->once()->andReturnUsing(function (string $path, array $body) use (&$captured) {
+        $captured = compact('path', 'body');
+
+        return ['certificate' => ['id' => 'old-cert']];
+    });
+
+    $deployer = hwElbDeployerWith(fn (string $kind) => $kind === 'iam' ? $iam : $elb);
+    $uploader = $deployer->certUploader([
+        'region' => 'cn-north-4', 'deploy_target' => 'certificate', 'certificate_id' => 'old-cert',
+    ]);
+    expect($uploader->storeKind())->toStartWith('huawei-elb-r:');
+    expect($uploader->upload('CERT', 'KEY', 'CHAIN', hwElbCreds()))->toBe('old-cert');
+    expect($captured['path'])->toBe('/v3/proj-1/elb/certificates/old-cert');
+    expect($captured['body']['certificate'])->toMatchArray([
+        'certificate' => "CERT\nCHAIN", 'private_key' => 'KEY',
+    ]);
+    $deployer->bind('old-cert', hwElbCreds(), [
+        'region' => 'cn-north-4', 'deploy_target' => 'certificate', 'certificate_id' => 'old-cert',
+    ]);
 });
 
 test('uploader.upload：IAM 反查 projectId 后 ELB CreateCertificate（type=server）返回 certificate.id', function () {
@@ -111,6 +163,36 @@ test('bind：IAM 反查 projectId、ShowListener 后 UpdateListener（default_tl
     expect($getPath)->toBe('/v3/proj-1/elb/listeners/listener-1');
     expect($putCaptured['path'])->toBe('/v3/proj-1/elb/listeners/listener-1');
     expect($putCaptured['body']['listener']['default_tls_container_ref'])->toBe('elb-cert-99');
+});
+
+test('bind SNI：以新证书替换同 SAN 的旧引用并保留其他 SNI 与匹配算法', function () {
+    $iam = Mockery::mock(HuaweicloudRestClient::class);
+    $iam->shouldReceive('get')->with('/v3/projects', ['name' => 'cn-north-4'])->andReturn(['projects' => [['id' => 'proj-1']]]);
+    $captured = null;
+    $elb = Mockery::mock(HuaweicloudRestClient::class);
+    $elb->shouldReceive('get')->with('/v3/proj-1/elb/listeners/listener-1', [])->andReturn(['listener' => [
+        'sni_container_refs' => ['old-same', 'old-other'],
+        'sni_match_algo' => 'wildcard',
+    ]]);
+    $elb->shouldReceive('get')->with('/v3/proj-1/elb/certificates', ['id' => 'old-same,old-other'])->andReturn(['certificates' => [
+        ['id' => 'old-same', 'subject_alternative_names' => ['api.example.com', '*.example.com']],
+        ['id' => 'old-other', 'subject_alternative_names' => ['other.example.com']],
+    ]]);
+    $elb->shouldReceive('get')->with('/v3/proj-1/elb/certificates/new-cert', [])->andReturn(['certificate' => [
+        'id' => 'new-cert', 'subject_alternative_names' => ['api.example.com', '*.example.com'],
+    ]]);
+    $elb->shouldReceive('put')->once()->andReturnUsing(function (string $path, array $body) use (&$captured) {
+        $captured = compact('path', 'body');
+
+        return [];
+    });
+
+    hwElbDeployerWith(fn (string $kind) => $kind === 'iam' ? $iam : $elb)
+        ->bind('new-cert', hwElbCreds(), hwElbConfig());
+
+    expect($captured['body']['listener']['default_tls_container_ref'])->toBe('new-cert');
+    expect($captured['body']['listener']['sni_container_refs'])->toBe(['new-cert', 'old-other']);
+    expect($captured['body']['listener']['sni_match_algo'])->toBe('wildcard');
 });
 
 test('缺 region / listener_id 配置抛业务错误', function () {

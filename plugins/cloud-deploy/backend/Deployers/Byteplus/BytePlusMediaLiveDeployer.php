@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Byteplus;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -19,8 +21,11 @@ use Throwable;
  * 签名 service / region 对齐 byteplus-sdk-golang service/live/v20230101/config.go：
  *   ServiceName = "live"、默认 region "cn-north-1"、host open.byteplusapi.com、version 2023-01-01。
  */
-class BytePlusMediaLiveDeployer extends AbstractDeployer
+class BytePlusMediaLiveDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesBytePlusDomains;
+    use MatchesCertificateHostnames;
+
     /** 直播签名 region（byteplus-sdk-golang live 默认 region）。 */
     private const LIVE_REGION = 'cn-north-1';
 
@@ -42,7 +47,8 @@ class BytePlusMediaLiveDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -61,22 +67,49 @@ class BytePlusMediaLiveDeployer extends AbstractDeployer
     /**
      * @param  string  $certRef  remote_cert_id（直播 ChainID）
      * @param  array{access_key_id:string,secret_access_key:string,project_name?:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $chainId = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $chainId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $domain, $chainId) {
+        $this->guardSdk(function () use ($credentials, $domain, $pattern, $certificate, $chainId) {
             /** @var BytePlusRestClient $client */
             $client = $this->makeClient('live', $credentials);
-            // 绑定证书：Action=BindCert Version=2023-01-01 body {ChainID, Domain, HTTPS:true}
-            $client->openApi('POST', 'BindCert', '2023-01-01', [], [
-                'ChainID' => $chainId,
-                'Domain' => $domain,
-                'HTTPS' => true,
-            ]);
+            if (! in_array($pattern, ['exact', 'wildcard', 'certsan'], true)) {
+                $this->fail("BytePlus MediaLive 不支持的域名匹配模式: $pattern");
+            }
+            $domains = [$domain];
+            if ($pattern === 'certsan' || ($pattern === 'wildcard' && str_starts_with($domain, '*.'))) {
+                $domains = [];
+                for ($page = 1; ; $page++) {
+                    $result = $client->openApi('POST', 'ListDomainDetail', '2023-01-01', [], [
+                        'DomainStatusList' => [0], 'PageNum' => $page, 'PageSize' => 1000,
+                    ]);
+                    $items = is_array($result->DomainList ?? null) ? $result->DomainList : [];
+                    foreach ($items as $item) {
+                        $candidate = (string) ($item->Domain ?? '');
+                        if (($pattern === 'wildcard' && $this->hostnameMatches($domain, $candidate))
+                            || ($pattern === 'certsan' && $this->certificateMatchesHostname($certificate, $candidate))) {
+                            $domains[] = $candidate;
+                        }
+                    }
+                    if (count($items) < 1000) {
+                        break;
+                    }
+                }
+            }
+            if ($domains === []) {
+                $this->fail('未找到匹配的 MediaLive 域名');
+            }
+            foreach ($domains as $matchedDomain) {
+                $client->openApi('POST', 'BindCert', '2023-01-01', [], [
+                    'ChainID' => $chainId, 'Domain' => $matchedDomain, 'HTTPS' => true,
+                ]);
+            }
         });
     }
 
@@ -89,6 +122,7 @@ class BytePlusMediaLiveDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

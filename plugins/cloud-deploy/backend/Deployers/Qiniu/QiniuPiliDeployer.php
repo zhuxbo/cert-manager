@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Qiniu;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Qiniu\Auth;
 use Throwable;
 
@@ -16,8 +18,9 @@ use Throwable;
  *
  * 仅实现 exact domain 核心路径（对齐插件既有约定）；不做 certimate 的 certsan 遍历 hub 域名。
  */
-class QiniuPiliDeployer extends AbstractDeployer
+class QiniuPiliDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
     use ParsesQiniuCertRef;
 
     public function provider(): string
@@ -39,7 +42,8 @@ class QiniuPiliDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'hub', 'label' => '直播空间名', 'type' => 'string', 'required' => true],
-            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -54,20 +58,39 @@ class QiniuPiliDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  复合 remote_cert_id "{certID}|{certName}"（Pili 用 certName）
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  复合 remote_cert_id 与可选证书材料
      * @param  array{access_key:string,secret_key:string}  $credentials
-     * @param  array{hub:string,domain:string}  $config
+     * @param  array{hub:string,domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         $hub = $this->requireConfig($config, 'hub');
-        $domain = $this->requireConfig($config, 'domain');
-        [, $certName] = $this->parseCertRef((string) $certRef);
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $domain = (string) ($config['domain'] ?? '');
+        $remoteRef = is_array($certRef) ? $certRef['remote_cert_id'] : $certRef;
+        $certificate = is_array($certRef) ? $certRef['cert'] : '';
+        [, $certName] = $this->parseCertRef($remoteRef);
+        if (in_array($pattern, ['', 'exact'], true) && $domain === '') {
+            $this->fail('缺少配置 domain');
+        }
 
-        $this->guardSdk(function () use ($credentials, $hub, $domain, $certName) {
+        $this->guardSdk(function () use ($credentials, $hub, $domain, $certName, $certificate, $pattern) {
             /** @var QiniuRestClient $client */
             $client = $this->makeClient('api', $credentials);
-            $client->setPiliDomainCert((string) $hub, (string) $domain, $certName);
+            $domains = match ($pattern) {
+                '', 'exact' => [$domain],
+                'certsan' => $certificate === '' ? $this->fail('certsan 匹配缺少证书材料') : array_values(array_filter(
+                    $client->listPiliDomains((string) $hub),
+                    fn (string $candidate): bool => $this->certificateMatchesHostname($certificate, $candidate),
+                )),
+                default => $this->fail("不支持的域名匹配模式 $pattern"),
+            };
+            if ($domains === []) {
+                $this->fail('未找到匹配证书的 Pili 域名');
+            }
+            foreach ($domains as $matchedDomain) {
+                $client->setPiliDomainCert((string) $hub, $matchedDomain, $certName);
+            }
         });
     }
 
@@ -78,6 +101,7 @@ class QiniuPiliDeployer extends AbstractDeployer
                 $credentials['access_key'] ?? '',
                 $credentials['secret_key'] ?? '',
             )),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

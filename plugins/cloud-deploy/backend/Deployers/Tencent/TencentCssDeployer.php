@@ -8,6 +8,7 @@ use TencentCloud\Common\Credential;
 use TencentCloud\Common\Profile\ClientProfile;
 use TencentCloud\Common\Profile\HttpProfile;
 use TencentCloud\Live\V20180801\LiveClient;
+use TencentCloud\Live\V20180801\Models\DescribeLiveDomainsRequest;
 use TencentCloud\Live\V20180801\Models\ModifyLiveDomainCertBindingsRequest;
 use TencentCloud\Ssl\V20191205\SslClient;
 use Throwable;
@@ -20,6 +21,9 @@ use Throwable;
  */
 class TencentCssDeployer extends AbstractDeployer
 {
+    use MatchesTencentCertificateDomains;
+    use UsesTencentEndpoint;
+
     public function provider(): string
     {
         return 'tencent';
@@ -38,7 +42,9 @@ class TencentCssDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => true],
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -49,28 +55,64 @@ class TencentCssDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
      * @param  string  $certRef  remote_cert_id（CertificateId）
      * @param  array{secret_id:string,secret_key:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = $this->requireConfig($config, 'domain');
+        $credentials = $this->withTencentEndpoint($credentials, $config);
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
 
-        $this->guardSdk(function () use ($credentials, $domain, $certRef) {
-            /** @var LiveClient $client */
-            $client = $this->makeClient('live', $credentials);
+        /** @var LiveClient $client */
+        $client = $this->makeClient('live', $credentials);
+        if ($pattern === '' || $pattern === 'exact') {
+            $domains = [(string) $this->requireConfig($config, 'domain')];
+        } elseif ($pattern === 'certsan') {
+            $domains = $this->matchTencentCertificateDomains((string) $certRef, $credentials, $this->listCssDomains($client));
+        } else {
+            $this->fail("不支持的域名匹配模式: $pattern");
+        }
+        if ($domains === []) {
+            $this->fail('未找到证书 SAN 匹配的腾讯云直播域名');
+        }
+
+        $this->guardSdk(function () use ($client, $domains, $certRef) {
             $req = new ModifyLiveDomainCertBindingsRequest;
             $req->deserialize([
-                'DomainInfos' => [['DomainName' => $domain, 'Status' => 1]],
+                'DomainInfos' => array_map(fn (string $domain): array => ['DomainName' => $domain, 'Status' => 1], $domains),
                 'CloudCertId' => $certRef,
             ]);
             $client->ModifyLiveDomainCertBindings($req);
         });
+    }
+
+    /** @return list<string> */
+    private function listCssDomains(LiveClient $client): array
+    {
+        $page = 1;
+        $domains = [];
+        do {
+            $response = $this->guardSdk(function () use ($client, $page) {
+                $request = new DescribeLiveDomainsRequest;
+                $request->deserialize(['DomainStatus' => 1, 'DomainType' => 1, 'PageNum' => $page, 'PageSize' => 100]);
+
+                return $client->DescribeLiveDomains($request);
+            });
+            $items = $response->getDomainList();
+            foreach ($items as $item) {
+                if ((string) $item->getName() !== '') {
+                    $domains[] = (string) $item->getName();
+                }
+            }
+            $page++;
+        } while (count($items) === 100);
+
+        return $domains;
     }
 
     protected function makeClient(string $kind, array $credentials): object
@@ -78,6 +120,7 @@ class TencentCssDeployer extends AbstractDeployer
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
         $http->setReqTimeout(15);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
@@ -85,6 +128,7 @@ class TencentCssDeployer extends AbstractDeployer
         return match ($kind) {
             'ssl' => new SslClient($cred, '', $profile),
             'live' => new LiveClient($cred, '', $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

@@ -26,6 +26,16 @@ function volcDcdnCreds(): array
     return ['access_key_id' => 'AK', 'secret_access_key' => 'SK'];
 }
 
+function volcDcdnCertificate(string $commonName): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => $commonName], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('火山 DCDN：证书服务型（usesRemoteCertStore + storeKind volc_certcenter）', function () {
     $deployer = new VolcDcdnDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -82,6 +92,32 @@ test('bind 调 CreateCertBind（CertSource=volc、CertId、DomainNames），exac
     expect($args['version'])->toBe('2021-04-01');
     // "*.example.com" → ".example.com"
     expect($args['body'])->toBe(['CertSource' => 'volc', 'CertId' => 'cert-inst-1', 'DomainNames' => ['.example.com']]);
+});
+
+test('certsan 按 ProjectName 分页列举非 Stop 域名并批量绑定匹配项', function () {
+    $requests = [];
+    $client = Mockery::mock(VolcRestClient::class);
+    $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$requests) {
+        $requests[] = compact('action', 'version', 'body');
+        if ($action === 'ListDomainConfig') {
+            return ['DomainList' => [
+                ['Domain' => 'a.example.com', 'Status' => 'Running'],
+                ['Domain' => 'b.example.com', 'Status' => 'Running'],
+                ['Domain' => 'a.example.com', 'Status' => 'Stop'],
+            ]];
+        }
+
+        return [];
+    });
+
+    $deployer = volcDcdnDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1', 'cert' => volcDcdnCertificate('a.example.com'), 'chain' => ''], volcDcdnCreds() + ['project_name' => 'project-a'], [
+        'region' => 'cn-beijing',
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($requests[0]['body']['ProjectName'])->toBe(['project-a']);
+    expect($requests[1]['body']['DomainNames'])->toBe(['a.example.com']);
 });
 
 test('region 透传：bind 用 config.region 构造 dcdn client，缺省回落 cn-beijing', function () {

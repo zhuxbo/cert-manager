@@ -8,6 +8,7 @@ use GuzzleHttp\Psr7\Response;
 use Plugins\CloudDeploy\Deployers\Kong\CertificateDeployer;
 use Plugins\CloudDeploy\Deployers\Kong\KongApiException;
 use Plugins\CloudDeploy\Deployers\Kong\KongClient;
+use Plugins\CloudDeploy\Deployers\Kong\KongProvider;
 use Psr\Http\Message\RequestInterface;
 use Tests\TestCase;
 
@@ -70,6 +71,12 @@ test('Kong 为内联型（usesRemoteCertStore=false）+ 元信息', function () 
     expect($deployer->usesRemoteCertStore())->toBeFalse();
     expect($deployer->certUploader())->toBeNull();
     expect(array_column($deployer->configSchema(), 'key'))->toContain('certificate_id')->toContain('workspace');
+});
+
+test('Kong Admin API Token 按 Certimate 契约允许留空', function () {
+    $schema = collect((new KongProvider)->credentialSchema())->keyBy('key');
+
+    expect($schema['api_token']['required'])->toBeFalse();
 });
 
 test('bind：upsertCertificate(id, {id, cert=完整链, key, snis 取证书 SAN})', function () {

@@ -50,6 +50,27 @@ class SamwafClient
         ]);
     }
 
+    /** 上传管理端证书。 */
+    public function uploadConsoleCertificate(string $certContent, string $keyContent): void
+    {
+        $this->call('POST', 'vipconfig/uploadSslCert', [
+            'cert_content' => $certContent,
+            'key_content' => $keyContent,
+        ]);
+    }
+
+    /** 开启管理端 HTTPS。 */
+    public function enableConsoleSsl(): void
+    {
+        $this->call('POST', 'vipconfig/updateSslEnable', ['ssl_enable' => true]);
+    }
+
+    /** 重启管理端使证书立即生效。 */
+    public function restartConsoleManager(): void
+    {
+        $this->call('POST', 'vipconfig/restartManager', null);
+    }
+
     /**
      * 发起 JSON 请求并归一错误。http_errors=false 自行判状态，兼容「2xx 但 code≠0」。
      *
@@ -70,20 +91,27 @@ class SamwafClient
         $resp = $this->http->request($method, $path, $options);
 
         $status = $resp->getStatusCode();
-        $json = json_decode((string) $resp->getBody(), true);
-        $json = is_array($json) ? $json : [];
+        $raw = (string) $resp->getBody();
 
-        $msg = is_string($json['msg'] ?? null) && $json['msg'] !== '' ? $json['msg'] : '';
-
-        // HTTP 非 2xx：用响应体 msg（若有）+ HTTP 状态码作错误码
         if ($status < 200 || $status >= 300) {
-            throw new SamwafApiException((string) $status, $msg !== '' ? $msg : "SamWaf 接口返回 HTTP $status");
+            throw new SamwafApiException('SamWafHttpError', 'SamWaf 接口请求失败');
         }
 
-        // 2xx 但 code≠0：业务错误（code 为整数，0 视为成功；缺失键视为 0/成功）
-        $code = $json['code'] ?? 0;
-        if ((int) $code !== 0) {
-            throw new SamwafApiException((string) $code, $msg !== '' ? $msg : 'SamWaf 接口返回错误');
+        // Certimate 的 doRequestWithResult 对空 body 直接成功；非空 body 则必须是含整型 code 的 JSON 对象。
+        if ($raw === '') {
+            return [];
+        }
+        try {
+            $json = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            throw new SamwafApiException('MalformedResponse', 'SamWaf 接口响应格式错误');
+        }
+        if (! is_array($json) || ! str_starts_with(ltrim($raw), '{') || ! array_key_exists('code', $json) || ! is_int($json['code'])) {
+            throw new SamwafApiException('MalformedResponse', 'SamWaf 接口响应格式错误');
+        }
+
+        if ($json['code'] !== 0) {
+            throw new SamwafApiException('SamWafApiError', 'SamWaf 接口返回业务错误');
         }
 
         return $json;

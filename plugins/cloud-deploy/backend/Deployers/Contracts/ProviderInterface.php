@@ -17,7 +17,7 @@ interface ProviderInterface
     /**
      * 凭证字段 schema，供前端表单渲染。
      *
-     * @return list<array{key:string,label:string,required?:bool,secret?:bool,destination?:bool}>
+     * @return list<array{key:string,label:string,type?:string,required?:bool,default?:mixed,required_when?:array{key:string,equals:mixed},visible_when?:array{key:string,equals:mixed},secret?:bool,destination?:bool}>
      */
     public function credentialSchema(): array;
 }

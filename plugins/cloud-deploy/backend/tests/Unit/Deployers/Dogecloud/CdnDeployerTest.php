@@ -37,7 +37,23 @@ test('多吉云 CDN：证书服务型（usesRemoteCertStore + storeKind dogeclou
     expect($deployer->provider())->toBe('dogecloud');
     expect($deployer->product())->toBe('cdn');
     expect($deployer->label())->toBe('多吉云 CDN');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain_match_pattern');
 });
+
+function dogecloudCertificateWithSan(): string
+{
+    $conf = tempnam(sys_get_temp_dir(), 'doge_san_');
+    file_put_contents($conf, "[v3]\nsubjectAltName=DNS:a.example.com,DNS:*.wild.example.com\n");
+    $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'a.example.com'], $key, ['digest_alg' => 'sha256']);
+    $cert = openssl_csr_sign($csr, null, $key, 1, [
+        'digest_alg' => 'sha256', 'config' => $conf, 'x509_extensions' => 'v3',
+    ]);
+    openssl_x509_export($cert, $pem);
+    @unlink($conf);
+
+    return $pem;
+}
 
 test('uploader.upload 调 POST /cdn/cert/upload.json 返回证书 id（cert=完整链, private=私钥）', function () {
     $captured = null;
@@ -88,6 +104,27 @@ test('bind：POST /cdn/cert/bind.json 把证书 id（int64）绑定到 exact 域
     // id 转 int64（多吉云 BindCdnCert 收数字 id）
     expect($captured['body']['id'])->toBe(88001);
     expect($captured['body']['domain'])->toBe('cdn.example.com');
+});
+
+test('bind：certsan 枚举非 offline 域名并批量绑定', function () {
+    $bound = [];
+    $client = Mockery::mock(DogecloudRestClient::class);
+    $client->shouldReceive('get')->once()->with('/cdn/domain/list.json')->andReturn(['data' => ['domains' => [
+        ['name' => 'a.example.com', 'status' => 'online'],
+        ['name' => 'x.wild.example.com', 'status' => 'online'],
+        ['name' => 'deep.x.wild.example.com', 'status' => 'online'],
+        ['name' => 'offline.example.com', 'status' => 'offline'],
+    ]]]);
+    $client->shouldReceive('post')->twice()->with('/cdn/cert/bind.json', Mockery::type('array'))
+        ->andReturnUsing(function (string $path, array $body) use (&$bound) {
+            $bound[] = $body['domain'];
+
+            return ['code' => 200];
+        });
+    dogecloudCdnDeployerWith(fn () => $client)->bind([
+        'remote_cert_id' => '88001', 'cert' => dogecloudCertificateWithSan(), 'chain' => '',
+    ], dogecloudCreds(), ['domain_match_pattern' => 'certsan']);
+    expect($bound)->toBe(['a.example.com', 'x.wild.example.com']);
 });
 
 test('缺 domain 配置抛业务错误', function () {

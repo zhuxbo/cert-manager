@@ -18,9 +18,6 @@ use Throwable;
  *      - 未指定 SNI domain → UpdateListenerAttribute 设为默认证书。
  *      - 指定 SNI domain → AddSSLBinding 增扩展证书（SNI）。
  *      已绑同证书（默认/扩展按 domain 区分）则跳过。
- *
- * 简化（相对 certimate，已注明）：SNI 路径只新增扩展绑定，**不**做「删除同域名旧扩展证书 / 过期证书」的
- * DescribeSSLV2 清理 sweep（属配额维护、非核心绑定路径；与插件 RemoteCertStore「只增不删」一致）。
  */
 class UcloudUalbDeployer extends AbstractDeployer
 {
@@ -50,6 +47,7 @@ class UcloudUalbDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
             ['key' => 'deploy_target', 'label' => '部署目标', 'type' => 'string', 'required' => true],
             ['key' => 'loadbalancer_id', 'label' => '负载均衡实例 ID', 'type' => 'string', 'required' => true],
@@ -69,7 +67,7 @@ class UcloudUalbDeployer extends AbstractDeployer
         $region = is_string($config['region'] ?? null) ? $config['region'] : '';
 
         return new UcloudUlbUploader(
-            fn (array $credentials): object => $this->makeClient('api', $credentials, $region),
+            fn (array $credentials): object => $this->makeClient('api', $this->withUcloudEndpoint($credentials, $config), $region),
             $region,
         );
     }
@@ -81,6 +79,7 @@ class UcloudUalbDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withUcloudEndpoint($credentials, $config);
         $region = (string) $this->requireConfig($config, 'region');
         $target = (string) $this->requireConfig($config, 'deploy_target');
         $loadbalancerId = (string) $this->requireConfig($config, 'loadbalancer_id');
@@ -168,6 +167,44 @@ class UcloudUalbDeployer extends AbstractDeployer
         }
         $this->guardSdk(fn () => $this->makeClient('api', $credentials, $region)
             ->addSSLBinding($loadbalancerId, $listenerId, [$sslId]));
+
+        // Certimate 语义：新证书绑定成功后，解绑同 SNI 域名的旧扩展证书与已过期扩展证书。
+        // 这里只删除监听器绑定，不删云端证书，不影响 RemoteCertStore 去重契约。
+        $sslIdsToDelete = [];
+        foreach ($certificates as $cert) {
+            if (! is_array($cert) || ($cert['IsDefault'] ?? false)) {
+                continue;
+            }
+            $oldSslId = is_string($cert['SSLId'] ?? null) ? $cert['SSLId'] : '';
+            if ($oldSslId === '') {
+                continue;
+            }
+
+            try {
+                $detail = $this->guardSdk(fn () => $this->makeClient('api', $credentials, $region)
+                    ->describeSSLV2($oldSslId));
+            } catch (Throwable) {
+                // 对齐 Certimate：单张旧证书查询失败不阻断新证书已成功绑定的主流程。
+                continue;
+            }
+            $item = is_array($detail['DataSet'][0] ?? null) ? $detail['DataSet'][0] : null;
+            if ($item === null) {
+                continue;
+            }
+
+            $sameDomain = ($item['Domains'] ?? null) === $domain;
+            $notAfter = is_numeric($item['NotAfter'] ?? null) ? (int) $item['NotAfter'] : 0;
+            if ($sameDomain || ($notAfter !== 0 && $notAfter < time())) {
+                $sslIdsToDelete[] = is_string($item['SSLId'] ?? null) && $item['SSLId'] !== ''
+                    ? $item['SSLId']
+                    : $oldSslId;
+            }
+        }
+
+        if ($sslIdsToDelete !== []) {
+            $this->guardSdk(fn () => $this->makeClient('api', $credentials, $region)
+                ->deleteSSLBinding($loadbalancerId, $listenerId, array_values(array_unique($sslIdsToDelete))));
+        }
     }
 
     /**

@@ -62,3 +62,26 @@ test('七牛响应体 code 200 视为成功', function () {
     expect($client->uploadSslCert('cert-name', 'example.com', 'FULLCHAIN', 'PRIVATEKEY'))
         ->toBe('cert-002');
 });
+
+test('列举 CDN 与 Pili 域名使用 Certimate REST 路径', function () {
+    [$cdn, $cdnCaptured] = qiniuRestClientWithFake(new Response(
+        200,
+        0.01,
+        ['Content-Type' => 'application/json'],
+        json_encode(['domains' => [
+            ['name' => 'a.example.com', 'operatingState' => 'online'],
+            ['name' => 'off.example.com', 'operatingState' => 'offlined'],
+        ], 'marker' => '']),
+    ));
+    expect($cdn->listCdnDomains())->toBe(['a.example.com']);
+    expect($cdnCaptured()['url'])->toBe('https://api.qiniu.com/domain?limit=100');
+
+    [$pili, $piliCaptured] = qiniuRestClientWithFake(new Response(
+        200,
+        0.01,
+        ['Content-Type' => 'application/json'],
+        json_encode(['domains' => [['domain' => 'live.example.com']]]),
+    ));
+    expect($pili->listPiliDomains('my hub'))->toBe(['live.example.com']);
+    expect($piliCaptured()['url'])->toBe('https://pili.qiniuapi.com/v2/hubs/my%20hub/domains');
+});

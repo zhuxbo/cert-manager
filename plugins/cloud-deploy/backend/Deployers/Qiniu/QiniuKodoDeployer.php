@@ -76,6 +76,7 @@ class QiniuKodoDeployer extends AbstractDeployer
                 $credentials['access_key'] ?? '',
                 $credentials['secret_key'] ?? '',
             )),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

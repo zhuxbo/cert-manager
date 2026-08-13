@@ -35,11 +35,15 @@ class AwsIamUploader implements CertUploaderInterface
      * @param  Closure(array<string,mixed>):object  $clientFactory  返回 Aws\Iam\IamClient
      * @param  string  $path  IAM 证书路径（如 "/elb/"），缺省 "/"
      */
-    public function __construct(private readonly Closure $clientFactory, private readonly string $path = '/') {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly string $path = '/',
+        private readonly bool $returnCertificateId = false,
+    ) {}
 
     public function storeKind(): string
     {
-        return 'iam';
+        return $this->returnCertificateId ? 'iam-cloudfront-id' : 'iam';
     }
 
     /**
@@ -63,15 +67,19 @@ class AwsIamUploader implements CertUploaderInterface
                 'CertificateChain' => $chainPem,
                 'PrivateKey' => $keyPem,
             ]);
-            $arn = $result['ServerCertificateMetadata']['Arn'] ?? null;
+            $metadata = $result['ServerCertificateMetadata'] ?? [];
+            $remoteId = $this->returnCertificateId
+                ? ($metadata['ServerCertificateId'] ?? null)
+                : ($metadata['Arn'] ?? null);
         } catch (Throwable $e) {
             throw new RuntimeException(AwsErrorSanitizer::sanitize($e), 0);
         }
 
-        if (! is_string($arn) || $arn === '') {
-            throw new RuntimeException('AWS UploadServerCertificate 未返回 ServerCertificateMetadata.Arn');
+        $field = $this->returnCertificateId ? 'ServerCertificateId' : 'Arn';
+        if (! is_string($remoteId) || $remoteId === '') {
+            throw new RuntimeException("AWS UploadServerCertificate 未返回 ServerCertificateMetadata.$field");
         }
 
-        return $arn;
+        return $remoteId;
     }
 }

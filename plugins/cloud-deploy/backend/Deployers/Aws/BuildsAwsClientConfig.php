@@ -2,6 +2,9 @@
 
 namespace Plugins\CloudDeploy\Deployers\Aws;
 
+use InvalidArgumentException;
+use Plugins\CloudDeploy\Support\CloudMetadataHttpClient;
+
 /**
  * AWS SDK client 构造配置单一来源（G3：显式 connect/read 超时，防 TCP 黑洞无限挂起）。
  *
@@ -26,13 +29,25 @@ trait BuildsAwsClientConfig
      */
     protected function awsClientConfig(array $credentials, string $region): array
     {
-        return [
-            'version' => 'latest',
-            'region' => $region !== '' ? $region : 'us-east-1',
-            'credentials' => [
+        $authMethod = strtolower((string) ($credentials['auth_method'] ?? 'accesskey'));
+        if ($authMethod === '') {
+            $authMethod = 'accesskey';
+        }
+
+        $credentialProvider = match ($authMethod) {
+            'accesskey' => [
                 'key' => $credentials['access_key_id'] ?? '',
                 'secret' => $credentials['secret_access_key'] ?? '',
             ],
+            'imds' => new AwsImdsCredentialProvider(CloudMetadataHttpClient::forAws()),
+            default => throw new InvalidArgumentException('不支持的 AWS 认证方式'),
+        };
+
+        return [
+            'version' => 'latest',
+            'region' => $region !== '' ? $region : 'us-east-1',
+            // 始终显式提供凭证或专用 IMDSv2 callable，禁止 AWS SDK 默认 credential chain。
+            'credentials' => $credentialProvider,
             'http' => [
                 'connect_timeout' => self::AWS_CONNECT_TIMEOUT_SECONDS,
                 'timeout' => self::AWS_TIMEOUT_SECONDS,

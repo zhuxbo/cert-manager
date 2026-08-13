@@ -7,6 +7,8 @@ use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailResponseBody;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateRequest;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponse;
 use AlibabaCloud\SDK\Cas\V20200407\Models\UploadUserCertificateResponseBody;
+use AlibabaCloud\SDK\Nlb\V20220430\Models\GetLoadBalancerAttributeRequest;
+use AlibabaCloud\SDK\Nlb\V20220430\Models\ListListenersRequest;
 use AlibabaCloud\SDK\Nlb\V20220430\Models\UpdateListenerAttributeRequest;
 use AlibabaCloud\SDK\Nlb\V20220430\Models\UpdateListenerAttributeResponse;
 use AlibabaCloud\SDK\Nlb\V20220430\Nlb;
@@ -53,7 +55,39 @@ test('阿里云 NLB 走证书服务（CAS）+ 基本元信息', function () {
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('nlb');
     expect($deployer->label())->toBe('阿里云 NLB');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('listener_id');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('deploy_target')->toContain('load_balancer_id')->toContain('listener_id');
+});
+
+test('bind loadbalancer：GetLoadBalancerAttribute 后分页列 TCPSSL 监听并批量更新', function () {
+    $listReq = null;
+    $updated = [];
+    $nlb = Mockery::mock(Nlb::class);
+    $nlb->shouldReceive('getLoadBalancerAttribute')->once()->with(Mockery::on(fn (GetLoadBalancerAttributeRequest $r) => $r->loadBalancerId === 'nlb-1'))->andReturn(new stdClass);
+    $nlb->shouldReceive('listListeners')->once()->andReturnUsing(function (ListListenersRequest $req) use (&$listReq) {
+        $listReq = $req;
+
+        return (object) ['body' => (object) ['listeners' => [
+            (object) ['listenerId' => 'lsn-1'],
+            (object) ['listenerId' => 'lsn-2'],
+        ]]];
+    });
+    $nlb->shouldReceive('updateListenerAttribute')->twice()->andReturnUsing(function (UpdateListenerAttributeRequest $req) use (&$updated) {
+        $updated[] = $req->listenerId;
+
+        return new UpdateListenerAttributeResponse;
+    });
+
+    $deployer = aliyunNlbDeployerWith(fn (string $kind) => $kind === 'nlb' ? $nlb : new stdClass);
+    $deployer->bind('cert-1-cn-hangzhou', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'cn-hangzhou',
+        'deploy_target' => 'loadbalancer',
+        'load_balancer_id' => 'nlb-1',
+    ]);
+
+    expect($listReq->loadBalancerIds)->toBe(['nlb-1']);
+    expect($listReq->listenerProtocol)->toBe('TCPSSL');
+    expect($listReq->maxResults)->toBe(100);
+    expect($updated)->toBe(['lsn-1', 'lsn-2']);
 });
 
 test('uploader.upload 调 cas.UploadUserCertificate + GetUserCertificateDetail 返回 CertIdentifier', function () {

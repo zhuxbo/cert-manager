@@ -14,12 +14,16 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunErrorSanitizer;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\CertificateDeliveryMode;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
 use Plugins\CloudDeploy\Deployers\Contracts\DeployPollPendingException;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Plugins\CloudDeploy\Deployers\Contracts\ResumesRemoteJob;
+use Plugins\CloudDeploy\Deployers\Contracts\SelectsCertificateDeliveryMode;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentErrorSanitizer;
+use Plugins\CloudDeploy\Deployers\Tencent\TencentSslUpdateDeployer;
 use Plugins\CloudDeploy\Jobs\CloudDeployJob;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
 use Plugins\CloudDeploy\Models\CloudDeployLog;
@@ -27,6 +31,7 @@ use Plugins\CloudDeploy\Models\CloudDeployRemoteCert;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Plugins\CloudDeploy\Notifications\CloudDeployFailedNotificationBuilder;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
+use TencentCloud\Ssl\V20191205\SslClient;
 use Tests\TestCase;
 
 uses(TestCase::class, RefreshDatabase::class);
@@ -169,6 +174,191 @@ function jobFakeRemoteStoreDeployer(string $returnId = 'cert-fake'): AbstractDep
     };
 }
 
+/**
+ * 同一 endpoint 可按 target config 选择交付模式的 fake：默认仍走 RemoteStore，
+ * 仅 APIGW traditional 和腾讯 SSL Update is_replaced 走内联。
+ */
+function jobFakeConfigSelectedDeliveryDeployer(string $provider, string $product): AbstractDeployer
+{
+    return new class($provider, $product) extends AbstractDeployer implements SelectsCertificateDeliveryMode
+    {
+        public function __construct(private string $providerKey, private string $productKey) {}
+
+        public function provider(): string
+        {
+            return $this->providerKey;
+        }
+
+        public function product(): string
+        {
+            return $this->productKey;
+        }
+
+        public function label(): string
+        {
+            return '动态交付模式';
+        }
+
+        public function configSchema(): array
+        {
+            return [['key' => 'domain', 'label' => '域名', 'required' => true]];
+        }
+
+        public function usesRemoteCertStore(): bool
+        {
+            return true;
+        }
+
+        public function certificateDeliveryMode(array $config): CertificateDeliveryMode
+        {
+            if (($this->productKey === 'apigw' && ($config['service_type'] ?? null) === 'traditional')
+                || ($this->productKey === 'ssl-update' && ($config['is_replaced'] ?? false) === true)) {
+                return CertificateDeliveryMode::Inline;
+            }
+
+            return CertificateDeliveryMode::RemoteStore;
+        }
+
+        public function certUploader(array $config = []): ?CertUploaderInterface
+        {
+            return new class implements CertUploaderInterface
+            {
+                public function storeKind(): string
+                {
+                    return 'dynamic_delivery';
+                }
+
+                public function upload(string $cert, string $key, string $chain, array $credentials): string
+                {
+                    CloudDeployJobTestSpy::$uploads[] = compact('cert', 'key', 'chain');
+
+                    return 'remote-dynamic';
+                }
+            };
+        }
+
+        public function bind(string|array $certRef, array $credentials, array $config): void
+        {
+            if (($config['throw_private_key'] ?? false) === true) {
+                throw new RuntimeException('cloud returned private key KEYPEM');
+            }
+            if (($config['throw_poll_pending'] ?? false) === true) {
+                throw new DeployPollPendingException('remote-job-KEYPEM', 'cloud poll pending KEYPEM');
+            }
+
+            CloudDeployJobTestSpy::$binds[] = ['cert' => $certRef, 'config' => $config];
+        }
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            throw new RuntimeException('fake 不应造真实 client');
+        }
+
+        protected function sanitize(Throwable $e): string
+        {
+            return 'x';
+        }
+    };
+}
+
+/** 真实 Tencent SSL Update deployer，仅替换 SDK client 与 sleep，供 Job 闭环验证。 */
+function jobTencentSslUpdateDeployerWith(SslClient $client): TencentSslUpdateDeployer
+{
+    return new class($client) extends TencentSslUpdateDeployer
+    {
+        public function __construct(private SslClient $client) {}
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            return $this->client;
+        }
+
+        protected function sleep(int $seconds): void {}
+    };
+}
+
+/** @return array{DeployRecordDetail:list<array{RunningTotalCount:int,SuccessTotalCount:int,FailedTotalCount:int,TotalCount:int}>} */
+function jobSslUploadUpdateDetailResponse(int $running = 0, int $success = 0, int $failed = 0, int $total = 1): array
+{
+    return ['DeployRecordDetail' => [[
+        'RunningTotalCount' => $running,
+        'SuccessTotalCount' => $success,
+        'FailedTotalCount' => $failed,
+        'TotalCount' => $total,
+    ]]];
+}
+
+/** opt-in 证书服务型 fake：bind 除 remote id 外安全接收 leaf/chain，不接收私钥。 */
+function jobFakeRemoteMaterialDeployer(string $returnId = 'cert-material'): AbstractDeployer
+{
+    return new class($returnId) extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
+    {
+        public function __construct(private string $rid) {}
+
+        public function provider(): string
+        {
+            return 'tencent';
+        }
+
+        public function product(): string
+        {
+            return 'cdn';
+        }
+
+        public function label(): string
+        {
+            return '腾讯云 CDN';
+        }
+
+        public function configSchema(): array
+        {
+            return [['key' => 'domain', 'label' => '域名', 'required' => false]];
+        }
+
+        public function usesRemoteCertStore(): bool
+        {
+            return true;
+        }
+
+        public function certUploader(array $config = []): ?CertUploaderInterface
+        {
+            $rid = $this->rid;
+
+            return new class($rid) implements CertUploaderInterface
+            {
+                public function __construct(private string $rid) {}
+
+                public function storeKind(): string
+                {
+                    return 'tencent_ssl_material';
+                }
+
+                public function upload(string $cert, string $key, string $chain, array $credentials): string
+                {
+                    CloudDeployJobTestSpy::$uploads[] = compact('cert', 'key', 'chain');
+
+                    return $this->rid;
+                }
+            };
+        }
+
+        public function bind(string|array $certRef, array $credentials, array $config): void
+        {
+            CloudDeployJobTestSpy::$binds[] = ['cert' => $certRef, 'config' => $config];
+        }
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            throw new RuntimeException('fake 不应造真实 client');
+        }
+
+        protected function sanitize(Throwable $e): string
+        {
+            return 'x';
+        }
+    };
+}
+
 /** 替换容器内 Registry 单例，注册指定的 fake deployer。 */
 function bindFakeRegistry(string $provider, string $product, callable $deployerFactory): void
 {
@@ -237,6 +427,218 @@ test('证书服务型走证书服务，落 remote_cert + bind 收到 remote_cert
     // 上传一次 + bind 收到 id 而非 PEM
     expect(CloudDeployJobTestSpy::$uploads)->toHaveCount(1);
     expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe('cert-t');
+});
+
+test('动态交付模式：APIGW traditional 与腾讯 is_replaced 内联，默认分支仍走 RemoteStore', function (string $provider, string $product, array $config, bool $expectsInline) {
+    bindFakeRegistry($provider, $product, fn () => jobFakeConfigSelectedDeliveryDeployer($provider, $product));
+    [$target, $cert] = makeTargetWithCert($provider, $product);
+    $target->update(['config' => ['domain' => 'cdn.example.com', ...$config]]);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
+    if ($expectsInline) {
+        expect(CloudDeployJobTestSpy::$uploads)->toBeEmpty();
+        expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe([
+            'cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAIN',
+        ]);
+    } else {
+        expect(CloudDeployJobTestSpy::$uploads)->toHaveCount(1);
+        expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe('remote-dynamic');
+    }
+})->with([
+    'APIGW traditional' => ['aliyun', 'apigw', ['service_type' => 'traditional'], true],
+    'APIGW 默认 cloudnative' => ['aliyun', 'apigw', [], false],
+    '腾讯 SSL Update is_replaced' => ['tencent', 'ssl-update', ['is_replaced' => true], true],
+    '腾讯 SSL Update 默认替换模式' => ['tencent', 'ssl-update', [], false],
+]);
+
+test('动态内联 bind 异常绝不把私钥写入 target、部署日志、pending 或 failed() 日志上下文', function () {
+    bindFakeRegistry('aliyun', 'apigw', fn () => jobFakeConfigSelectedDeliveryDeployer('aliyun', 'apigw'));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'apigw');
+    $target->update(['config' => ['domain' => 'cdn.example.com', 'service_type' => 'traditional', 'throw_private_key' => true]]);
+
+    $logCalls = [];
+    Log::shouldReceive('error')->andReturnUsing(function (...$args) use (&$logCalls) {
+        $logCalls[] = $args;
+    });
+
+    $job = new CloudDeployJob($target->id, $cert->id, 'auto');
+    try {
+        $job->handle();
+    } catch (Throwable $e) {
+        $job->failed($e);
+    }
+
+    $target->refresh();
+    expect($target->pending_job)->toBeNull();
+    expect($logCalls)->not->toBeEmpty();
+    expectNoCredentialLeak($target->id, ['KEYPEM', 'private key'], $logCalls);
+});
+
+test('动态内联 poll pending fail closed：不持久化 remoteJobId，并记固定业务错误', function () {
+    bindFakeRegistry('aliyun', 'apigw', fn () => jobFakeConfigSelectedDeliveryDeployer('aliyun', 'apigw'));
+    [$target, $cert] = makeTargetWithCert('aliyun', 'apigw');
+    $target->update(['config' => [
+        'domain' => 'cdn.example.com',
+        'service_type' => 'traditional',
+        'throw_poll_pending' => true,
+    ]]);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    $target->refresh();
+    expect($target->pending_job)->toBeNull();
+    expect($target->last_status)->toBe('failed');
+    expect($target->last_error)->toContain('动态证书部署失败');
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'business_error')->where('is_final', true)->exists())->toBeTrue();
+});
+
+test('真实 Tencent is_replaced：bind 一次后持久化 canonical opaque ID，续查专用 Action 成功且不重建', function () {
+    $actions = [];
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('callJson')->times(3)->andReturnUsing(function (string $action, string $body) use (&$actions): array {
+        $actions[] = [$action, json_decode($body, true, flags: JSON_THROW_ON_ERROR)];
+
+        return match (count($actions)) {
+            1 => ['DeployStatus' => 1, 'DeployRecordId' => 9],
+            2 => jobSslUploadUpdateDetailResponse(running: 1, total: 1),
+            default => jobSslUploadUpdateDetailResponse(success: 1),
+        };
+    });
+    bindFakeRegistry('tencent', 'ssl-update', fn () => jobTencentSslUpdateDeployerWith($ssl));
+    [$target, $cert] = makeTargetWithCert('tencent', 'ssl-update', credentials: ['secret_id' => 'AK', 'secret_key' => 'SK']);
+    $target->update(['config' => [
+        'is_replaced' => true,
+        'certificate_id' => 'old-cert',
+        'resource_products' => 'cdn',
+    ]]);
+
+    expect(fn () => (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle())
+        ->toThrow(DeployPollPendingException::class);
+    expect($target->fresh()->pending_job['job_id'])->toBe('9');
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(array_column($actions, 0))->toBe([
+        'UploadUpdateCertificateInstance',
+        'DescribeHostUploadUpdateRecordDetail',
+        'DescribeHostUploadUpdateRecordDetail',
+    ]);
+    expect($actions[2][1])->toBe(['DeployRecordId' => 9, 'Limit' => 200]);
+    expect($target->fresh()->pending_job)->toBeNull();
+    expect($target->fresh()->last_status)->toBe('success');
+});
+
+test('真实 Tencent is_replaced：续查同一 ID 终态失败并清 pending，不重建上传更新任务', function () {
+    $actions = [];
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('callJson')->times(3)->andReturnUsing(function (string $action) use (&$actions): array {
+        $actions[] = $action;
+
+        return match (count($actions)) {
+            1 => ['DeployStatus' => 1, 'DeployRecordId' => 9],
+            2 => jobSslUploadUpdateDetailResponse(running: 1, total: 1),
+            default => jobSslUploadUpdateDetailResponse(failed: 1),
+        };
+    });
+    bindFakeRegistry('tencent', 'ssl-update', fn () => jobTencentSslUpdateDeployerWith($ssl));
+    [$target, $cert] = makeTargetWithCert('tencent', 'ssl-update', credentials: ['secret_id' => 'AK', 'secret_key' => 'SK']);
+    $target->update(['config' => [
+        'is_replaced' => true,
+        'certificate_id' => 'old-cert',
+        'resource_products' => 'cdn',
+    ]]);
+
+    expect(fn () => (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle())
+        ->toThrow(DeployPollPendingException::class);
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect($actions)->toBe([
+        'UploadUpdateCertificateInstance',
+        'DescribeHostUploadUpdateRecordDetail',
+        'DescribeHostUploadUpdateRecordDetail',
+    ]);
+    expect($target->fresh()->pending_job)->toBeNull();
+    expect($target->fresh()->last_status)->toBe('failed');
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'business_error')->where('is_final', true)->exists())->toBeTrue();
+});
+
+test('真实 Tencent is_replaced：数据库中非 opaque pending ID 先清理且绝不作为 Describe ID 续查', function () {
+    $actions = [];
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('callJson')->twice()->andReturnUsing(function (string $action) use (&$actions): array {
+        $actions[] = $action;
+
+        return $action === 'UploadUpdateCertificateInstance'
+            ? ['DeployStatus' => 1, 'DeployRecordId' => 10]
+            : jobSslUploadUpdateDetailResponse(success: 1);
+    });
+    bindFakeRegistry('tencent', 'ssl-update', fn () => jobTencentSslUpdateDeployerWith($ssl));
+    [$target, $cert] = makeTargetWithCert('tencent', 'ssl-update', credentials: ['secret_id' => 'AK', 'secret_key' => 'SK']);
+    $target->update([
+        'config' => ['is_replaced' => true, 'certificate_id' => 'old-cert', 'resource_products' => 'cdn'],
+        'pending_job' => validPendingJob($cert->id, ['job_id' => '9-PRIVATE-KEY']),
+    ]);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect($actions)->toBe(['UploadUpdateCertificateInstance', 'DescribeHostUploadUpdateRecordDetail']);
+    expect($target->fresh()->pending_job)->toBeNull();
+    expect($target->fresh()->last_status)->toBe('success');
+    expect(CloudDeployLog::where('target_id', $target->id)->pluck('message')->implode("\n"))->not->toContain('PRIVATE-KEY');
+});
+
+test('failed() 在动态内联 target 删除后只写安全 skipLog 和 Log 上下文', function () {
+    [$target, $cert] = makeTargetWithCert('aliyun', 'apigw');
+    $targetId = $target->id;
+    $target->delete();
+
+    $logCalls = [];
+    Log::shouldReceive('error')->andReturnUsing(function (...$args) use (&$logCalls) {
+        $logCalls[] = $args;
+    });
+
+    (new CloudDeployJob($targetId, $cert->id, 'auto'))->failed(new RuntimeException('KEYPEM'));
+
+    expect($logCalls)->not->toBeEmpty();
+    expect(CloudDeployLog::where('target_id', $targetId)->where('error_code', 'retries_exhausted')->exists())->toBeTrue();
+    expect(CloudDeployLog::where('target_id', $targetId)->pluck('message')->implode("\n"))->not->toContain('KEYPEM');
+    expect(json_encode($logCalls, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE))->not->toContain('KEYPEM');
+});
+
+test('failed() 在动态内联 access 删除后不把私钥写入 last_error、skipLog 或 Log 上下文', function () {
+    [$target, $cert, $access] = makeTargetWithCert('aliyun', 'apigw');
+    $target->update(['config' => ['domain' => 'cdn.example.com', 'service_type' => 'traditional']]);
+    $access->delete();
+
+    $logCalls = [];
+    Log::shouldReceive('error')->andReturnUsing(function (...$args) use (&$logCalls) {
+        $logCalls[] = $args;
+    });
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->failed(new RuntimeException('KEYPEM'));
+
+    expect($logCalls)->not->toBeEmpty();
+    expect(CloudDeployLog::where('target_id', $target->id)->where('error_code', 'retries_exhausted')->exists())->toBeTrue();
+    expectNoCredentialLeak($target->id, ['KEYPEM'], $logCalls);
+});
+
+test('仅 opt-in 证书服务型 bind 收到 remote id + leaf/chain，且不含私钥', function () {
+    bindFakeRegistry('tencent', 'cdn', fn () => jobFakeRemoteMaterialDeployer());
+    [$target, $cert] = makeTargetWithCert('tencent', 'cdn');
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe([
+        'remote_cert_id' => 'cert-material',
+        'cert' => 'CERTPEM',
+        'chain' => 'CHAIN',
+    ]);
+    expect(CloudDeployJobTestSpy::$binds[0]['cert'])->not->toHaveKey('key')->not->toHaveKey('private_key');
+    expect(CloudDeployRemoteCert::where('access_id', $target->access_id)->value('remote_cert_id'))->toBe('cert-material');
+    expect(CloudDeployRemoteCert::where('access_id', $target->access_id)->firstOrFail()->toJson())->not->toContain('KEYPEM');
+    expect(CloudDeployLog::where('target_id', $target->id)->get()->toJson())->not->toContain('KEYPEM');
 });
 
 test('缺中间证书 fail closed：不推、记 missing_chain、target failed、不调 deployer', function () {

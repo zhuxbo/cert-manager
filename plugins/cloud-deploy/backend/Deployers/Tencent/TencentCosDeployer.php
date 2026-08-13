@@ -11,6 +11,7 @@ use TencentCloud\Common\Credential;
 use TencentCloud\Common\Profile\ClientProfile;
 use TencentCloud\Common\Profile\HttpProfile;
 use TencentCloud\Ssl\V20191205\Models\DeployCertificateInstanceRequest;
+use TencentCloud\Ssl\V20191205\Models\DescribeHostCosInstanceListRequest;
 use TencentCloud\Ssl\V20191205\Models\DescribeHostDeployRecordDetailRequest;
 use TencentCloud\Ssl\V20191205\SslClient;
 use Throwable;
@@ -27,24 +28,23 @@ use Throwable;
  *
  * 异步处理：DeployCertificateInstance 返回 DeployRecordId，certimate 轮询
  * DescribeHostDeployRecordDetail 直到 succeeded+failed==total（任一 failed 即报错）。
- * 本端点对齐——bind 内 guardSdk 后 pollDeployRecord() 有界轮询（最多 maxPollAttempts 次、
- * 每次间隔 pollIntervalSeconds 秒，防无限等）；轮询超时不算失败（部署任务已提交，
- * 腾讯侧异步落地），仅记一次"未在等待窗口内完成"——抛业务错误让上层可见但不丢任务。
- *
- * 简化（相对 certimate）：① 不做部署前 DescribeHostCosInstanceList 去重预检（certimate
- * 为规避 issue#897 重复部署报错，本插件 RemoteCertStore 已按 fingerprint 去重 CertId，
- * 重复 DeployCertificateInstance 同实例腾讯侧幂等覆盖，风险低）；② Status 固定 1（启用）。
+ * bind 先按 CertificateId + bucket + domain 查询 DescribeHostCosInstanceList，已绑定且为
+ * ENABLED 时直接收敛，规避重复部署错误；预检失败与 Certimate 一致不阻断部署。
+ * 创建部署任务后在短窗内查询一次，未终态则持久化 DeployRecordId，由 resumePoll
+ * 续查同一任务，不重复发起部署。Status 固定 1（启用）。
  *
  * region 维度：DeployCertificateInstance 接口本身是全局 SSL 服务（client 空 region 即可，
  * region 仅作为 InstanceId 拼装的一段），与 CLB/WAF 的 region 维度 client 不同。
  */
 class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, ResumesRemoteJob
 {
+    use UsesTencentEndpoint;
+
     /** SSL client 请求超时（秒）= §G2.3 预算 T 单一来源（长轮询专用；非轮询腾讯端点保持 15）。 */
     public const CLIENT_TIMEOUT_SECONDS = 10;
 
     /** bind 短窗首查次数（G2 压窗）：未终态即抛 DeployPollPendingException 走重试/sweep-B 续查同一 recordId。 */
-    protected int $maxPollAttempts = 2;
+    protected int $maxPollAttempts = 1;
 
     /** resumePoll 续查次数（无前置建任务，预算宽松）。 */
     protected int $resumePollAttempts = 3;
@@ -70,6 +70,7 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
             ['key' => 'bucket', 'label' => '存储桶名', 'type' => 'string', 'required' => true],
             ['key' => 'domain', 'label' => '自定义域名（不支持泛域名）', 'type' => 'string', 'required' => true],
@@ -84,7 +85,7 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // 腾讯 SSL 上传是全局服务（空 region）
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
@@ -94,12 +95,17 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         $region = (string) $this->requireConfig($config, 'region');
         $bucket = (string) $this->requireConfig($config, 'bucket');
         $domain = (string) $this->requireConfig($config, 'domain');
 
         /** @var SslClient $client */
         $client = $this->makeClient('ssl', $credentials);
+
+        if ($this->isAlreadyBound($client, (string) $certRef, $bucket, $domain)) {
+            return;
+        }
 
         // SDK 调用单独 guardSdk（异常脱敏）；返回的 recordId 用于后续轮询
         $recordId = $this->guardSdk(function () use ($client, $region, $bucket, $domain, $certRef) {
@@ -116,7 +122,7 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
         });
 
         // 部署任务 ID 缺失（极少数实例无需异步落地）→ 触发即成功，不轮询
-        if ($recordId === null || $recordId === '') {
+        if ($recordId <= 0) {
             return;
         }
 
@@ -130,6 +136,7 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
      */
     public function resumePoll(string $remoteJobId, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         /** @var SslClient $client */
         $client = $this->makeClient('ssl', $credentials);
         $this->pollDeployRecord($client, $remoteJobId, $this->resumePollAttempts);
@@ -137,14 +144,56 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
 
     public function pollBudget(): PollBudget
     {
-        // N_upload=1（SSL UploadCertificate）+ N_pre=1（DeployCertificateInstance）
+        // N_upload=1（SSL UploadCertificate）+ N_pre=2（COS 去重预检 + 创建部署任务）
         return new PollBudget(
             clientTimeoutSeconds: self::CLIENT_TIMEOUT_SECONDS,
             uploadCalls: 1,
-            preIterCalls: 1,
+            preIterCalls: 2,
             bindIterations: $this->maxPollAttempts,
             intervalSeconds: $this->pollIntervalSeconds,
         );
+    }
+
+    /**
+     * 查询当前证书在 COS 的已绑定实例。预检是去重优化，查询失败时按 Certimate
+     * 语义继续创建部署任务，不把读路异常误判为已绑定。
+     */
+    private function isAlreadyBound(object $client, string $certificateId, string $bucket, string $domain): bool
+    {
+        $limit = 100;
+        $offset = 0;
+
+        try {
+            do {
+                $response = $this->guardSdk(function () use ($client, $certificateId, $limit, $offset) {
+                    $req = new DescribeHostCosInstanceListRequest;
+                    $req->deserialize([
+                        'OldCertificateId' => $certificateId,
+                        'ResourceType' => 'cos',
+                        'IsCache' => 0,
+                        'Offset' => $offset,
+                        'Limit' => $limit,
+                    ]);
+
+                    return $client->DescribeHostCosInstanceList($req);
+                });
+
+                $instances = $response->getInstanceList() ?? [];
+                foreach ($instances as $instance) {
+                    if ((string) $instance->getBucket() === $bucket
+                        && (string) $instance->getDomain() === $domain
+                        && (string) $instance->getStatus() === 'ENABLED') {
+                        return true;
+                    }
+                }
+
+                $offset += $limit;
+            } while (count($instances) === $limit);
+        } catch (Throwable) {
+            return false;
+        }
+
+        return false;
     }
 
     /**
@@ -184,12 +233,14 @@ class TencentCosDeployer extends AbstractDeployer implements HasPollBudget, Resu
         $http = new HttpProfile;
         // 长轮询端点：请求超时收至 10s（§G2.3 预算 T；非轮询腾讯端点保持 15）。
         $http->setReqTimeout(self::CLIENT_TIMEOUT_SECONDS);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
         // SSL DeployCertificateInstance 为全局服务，region 取空
         return match ($kind) {
             'ssl' => new SslClient($cred, '', $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

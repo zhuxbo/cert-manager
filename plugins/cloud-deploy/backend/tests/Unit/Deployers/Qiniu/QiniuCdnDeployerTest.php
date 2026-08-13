@@ -24,6 +24,16 @@ function qiniuCdnDeployerWith(callable $clientFactory): QiniuCdnDeployer
     };
 }
 
+function qiniuCdnCertificate(string $commonName): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => $commonName], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('七牛云 CDN 走证书服务（storeKind=qiniu）', function () {
     $deployer = new QiniuCdnDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -129,6 +139,20 @@ test('bind exact 模式去掉域名前导 *（*.example.com → .example.com）'
     $deployer->bind('c|clouddeploy_1', ['access_key' => 'AK', 'secret_key' => 'SK'], ['domain' => '*.example.com']);
 
     expect($captured)->toBe('.example.com');
+});
+
+test('certsan 按 marker 列举可用域名并仅更新证书匹配项', function () {
+    $client = Mockery::mock(QiniuRestClient::class);
+    $client->shouldReceive('listCdnDomains')->once()->andReturn(['a.example.com', 'b.example.com']);
+    $client->shouldReceive('getCdnDomainInfo')->once()->with('a.example.com')->andReturn(['https' => null]);
+    $client->shouldReceive('enableCdnDomainHttps')->once()->with('a.example.com', 'cert-1', true, true);
+
+    $deployer = qiniuCdnDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1|name-1', 'cert' => qiniuCdnCertificate('a.example.com'), 'chain' => ''], ['access_key' => 'AK', 'secret_key' => 'SK'], [
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect(true)->toBeTrue();
 });
 
 test('bind 收到无效 remote_cert_id 抛业务错误', function () {

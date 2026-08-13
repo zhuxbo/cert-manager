@@ -20,9 +20,6 @@ use Throwable;
  * as_default 由 config.is_default 决定（导入即设为默认证书；更新时若原证书已是默认则保持）。
  * 鉴权 登录拿 sid + SynoToken（凭证含 server_url + 账号密码 + 可选 totp_secret）。
  *
- * 偏差说明：未实现 certimate「设为默认后把所有服务从旧默认证书改绑到新默认证书」的二级编排
- * （SYNO.Core.Certificate.Service:set）——import 的 as_default=true 已在 API 层将导入证书设为默认。
- *
  * config：certificate_id_or_desc（选填，空=新建/非空=更新指定证书）/ is_default（选填，bool）。
  */
 class CertificateDeployer extends AbstractDeployer
@@ -98,9 +95,36 @@ class CertificateDeployer extends AbstractDeployer
         }
 
         // 阶段 2（SDK）：导入证书 + 登出（finally 兜底）
-        $this->guardSdk(function () use ($client, $resolved, $key, $leaf, $intermediate) {
+        $this->guardSdk(function () use ($client, $resolved, $key, $leaf, $intermediate, $isDefault) {
             try {
                 $client->importCertificate($resolved['id'], $resolved['desc'], $key, $leaf, $intermediate, $resolved['as_default']);
+                if ($isDefault) {
+                    $certificates = $client->listCertificates();
+                    $defaultId = '';
+                    foreach ($certificates as $certificate) {
+                        if (($certificate['is_default'] ?? false) === true) {
+                            $defaultId = (string) ($certificate['id'] ?? '');
+                            break;
+                        }
+                    }
+                    $settings = [];
+                    if ($defaultId !== '') {
+                        foreach ($certificates as $certificate) {
+                            $oldId = (string) ($certificate['id'] ?? '');
+                            if ($oldId === '' || $oldId === $defaultId) {
+                                continue;
+                            }
+                            foreach ((array) ($certificate['services'] ?? []) as $service) {
+                                if (is_array($service)) {
+                                    $settings[] = ['service' => $service, 'old_id' => $oldId, 'id' => $defaultId];
+                                }
+                            }
+                        }
+                    }
+                    if ($settings !== []) {
+                        $client->setServiceCertificates($settings);
+                    }
+                }
             } finally {
                 $client->logout();
             }

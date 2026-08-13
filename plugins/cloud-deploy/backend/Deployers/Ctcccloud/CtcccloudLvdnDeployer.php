@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Ctcccloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -19,8 +20,10 @@ use Throwable;
  * 与 CDN/ICDN 的差异：LVDN 用 product_code="005" + https_switch(int 1) 而非 https_status("on")，且路径前缀为 /live、
  * create-cert 无 /v1 前缀（对齐各 SDK api 文件）。endpoint host：ctlvdn-global.ctapi.ctyun.cn。仅 exact。
  */
-class CtcccloudLvdnDeployer extends AbstractDeployer
+class CtcccloudLvdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCtcccloudDomains;
+
     /** LVDN 产品码（对齐 certimate，固定 005）。 */
     private const PRODUCT_CODE = '005';
 
@@ -42,7 +45,8 @@ class CtcccloudLvdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -67,24 +71,24 @@ class CtcccloudLvdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certName = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $certName = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $domain, $certName) {
+        $this->guardSdk(function () use ($credentials, $domain, $pattern, $certificate, $certName) {
             /** @var CtcccloudRestClient $client */
             $client = $this->makeClient('lvdn', $credentials);
 
-            $client->get('/live/domain/query-domain-detail', [
-                'domain' => $domain,
-                'product_code' => self::PRODUCT_CODE,
-            ]);
-
-            $client->post('/live/domain/update-domain', [
-                'domain' => $domain,
-                'product_code' => self::PRODUCT_CODE,
-                'https_switch' => 1,
-                'cert_name' => $certName,
-            ]);
+            foreach ($this->matchingDomains($client, '/domain/query-domain-list', $domain, $pattern, self::PRODUCT_CODE, false, $certificate) as $matchedDomain) {
+                $client->get('/live/domain/query-domain-detail', [
+                    'domain' => $matchedDomain, 'product_code' => self::PRODUCT_CODE,
+                ]);
+                $client->post('/live/domain/update-domain', [
+                    'domain' => $matchedDomain, 'product_code' => self::PRODUCT_CODE,
+                    'https_switch' => 1, 'cert_name' => $certName,
+                ]);
+            }
         });
     }
 

@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Jdcloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -18,8 +20,10 @@ use Throwable;
  * 仅实现 exact domain 核心路径（对齐插件既有约定）；不做 certimate 的 wildcard / certsan 遍历
  * （GetDomainList + DomainMatchPattern）。
  */
-class JdcloudCdnDeployer extends AbstractDeployer
+class JdcloudCdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
+
     public function provider(): string
     {
         return 'jdcloud';
@@ -38,7 +42,8 @@ class JdcloudCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -53,20 +58,43 @@ class JdcloudCdnDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  云端 certId（SSL 证书中心上传所得）
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  云端 certId 与可选证书材料
      * @param  array{access_key_id:string,access_key_secret:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certId = (string) $certRef;
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $domain = (string) ($config['domain'] ?? '');
+        $certId = is_array($certRef) ? $certRef['remote_cert_id'] : $certRef;
+        $certificate = is_array($certRef) ? $certRef['cert'] : '';
+        if (in_array($pattern, ['', 'exact', 'wildcard'], true) && $domain === '') {
+            $this->fail('缺少配置 domain');
+        }
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId) {
+        $this->guardSdk(function () use ($credentials, $domain, $certId, $certificate, $pattern) {
             /** @var JdcloudRestClient $client */
             $client = $this->makeClient('cdn', $credentials);
-            $jumpType = $client->queryCdnDomainHttpsJumpType($domain);
-            $client->setCdnHttpType($domain, $certId, $jumpType);
+            $candidates = in_array($pattern, ['wildcard', 'certsan'], true) ? $client->listCdnDomains() : [];
+            $domains = match ($pattern) {
+                '', 'exact' => [$domain],
+                'wildcard' => array_values(array_filter(
+                    $candidates,
+                    fn (string $candidate): bool => $this->certificateHostnamePatternMatches($domain, $candidate),
+                )),
+                'certsan' => $certificate === '' ? $this->fail('certsan 匹配缺少证书材料') : array_values(array_filter(
+                    $candidates,
+                    fn (string $candidate): bool => $this->certificateMatchesHostname($certificate, $candidate),
+                )),
+                default => $this->fail("不支持的域名匹配模式 $pattern"),
+            };
+            if ($domains === []) {
+                $this->fail('未找到匹配的 CDN 域名');
+            }
+            foreach ($domains as $matchedDomain) {
+                $jumpType = $client->queryCdnDomainHttpsJumpType($matchedDomain);
+                $client->setCdnHttpType($matchedDomain, $certId, $jumpType);
+            }
         });
     }
 
@@ -75,6 +103,7 @@ class JdcloudCdnDeployer extends AbstractDeployer
         return match ($kind) {
             'ssl' => JdcloudClientFactory::ssl($credentials),
             'cdn' => JdcloudClientFactory::cdn($credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

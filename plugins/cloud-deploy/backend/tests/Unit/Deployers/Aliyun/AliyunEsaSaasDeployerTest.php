@@ -44,7 +44,25 @@ test('阿里云 ESA SaaS 走证书服务（storeKind=cas）+ 元信息', functio
     expect($deployer->product())->toBe('esasaas');
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader()->storeKind())->toBe('cas');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('site_id')->toContain('domain');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('site_id')->toContain('domain')->toContain('domain_match_pattern');
+});
+
+test('wildcard 批量更新 ESA SaaS 单层匹配域名', function () {
+    $ids = [];
+    $esa = Mockery::mock(ESA::class);
+    $esa->shouldReceive('listCustomHostnames')->once()->andReturn(esaHostnamesResponse([
+        ['hostnameId' => 1, 'hostname' => 'a.example.com'],
+        ['hostnameId' => 2, 'hostname' => 'deep.a.example.com'],
+    ]));
+    $esa->shouldReceive('updateCustomHostname')->once()->andReturnUsing(function ($request) use (&$ids) {
+        $ids[] = $request->hostnameId;
+
+        return new UpdateCustomHostnameResponse;
+    });
+    aliyunEsaSaasDeployerWith(fn () => $esa)->bind('1-cn-hangzhou', [
+        'access_key_id' => 'AK', 'access_key_secret' => 'SK',
+    ], ['site_id' => '100', 'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com']);
+    expect($ids)->toBe([1]);
 });
 
 test('bind 找到精确域名后调 UpdateCustomHostname（CertType=cas、CasId 数字 certId、CasRegion、SslFlag=on）', function () {

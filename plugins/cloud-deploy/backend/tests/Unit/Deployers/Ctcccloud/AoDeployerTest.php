@@ -1,6 +1,9 @@
 <?php
 
 use Plugins\CloudDeploy\Deployers\Ctcccloud\CtcccloudAoDeployer;
+use Plugins\CloudDeploy\Deployers\Ctcccloud\CtcccloudCdnDeployer;
+use Plugins\CloudDeploy\Deployers\Ctcccloud\CtcccloudIcdnDeployer;
+use Plugins\CloudDeploy\Deployers\Ctcccloud\CtcccloudLvdnDeployer;
 use Plugins\CloudDeploy\Deployers\Ctcccloud\CtcccloudRestClient;
 use Tests\TestCase;
 
@@ -32,7 +35,36 @@ test('天翼云 AO：证书服务型（storeKind ctcccloud_ao + 元信息 + sche
     expect($deployer->provider())->toBe('ctcccloud');
     expect($deployer->product())->toBe('ao');
     expect($deployer->label())->toBe('天翼云边缘安全加速 AccessOne');
-    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain']);
+    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain_match_pattern', 'domain']);
+});
+
+test('AO/CDN/ICDN/LVDN 均暴露官方 domain_match_pattern', function () {
+    foreach ([new CtcccloudAoDeployer, new CtcccloudCdnDeployer, new CtcccloudIcdnDeployer, new CtcccloudLvdnDeployer] as $deployer) {
+        expect(array_column($deployer->configSchema(), 'key'))->toContain('domain_match_pattern');
+    }
+});
+
+test('AO wildcard 分页列举并更新单层匹配域名', function () {
+    $updated = [];
+    $client = Mockery::mock(CtcccloudRestClient::class);
+    $client->shouldReceive('get')->once()->with('/ctapi/v2/domain/query', Mockery::type('array'))->andReturn([
+        'returnObj' => ['result' => [
+            ['domain' => 'a.example.com', 'status' => 0],
+            ['domain' => 'deep.a.example.com', 'status' => 0],
+        ]],
+    ]);
+    $client->shouldReceive('post')->andReturnUsing(function ($path, $body) use (&$updated) {
+        if ($path === '/ctapi/v1/accessone/domain/config') {
+            return ['returnObj' => ['product_code' => '020', 'origin' => []]];
+        }
+        $updated[] = $body['domain'];
+
+        return [];
+    });
+    ctyunAoDeployerWith(fn () => $client)->bind('cert-1', ctyunAoCreds(), [
+        'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    expect($updated)->toBe(['a.example.com']);
 });
 
 test('uploader.upload 走 AO create 路径 /ctapi/v1/accessone/cert/create 返回 CertName', function () {

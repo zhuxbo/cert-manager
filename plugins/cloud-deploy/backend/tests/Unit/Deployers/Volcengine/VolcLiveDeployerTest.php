@@ -43,7 +43,7 @@ test('uploader.upload 调 CreateCert 返回 ChainID（Rsa.Prikey/Pubkey 嵌套�
     });
 
     $deployer = volcLiveDeployerWith(fn (string $kind) => $kind === 'live' ? $client : new stdClass);
-    $id = $deployer->certUploader()->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', volcLiveCreds());
+    $id = $deployer->certUploader()->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', volcLiveCreds() + ['project_name' => 'project-a']);
 
     expect($id)->toBe('chain-1');
     expect($args['action'])->toBe('CreateCert');
@@ -52,6 +52,7 @@ test('uploader.upload 调 CreateCert 返回 ChainID（Rsa.Prikey/Pubkey 嵌套�
     expect($args['body']['Rsa']['Prikey'])->toBe('KEYPEM');
     expect($args['body']['Rsa']['Pubkey'])->toContain('CERTPEM')->toContain('CHAINPEM');
     expect($args['body']['UseWay'])->toBe('https');
+    expect($args['body']['ProjectName'])->toBe('project-a');
     expect($args['body']['CertName'])->toStartWith('clouddeploy_');
 });
 
@@ -79,6 +80,29 @@ test('bind 调 BindCert（ChainID、Domain、HTTPS 大写键=true）', function 
     expect($args['action'])->toBe('BindCert');
     expect($args['version'])->toBe('2023-01-01');
     expect($args['body'])->toBe(['ChainID' => 'chain-1', 'Domain' => 'live.example.com', 'HTTPS' => true]);
+});
+
+test('wildcard 分页列举启用域名并仅绑定单层匹配项', function () {
+    $requests = [];
+    $client = Mockery::mock(VolcRestClient::class);
+    $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$requests) {
+        $requests[] = compact('action', 'version', 'body');
+        if ($action === 'ListDomainDetail') {
+            return ['Result' => ['DomainList' => [
+                ['Domain' => 'a.example.com'],
+                ['Domain' => 'deep.a.example.com'],
+            ]]];
+        }
+
+        return [];
+    });
+
+    $deployer = volcLiveDeployerWith(fn () => $client);
+    $deployer->bind('chain-1', volcLiveCreds(), ['domain_match_pattern' => 'wildcard', 'domain' => '*.example.com']);
+
+    expect($requests[0]['body'])->toMatchArray(['DomainStatusList' => [0], 'PageNum' => 1, 'PageSize' => 1000]);
+    expect($requests)->toHaveCount(2);
+    expect($requests[1]['body']['Domain'])->toBe('a.example.com');
 });
 
 test('缺 domain 配置抛业务错误', function () {

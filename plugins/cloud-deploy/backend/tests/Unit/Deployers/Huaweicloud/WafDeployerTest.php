@@ -31,13 +31,56 @@ function hwWafConfig(): array
     return ['region' => 'cn-north-4', 'domain' => 'waf.example.com'];
 }
 
-test('华为云 WAF：证书服务型 + region 维度 storeKind + schema(region+domain)', function () {
+test('华为云 WAF：证书服务型 + region 维度 storeKind + schema 部署目标', function () {
     $deployer = new WafDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader(['region' => 'cn-north-4'])->storeKind())->toBe('huawei_waf:cn-north-4');
     expect($deployer->product())->toBe('waf');
     $keys = array_column($deployer->configSchema(), 'key');
-    expect($keys)->toContain('region')->toContain('domain');
+    expect($keys)->toContain('region')->toContain('deploy_target')->toContain('domain')->toContain('certificate_id');
+});
+
+test('bind premiumhost：ListPremiumHost 后 UpdatePremiumHost 绑定证书', function () {
+    $iam = Mockery::mock(HuaweicloudRestClient::class);
+    $iam->shouldReceive('get')->with('/v3/projects', ['name' => 'cn-north-4'])->andReturn(['projects' => [['id' => 'proj-1']]]);
+    $putCaptured = null;
+    $waf = Mockery::mock(HuaweicloudRestClient::class);
+    $waf->shouldReceive('get')->with('/v1/proj-1/waf/certificate/waf-cert-99', [])->andReturn(['name' => 'cert-name-x']);
+    $waf->shouldReceive('get')->with('/v1/proj-1/premium-waf/host', Mockery::on(fn ($q) => ($q['hostname'] ?? '') === 'waf.example.com'))
+        ->andReturn(['items' => [['id' => 'premium-1', 'hostname' => 'waf.example.com']]]);
+    $waf->shouldReceive('put')->once()->andReturnUsing(function (string $path, array $body, array $query = []) use (&$putCaptured) {
+        $putCaptured = compact('path', 'body');
+
+        return [];
+    });
+
+    $deployer = hwWafDeployerWith(fn (string $kind) => $kind === 'iam' ? $iam : $waf);
+    $deployer->bind('waf-cert-99', hwWafCreds(), array_replace(hwWafConfig(), ['deploy_target' => 'premiumhost']));
+
+    expect($putCaptured['path'])->toBe('/v1/proj-1/premium-waf/host/premium-1');
+    expect($putCaptured['body'])->toMatchArray(['certificateid' => 'waf-cert-99', 'certificatename' => 'cert-name-x']);
+});
+
+test('certificate 目标：uploader 保留证书名并原地 UpdateCertificate，bind no-op', function () {
+    $iam = Mockery::mock(HuaweicloudRestClient::class);
+    $iam->shouldReceive('get')->with('/v3/projects', ['name' => 'cn-north-4'])->andReturn(['projects' => [['id' => 'proj-1']]]);
+    $captured = null;
+    $waf = Mockery::mock(HuaweicloudRestClient::class);
+    $waf->shouldReceive('get')->with('/v1/proj-1/waf/certificate/old-cert', [])->andReturn(['name' => 'existing-name']);
+    $waf->shouldReceive('put')->once()->andReturnUsing(function (string $path, array $body, array $query = []) use (&$captured) {
+        $captured = compact('path', 'body', 'query');
+
+        return ['id' => 'old-cert'];
+    });
+
+    $deployer = hwWafDeployerWith(fn (string $kind) => $kind === 'iam' ? $iam : $waf);
+    $config = ['region' => 'cn-north-4', 'deploy_target' => 'certificate', 'certificate_id' => 'old-cert'];
+    $uploader = $deployer->certUploader($config);
+    expect($uploader->storeKind())->toStartWith('huawei-waf-r:');
+    expect($uploader->upload('CERT', 'KEY', 'CHAIN', hwWafCreds()))->toBe('old-cert');
+    expect($captured['path'])->toBe('/v1/proj-1/waf/certificate/old-cert');
+    expect($captured['body'])->toBe(['name' => 'existing-name', 'content' => "CERT\nCHAIN", 'key' => 'KEY']);
+    $deployer->bind('old-cert', hwWafCreds(), $config);
 });
 
 test('uploader.upload：IAM 反查 projectId 后 WAF CreateCertificate（字段 content/key）返回 id', function () {

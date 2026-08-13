@@ -60,7 +60,7 @@ class VolcWafDeployer extends AbstractDeployer
 
     /**
      * @param  string  $certRef  证书中心 InstanceId
-     * @param  array{access_key_id?:string,secret_access_key?:string}  $credentials
+     * @param  array{access_key_id?:string,secret_access_key?:string,project_name?:string}  $credentials
      * @param  array{region:string,access_mode:string,domain:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
@@ -78,13 +78,17 @@ class VolcWafDeployer extends AbstractDeployer
         $domainInfo = $this->guardSdk(function () use ($credentials, $domain, $region): array {
             /** @var VolcRestClient $client */
             $client = $this->makeClient('waf', $credentials, $region);
-            $listResult = $client->callJson('ListDomain', '2023-12-25', [
+            $body = [
                 'Region' => $region,
                 'Domain' => $domain,
                 'AccurateQuery' => 1,
                 'Page' => 1,
                 'PageSize' => 1,
-            ]);
+            ];
+            if (isset($credentials['project_name']) && (string) $credentials['project_name'] !== '') {
+                $body['ProjectName'] = (string) $credentials['project_name'];
+            }
+            $listResult = $client->callJson('ListDomain', '2023-12-25', $body);
             $data = is_array($listResult['Data'] ?? null) ? $listResult['Data'] : [];
 
             return is_array($data[0] ?? null) ? $data[0] : [];
@@ -129,6 +133,9 @@ class VolcWafDeployer extends AbstractDeployer
                 'VolcCertificateID' => $certId,
                 'CertificatePlatform' => 'certificate-service',
             ];
+            if (isset($credentials['project_name']) && (string) $credentials['project_name'] !== '') {
+                $body['ProjectName'] = (string) $credentials['project_name'];
+            }
             if (isset($domainInfo['LBAlgorithm']) && is_string($domainInfo['LBAlgorithm']) && $domainInfo['LBAlgorithm'] !== '') {
                 $body['LBAlgorithm'] = $domainInfo['LBAlgorithm'];
             }
@@ -154,6 +161,7 @@ class VolcWafDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

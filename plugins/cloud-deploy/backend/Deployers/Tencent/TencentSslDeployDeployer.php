@@ -38,6 +38,8 @@ use Throwable;
  */
 class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget, ResumesRemoteJob
 {
+    use UsesTencentEndpoint;
+
     /** SSL client 请求超时（秒）= §G2.3 预算 T 单一来源（长轮询专用；非轮询腾讯端点保持 15）。 */
     public const CLIENT_TIMEOUT_SECONDS = 10;
 
@@ -68,6 +70,7 @@ class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'resource_type', 'label' => '云资源类型（如 cdn/clb/cos/ddos/live/teo/vod/waf）', 'type' => 'string', 'required' => true],
             ['key' => 'instance_id_list', 'label' => '资源实例 ID 列表（换行或逗号分隔）', 'type' => 'string', 'required' => true],
             ['key' => 'region', 'label' => '云资源地域（选填）', 'type' => 'string', 'required' => false],
@@ -82,7 +85,7 @@ class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // 腾讯 SSL 上传是全局服务（空 region）
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
@@ -92,6 +95,7 @@ class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         $resourceType = (string) $this->requireConfig($config, 'resource_type');
         $instanceIdList = $this->normalizeInstanceIdList($this->requireConfig($config, 'instance_id_list'));
         if ($instanceIdList === []) {
@@ -116,7 +120,7 @@ class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget
             return $client->DeployCertificateInstance($req)->getDeployRecordId();
         });
 
-        if ($recordId === null || $recordId === '') {
+        if ($recordId <= 0) {
             return;
         }
 
@@ -130,6 +134,7 @@ class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget
      */
     public function resumePoll(string $remoteJobId, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         /** @var SslClient $client */
         $client = $this->makeClient('ssl', $credentials, (string) ($config['region'] ?? ''));
         $this->pollDeployRecord($client, $remoteJobId, $this->resumePollAttempts);
@@ -207,12 +212,14 @@ class TencentSslDeployDeployer extends AbstractDeployer implements HasPollBudget
         $http = new HttpProfile;
         // 长轮询端点：请求超时收至 10s（§G2.3 预算 T；非轮询腾讯端点保持 15）。
         $http->setReqTimeout(self::CLIENT_TIMEOUT_SECONDS);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
         return match ($kind) {
             // certimate ssl-deploy 把 resourceRegion 作为 client region 传入（部分资源类型要求一致）
             'ssl' => new SslClient($cred, $region, $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

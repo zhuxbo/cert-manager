@@ -29,6 +29,8 @@ use Throwable;
  */
 class TencentWafDeployer extends AbstractDeployer
 {
+    use UsesTencentEndpoint;
+
     public function provider(): string
     {
         return 'tencent';
@@ -47,6 +49,7 @@ class TencentWafDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'instance_id', 'label' => 'WAF 实例 ID', 'type' => 'string', 'required' => true],
             ['key' => 'domain', 'label' => '防护域名', 'type' => 'string', 'required' => true],
             ['key' => 'domain_id', 'label' => '防护域名 ID', 'type' => 'string', 'required' => true],
@@ -62,7 +65,7 @@ class TencentWafDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // 腾讯 SSL 上传是全局服务（空 region），与 WAF 的 region 维度无关
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
@@ -72,6 +75,7 @@ class TencentWafDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         $instanceId = (string) $this->requireConfig($config, 'instance_id');
         $domain = (string) $this->requireConfig($config, 'domain');
         $domainId = (string) $this->requireConfig($config, 'domain_id');
@@ -98,6 +102,7 @@ class TencentWafDeployer extends AbstractDeployer
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
         $http->setReqTimeout(15);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
@@ -106,6 +111,7 @@ class TencentWafDeployer extends AbstractDeployer
             'ssl' => new SslClient($cred, '', $profile),
             // WAF region 维度：client 构造必须带 region
             'waf' => new WafClient($cred, $region, $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

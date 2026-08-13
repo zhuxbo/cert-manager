@@ -7,15 +7,20 @@ use Tests\TestCase;
 
 uses(TestCase::class);
 
-function jdcloudLiveDeployerWith(callable $clientFactory): JdcloudLiveDeployer
+function jdcloudLiveDeployerWith(callable $clientFactory, ?callable $matcher = null): JdcloudLiveDeployer
 {
-    return new class($clientFactory) extends JdcloudLiveDeployer
+    return new class($clientFactory, $matcher) extends JdcloudLiveDeployer
     {
-        public function __construct(private $factory) {}
+        public function __construct(private $factory, private $matcher) {}
 
         protected function makeClient(string $kind, array $credentials): object
         {
             return ($this->factory)($kind, $credentials);
+        }
+
+        protected function certificateMatches(string $certPem, string $domain): bool
+        {
+            return $this->matcher === null ? parent::certificateMatches($certPem, $domain) : ($this->matcher)($domain);
         }
     };
 }
@@ -55,6 +60,21 @@ test('bind：SetLiveDomainCertificate 直灌完整链 PEM + 私钥', function ()
     // cert = leaf + chain 完整链
     expect($captured['cert'])->toContain('CERTPEM')->toContain('CHAINPEM');
     expect($captured['key'])->toBe('KEYPEM');
+});
+
+test('certsan 分页列举播放域名，跳过离线状态并批量更新匹配域名', function () {
+    $writes = [];
+    $client = Mockery::mock(JdcloudRestClient::class);
+    $client->shouldReceive('listLiveDomains')->once()->andReturn(['a.example.com', 'b.example.com']);
+    $client->shouldReceive('setLiveDomainCertificate')->once()->andReturnUsing(function (string $domain) use (&$writes) {
+        $writes[] = $domain;
+    });
+
+    jdcloudLiveDeployerWith(fn () => $client, fn (string $domain): bool => $domain === 'a.example.com')->bind(
+        ['cert' => 'CERTPEM', 'key' => 'KEY', 'chain' => 'CHAIN'], jdCreds(), ['domain_match_pattern' => 'certsan'],
+    );
+
+    expect($writes)->toBe(['a.example.com']);
 });
 
 test('bind 收到非数组 certRef（内联型必须 PEM 三元组）抛业务错误', function () {

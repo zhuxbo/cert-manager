@@ -4,13 +4,14 @@ namespace Plugins\CloudDeploy\Services;
 
 use App\Models\Order;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 
 class OrderOptionService
 {
     private const SELECTABLE_CERT_STATUSES = ['unpaid', 'pending', 'processing', 'approving', 'active'];
 
     /**
-     * @return array{items:\Illuminate\Support\Collection<int,array{id:int,label:string,user_id:int,common_name:string,status:string}>,total:int,pageSize:int,currentPage:int}
+     * @return array{items:Collection<int,array{id:int,label:string,user_id:int,common_name:string,status:string}>,total:int,pageSize:int,currentPage:int}
      */
     public function paginate(?int $userId, string $quickSearch, int $currentPage, int $pageSize, bool $withGlobalScopes): array
     {

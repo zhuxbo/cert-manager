@@ -39,6 +39,19 @@ test('Zenlayer CDN：证书服务型（usesRemoteCertStore + storeKind zenlayer_
     expect($deployer->provider())->toBe('zenlayer');
     expect($deployer->product())->toBe('cdn');
     expect($deployer->label())->toBe('Zenlayer CDN');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('deploy_target')->toContain('certificate_id')->toContain('domain_match_pattern');
+});
+
+test('certificate 目标经 uploader 调 ModifyCertificate 原位替换', function () {
+    $client = Mockery::mock(ZenlayerRestClient::class);
+    $client->shouldReceive('call')->once()->with('ModifyCertificate', [
+        'certificateId' => 'cert-old', 'certificateContent' => "CERTPEM\nCHAINPEM", 'certificateKey' => 'KEYPEM',
+    ])->andReturn([]);
+    $deployer = zenlayerCdnDeployerWith(fn () => $client);
+    $uploader = $deployer->certUploader(['deploy_target' => 'certificate', 'certificate_id' => 'cert-old']);
+    expect($uploader->storeKind())->toBe('zenlayer_cdn:cert-old');
+    expect($uploader->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', zenlayerCdnCreds()))->toBe('cert-old');
+    $deployer->bind('cert-old', zenlayerCdnCreds(), ['deploy_target' => 'certificate', 'certificate_id' => 'cert-old']);
 });
 
 test('uploader.upload 调 CreateCertificate 返回 certificateId（content=完整链, key=私钥, 透传 resourceGroupId）', function () {
@@ -96,6 +109,70 @@ test('bind：exact 匹配域名 → 未绑定时 ModifyDomainCertificate + 轮�
     // 只对匹配域名 d-1 操作（d-2 不匹配）
     $modifyCount = collect($calls)->where('action', 'ModifyDomainCertificate')->count();
     expect($modifyCount)->toBe(1);
+});
+
+test('bind：wildcard 匹配多个单层域名并逐个绑定', function () {
+    $modified = [];
+    $client = Mockery::mock(ZenlayerRestClient::class);
+    $client->shouldReceive('call')->andReturnUsing(function (string $action, array $body) use (&$modified) {
+        if ($action === 'DescribeDomains' && isset($body['domainStatus'])) {
+            return ['dataSet' => [
+                ['domainId' => 'd1', 'domainName' => 'a.example.com'],
+                ['domainId' => 'd2', 'domainName' => 'deep.a.example.com'],
+                ['domainId' => 'd3', 'domainName' => '.example.com'],
+            ]];
+        }
+        if ($action === 'DescribeDomainCertificate') {
+            return ['certificate' => ['certificateId' => 'old']];
+        }
+        if ($action === 'ModifyDomainCertificate') {
+            $modified[] = $body['domainId'];
+
+            return [];
+        }
+
+        return ['dataSet' => [['configStatus' => 'DEPLOYED']]];
+    });
+    zenlayerCdnDeployerWith(fn () => $client)->bind('new', zenlayerCdnCreds(), [
+        'deploy_target' => 'domain', 'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    expect($modified)->toBe(['d1', 'd3']);
+});
+
+test('bind：certsan 用 opt-in leaf 证书枚举域名并绑定', function () {
+    $conf = tempnam(sys_get_temp_dir(), 'zen_san_');
+    file_put_contents($conf, "[v3]\nsubjectAltName=DNS:a.example.com,DNS:*.wild.example.com\n");
+    $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'a.example.com'], $key, ['digest_alg' => 'sha256']);
+    $cert = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256', 'config' => $conf, 'x509_extensions' => 'v3']);
+    openssl_x509_export($cert, $pem);
+    @unlink($conf);
+
+    $modified = [];
+    $client = Mockery::mock(ZenlayerRestClient::class);
+    $client->shouldReceive('call')->andReturnUsing(function (string $action, array $body) use (&$modified) {
+        if ($action === 'DescribeDomains' && isset($body['domainStatus'])) {
+            return ['dataSet' => [
+                ['domainId' => 'd1', 'domainName' => 'a.example.com'],
+                ['domainId' => 'd2', 'domainName' => 'x.wild.example.com'],
+                ['domainId' => 'd3', 'domainName' => 'deep.x.wild.example.com'],
+            ]];
+        }
+        if ($action === 'DescribeDomainCertificate') {
+            return ['certificate' => ['certificateId' => 'old']];
+        }
+        if ($action === 'ModifyDomainCertificate') {
+            $modified[] = $body['domainId'];
+
+            return [];
+        }
+
+        return ['dataSet' => [['configStatus' => 'DEPLOYED']]];
+    });
+    zenlayerCdnDeployerWith(fn () => $client)->bind([
+        'remote_cert_id' => 'new', 'cert' => $pem, 'chain' => '',
+    ], zenlayerCdnCreds(), ['deploy_target' => 'domain', 'domain_match_pattern' => 'certsan']);
+    expect($modified)->toBe(['d1', 'd2']);
 });
 
 test('bind：域名已绑定该证书 → 跳过 ModifyDomainCertificate', function () {

@@ -50,7 +50,9 @@ class ZenlayerGaDeployer extends AbstractDeployer implements HasPollBudget
     public function configSchema(): array
     {
         return [
-            ['key' => 'accelerator_id', 'label' => '加速器 ID', 'type' => 'string', 'required' => true],
+            ['key' => 'deploy_target', 'label' => '部署目标（accelerator/certificate）', 'type' => 'string', 'required' => false],
+            ['key' => 'accelerator_id', 'label' => '加速器 ID', 'type' => 'string', 'required' => false],
+            ['key' => 'certificate_id', 'label' => '证书 ID（certificate 目标）', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -64,6 +66,7 @@ class ZenlayerGaDeployer extends AbstractDeployer implements HasPollBudget
         return new ZenlayerCertUploader(
             fn (array $credentials): object => $this->makeClient('zga', $credentials),
             'zenlayer_zga',
+            (string) (($config['deploy_target'] ?? 'accelerator') === 'certificate' ? ($config['certificate_id'] ?? '') : ''),
         );
     }
 
@@ -74,6 +77,15 @@ class ZenlayerGaDeployer extends AbstractDeployer implements HasPollBudget
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $deployTarget = (string) ($config['deploy_target'] ?? 'accelerator');
+        if ($deployTarget === 'certificate') {
+            $this->requireConfig($config, 'certificate_id');
+
+            return;
+        }
+        if ($deployTarget !== 'accelerator') {
+            $this->fail("不支持的部署目标: $deployTarget");
+        }
         $acceleratorId = (string) $this->requireConfig($config, 'accelerator_id');
         $certId = (string) $certRef;
 

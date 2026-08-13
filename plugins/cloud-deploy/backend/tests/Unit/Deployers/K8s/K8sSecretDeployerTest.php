@@ -2,6 +2,7 @@
 
 use Plugins\CloudDeploy\Deployers\K8s\K8sApiException;
 use Plugins\CloudDeploy\Deployers\K8s\K8sClient;
+use Plugins\CloudDeploy\Deployers\K8s\K8sProvider;
 use Plugins\CloudDeploy\Deployers\K8s\K8sSecretDeployer;
 use Plugins\CloudDeploy\Support\OutboundDestinationException;
 use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
@@ -40,7 +41,67 @@ test('Kubernetes Secret 为内联型（usesRemoteCertStore=false）+ 元信息',
     expect($deployer->usesRemoteCertStore())->toBeFalse();
     expect($deployer->certUploader())->toBeNull();
     expect(array_column($deployer->configSchema(), 'key'))
-        ->toContain('namespace')->toContain('secret_name')->toContain('secret_type');
+        ->toContain('namespace')->toContain('secret_name')->toContain('secret_type')
+        ->toContain('secret_annotations')->toContain('secret_labels');
+    expect(collect($deployer->configSchema())->firstWhere('key', 'secret_type')['required'])->toBeTrue();
+});
+
+test('provider 支持 kubeconfig 与显式 server/token 两种凭证', function () {
+    $schema = (new K8sProvider)->credentialSchema();
+    expect(array_column($schema, 'key'))->toContain('kube_config')->toContain('server')->toContain('token');
+    expect(collect($schema)->firstWhere('key', 'server')['required'])->toBeFalse();
+});
+
+test('kubeconfig 解析 current-context 的 server/token/CA', function () {
+    $yaml = <<<'YAML'
+apiVersion: v1
+current-context: production
+clusters:
+  - name: prod-cluster
+    cluster:
+      server: https://k8s.example.com:6443
+      certificate-authority-data: Q0FQRU0=
+users:
+  - name: deployer
+    user:
+      token: TOKEN-123
+contexts:
+  - name: production
+    context:
+      cluster: prod-cluster
+      user: deployer
+YAML;
+    $deployer = new K8sSecretDeployer;
+    $method = new ReflectionMethod($deployer, 'resolveConnection');
+    $method->setAccessible(true);
+    expect($method->invoke($deployer, ['kube_config' => $yaml]))->toBe([
+        'server' => 'https://k8s.example.com:6443', 'token' => 'TOKEN-123', 'ca_cert' => 'CAPEM',
+        'client_cert' => '', 'client_key' => '',
+    ]);
+});
+
+test('自定义 annotations/labels 写入新 Secret，并允许自定义 annotation 覆盖自动值', function () {
+    $captured = null;
+    $client = Mockery::mock(K8sClient::class);
+    $client->shouldReceive('getSecret')->once()->andReturnNull();
+    $client->shouldReceive('createSecret')->once()->andReturnUsing(function (string $ns, array $payload) use (&$captured) {
+        $captured = $payload;
+    });
+
+    $deployer = k8sSecretDeployerWith(fn () => $client);
+    $deployer->bind(k8sCertRef(), k8sCreds(), [
+        'namespace' => 'default',
+        'secret_name' => 'tls-secret',
+        'secret_type' => 'kubernetes.io/tls',
+        'secret_annotations' => ['certimate/common-name' => 'override.example.com', 'owner' => 'platform'],
+        'secret_labels' => ['app' => 'gateway'],
+    ]);
+
+    expect($captured['metadata']['annotations'])->toMatchArray([
+        'certimate/common-name' => 'override.example.com',
+        'owner' => 'platform',
+    ]);
+    expect($captured['metadata']['labels'])->toBe(['app' => 'gateway']);
 });
 
 test('Secret 不存在（404→null）：createSecret 写 data（base64 的 tls.crt 完整链 + tls.key）', function () {
@@ -53,12 +114,14 @@ test('Secret 不存在（404→null）：createSecret 写 data（base64 的 tls.
     $client->shouldNotReceive('replaceSecret');
 
     $deployer = k8sSecretDeployerWith(fn () => $client);
-    $deployer->bind(k8sCertRef(), k8sCreds(), ['namespace' => 'default', 'secret_name' => 'tls-secret']);
+    $deployer->bind(k8sCertRef(), k8sCreds(), [
+        'namespace' => 'default', 'secret_name' => 'tls-secret', 'secret_type' => 'kubernetes.io/tls',
+    ]);
 
     [$ns, $payload] = $captured;
     expect($ns)->toBe('default');
     expect($payload['kind'])->toBe('Secret');
-    expect($payload['type'])->toBe('kubernetes.io/tls'); // 默认类型
+    expect($payload['type'])->toBe('kubernetes.io/tls');
     // tls.crt = base64(完整链 = 叶子 + 中间)
     expect(base64_decode($payload['data']['tls.crt']))->toContain('SERVERCERTPEM')->toContain('INTERMEDIAPEM');
     expect(base64_decode($payload['data']['tls.key']))->toBe('KEYPEM');
@@ -101,6 +164,7 @@ test('选填 data_key_crt_server / data_key_crt_intermedia 分别写仅服务器
     $deployer = k8sSecretDeployerWith(fn () => $client);
     $deployer->bind(k8sCertRef(), k8sCreds(), [
         'namespace' => 'default', 'secret_name' => 's',
+        'secret_type' => 'kubernetes.io/tls',
         'data_key_crt_server' => 'server.crt', 'data_key_crt_intermedia' => 'ca.crt',
     ]);
 
@@ -120,13 +184,27 @@ test('缺 secret_name 抛业务错误', function () {
         ->toThrow(RuntimeException::class, '缺少配置 secret_name');
 });
 
+test('存量配置缺 secret_type 时兼容回退 kubernetes.io/tls', function () {
+    $captured = null;
+    $client = Mockery::mock(K8sClient::class);
+    $client->shouldReceive('getSecret')->once()->andReturnNull();
+    $client->shouldReceive('createSecret')->once()->andReturnUsing(function (string $namespace, array $payload) use (&$captured) {
+        $captured = $payload;
+    });
+    $deployer = k8sSecretDeployerWith(fn () => $client);
+    $deployer->bind(k8sCertRef(), k8sCreds(), ['namespace' => 'default', 'secret_name' => 's']);
+    expect($captured['type'])->toBe('kubernetes.io/tls');
+});
+
 test('bind 遇 K8sApiException 时脱敏重抛（含 reason、无 token、不挂 previous）', function () {
     $client = Mockery::mock(K8sClient::class);
     $client->shouldReceive('getSecret')->andThrow(new K8sApiException('Forbidden', 'secrets is forbidden'));
 
     $deployer = k8sSecretDeployerWith(fn () => $client);
     try {
-        $deployer->bind(k8sCertRef(), ['server' => 'https://k8s', 'token' => 'TOKEN-LEAK-123'], ['namespace' => 'default', 'secret_name' => 's']);
+        $deployer->bind(k8sCertRef(), ['server' => 'https://k8s', 'token' => 'TOKEN-LEAK-123'], [
+            'namespace' => 'default', 'secret_name' => 's', 'secret_type' => 'kubernetes.io/tls',
+        ]);
         expect(false)->toBeTrue('应抛异常');
     } catch (RuntimeException $e) {
         expect($e->getMessage())->toContain('Forbidden')->toContain('secrets is forbidden');

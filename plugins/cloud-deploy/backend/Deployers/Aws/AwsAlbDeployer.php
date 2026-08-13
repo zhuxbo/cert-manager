@@ -104,7 +104,8 @@ class AwsAlbDeployer extends AbstractDeployer
         if ($isDefault) {
             // 已是该默认证书则跳过
             foreach ($listeners[0]['Certificates'] ?? [] as $cert) {
-                if (($cert['CertificateArn'] ?? null) === $certificateArn) {
+                if (($cert['CertificateArn'] ?? null) === $certificateArn
+                    && filter_var($cert['IsDefault'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
                     return;
                 }
             }
@@ -113,6 +114,12 @@ class AwsAlbDeployer extends AbstractDeployer
                 'Certificates' => [['CertificateArn' => $certificateArn]],
             ]));
         } else {
+            foreach ($listeners[0]['Certificates'] ?? [] as $cert) {
+                if (($cert['CertificateArn'] ?? null) === $certificateArn
+                    && ! filter_var($cert['IsDefault'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                    return;
+                }
+            }
             $this->guardSdk(fn () => $client->addListenerCertificates([
                 'ListenerArn' => $listenerArn,
                 'Certificates' => [['CertificateArn' => $certificateArn]],

@@ -12,8 +12,7 @@ use Throwable;
  *
  * 对齐 certimate azure-keyvault 的「新建证书」分支：Deploy 把 PEM 证书转 PKCS12 后导入 Key Vault
  * （拿证书标识 kid），**不绑定 CDN / Front Door 等资源**（后续在控制台/其他流程关联 Key Vault 证书）。
- * （certimate 的 CertificateName 非空时走「替换」——本插件靠 RemoteCertStore 按指纹去重 + 续期导入
- *  新证书，不实现原地替换，故省略 certificate_name 配置。）
+ * certificate_name 留空时创建新证书；指定时向同名证书导入新版本，实现 Certimate 的原地替换语义。
  *
  * 插件模型：usesRemoteCertStore=true + AzureKeyVaultUploader（store_kind="azure_keyvault:{vault}"），
  * bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader($config)) 完成。
@@ -21,7 +20,7 @@ use Throwable;
  * 鉴权：Azure AD OAuth2 client_credentials（service principal 换 access_token，scope vault/.default），
  * 再 Bearer 调 Key Vault REST 导入证书。仅用 GuzzleHttp + PHP openssl_pkcs12_export（见 AzureKeyVaultUploader）。
  *
- * config：vault_name（必填）。cloud_name 走凭证。
+ * config：vault_name（必填）/ certificate_name（选填）。cloud_name 走凭证。
  */
 class AzureKeyVaultDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
@@ -44,6 +43,7 @@ class AzureKeyVaultDeployer extends AbstractDeployer implements UploadOnlyDeploy
     {
         return [
             ['key' => 'vault_name', 'label' => 'Key Vault 名称', 'type' => 'string', 'required' => true],
+            ['key' => 'certificate_name', 'label' => '证书名称（选填，指定时原地替换）', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -55,13 +55,13 @@ class AzureKeyVaultDeployer extends AbstractDeployer implements UploadOnlyDeploy
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         $vaultName = isset($config['vault_name']) ? (string) $config['vault_name'] : '';
-        $cloudName = isset($config['cloud_name']) ? (string) $config['cloud_name'] : '';
+        $certificateName = isset($config['certificate_name']) ? (string) $config['certificate_name'] : '';
 
         return new AzureKeyVaultUploader(
             fn (): AzureOAuth2 => $this->makeClient('oauth', []),
             fn (string $token, string $vaultBaseUrl): object => $this->makeClient('api', [], $token, $vaultBaseUrl),
             $vaultName,
-            $cloudName,
+            $certificateName,
         );
     }
 

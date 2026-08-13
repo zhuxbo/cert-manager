@@ -88,7 +88,7 @@ test('bind 完整流程：getHostname → 私钥加密 → createCertificate →
     $deployer->bind(WANGSU_CDNPRO_PEM, WANGSU_CDNPRO_CREDS, ['domain' => 'cdnpro.example.com', 'environment' => 'production']);
 
     // 证书内容：明文证书 + AES 加密私钥（用固定 ts 算出的权威向量）
-    expect($calls['create']['newVersion']['certificate'])->toBe('CERTPEM');
+    expect($calls['create']['newVersion']['certificate'])->toBe("CERTPEM\nCHAINPEM");
     expect($calls['create']['newVersion']['privateKey'])->toBe('COSBXCbdFgmqA/iKcj/Yl7hwFFm2lGD78Gkqf7fZDwdtv9MdJtI6tLpGhDMZo6dL8RZHSxCmxWITrARSxpeFoA==');
     expect($calls['create']['ts'])->toBe(1700000000);
     // 部署任务：target=环境，certId/version 来自创建，webhook 空

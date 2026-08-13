@@ -7,7 +7,7 @@ use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Throwable;
 
 /**
- * Nginx Proxy Manager（NPM，自建反代面板，内联型）—— 替换指定证书。
+ * Nginx Proxy Manager（NPM，自建反代面板，内联型）—— 替换指定证书或绑定主机。
  *
  * 对齐 certimate nginxproxymanager（deploy_target=certificate）：替换 NPM 已有证书内容并触发重启——
  *   1. POST /nginx/certificates/{certificateId}/upload（multipart：certificate=叶证书 /
@@ -18,7 +18,7 @@ use Throwable;
  * 叶证书走 certRef.cert、中间证书走 certRef.chain（对齐 certimate ExtractCertificatesFromPEM 拆分）。
  * 鉴权 JWT Bearer（凭证 auth_method=password 走账号登录、=token 直接用 api_token）。
  *
- * config：certificate_id（必填，NPM 证书数字 ID）。
+ * config：deploy_target（certificate/host，默认 certificate）及其条件配置。
  */
 class CertificateDeployer extends AbstractDeployer
 {
@@ -40,7 +40,11 @@ class CertificateDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'certificate_id', 'label' => '证书 ID', 'type' => 'number', 'required' => true],
+            ['key' => 'deploy_target', 'label' => '部署目标（certificate/host）', 'type' => 'string', 'required' => false],
+            ['key' => 'host_type', 'label' => '主机类型（proxy/redirection/stream/dead）', 'type' => 'string', 'required' => false],
+            ['key' => 'host_match_pattern', 'label' => '主机匹配（specified/certsan）', 'type' => 'string', 'required' => false],
+            ['key' => 'host_id', 'label' => '主机 ID', 'type' => 'number', 'required' => false],
+            ['key' => 'certificate_id', 'label' => '证书 ID', 'type' => 'number', 'required' => false],
         ];
     }
 
@@ -51,10 +55,20 @@ class CertificateDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $certificateId = (int) $this->requireConfig($config, 'certificate_id');
         $leaf = rtrim($certRef['cert']);
         $intermediate = trim($certRef['chain']);
         $key = $certRef['key'];
+
+        $deployTarget = (string) ($config['deploy_target'] ?? 'certificate');
+        if ($deployTarget === 'host') {
+            $this->bindHosts($leaf, $key, $intermediate, $credentials, $config);
+
+            return;
+        }
+        if ($deployTarget !== 'certificate') {
+            $this->fail("不支持的部署目标: $deployTarget");
+        }
+        $certificateId = (int) $this->requireConfig($config, 'certificate_id');
 
         $this->guardSdk(function () use ($credentials, $certificateId, $leaf, $key, $intermediate) {
             /** @var NginxproxymanagerClient $client */
@@ -67,6 +81,105 @@ class CertificateDeployer extends AbstractDeployer
             $value = $client->getDefaultSiteValue();
             $client->setDefaultSite($value);
         });
+    }
+
+    /** @param array<string,mixed> $credentials @param array<string,mixed> $config */
+    private function bindHosts(string $leaf, string $key, string $intermediate, array $credentials, array $config): void
+    {
+        $hostType = (string) $this->requireConfig($config, 'host_type');
+        $matchPattern = (string) ($config['host_match_pattern'] ?? 'specified');
+        $hostId = $matchPattern === 'specified' ? (int) $this->requireConfig($config, 'host_id') : 0;
+
+        $this->guardSdk(function () use ($credentials, $hostType, $matchPattern, $hostId, $leaf, $key, $intermediate) {
+            /** @var NginxproxymanagerClient $client */
+            $client = $this->makeClient('api', $credentials);
+            $certificateId = $client->ensureCertificate('clouddeploy-'.(int) (microtime(true) * 1000), $leaf, $key, $intermediate);
+            $hosts = $client->listHosts($hostType);
+            if ($matchPattern === 'specified') {
+                $ids = [$hostId];
+            } elseif ($matchPattern === 'certsan') {
+                $ids = [];
+                foreach ($hosts as $host) {
+                    $domains = array_values(array_filter((array) ($host['domain_names'] ?? []), 'is_string'));
+                    if ($domains !== [] && $this->certificateMatchesAll($leaf, $domains)) {
+                        $ids[] = (int) ($host['id'] ?? 0);
+                    }
+                }
+                if ($ids === []) {
+                    throw new NginxproxymanagerApiException('HostNotFound', '未找到证书 SAN 匹配的 NPM 主机');
+                }
+            } else {
+                throw new NginxproxymanagerApiException('InvalidMatchPattern', "不支持的 NPM 主机匹配模式: $matchPattern");
+            }
+            foreach ($ids as $id) {
+                $current = null;
+                foreach ($hosts as $host) {
+                    if ((int) ($host['id'] ?? 0) === $id) {
+                        $current = (int) ($host['certificate_id'] ?? 0);
+                        break;
+                    }
+                }
+                if ($current !== $certificateId) {
+                    $client->updateHostCertificate($hostType, $id, $certificateId);
+                }
+            }
+        });
+    }
+
+    /** @param list<string> $domains */
+    private function certificateMatchesAll(string $certificate, array $domains): bool
+    {
+        $parsed = @openssl_x509_parse($certificate);
+        if (! is_array($parsed)) {
+            return false;
+        }
+        $certificateNames = [];
+        $san = $parsed['extensions']['subjectAltName'] ?? '';
+        if (is_string($san) && $san !== '') {
+            foreach (explode(',', $san) as $entry) {
+                $entry = trim($entry);
+                if (str_starts_with(strtoupper($entry), 'DNS:')) {
+                    $certificateNames[] = trim(substr($entry, 4));
+                }
+            }
+        }
+        if ($certificateNames === []) {
+            $cn = $parsed['subject']['CN'] ?? '';
+            if (is_string($cn) && $cn !== '') {
+                $certificateNames[] = $cn;
+            }
+        }
+        foreach ($domains as $domain) {
+            $covered = false;
+            foreach ($certificateNames as $certificateName) {
+                if ($this->certificateNameMatches($certificateName, $domain)) {
+                    $covered = true;
+                    break;
+                }
+            }
+            if (! $covered) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function certificateNameMatches(string $certificateName, string $hostname): bool
+    {
+        if (strcasecmp($certificateName, $hostname) === 0) {
+            return true;
+        }
+        if (! str_starts_with($certificateName, '*.')) {
+            return false;
+        }
+        $suffix = substr($certificateName, 2);
+        if (! str_ends_with(strtolower($hostname), '.'.strtolower($suffix))) {
+            return false;
+        }
+        $prefix = substr($hostname, 0, -strlen('.'.$suffix));
+
+        return $prefix !== '' && ! str_contains($prefix, '.');
     }
 
     protected function makeClient(string $kind, array $credentials): object

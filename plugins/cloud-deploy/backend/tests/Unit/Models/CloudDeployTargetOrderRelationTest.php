@@ -3,6 +3,7 @@
 use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Tests\TestCase;
@@ -15,7 +16,7 @@ test('order() 关系存在且为 BelongsTo，外键 order_id', function () {
     expect(method_exists($target, 'order'))->toBeTrue();
 
     $relation = $target->order();
-    expect($relation)->toBeInstanceOf(\Illuminate\Database\Eloquent\Relations\BelongsTo::class);
+    expect($relation)->toBeInstanceOf(BelongsTo::class);
     expect($relation->getForeignKeyName())->toBe('order_id');
     expect($relation->getRelated())->toBeInstanceOf(Order::class);
 });

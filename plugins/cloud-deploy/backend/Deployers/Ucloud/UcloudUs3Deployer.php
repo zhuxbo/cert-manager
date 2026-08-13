@@ -39,6 +39,7 @@ class UcloudUs3Deployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
             ['key' => 'bucket', 'label' => '存储桶名', 'type' => 'string', 'required' => true],
             ['key' => 'domain', 'label' => '自定义域名', 'type' => 'string', 'required' => true],
@@ -54,7 +55,7 @@ class UcloudUs3Deployer extends AbstractDeployer
     {
         // USSL 上传全局（不分 region），用 region-less client（makeClient 默认 region=''）；
         // 测试 override makeClient('api') 即作用于上传。
-        return new UcloudUsslUploader(fn (array $credentials): object => $this->makeClient('api', $credentials));
+        return new UcloudUsslUploader(fn (array $credentials): object => $this->makeClient('api', $this->withUcloudEndpoint($credentials, $config)));
     }
 
     /**
@@ -64,6 +65,7 @@ class UcloudUs3Deployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withUcloudEndpoint($credentials, $config);
         $region = (string) $this->requireConfig($config, 'region');
         $bucket = (string) $this->requireConfig($config, 'bucket');
         $domain = (string) $this->requireConfig($config, 'domain');

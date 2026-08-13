@@ -148,6 +148,26 @@ class SynologydsmClient
         ], ['multipart' => $multipart]);
     }
 
+    /**
+     * 把各服务从旧证书迁移到新默认证书并触发相关服务重载。
+     *
+     * @param  list<array{service:array<string,mixed>,old_id:string,id:string}>  $settings
+     */
+    public function setServiceCertificates(array $settings): void
+    {
+        $this->post('/webapi/entry.cgi', [
+            'api' => 'SYNO.Core.Certificate.Service',
+            'method' => 'set',
+            'version' => '1',
+            '_sid' => $this->sid,
+            'SynoToken' => $this->synoToken,
+        ], [
+            'form_params' => [
+                'settings' => json_encode($settings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            ],
+        ]);
+    }
+
     /** 懒查询 SYNO.API.Auth 的 path + maxVersion（仅一次）。 */
     private function ensureAuthApiInfo(): void
     {

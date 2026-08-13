@@ -37,6 +37,8 @@ use Throwable;
  */
 class TencentGaapDeployer extends AbstractDeployer
 {
+    use UsesTencentEndpoint;
+
     public function provider(): string
     {
         return 'tencent';
@@ -55,6 +57,7 @@ class TencentGaapDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'listener_id', 'label' => 'HTTPS 监听器 ID', 'type' => 'string', 'required' => true],
             ['key' => 'proxy_id', 'label' => '通道 ID（选填）', 'type' => 'string', 'required' => false],
         ];
@@ -68,7 +71,7 @@ class TencentGaapDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // 腾讯 SSL 上传是全局服务（空 region）
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
@@ -78,6 +81,7 @@ class TencentGaapDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         $listenerId = (string) $this->requireConfig($config, 'listener_id');
         // proxy_id 选填（通道组监听器可省）
         $proxyId = (string) ($config['proxy_id'] ?? '');
@@ -122,6 +126,7 @@ class TencentGaapDeployer extends AbstractDeployer
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
         $http->setReqTimeout(15);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
@@ -129,6 +134,7 @@ class TencentGaapDeployer extends AbstractDeployer
         return match ($kind) {
             'ssl' => new SslClient($cred, '', $profile),
             'gaap' => new GaapClient($cred, '', $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

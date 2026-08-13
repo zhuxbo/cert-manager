@@ -8,15 +8,20 @@ use Tests\TestCase;
 
 uses(TestCase::class);
 
-function jdcloudVodDeployerWith(callable $clientFactory): JdcloudVodDeployer
+function jdcloudVodDeployerWith(callable $clientFactory, ?callable $matcher = null): JdcloudVodDeployer
 {
-    return new class($clientFactory) extends JdcloudVodDeployer
+    return new class($clientFactory, $matcher) extends JdcloudVodDeployer
     {
-        public function __construct(private $factory) {}
+        public function __construct(private $factory, private $matcher) {}
 
         protected function makeClient(string $kind, array $credentials): object
         {
             return ($this->factory)($kind, $credentials);
+        }
+
+        protected function certificateMatches(string $certPem, string $domain): bool
+        {
+            return $this->matcher === null ? parent::certificateMatches($certPem, $domain) : ($this->matcher)($domain);
         }
     };
 }
@@ -59,6 +64,24 @@ test('bind：findDomainId → GetHttpSsl 取 jumpType → SetHttpSsl 直灌 PEM�
     expect($captured['cert'])->toContain('CERTPEM')->toContain('CHAINPEM');
     expect($captured['key'])->toBe('KEYPEM');
     expect($captured['jumpType'])->toBe('redirect');
+});
+
+test('certsan 列举在线 VOD 域名并批量更新匹配域名', function () {
+    $writes = [];
+    $client = Mockery::mock(JdcloudRestClient::class);
+    $client->shouldReceive('listVodDomains')->once()->andReturn([
+        ['id' => 1, 'name' => 'a.example.com'], ['id' => 2, 'name' => 'b.example.com'],
+    ]);
+    $client->shouldReceive('getVodHttpSslJumpType')->once()->with(1)->andReturn('redirect');
+    $client->shouldReceive('setVodHttpSsl')->once()->andReturnUsing(function (int $id) use (&$writes) {
+        $writes[] = $id;
+    });
+
+    jdcloudVodDeployerWith(fn () => $client, fn (string $domain): bool => $domain === 'a.example.com')->bind(
+        ['cert' => 'CERTPEM', 'key' => 'KEY', 'chain' => 'CHAIN'], jdCreds(), ['domain_match_pattern' => 'certsan'],
+    );
+
+    expect($writes)->toBe([1]);
 });
 
 test('域名未找到 → 业务错误（DeployBusinessException，不是被脱敏的 SDK 异常）', function () {

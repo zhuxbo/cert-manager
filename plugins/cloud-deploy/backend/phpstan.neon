@@ -78,6 +78,20 @@ parameters:
             - Deployers/*
           message: '#nullsafe property access "[^"]+" on left side of \?\? is unnecessary#'
 
+        # 新增的列表/详情路径同样必须防御生成 SDK 把可缺失响应字段错误标成 non-null。
+        # 仅放行阿里云生成模型属性上的 ??；业务对象与插件自有类型不在此范围。
+        - identifier: nullCoalesce.property
+          paths:
+            - Deployers/Aliyun/AliyunAlbDeployer.php
+            - Deployers/Aliyun/AliyunClbDeployer.php
+            - Deployers/Aliyun/AliyunDcdnDeployer.php
+            - Deployers/Aliyun/AliyunFcDeployer.php
+            - Deployers/Aliyun/AliyunGaDeployer.php
+            - Deployers/Aliyun/AliyunNlbDeployer.php
+            - Deployers/Aliyun/AliyunVodDeployer.php
+            - Deployers/Aliyun/AliyunWafDeployer.php
+          message: '#Property AlibabaCloud\\SDK\\.* on left side of \?\? is not nullable#'
+
         # CasUploader:75 等：SDK 把 certId 乐观标为 int，使插件的 is_int/is_string/!== ''
         # 防御判空被判「恒真/已收窄」。删掉这些判空 = 让 (int) null=0 流向 API，是真 bug。仅此文件放行。
         - identifier: function.alreadyNarrowedType

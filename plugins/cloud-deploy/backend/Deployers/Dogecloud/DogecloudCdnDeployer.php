@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Dogecloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -13,12 +15,13 @@ use Throwable;
  *   1. 证书经 DogecloudSslUploader 上传（POST /cdn/cert/upload.json）拿 certId（store_kind=dogecloud，走 RemoteCertStore 去重）。
  *   2. bind 调 POST /cdn/cert/bind.json {id: certId(int64), domain} 把证书绑定到加速域名。
  *
- * 与 certimate 对齐的取舍：certimate 支持 exact / certsan 两种匹配模式（certsan 会 ListCdnDomain 后按证书 SAN
- * 过滤批量绑定）。本端点**仅实现 exact**（domain 必填、直接绑定该域名），与插件其他端点（KsyunCdn/Qiniu/Baidu cdn 等）
- * 「仅 exact」的简化口径一致。如需按 SAN 批量部署，可逐个域名各配一个 target。
+ * 支持 exact / certsan：certsan 经可选远端证书材料契约取得叶证书，ListCdnDomain 后按 SAN/CN
+ * 过滤非 offline 域名并批量绑定；私钥不进入 bind 上下文。
  */
-class DogecloudCdnDeployer extends AbstractDeployer
+class DogecloudCdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
+
     public function provider(): string
     {
         return 'dogecloud';
@@ -37,7 +40,8 @@ class DogecloudCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配（exact/certsan）', 'type' => 'string', 'required' => false],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -52,22 +56,44 @@ class DogecloudCdnDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  remote_cert_id（多吉云证书 id，十进制字符串）
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  证书 id 或 opt-in 的 leaf/中间链上下文
      * @param  array{access_key:string,secret_key:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain?:string,domain_match_pattern?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certId = (int) $certRef;
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $certId = (int) (is_array($certRef) ? ($certRef['remote_cert_id'] ?? 0) : $certRef);
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $domain = $pattern === 'certsan' ? '' : (string) $this->requireConfig($config, 'domain');
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId) {
+        $this->guardSdk(function () use ($credentials, $domain, $pattern, $certificate, $certId) {
             /** @var DogecloudRestClient $client */
             $client = $this->makeClient('cdn', $credentials);
-            $client->post('/cdn/cert/bind.json', [
-                'id' => $certId,
-                'domain' => $domain,
-            ]);
+            if ($pattern === '' || $pattern === 'exact') {
+                $domains = [$domain];
+            } elseif ($pattern === 'certsan') {
+                $response = $client->get('/cdn/domain/list.json');
+                $items = is_array($response['data']['domains'] ?? null) ? $response['data']['domains'] : [];
+                $domains = [];
+                foreach ($items as $item) {
+                    if (! is_array($item) || strtolower((string) ($item['status'] ?? '')) === 'offline') {
+                        continue;
+                    }
+                    $name = (string) ($item['name'] ?? '');
+                    if ($name !== '' && $this->certificateMatchesHostname($certificate, $name)) {
+                        $domains[] = $name;
+                    }
+                }
+                if ($domains === []) {
+                    throw new DogecloudApiException('DomainNotFound', '未找到证书匹配的多吉云 CDN 域名');
+                }
+            } else {
+                throw new DogecloudApiException('InvalidMatchPattern', "不支持的域名匹配模式: $pattern");
+            }
+            foreach ($domains as $candidate) {
+                $client->post('/cdn/cert/bind.json', ['id' => $certId, 'domain' => $candidate]);
+            }
         });
     }
 
