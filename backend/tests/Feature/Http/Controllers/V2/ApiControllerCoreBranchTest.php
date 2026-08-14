@@ -58,6 +58,8 @@ test('v2 cancel 对已取消订单直接返回成功（幂等）', function () {
     $mockAction->shouldNotReceive('deleteTask');
     $mockAction->shouldNotReceive('cancel');
     $mockAction->shouldNotReceive('cancelPending');
+    $mockAction->shouldNotReceive('guardCancelDuplicate');
+    $mockAction->shouldNotReceive('prepareImmediateCancel');
 
     $controller = buildV2Controller([
         'order_id' => $order->id,
@@ -75,10 +77,16 @@ test('v2 cancel 精确退款期边界允许取消', function () {
     $product = $this->createTestProduct(['refund_period' => 30]);
     $order = $this->createTestOrder($user, $product);
     $order->forceFill(['created_at' => now()->subDays(30)])->saveQuietly();
-    $this->createTestCert($order, ['status' => 'active']);
+    $cert = $this->createTestCert($order, ['status' => 'active']);
 
     $mockAction = Mockery::mock(Action::class);
-    $mockAction->shouldReceive('deleteTask')->once()->with($order->id, 'sync,revalidate,cancel');
+    $mockAction->shouldReceive('guardCancelDuplicate')->once()->with($order->id);
+    $mockAction->shouldReceive('prepareImmediateCancel')->once()->with($order->id)->andReturnUsing(function () use ($cert) {
+        $cert->update(['status' => 'cancelling']);
+
+        return false;
+    });
+    $mockAction->shouldNotReceive('deleteTask');
     $mockAction->shouldReceive('cancel')->once()->with($order->id);
 
     $controller = buildV2Controller(['order_id' => $order->id], 'POST', $mockAction, $user->id);

@@ -8,6 +8,7 @@ use App\Http\Requests\Fund\StoreRequest;
 use App\Http\Requests\Fund\UpdateRequest;
 use App\Http\Traits\PaymentConfigTrait;
 use App\Models\Fund;
+use App\Models\User;
 use App\Services\Payment\PaymentGateway;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -18,6 +19,8 @@ use Throwable;
 class FundController extends BaseController
 {
     use PaymentConfigTrait;
+
+    private const MANUAL_ADD_FUNDS_DEBOUNCE_SECONDS = 30;
 
     public function __construct()
     {
@@ -105,7 +108,24 @@ class FundController extends BaseController
      */
     public function store(StoreRequest $request): void
     {
-        $fund = DB::transaction(fn () => Fund::create($request->validated()));
+        $validated = $request->validated();
+        $fund = DB::transaction(function () use ($validated) {
+            if ($validated['type'] === 'addfunds') {
+                User::where('id', $validated['user_id'])->lockForUpdate()->firstOrFail();
+
+                $duplicate = Fund::where('created_at', '>=', now()->subSeconds(self::MANUAL_ADD_FUNDS_DEBOUNCE_SECONDS))
+                    ->where('user_id', $validated['user_id'])
+                    ->where('amount', $validated['amount'])
+                    ->where('type', 'addfunds')
+                    ->exists();
+
+                if ($duplicate) {
+                    $this->error('同一用户相同金额 30 秒内请勿重复充值');
+                }
+            }
+
+            return Fund::create($validated);
+        });
 
         if (! $fund->exists) {
             $this->error('添加失败');

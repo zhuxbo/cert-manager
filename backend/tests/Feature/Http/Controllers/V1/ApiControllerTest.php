@@ -53,7 +53,13 @@ test('V1 cancel 精确退款期边界允许取消', function () {
     $order->update(['latest_cert_id' => $cert->id]);
 
     $action = Mockery::mock(Action::class);
-    $action->shouldReceive('deleteTask')->once()->with($order->id, 'sync,revalidate,cancel');
+    $action->shouldReceive('guardCancelDuplicate')->once()->with($order->id);
+    $action->shouldReceive('prepareImmediateCancel')->once()->with($order->id)->andReturnUsing(function () use ($cert) {
+        $cert->update(['status' => 'cancelling']);
+
+        return false;
+    });
+    $action->shouldNotReceive('deleteTask');
     $action->shouldReceive('cancel')->once()->with($order->id);
 
     buildV1Controller(['oid' => $order->id], 'POST', $action, $user->id)->cancel();

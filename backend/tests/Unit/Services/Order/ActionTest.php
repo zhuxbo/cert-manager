@@ -1743,6 +1743,131 @@ test('checkDuplicate 原子占位：首次放行 0，同参数重复返回剩余
     expect($method->invoke($this->service, 'atomicDupTest', ['p2'], 10))->toBe(0);
 });
 
+test('guardCancelDuplicate 首次放行且 60 秒内重复取消返回剩余秒数', function () {
+    $orderId = 76164642075584;
+
+    $this->service->guardCancelDuplicate($orderId);
+
+    try {
+        $this->service->guardCancelDuplicate($orderId);
+        $this->fail('期望重复取消被拦截');
+    } catch (ApiResponseException $e) {
+        $response = $e->getApiResponse();
+        $retryAfter = $response['errors']['retry_after'] ?? null;
+
+        expect($response['code'])->toBe(0)
+            ->and($retryAfter)->toBeInt()->toBeGreaterThan(0)->toBeLessThanOrEqual(60)
+            ->and($response['msg'])->toBe("Duplicate cancel request, retry after {$retryAfter} seconds");
+    }
+
+    $this->travel(61)->seconds();
+    $this->service->guardCancelDuplicate($orderId);
+});
+
+test('prepareImmediateCancel 按 task 到 order 锁序删除同步任务并保留 cancel 任务', function () {
+    test()->product->update(['refund_period' => 30]);
+    [$order, $cert] = createOrderWithCertForAction('active');
+
+    foreach (['sync', 'revalidate', 'cancel'] as $action) {
+        Task::factory()->create([
+            'order_id' => $order->id,
+            'action' => $action,
+            'status' => 'executing',
+            'started_at' => now(),
+        ]);
+    }
+    Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'sync',
+        'status' => 'stopped',
+        'started_at' => now(),
+    ]);
+    Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'revalidate',
+        'status' => 'successful',
+        'started_at' => now(),
+    ]);
+
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = ['sql' => $query->sql, 'bindings' => $query->bindings];
+    });
+
+    $alreadyCancelled = $this->service->prepareImmediateCancel($order->id);
+
+    $taskLockIndex = collect($queries)->search(fn (array $query) => str_contains($query['sql'], 'from `tasks`')
+        && str_contains($query['sql'], 'for update'));
+    $orderLockIndex = collect($queries)->search(fn (array $query) => str_contains($query['sql'], 'from `orders`')
+        && str_contains($query['sql'], 'for update'));
+    $taskLock = $queries[$taskLockIndex];
+
+    expect($alreadyCancelled)->toBeFalse()
+        ->and($cert->fresh()->status)->toBe('cancelling')
+        ->and(Task::where('order_id', $order->id)->whereIn('action', ['sync', 'revalidate'])
+            ->whereIn('status', ['executing', 'stopped'])->exists())->toBeFalse()
+        ->and(Task::where('order_id', $order->id)->where('action', 'revalidate')
+            ->where('status', 'successful')->exists())->toBeTrue()
+        ->and(Task::where('order_id', $order->id)->where('action', 'cancel')->exists())->toBeTrue()
+        ->and($taskLockIndex)->toBeInt()
+        ->and($orderLockIndex)->toBeInt()->toBeGreaterThan($taskLockIndex)
+        ->and($taskLock['sql'])->toContain('force index (tasks_order_action_status_index)')
+        ->and($taskLock['bindings'])->toContain('sync', 'revalidate', 'executing', 'stopped')
+        ->not->toContain('cancel');
+});
+
+test('prepareImmediateCancel 锁内发现订单已取消时返回幂等结果', function () {
+    [$order, $cert] = createOrderWithCertForAction('cancelled');
+
+    $alreadyCancelled = $this->service->prepareImmediateCancel($order->id);
+
+    expect($alreadyCancelled)->toBeTrue()
+        ->and($cert->fresh()->status)->toBe('cancelled');
+});
+
+test('prepareImmediateCancel 接受可取消状态并统一进入 cancelling', function (string $status) {
+    test()->product->update(['refund_period' => 30]);
+    [$order, $cert] = createOrderWithCertForAction($status);
+
+    $alreadyCancelled = $this->service->prepareImmediateCancel($order->id);
+
+    expect($alreadyCancelled)->toBeFalse()
+        ->and($cert->fresh()->status)->toBe('cancelling');
+})->with(['processing', 'approving', 'cancelling']);
+
+test('prepareImmediateCancel 在退款期边界允许取消且超出一秒拒绝', function () {
+    $this->travelTo(now()->startOfSecond());
+    test()->product->update(['refund_period' => 1]);
+
+    [$boundaryOrder, $boundaryCert] = createOrderWithCertForAction('active', [
+        'created_at' => now()->subDay(),
+    ]);
+
+    expect($this->service->prepareImmediateCancel($boundaryOrder->id))->toBeFalse()
+        ->and($boundaryCert->fresh()->status)->toBe('cancelling');
+
+    [$expiredOrder, $expiredCert] = createOrderWithCertForAction('active', [
+        'created_at' => now()->subDay()->subSecond(),
+    ]);
+
+    expectOrderApiError(
+        fn () => $this->service->prepareImmediateCancel($expiredOrder->id),
+        'Order cannot be cancelled after 1 days'
+    );
+    expect($expiredCert->fresh()->status)->toBe('active');
+});
+
+test('prepareImmediateCancel 按退款天数换算有效期', function () {
+    $this->travelTo(now()->startOfSecond());
+    test()->product->update(['refund_period' => 2]);
+    [$order, $cert] = createOrderWithCertForAction('active', [
+        'created_at' => now()->subDay(),
+    ]);
+
+    expect($this->service->prepareImmediateCancel($order->id))->toBeFalse()
+        ->and($cert->fresh()->status)->toBe('cancelling');
+});
+
 // ==================== B 锁下沉：new(renew) / reissue 守卫（任务2）====================
 
 /**

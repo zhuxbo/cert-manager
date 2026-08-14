@@ -64,6 +64,24 @@ trait ActionTrait
     }
 
     /**
+     * 限制同一订单在指定时间内重复发起取消。
+     *
+     * 首次请求无论后续成功或失败都保留占位至 TTL 到期，避免下游在异常后立即并发重试；
+     * 已取消订单由 API Controller 在调用本方法前直接按幂等成功返回。
+     */
+    public function guardCancelDuplicate(int $orderId, int $expire = 60): void
+    {
+        $later = $this->checkDuplicate('cancel', [$orderId], $expire);
+
+        if ($later > 0) {
+            $this->error(
+                "Duplicate cancel request, retry after {$later} seconds",
+                ['retry_after' => $later],
+            );
+        }
+    }
+
+    /**
      * 初始化参数
      */
     protected function initParams(array $params): array

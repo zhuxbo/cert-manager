@@ -1201,6 +1201,55 @@ class Action
     }
 
     /**
+     * 为 API 立即取消准备本地状态。
+     *
+     * 本事务只做本地变更，因此可安全执行三次死锁重试。锁序固定为 task→order，
+     * 与 TaskJob 保持一致；cancel task 有意保留，作为立即取消异常后的异步兜底。
+     * 返回 true 表示并发请求已将订单取消，调用方应按幂等成功结束。
+     */
+    public function prepareImmediateCancel(int $orderId): bool
+    {
+        return $this->runTaskMutationTransaction(function () use ($orderId) {
+            Task::lockForMutation($orderId, ['sync', 'revalidate'])->get();
+
+            $order = Order::with(['latestCert', 'product'])
+                ->whereHas('latestCert')
+                ->whereHas('product')
+                ->lock()
+                ->find($orderId);
+
+            if (! $order) {
+                $this->error('Order not found');
+            }
+
+            $status = $order->latestCert->status;
+            if ($status === 'cancelled') {
+                return true;
+            }
+
+            $refundPeriod = $order->product->refund_period ?? 0;
+            if ($order->created_at->timestamp < now()->timestamp - 86400 * $refundPeriod) {
+                $this->error("Order cannot be cancelled after $refundPeriod days");
+            }
+
+            $status === 'expired' && $this->error('Order has expired');
+            $status === 'renewed' && $this->error('Order has been renewed');
+            $status === 'reissued' && $this->error('Order has been reissued');
+            $status === 'revoked' && $this->error('Order has been revoked');
+            $status === 'failed' && $this->error('Order has failed');
+            in_array($status, ['processing', 'approving', 'active', 'cancelling'], true)
+            || $this->error('Order cannot be cancelled');
+
+            if ($status !== 'cancelling') {
+                $order->latestCert->update(['status' => 'cancelling']);
+            }
+            $this->deleteTask($orderId, ['sync', 'revalidate']);
+
+            return false;
+        });
+    }
+
+    /**
      * 取消证书
      *
      * @throws Throwable
