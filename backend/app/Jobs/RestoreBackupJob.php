@@ -192,7 +192,7 @@ class RestoreBackupJob implements ShouldQueue
     {
         $cnfPath = $this->writeCnfFile();
         try {
-            $fh = fopen($sqlPath, 'rb');
+            $fh = @fopen($sqlPath, 'rb');
             if ($fh === false) {
                 throw new RuntimeException("无法打开 sql: $sqlPath");
             }

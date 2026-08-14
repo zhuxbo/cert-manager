@@ -179,7 +179,7 @@ class UpgradeStatusManager
             return null;
         }
 
-        $handle = fopen($this->statusFile, 'r');
+        $handle = @fopen($this->statusFile, 'r');
         if ($handle === false) {
             return null;
         }

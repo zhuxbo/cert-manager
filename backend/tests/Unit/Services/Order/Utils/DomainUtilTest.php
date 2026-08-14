@@ -1,6 +1,8 @@
 <?php
 
 use App\Services\Order\Utils\DomainUtil;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -188,3 +190,73 @@ test('domains with spaces', function () {
     $result = DomainUtil::removeGiftDomain(' example.com , www.example.com ');
     expect($result)->toContain('example.com');
 });
+
+test('公共后缀缓存无法写入时仍使用已下载的规则', function () {
+    $originalStoragePath = storage_path();
+    $storagePath = sys_get_temp_dir().'/domain_util_cache_write_failure_'.uniqid();
+    $dataFile = "$storagePath/domain-rules/public_suffix_list.dat";
+
+    mkdir($dataFile, 0755, true);
+    touch($dataFile, time() - (31 * 24 * 60 * 60));
+    app()->useStoragePath($storagePath);
+
+    $rules = new ReflectionProperty(DomainUtil::class, 'rules');
+    $rules->setValue(null, null);
+
+    stream_wrapper_unregister('https');
+    stream_wrapper_register('https', DomainUtilSuccessfulHttpsStream::class);
+    Log::spy();
+
+    try {
+        expect(DomainUtil::getRootDomain('sub.example.codexprobe'))
+            ->toBe('example.codexprobe');
+
+        Log::shouldHaveReceived('error')
+            ->once()
+            ->with('DomainParser Error in loadRules: Unable to write to data file');
+    } finally {
+        stream_wrapper_restore('https');
+        app()->useStoragePath($originalStoragePath);
+        $rules->setValue(null, null);
+        File::deleteDirectory($storagePath);
+    }
+});
+
+final class DomainUtilSuccessfulHttpsStream
+{
+    public mixed $context;
+
+    private string $data = "// test rules\ncom\ncodexprobe\n";
+
+    private int $position = 0;
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$openedPath): bool
+    {
+        return true;
+    }
+
+    public function stream_read(int $count): string
+    {
+        $chunk = substr($this->data, $this->position, $count);
+        $this->position += strlen($chunk);
+
+        return $chunk;
+    }
+
+    public function stream_eof(): bool
+    {
+        return $this->position >= strlen($this->data);
+    }
+
+    /** @return array<string, int> */
+    public function stream_stat(): array
+    {
+        return [];
+    }
+
+    /** @return array<string, int> */
+    public function url_stat(string $path, int $flags): array
+    {
+        return [];
+    }
+}

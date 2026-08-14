@@ -35,7 +35,7 @@ class UserDataExporter
         $filename = "{$user->id}_".date('Y-m-d_His').'.sql';
         $filePath = "$exportDir/$filename";
 
-        $handle = fopen($filePath, 'w');
+        $handle = @fopen($filePath, 'w');
         if ($handle === false) {
             throw new \RuntimeException("无法创建导出文件：$filePath");
         }

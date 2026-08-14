@@ -458,7 +458,7 @@ class DomainUtil
 
             if ($data !== false) {
                 // 将数据保存到本地文件，加锁防止并发写入
-                $fp = fopen($dataFile, 'w');
+                $fp = @fopen($dataFile, 'w');
                 if ($fp) {
                     if (flock($fp, LOCK_EX)) {
                         fwrite($fp, $data);
@@ -471,8 +471,8 @@ class DomainUtil
                     Log::error('DomainParser Error in loadRules: Unable to write to data file');
                 }
 
-                // 从保存的文件加载规则
-                self::$rules = Rules::fromPath($dataFile);
+                // 当前请求直接使用已下载的数据，缓存写入失败也不应阻断域名解析
+                self::$rules = Rules::fromString($data);
             } else {
                 // 无法在线获取，尝试使用默认的常用域名后缀
                 Log::error('DomainParser Error in loadRules: Unable to obtain public suffix list, using default suffixes');
