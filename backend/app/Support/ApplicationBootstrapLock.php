@@ -17,7 +17,7 @@ final class ApplicationBootstrapLock
      */
     public static function acquireExclusive()
     {
-        $path = dirname(base_path()).'/.upgrade-bootstrap.lock';
+        $path = base_path('.upgrade-bootstrap.lock');
         $handle = @fopen($path, 'c');
         if ($handle === false) {
             throw new RuntimeException('无法创建应用启动切换锁');
@@ -51,7 +51,7 @@ final class ApplicationBootstrapLock
             throw new RuntimeException('无法读取当前 HTTP 入口');
         }
 
-        $statePath = dirname(dirname(dirname($targetIndex))).'/.upgrade-bootstrap-prepared.json';
+        $statePath = dirname(dirname($targetIndex)).'/.upgrade-bootstrap-prepared.json';
         $state = self::readPreparationState($statePath);
         $hasEntry = str_contains($target, self::ENTRY_BEGIN)
             && str_contains($target, self::ENTRY_END);
@@ -99,6 +99,14 @@ final class ApplicationBootstrapLock
         if ($remaining > 0) {
             sleep($remaining);
         }
+    }
+
+    /**
+     * 独占锁取得后，首次排空状态已完成使命；删除它避免后续升级重复保留状态文件。
+     */
+    public static function completeLegacyHttpEntryPreparation(string $targetIndex): void
+    {
+        @unlink(dirname(dirname($targetIndex)).'/.upgrade-bootstrap-prepared.json');
     }
 
     private static function extractEntrySnippet(string $source): string

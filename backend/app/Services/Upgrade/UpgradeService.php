@@ -6,6 +6,7 @@ use App\Exceptions\PhpEnvironmentException;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Composer\ComposerMirror;
+use App\Services\Composer\ComposerVendorBundle;
 use App\Support\Opcache;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Facades\Artisan;
@@ -227,8 +228,12 @@ class UpgradeService
             }
 
             // 包内 vendor 在发布构建时已优化 autoload，运行时不再要求 Composer 或网络。
-            if (! $bundledVendorApplied && ! $this->runDumpAutoload()) {
-                throw new RuntimeException('Composer autoload 重建失败');
+            if (! $bundledVendorApplied) {
+                if (! $this->runDumpAutoload()) {
+                    throw new RuntimeException('Composer autoload 重建失败');
+                }
+                ComposerVendorBundle::writeMarker(base_path());
+                Log::info('[Upgrade] vendor 完整性标记已与 composer.lock 对齐');
             }
 
             // 步骤 9: 清理 opcache

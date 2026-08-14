@@ -114,6 +114,8 @@ eval "$(extract_fn "$UPGRADE" _restore_preserved_extras)"
 eval "$(extract_fn "$UPGRADE" _need_composer_install)"
 eval "$(extract_fn "$UPGRADE" _bundled_vendor_matches_lock)"
 eval "$(extract_fn "$UPGRADE" _vendor_dir_matches_lock)"
+eval "$(extract_fn "$UPGRADE" _write_composer_lock_marker)"
+eval "$(extract_fn "$BT_INSTALL" write_composer_lock_marker)"
 eval "$(extract_fn "$UPGRADE" _stage_bundled_vendor)"
 eval "$(extract_fn "$UPGRADE" _ensure_runtime_directories)"
 eval "$(extract_fn "$UPGRADE" _print_recovery_runbook)"
@@ -121,6 +123,7 @@ eval "$(extract_fn "$UPGRADE" _print_recovery_runbook)"
 # 抽取健全性校验：任一函数未抽出即整体失败（防 upgrade.sh 改结构后静默失测）
 for fn in _fs_device _assert_storage_same_fs _check_stranded_preserve _restore_preserved_storage \
     _restore_preserved_extras _need_composer_install _bundled_vendor_matches_lock _vendor_dir_matches_lock \
+    _write_composer_lock_marker write_composer_lock_marker \
     _stage_bundled_vendor _ensure_runtime_directories; do
     if ! declare -f "$fn" >/dev/null 2>&1; then
         echo "✗ 抽取失败：$fn 未从 $UPGRADE 提取到（函数结构变化？）"
@@ -498,6 +501,38 @@ test_a9d() {
     BUNDLED_VENDOR_STAGE=""
 }
 
+test_a9e() {
+    local base expected ok=1 rc
+    base="$(mktemp -d)"
+    mkdir -p "$base/vendor/composer"
+    printf 'LOCK-A' >"$base/composer.lock"
+    printf 'AUTOLOAD' >"$base/vendor/autoload.php"
+    printf 'STALE' >"$base/vendor/composer/.ssl-manager-lock.sha256"
+
+    _write_composer_lock_marker "$base" || ok=0
+    expected="$(file_sha256 "$base/composer.lock")"
+    [ "$(tr -d '[:space:]' <"$base/vendor/composer/.ssl-manager-lock.sha256")" = "$expected" ] || ok=0
+
+    printf 'LOCK-B' >"$base/composer.lock"
+    write_composer_lock_marker "$base" || ok=0
+    expected="$(file_sha256 "$base/composer.lock")"
+    [ "$(tr -d '[:space:]' <"$base/vendor/composer/.ssl-manager-lock.sha256")" = "$expected" ] || ok=0
+    if find "$base/vendor/composer" -name '.ssl-manager-lock.sha256.tmp.*' -print -quit | grep -q .; then
+        ok=0
+    fi
+
+    rm -f "$base/vendor/autoload.php"
+    _write_composer_lock_marker "$base"
+    rc=$?
+    [ "$rc" -ne 0 ] || ok=0
+    if [ "$ok" -eq 1 ]; then
+        pass "A9e Shell 安装与升级在 Composer 成功后原子刷新 lock 标记，前置缺失时失败关闭"
+    else
+        fail "A9e Shell Composer lock 标记刷新（rc=${rc}）"
+    fi
+    rm -rf "$base"
+}
+
 # A10 cleanup 删 preserve 前还原 extras（⑨ 集成）：模拟中断在「rm 原件 ~ step9 还原」窗内，
 # preserve 存自定义适配器唯一副本、原件已删 → cleanup 触发后适配器还原到位 + preserve 清理（不静默销毁）
 test_a10() {
@@ -724,6 +759,7 @@ test_a9
 test_a9b
 test_a9c
 test_a9d
+test_a9e
 test_a10
 test_a11
 test_a12
@@ -894,7 +930,7 @@ lock_acquire_line=$(grep -nE '^[[:space:]]*_acquire_bootstrap_lock$' "$UPGRADE" 
 legacy_prepare_line=$(grep -nE '^[[:space:]]*_prepare_legacy_bootstrap_entry ' "$UPGRADE" | head -1 | cut -d: -f1 || true)
 vendor_preserve_line=$(grep -nF 'mv "$INSTALL_DIR/backend/vendor" "$PRESERVE_DIR/"' "$UPGRADE" | head -1 | cut -d: -f1 || true)
 lock_release_line=$(grep -nE '^[[:space:]]*_release_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
-if grep -qF 'local lock_file="$INSTALL_DIR/.upgrade-bootstrap.lock"' "$UPGRADE" &&
+if grep -qF 'local lock_file="$INSTALL_DIR/backend/.upgrade-bootstrap.lock"' "$UPGRADE" &&
     grep -qF 'UPGRADE_LEGACY_REQUEST_DRAIN_TIMEOUT' "$UPGRADE" &&
     grep -qF 'ApplicationBootstrapLock::prepareLegacyHttpEntry' "$UPGRADE" &&
     [ -n "$legacy_prepare_line" ] && [ -n "$lock_acquire_line" ] && [ -n "$vendor_preserve_line" ] && [ -n "$lock_release_line" ] &&
@@ -903,6 +939,22 @@ if grep -qF 'local lock_file="$INSTALL_DIR/.upgrade-bootstrap.lock"' "$UPGRADE" 
     pass "C Shell 首次升级先排空旧请求，随后目录替换全程持应用启动独占锁"
 else
     fail "C Shell 首次升级排空或启动锁未覆盖 vendor/代码切换窗口"
+fi
+
+if ! grep -qF 'rm -rf "$INSTALL_DIR/backend"' "$UPGRADE" &&
+    grep -qF '! -name index.php' "$UPGRADE"; then
+    pass "C Shell 回滚保留 backend 锁 inode 与 public/index.php 稳定入口"
+else
+    fail "C Shell 回滚仍可能替换 backend 锁 inode 或共享锁入口"
+fi
+
+if grep -qF 'scripts/write-composer-lock-marker.php' "$ROOT/backend/composer.json" &&
+    grep -qF '@php ../../../backend/scripts/write-composer-lock-marker.php .' "$ROOT/plugins/cloud-deploy/backend/composer.json" &&
+    [ -f "$ROOT/backend/scripts/write-composer-lock-marker.php" ] &&
+    [ ! -e "$ROOT/plugins/cloud-deploy/backend/scripts/write-composer-lock-marker.php" ]; then
+    pass "C 主系统与云部署插件的 Composer install/update/dump 共享唯一 marker 入口"
+else
+    fail "C 主系统或云部署插件未共享唯一 Composer marker 入口"
 fi
 
 if grep -qF '_vendor_dir_matches_lock "$INSTALL_DIR/backend/vendor" "$src_dir/backend/composer.lock"' "$UPGRADE" &&

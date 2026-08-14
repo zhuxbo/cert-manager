@@ -40,7 +40,7 @@
 
 ### 独立 vendor（发布包携带，不 scoping，不入库）
 
-插件依赖阿里/腾讯官方云 SDK。**vendor 不入 git，但进入发布 zip**：发布脚本执行生产 `composer install`，写入 `vendor/composer/.ssl-manager-lock.sha256`；主系统安装/更新时校验标记与 lock 后直接使用。`PluginComposerRunner` 仅作为历史不带 vendor 插件包的兼容回落。
+插件依赖阿里/腾讯官方云 SDK。**vendor 不入 git，但进入发布 zip**：发布脚本执行生产 `composer install`，写入 `vendor/composer/.ssl-manager-lock.sha256`；插件的 `post-autoload-dump` 钩子复用主系统唯一的 `backend/scripts/write-composer-lock-marker.php`，在手工 `composer install`、`update` 或 `dump-autoload` 后为插件 Composer 项目原子刷新该标记，避免主系统与插件各自维护实现而漂移。主系统安装/更新时校验标记与 lock 后直接使用，`PluginComposerRunner` 仅作为历史不带 vendor 插件包的兼容回落。
 
 **对目标机要求**：新发布包无需 Composer/Packagist/GitHub 网络。只有安装历史不带 vendor 的插件包时，才需 Composer 和 PHP CLI 子进程能力。
 

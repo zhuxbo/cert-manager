@@ -458,7 +458,7 @@ test('vendor 整体切换持有启动独占锁且 HTTP 在 autoload 前获取共
     $originalBase = base_path();
     app()->setBasePath($backendDir);
     $exclusive = ApplicationBootstrapLock::acquireExclusive();
-    $shared = fopen("$installDir/.upgrade-bootstrap.lock", 'c');
+    $shared = fopen("$installDir/backend/.upgrade-bootstrap.lock", 'c');
 
     try {
         expect(flock($shared, LOCK_SH | LOCK_NB))->toBeFalse();

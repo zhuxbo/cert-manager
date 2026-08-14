@@ -99,7 +99,7 @@ reject_file_matches() {
     fi
 }
 
-COMMON_FORBIDDEN='(^|/)(tests?|testing|specs?|fixtures?|mocks?|__tests__|coverage|node_modules)(/|$)|/backend/(scripts|\.github|\.gitlab|\.circleci|\.idea|\.vscode|\.cursor|\.superpowers)(/|$)|/backend/(README[^/]*|LICENSE[^/]*|INSTALL\.md|JRE_INSTALL\.md)$|/(\.gitignore|\.gitattributes|phpunit\.xml|phpstan([^/]*)?\.neon|\.pint\.json|\.editorconfig|\.phpunit\.result\.cache|_ide_helper\.php|_ide_helper_models\.php|\.phpstorm\.meta\.php)$|\.(map|log|bak|tmp|swp|orig)$'
+COMMON_FORBIDDEN='(^|/)(tests?|testing|specs?|fixtures?|mocks?|__tests__|coverage|node_modules)(/|$)|/backend/(\.github|\.gitlab|\.circleci|\.idea|\.vscode|\.cursor|\.superpowers)(/|$)|/backend/\.upgrade-bootstrap(\.lock|-prepared\.json)$|/backend/(README[^/]*|LICENSE[^/]*|INSTALL\.md|JRE_INSTALL\.md)$|/(\.gitignore|\.gitattributes|phpunit\.xml|phpstan([^/]*)?\.neon|\.pint\.json|\.editorconfig|\.phpunit\.result\.cache|_ide_helper\.php|_ide_helper_models\.php|\.phpstorm\.meta\.php)$|\.(map|log|bak|tmp|swp|orig)$'
 
 FULL_LIST="$AUDIT_TMP/full.list"
 UPGRADE_LIST="$AUDIT_TMP/upgrade.list"
@@ -112,6 +112,19 @@ write_listing "$SCRIPT_PACKAGE" "$SCRIPT_LIST"
 reject_matches "$FULL_PACKAGE" "$FULL_LIST" "测试或开发文件" "$COMMON_FORBIDDEN"
 reject_matches "$UPGRADE_PACKAGE" "$UPGRADE_LIST" "测试或开发文件" "$COMMON_FORBIDDEN"
 reject_matches "$SCRIPT_PACKAGE" "$SCRIPT_LIST" "测试或开发文件" "$COMMON_FORBIDDEN"
+
+for package_and_list in \
+    "$FULL_PACKAGE|$FULL_LIST" \
+    "$UPGRADE_PACKAGE|$UPGRADE_LIST"; do
+    package="${package_and_list%%|*}"
+    listing="${package_and_list#*|}"
+    backend_script_hits="$(grep -Ev '/$' "$listing" | grep -E '/backend/scripts/' | grep -Ev '/backend/scripts/write-composer-lock-marker\.php$' || true)"
+    if [ -n "$backend_script_hits" ]; then
+        audit_error "$(basename "$package") 包含非运行时后端脚本:"
+        printf '%s\n' "$backend_script_hits" >&2
+        exit 1
+    fi
+done
 
 # 完整包会复制整个 production-code，根目录必须使用白名单，阻断未知陈旧文件。
 FULL_UNEXPECTED="$(grep -Ev '/$' "$FULL_LIST" | grep -Ev '^full/(backend|frontend|nginx|scripts)/|^full/(version\.json|manifest\.json|php-requirements\.json)$' || true)"
@@ -145,6 +158,7 @@ for required in \
     full/backend/bootstrap/cache/ \
     full/backend/composer.json \
     full/backend/composer.lock \
+    full/backend/scripts/write-composer-lock-marker.php \
     full/backend/vendor/autoload.php \
     full/backend/vendor/composer/.ssl-manager-lock.sha256 \
     full/backend/storage/ \
@@ -178,6 +192,7 @@ for required in \
     upgrade/backend/bootstrap/cache/ \
     upgrade/backend/composer.json \
     upgrade/backend/composer.lock \
+    upgrade/backend/scripts/write-composer-lock-marker.php \
     upgrade/backend/vendor/autoload.php \
     upgrade/backend/vendor/composer/.ssl-manager-lock.sha256 \
     upgrade/frontend/admin/index.html \

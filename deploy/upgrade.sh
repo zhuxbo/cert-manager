@@ -53,7 +53,7 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
 _acquire_bootstrap_lock() {
     [ "$BOOTSTRAP_LOCK_HELD" -eq 0 ] || return 0
-    local lock_file="$INSTALL_DIR/.upgrade-bootstrap.lock"
+    local lock_file="$INSTALL_DIR/backend/.upgrade-bootstrap.lock"
 
     if ! command -v flock >/dev/null 2>&1; then
         log_error "缺少 flock，无法安全隔离在线请求与目录切换"
@@ -130,7 +130,7 @@ require $argv[1];
         return 1
     fi
 
-    chown www:www "$target_index" "$INSTALL_DIR/.upgrade-bootstrap-prepared.json" 2>/dev/null || true
+    chown www:www "$target_index" "$INSTALL_DIR/backend/.upgrade-bootstrap-prepared.json" 2>/dev/null || true
 }
 
 # Laravel/升级流程共用的核心可写目录。upgrade 包不携带 storage，且 zip 可能丢失空目录，
@@ -1870,6 +1870,27 @@ _vendor_dir_matches_lock() {
     [[ "$actual" =~ ^[a-f0-9]{64}$ ]] && [ "$actual" = "$expected" ]
 }
 
+_write_composer_lock_marker() {
+    local backend_dir="$1"
+    local lock_file="$backend_dir/composer.lock"
+    local autoload_file="$backend_dir/vendor/autoload.php"
+    local composer_dir="$backend_dir/vendor/composer"
+    local marker="$composer_dir/.ssl-manager-lock.sha256"
+    local temporary="$composer_dir/.ssl-manager-lock.sha256.tmp.$$"
+    local expected
+
+    if [ ! -f "$lock_file" ] || [ ! -f "$autoload_file" ]; then
+        log_error "无法写入 vendor 标记：composer.lock 或 vendor/autoload.php 不存在"
+        return 1
+    fi
+    expected=$(file_sha256 "$lock_file" | tr 'A-F' 'a-f') || return 1
+    if ! mkdir -p "$composer_dir" || ! printf '%s\n' "$expected" >"$temporary" || ! mv -f "$temporary" "$marker"; then
+        rm -f "$temporary"
+        log_error "无法原子更新 vendor 完整性标记"
+        return 1
+    fi
+}
+
 # 在服务仍在线、旧代码完全未动时，把包内 vendor 复制到安装盘同文件系统并再次校验。
 # 后续仅用 rename 启用；磁盘满/权限/复制失败均在 maintenance/freeze/rm 之前结束。
 _stage_bundled_vendor() {
@@ -2011,13 +2032,15 @@ perform_upgrade() {
     # 首次采用启动锁时，旧 index.php 尚不持共享锁。先只原子注入锁入口并按
     # FPM 请求上限排空旧请求；中断重试从状态文件继续剩余时间，再进入独占窗口。
     _prepare_legacy_bootstrap_entry "$src_dir/backend"
-    # 等待已进入的 HTTP 请求完成，并阻塞新请求；锁文件位于安装根，不随任何代码目录搬移。
+    # 等待已进入的 HTTP 请求完成，并阻塞新请求；锁文件位于稳定的 backend 根目录，
+    # 不随其下代码、storage 或 vendor 目录搬移。
     # 从这里到新代码、storage、vendor 全部就绪之间，请求不会观察到缺失或半更新目录。
     _acquire_bootstrap_lock
+    rm -f "$INSTALL_DIR/backend/.upgrade-bootstrap-prepared.json"
     "$PHP_CMD" artisan down --retry=60 || true
     # freeze：down 只暂停 worker/scheduler、不挡 HTTP（本仓已删 PreventRequestsDuringMaintenance）；
     # freeze 才是挡外部写请求（下单/支付回调/文档上传）的 HTTP-503 闸，锁文件 storage/framework/upgrade.lock。
-    # freeze 锁会随 storage 暂时移走，但切代码窗已经由安装根目录下的应用启动独占锁覆盖；
+    # freeze 锁会随 storage 暂时移走，但切代码窗已经由 backend 根目录下的应用启动独占锁覆盖；
     # storage 恢复后 freeze 中间件重新接管，继续罩住 migrate/seed 数据危险窗。
     # 带上版本：两个字段仅记录用（无消费方），但升级卡住时人工看 upgrade.lock 能直接读出
     # 这是从哪个版本升到哪个版本——web 路径（UpgradeService::performUpgradeWithStatus）本就带
@@ -2038,7 +2061,7 @@ perform_upgrade() {
     [ -f "$INSTALL_DIR/backend/.env" ] && cp "$INSTALL_DIR/backend/.env" "$PRESERVE_DIR/"
     # 保留 storage（使用 mv 避免大目录复制失败导致数据丢失）
     # freeze 锁文件（storage/framework/upgrade.lock）随此 mv 一并移走；该窗口由
-    # 安装根目录的 .upgrade-bootstrap.lock 独占锁阻塞新请求，不再依赖 bootstrap 失败兜底。
+    # backend 根目录的 .upgrade-bootstrap.lock 独占锁阻塞新请求，不再依赖 bootstrap 失败兜底。
     # 存量 platform-config.json 一次性暂存到 storage（随下方 storage mv/恢复走），
     # 供 SettingSeeder 导入历史定制值（Beian/Title/Brands）；seed 成功后统一清理，不还原到前端。
     # 仅当源文件含迁移键时才暂存（新版配置已不含这些键，后续升级自然不再暂存）；
@@ -2352,6 +2375,9 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
             log_info "然后重跑 bash upgrade.sh"
             exit 1
         fi
+        if ! _write_composer_lock_marker "$INSTALL_DIR/backend"; then
+            exit 1
+        fi
         chown -R www:www "$INSTALL_DIR/backend/vendor" 2>/dev/null || true
     fi
 
@@ -2574,8 +2600,28 @@ rollback() {
     # 旧格式：code/backend 目录
     elif [ -d "$latest_backup/code/backend" ]; then
         log_info "从 code/backend 恢复后端代码（旧格式）..."
-        rm -rf "$INSTALL_DIR/backend"
-        cp -r "$latest_backup/code/backend" "$INSTALL_DIR/"
+
+        # backend 根目录承载应用启动锁，不能整目录删除；否则当前独占锁仍指向旧 inode，
+        # 新请求会在新目录创建另一把锁并绕过互斥。旧格式也按新格式逐项恢复，且始终保留 storage。
+        for dir in app config database routes bootstrap vendor resources tests; do
+            if [ -d "$latest_backup/code/backend/$dir" ]; then
+                rm -rf "$INSTALL_DIR/backend/$dir"
+                cp -r "$latest_backup/code/backend/$dir" "$INSTALL_DIR/backend/"
+            fi
+        done
+
+        # public/index.php 是共享锁稳定入口，不删除目录；其余静态文件覆盖恢复即可。
+        if [ -d "$latest_backup/code/backend/public" ]; then
+            mkdir -p "$INSTALL_DIR/backend/public"
+            find "$latest_backup/code/backend/public" -mindepth 1 -maxdepth 1 ! -name index.php \
+                -exec cp -r {} "$INSTALL_DIR/backend/public/" \;
+        fi
+
+        for file in artisan composer.json composer.lock php-requirements.json; do
+            if [ -f "$latest_backup/code/backend/$file" ]; then
+                cp "$latest_backup/code/backend/$file" "$INSTALL_DIR/backend/"
+            fi
+        done
 
         # 恢复配置（旧格式）
         [ -f "$latest_backup/backend.env" ] && cp "$latest_backup/backend.env" "$INSTALL_DIR/backend/.env"

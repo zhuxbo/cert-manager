@@ -13,7 +13,7 @@ if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php'))
 // Hold a shared bootstrap lock for the whole HTTP request. Upgrade and plugin
 // publishers take the exclusive lock while replacing runtime files, so no
 // request can observe a missing or partially updated application tree.
-$upgradeBootstrapLock = @fopen(__DIR__.'/../../.upgrade-bootstrap.lock', 'c');
+$upgradeBootstrapLock = @fopen(__DIR__.'/../.upgrade-bootstrap.lock', 'c');
 if ($upgradeBootstrapLock !== false) {
     if (flock($upgradeBootstrapLock, LOCK_SH)) {
         register_shutdown_function(static function () use ($upgradeBootstrapLock): void {

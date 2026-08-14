@@ -41,6 +41,11 @@
         "guzzle/guzzle": "*",
         "symfony/event-dispatcher": "*"
     },
+    "scripts": {
+        "post-autoload-dump": [
+            "@php ../../../backend/scripts/write-composer-lock-marker.php ."
+        ]
+    },
     "config": {
         "allow-plugins": false,
         "sort-packages": true,

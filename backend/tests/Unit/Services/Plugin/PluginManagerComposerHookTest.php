@@ -88,7 +88,7 @@ test('installFromZip 发布文件到迁移终局期间持有应用启动独占�
 
         protected function runPluginMigrations(string $name): void
         {
-            $shared = fopen(dirname(base_path()).'/.upgrade-bootstrap.lock', 'c');
+            $shared = fopen(base_path('.upgrade-bootstrap.lock'), 'c');
             $this->lockWasExclusive = ! flock($shared, LOCK_SH | LOCK_NB);
             fclose($shared);
         }
@@ -103,7 +103,7 @@ test('installFromZip 发布文件到迁移终局期间持有应用启动独占�
 
     $manager->installFromZip(makePluginZip('locked-install-plugin', withComposer: false));
 
-    $shared = fopen(dirname(base_path()).'/.upgrade-bootstrap.lock', 'c');
+    $shared = fopen(base_path('.upgrade-bootstrap.lock'), 'c');
     try {
         expect($manager->lockWasExclusive)->toBeTrue()
             ->and(flock($shared, LOCK_SH | LOCK_NB))->toBeTrue();
@@ -403,7 +403,7 @@ function makeUpdateManager(
 
         protected function runPluginMigrations(string $name): void
         {
-            $shared = fopen(dirname(base_path()).'/.upgrade-bootstrap.lock', 'c');
+            $shared = fopen(base_path('.upgrade-bootstrap.lock'), 'c');
             $this->lockWasExclusive = ! flock($shared, LOCK_SH | LOCK_NB);
             fclose($shared);
         }

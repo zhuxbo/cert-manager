@@ -13,7 +13,7 @@ beforeEach(function () {
 
     $snippet = <<<'PHP'
 // SSL_MANAGER_BOOTSTRAP_LOCK_V1_BEGIN
-$handle = @fopen(__DIR__.'/../../.upgrade-bootstrap.lock', 'c');
+$handle = @fopen(__DIR__.'/../.upgrade-bootstrap.lock', 'c');
 if ($handle !== false) {
     flock($handle, LOCK_SH);
 }
@@ -40,7 +40,7 @@ test('首次采用会原子注入共享锁片段并记录排空状态', function
     ApplicationBootstrapLock::prepareLegacyHttpEntry($source, $target, 0);
 
     $contents = file_get_contents($target);
-    $state = json_decode(file_get_contents($this->root.'/target/.upgrade-bootstrap-prepared.json'), true);
+    $state = json_decode(file_get_contents($this->root.'/target/backend/.upgrade-bootstrap-prepared.json'), true);
 
     expect(substr_count($contents, 'SSL_MANAGER_BOOTSTRAP_LOCK_V1_BEGIN'))->toBe(1)
         ->and($contents)->toContain('// legacy entry')
@@ -54,7 +54,7 @@ test('注入后中断重试仍等待状态文件中的剩余排空时间', funct
     $target = $this->root.'/target/backend/public/index.php';
 
     ApplicationBootstrapLock::prepareLegacyHttpEntry($source, $target, 0);
-    file_put_contents($this->root.'/target/.upgrade-bootstrap-prepared.json', json_encode([
+    file_put_contents($this->root.'/target/backend/.upgrade-bootstrap-prepared.json', json_encode([
         'status' => 'draining',
         'started_at' => time(),
         'ready_at' => time() + 1,
@@ -76,7 +76,7 @@ test('入口原生带锁且没有首次准备状态时不增加固定等待', fu
     ApplicationBootstrapLock::prepareLegacyHttpEntry($source, $target, 2);
 
     expect(microtime(true) - $started)->toBeLessThan(0.5)
-        ->and(file_exists($this->root.'/target/.upgrade-bootstrap-prepared.json'))->toBeFalse();
+        ->and(file_exists($this->root.'/target/backend/.upgrade-bootstrap-prepared.json'))->toBeFalse();
 });
 
 test('旧入口缺少稳定锚点时在改动文件前失败关闭', function () {
@@ -91,7 +91,7 @@ test('旧入口缺少稳定锚点时在改动文件前失败关闭', function ()
 
 test('独占锁文件无法打开时抛出稳定的领域错误', function () {
     $originalBase = base_path();
-    File::makeDirectory($this->root.'/target/.upgrade-bootstrap.lock', 0777, true);
+    File::makeDirectory($this->root.'/target/backend/.upgrade-bootstrap.lock', 0777, true);
     app()->setBasePath($this->root.'/target/backend');
 
     try {
@@ -100,4 +100,13 @@ test('独占锁文件无法打开时抛出稳定的领域错误', function () {
     } finally {
         app()->setBasePath($originalBase);
     }
+});
+
+test('取得独占锁后会清理首次排空状态', function () {
+    $target = $this->root.'/target/backend/public/index.php';
+    file_put_contents($this->root.'/target/backend/.upgrade-bootstrap-prepared.json', '{}');
+
+    ApplicationBootstrapLock::completeLegacyHttpEntryPreparation($target);
+
+    expect(file_exists($this->root.'/target/backend/.upgrade-bootstrap-prepared.json'))->toBeFalse();
 });

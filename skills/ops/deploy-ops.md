@@ -224,6 +224,11 @@ bash nginx/render.sh /www/wwwroot/ssl-manager --reload
 对应 lock 生成，随完整包、升级包和含 Composer 依赖的插件包一起交付；后台与 Shell 消费端都
 必须先验 lock marker，再替换现有 vendor。
 
+历史包触发受控 `composer install` 时，安装脚本、Shell 升级、后台升级和插件安装器都必须在
+autoload 成功生成后原子刷新该 marker；标记写入失败按依赖安装失败处理，不得留下“依赖成功但
+后续无法复用”的半完成状态。Composer 的 `post-autoload-dump` 钩子同时覆盖手工执行的
+`composer install`、`composer update` 与 `composer dump-autoload`；生产环境仍不建议自行改变发布依赖集合。
+
 ### PHP / Composer 路径约定
 
 **所有 PHP / Composer 调用必须用绝对路径**，避免宝塔多版本系统下 root PATH 命中错误版本：

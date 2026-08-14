@@ -117,7 +117,9 @@ test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路
         }
     };
 
-    $pluginDir = makePluginDir();
+    $pluginDir = makePluginDir(lockContent: 'LOCK-A');
+    File::ensureDirectoryExists("$pluginDir/backend/vendor/composer");
+    File::put("$pluginDir/backend/vendor/autoload.php", '<?php');
     $runner->install($pluginDir, 'cloud-deploy');
 
     expect($runner->commands)->toHaveCount(1);
@@ -127,6 +129,8 @@ test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路
     expect($cmd)->toContain(escapeshellarg("$pluginDir/backend"));
     // composer 前缀原样拼入
     expect($cmd)->toContain("'/usr/bin/php' '/usr/local/bin/composer'");
+    expect(trim(File::get("$pluginDir/backend/vendor/composer/.ssl-manager-lock.sha256")))
+        ->toBe(hash('sha256', 'LOCK-A'));
 });
 
 test('runShell 为 composer 子进程提供可写 HOME 和 COMPOSER_HOME', function () {
@@ -313,7 +317,9 @@ test('install 仅 FPM proc_open 阻塞（CLI 正常）时不拦截 composer（�
         }
     };
 
-    $pluginDir = makePluginDir();
+    $pluginDir = makePluginDir(lockContent: 'LOCK-A');
+    File::ensureDirectoryExists("$pluginDir/backend/vendor/composer");
+    File::put("$pluginDir/backend/vendor/autoload.php", '<?php');
     $runner->install($pluginDir, 'cloud-deploy'); // 不抛
 
     expect($runner->ran)->toBeTrue();

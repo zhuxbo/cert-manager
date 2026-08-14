@@ -137,6 +137,7 @@ class PluginComposerRunner
             );
         }
 
+        ComposerVendorBundle::writeMarker($backendDir);
         Log::info("[Plugin] composer install 完成: $name");
         $this->report($reporter, 'composer_done', 'Composer 依赖安装完成');
     }

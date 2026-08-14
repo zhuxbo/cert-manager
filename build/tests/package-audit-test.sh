@@ -19,6 +19,7 @@ make_valid_packages() {
     rm -rf "$STAGE" "$FULL_ZIP" "$UPGRADE_ZIP" "$SCRIPT_ZIP"
     mkdir -p \
         "$STAGE/full/backend" \
+        "$STAGE/full/backend/scripts" \
         "$STAGE/full/backend/vendor/composer" \
         "$STAGE/full/backend/bootstrap/cache" \
         "$STAGE/full/backend/storage/app/private" \
@@ -34,6 +35,7 @@ make_valid_packages() {
         "$STAGE/full/nginx" \
         "$STAGE/full/scripts" \
         "$STAGE/upgrade/backend" \
+        "$STAGE/upgrade/backend/scripts" \
         "$STAGE/upgrade/backend/vendor/composer" \
         "$STAGE/upgrade/backend/bootstrap/cache" \
         "$STAGE/upgrade/frontend/admin" \
@@ -48,6 +50,7 @@ make_valid_packages() {
         "$STAGE/full/backend/artisan" \
         "$STAGE/full/backend/composer.json" \
         "$STAGE/full/backend/composer.lock" \
+        "$STAGE/full/backend/scripts/write-composer-lock-marker.php" \
         "$STAGE/full/backend/vendor/autoload.php" \
         "$STAGE/full/backend/storage/domain-rules/public_suffix_list.dat" \
         "$STAGE/full/frontend/admin/index.html" \
@@ -65,6 +68,7 @@ make_valid_packages() {
         "$STAGE/upgrade/backend/artisan" \
         "$STAGE/upgrade/backend/composer.json" \
         "$STAGE/upgrade/backend/composer.lock" \
+        "$STAGE/upgrade/backend/scripts/write-composer-lock-marker.php" \
         "$STAGE/upgrade/backend/vendor/autoload.php" \
         "$STAGE/upgrade/frontend/admin/index.html" \
         "$STAGE/upgrade/frontend/user/index.html" \
@@ -106,6 +110,19 @@ expect_rejected() {
 
 make_valid_packages
 "$AUDITOR" "$FULL_ZIP" "$UPGRADE_ZIP" "$SCRIPT_ZIP" >/dev/null
+
+for runtime_lock in .upgrade-bootstrap.lock .upgrade-bootstrap-prepared.json; do
+    touch "$STAGE/full/backend/$runtime_lock"
+    (cd "$STAGE" && zip -q "$FULL_ZIP" "full/backend/$runtime_lock")
+    expect_rejected "完整包包含运行时升级锁 $runtime_lock"
+
+    make_valid_packages
+    touch "$STAGE/upgrade/backend/$runtime_lock"
+    (cd "$STAGE" && zip -q "$UPGRADE_ZIP" "upgrade/backend/$runtime_lock")
+    expect_rejected "升级包包含运行时升级锁 $runtime_lock"
+
+    make_valid_packages
+done
 
 printf 'BROKEN\n' >"$STAGE/full/backend/vendor/composer/.ssl-manager-lock.sha256"
 (cd "$STAGE" && zip -q "$FULL_ZIP" full/backend/vendor/composer/.ssl-manager-lock.sha256)
