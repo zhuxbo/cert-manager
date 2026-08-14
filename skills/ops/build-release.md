@@ -29,6 +29,12 @@ build/
    - 正式版先按 `skills/remote-release.md` 在当前 main fingerprint 完成全部 6 个精确 mutation 分片的加权汇总；可复用有效分片缓存，但 `release.sh` 只接受当前 fingerprint 的汇总 gate 证据，验证后才创建/更新 tag 并 push
    - 测试版无需 tag
 
+### 首次启用请求排空锁的兼容边界
+
+- 首个包含 `SSL_MANAGER_BOOTSTRAP_LOCK_V1` 的版本，其用户可见升级说明必须明确：从不含该入口锁标记的历史版本升级，只支持使用该版本随附的新版 `upgrade.sh` 完成首次跨越；旧版本后台 Web UI 不支持这一首跳。
+- 首次跨越完成后，后续版本可继续使用后台 Web UI 或 `upgrade.sh` 升级。
+- “桥接版本”目前只是备选设计，不得在发布说明中描述为现成功能；若未来实现，除入口 marker 外还必须建立持久化 draining 状态并完成旧请求排空。
+
 ---
 
 ## 构建命令
@@ -59,6 +65,10 @@ bash build/build.sh --clear-cache
 ```
 
 > **注意**：`release.sh` 内部会自动调用 `build.sh` 构建打包，无需手动先执行 `build.sh`。
+
+前端增量构建指纹同时覆盖 admin/user 源码、shared 共享源码，以及根
+`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`.npmrc`。任一依赖清单、
+锁文件或 pnpm workspace 配置变化都必须重新构建前端 `dist`，不能只重新安装依赖后复用旧产物。
 
 ---
 

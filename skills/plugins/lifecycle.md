@@ -90,11 +90,15 @@ bash plugins/release-plugin.sh {name} --remote --server cn
 
 系统管理 → 插件管理页面操作。
 
-页面只展示执行中和失败的插件任务，成功安装/更新只刷新插件列表、不保留成功记录。安装/更新任务失败后，同插件会被失败记录阻塞，避免重复创建安装任务；管理员需在失败记录上选择「重试」重新入队，或选择「卸载」清理失败安装记录。
+页面只展示执行中和失败的插件任务，成功安装/更新只刷新插件列表、不保留成功记录。安装/更新任务失败后，同插件会被失败记录阻塞，避免重复创建安装任务；管理员可在失败记录上选择「重试」重新入队。失败安装可选择「卸载」清理记录；失败更新可选择「取消」，只删除失败任务并保留更新回滚后的当前插件版本。
 
 卸载选择“完全清除”时，`PluginManager` 重置该插件路径下所有已执行迁移，并执行可选 Seeder `clear()` 钩子。迁移重置或 Seeder 清理失败都必须 fail-closed：抛出错误、中止目录删除并保留插件文件供重试，禁止吞掉异常后返回“数据已清除”。
 
-带 `backend/composer.json` 的插件安装/更新时会在插件 `backend/` 目录内运行 `composer install --no-dev --no-interaction --optimize-autoloader --no-scripts`。`PluginComposerRunner` 会为 Composer 子进程显式设置 `HOME`、`COMPOSER_HOME` 和 `COMPOSER_CACHE_DIR` 到 `storage/app/plugin-composer`，不要依赖队列/FPM 环境自带 HOME。
+新插件包应随包携带与 `composer.lock` 对齐的 `backend/vendor`，安装/更新会直接校验并复用，不再联网执行 Composer。仅兼容没有随包 vendor 的历史插件包时才运行 `composer install --no-dev --no-interaction --optimize-autoloader --no-scripts`；`PluginComposerRunner` 会为该兼容路径显式设置 `HOME`、`COMPOSER_HOME` 和 `COMPOSER_CACHE_DIR` 到 `storage/app/plugin-composer`，不要依赖队列/FPM 环境自带 HOME。
+
+插件安装/更新在包校验和下载完成后获取安装根目录 `.upgrade-bootstrap.lock` 独占锁，再发布插件文件、运行迁移/Seeder 并清理缓存；HTTP 请求从加载主系统 autoload 前到请求结束持共享锁。成功终局或失败回退完成后才释放独占锁，避免请求观察到半安装、半更新或暂时缺失的插件目录。
+
+在线插件包下载的 `PLUGIN_DOWNLOAD_TIMEOUT` 是单个下载器的上限，默认 120 秒：先由 curl 尝试，失败或超时后清理半包，再给 PHP HTTP 客户端完整 120 秒回退。默认插件任务总超时为 720 秒，数据库、Redis、Beanstalkd 队列的默认 `retry_after` 为 900 秒；自定义这些值时，任务预算必须覆盖两次下载、兼容 Composer、迁移/Seeder/回滚及固定余量，队列可见性超时还必须大于任务超时与安全余量之和。
 
 ### API
 

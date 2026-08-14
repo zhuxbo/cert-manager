@@ -19,12 +19,6 @@ class UpgradeRunCommand extends Command
     {
         $version = $this->argument('version');
 
-        // 升级流程已迁移到 upgrade.sh / 后台覆盖式，
-        // upgrade:run 仅作兼容入口保留；不推荐使用，改用：
-        //  - 宝塔模式：管理后台 → 系统设置 → 在线升级
-        //  - 命令行：./upgrade.sh --version <ver>
-        $this->warn('upgrade:run is deprecated; use upgrade.sh or admin Web UI instead.');
-
         Log::info("[Upgrade] 开始升级到版本: $version");
         $this->info("开始升级到版本: $version");
 

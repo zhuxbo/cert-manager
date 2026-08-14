@@ -6,7 +6,6 @@ use App\Services\Plugin\PluginManager;
 use App\Services\Upgrade\UpgradePreflight;
 use App\Services\Upgrade\VersionManager;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -76,6 +75,42 @@ test('installFromZip 无 composer.json 的插件跳过 composer（runner.install
     expect($result['name'])->toBe('no-composer-plugin');
     // 插件已落地
     expect(is_file("$pluginsPath/no-composer-plugin/plugin.json"))->toBeTrue();
+});
+
+test('installFromZip 发布文件到迁移终局期间持有应用启动独占锁', function () {
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $runner->shouldReceive('pluginHasComposer')->andReturn(false);
+
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new class($versionManager, $runner) extends PluginManager
+    {
+        public bool $lockWasExclusive = false;
+
+        protected function runPluginMigrations(string $name): void
+        {
+            $shared = fopen(dirname(base_path()).'/.upgrade-bootstrap.lock', 'c');
+            $this->lockWasExclusive = ! flock($shared, LOCK_SH | LOCK_NB);
+            fclose($shared);
+        }
+    };
+    $pluginsPath = sys_get_temp_dir().'/pmch-plugins-'.uniqid();
+    $downloadPath = sys_get_temp_dir().'/pmch-dl-'.uniqid();
+    mkdir($pluginsPath, 0755, true);
+    mkdir($downloadPath, 0755, true);
+    $ref = new ReflectionClass(PluginManager::class);
+    $ref->getProperty('pluginsPath')->setValue($manager, $pluginsPath);
+    $ref->getProperty('downloadPath')->setValue($manager, $downloadPath);
+
+    $manager->installFromZip(makePluginZip('locked-install-plugin', withComposer: false));
+
+    $shared = fopen(dirname(base_path()).'/.upgrade-bootstrap.lock', 'c');
+    try {
+        expect($manager->lockWasExclusive)->toBeTrue()
+            ->and(flock($shared, LOCK_SH | LOCK_NB))->toBeTrue();
+    } finally {
+        flock($shared, LOCK_UN);
+        fclose($shared);
+    }
 });
 
 test('installFromZip 有 composer.json 的插件触发 composer install', function () {
@@ -347,6 +382,8 @@ function makeUpdateManager(
 
     $manager = new class($versionManager, $runner, $newZip) extends PluginManager
     {
+        public bool $lockWasExclusive = false;
+
         public function __construct($vm, $runner, private string $newZip)
         {
             parent::__construct($vm, $runner);
@@ -362,6 +399,13 @@ function makeUpdateManager(
         protected function downloadPlugin(string $url, string $savePath): void
         {
             copy($this->newZip, $savePath);
+        }
+
+        protected function runPluginMigrations(string $name): void
+        {
+            $shared = fopen(dirname(base_path()).'/.upgrade-bootstrap.lock', 'c');
+            $this->lockWasExclusive = ! flock($shared, LOCK_SH | LOCK_NB);
+            fclose($shared);
         }
     };
 
@@ -393,7 +437,7 @@ function seedInstalledPlugin(string $pluginsPath, string $lockContent, bool $wit
     }
 }
 
-test('update composer.lock 未变化时跳过 composer install（复用原 vendor）', function () {
+test('update composer.lock 未变化时复用原 vendor 且不调用 composer', function () {
     [$manager, $pluginsPath, $installCalls] = makeUpdateManager(newLockContent: 'SAME-LOCK');
     seedInstalledPlugin($pluginsPath, lockContent: 'SAME-LOCK'); // 默认带 vendor
 
@@ -439,6 +483,7 @@ test('update composer.lock 变化但新包自带对齐 vendor 时不运行 compo
 
     expect($result['version'])->toBe('2.0.0')
         ->and($installCalls->count)->toBe(0)
+        ->and($manager->lockWasExclusive)->toBeTrue()
         ->and("$pluginsPath/lock-plugin/backend/vendor/new-package.php")->toBeFile()
         ->and("$pluginsPath/lock-plugin/backend/vendor/.runtime-installed")->not->toBeFile();
 });
@@ -545,14 +590,16 @@ test('update 迁移回滚不干净时隔离失败新目录并恢复旧目录', f
         ->and(glob("$downloadPath/plugin-backup-lock-plugin-*") ?: [])->toBeEmpty();
 });
 
-test('异步下载路径将 download timeout 作为 curl 和 HTTP fallback 总预算', function () {
-    config(['plugin.download.timeout' => 30]);
+test('异步下载路径为 curl 和 HTTP fallback 分别提供完整的单次超时', function () {
+    config(['plugin.download.timeout' => 120]);
 
     $runner = Mockery::mock(PluginComposerRunner::class);
     $versionManager = Mockery::mock(VersionManager::class);
     $manager = new class($versionManager, $runner) extends PluginManager
     {
         public int $curlTimeout = 0;
+
+        public int $httpTimeout = 0;
 
         public function exposeDownload(string $url, string $savePath): void
         {
@@ -565,21 +612,62 @@ test('异步下载路径将 download timeout 作为 curl 和 HTTP fallback 总�
 
             return false;
         }
+
+        protected function downloadWithHttp(string $url, string $savePath, int $timeout): void
+        {
+            $this->httpTimeout = $timeout;
+            file_put_contents($savePath, 'zip');
+        }
     };
 
     $downloadDir = sys_get_temp_dir().'/pmch-download-'.uniqid();
     mkdir($downloadDir, 0755, true);
     $savePath = "$downloadDir/plugin.zip";
 
-    Http::fake(function () use ($savePath) {
-        file_put_contents($savePath, 'zip');
+    $manager = $manager->withProgressReporter(fn () => null);
+    $manager->exposeDownload('https://example.com/plugin.zip', $savePath);
 
-        return Http::response('ok');
-    });
+    expect($manager->curlTimeout)->toBe(120)
+        ->and($manager->httpTimeout)->toBe(120)
+        ->and(is_file($savePath))->toBeTrue();
+});
+
+test('异步下载在 curl 进程超时后可靠回退到 HTTP 客户端', function () {
+    config(['plugin.download.timeout' => 120]);
+
+    $runner = Mockery::mock(PluginComposerRunner::class);
+    $versionManager = Mockery::mock(VersionManager::class);
+    $manager = new class($versionManager, $runner) extends PluginManager
+    {
+        public int $httpTimeout = 0;
+
+        public function exposeDownload(string $url, string $savePath): void
+        {
+            $this->downloadPlugin($url, $savePath);
+        }
+
+        protected function downloadWithCurl(string $url, string $savePath, int $timeout): bool
+        {
+            file_put_contents($savePath, 'partial');
+
+            throw new RuntimeException('插件包下载超时');
+        }
+
+        protected function downloadWithHttp(string $url, string $savePath, int $timeout): void
+        {
+            expect($savePath)->not->toBeFile();
+            $this->httpTimeout = $timeout;
+            file_put_contents($savePath, 'zip');
+        }
+    };
+
+    $downloadDir = sys_get_temp_dir().'/pmch-fallback-'.uniqid();
+    mkdir($downloadDir, 0755, true);
+    $savePath = "$downloadDir/plugin.zip";
 
     $manager = $manager->withProgressReporter(fn () => null);
     $manager->exposeDownload('https://example.com/plugin.zip', $savePath);
 
-    expect($manager->curlTimeout)->toBe(15)
-        ->and(is_file($savePath))->toBeTrue();
+    expect($manager->httpTimeout)->toBe(120)
+        ->and(file_get_contents($savePath))->toBe('zip');
 });

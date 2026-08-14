@@ -188,7 +188,11 @@ class PluginOperationService
         }
 
         if ($blocking->status === PluginOperation::STATUS_FAILED) {
-            throw new RuntimeException("插件 $pluginName 上次安装或更新失败，请先重试或卸载");
+            $action = $blocking->type === PluginOperation::TYPE_UPDATE
+                ? '重试或取消'
+                : '重试或卸载';
+
+            throw new RuntimeException("插件 $pluginName 上次安装或更新失败，请先{$action}");
         }
 
         throw new RuntimeException("插件 $pluginName 已有安装或更新任务正在执行，请稍后再试");
@@ -244,6 +248,30 @@ class PluginOperationService
                 PluginOperation::TYPE_INSTALL_UPLOAD,
             ])
             ->delete();
+    }
+
+    public function cancelFailedUpdate(PluginOperation $operation): void
+    {
+        if ($operation->status !== PluginOperation::STATUS_FAILED
+            || $operation->type !== PluginOperation::TYPE_UPDATE) {
+            throw new RuntimeException('只能取消失败的更新任务');
+        }
+
+        $this->withPluginMutex($operation->plugin_name, function () use ($operation) {
+            DB::transaction(function () use ($operation) {
+                $current = PluginOperation::whereKey($operation->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if ($current->status !== PluginOperation::STATUS_FAILED
+                    || $current->type !== PluginOperation::TYPE_UPDATE) {
+                    throw new RuntimeException('只能取消失败的更新任务');
+                }
+
+                $this->assertNoActiveOperation($current->plugin_name);
+                $current->delete();
+            });
+        });
     }
 
     public function beginRunning(PluginOperation $operation): ?string
@@ -416,9 +444,9 @@ class PluginOperationService
 
     public function assertConfigSafe(): void
     {
-        $timeout = (int) config('plugin.operations.timeout', 480);
+        $timeout = (int) config('plugin.operations.timeout', 720);
         $margin = (int) config('plugin.operations.timeout_margin', 60);
-        $download = (int) config('plugin.download.timeout', 30);
+        $download = (int) config('plugin.download.timeout', 120);
         $composer = (int) config('plugin.composer.timeout', 210);
         $overhead = (int) config('plugin.operations.overhead_margin', 30);
         $artisan = (int) config('plugin.operations.artisan_timeout', 60);
@@ -428,7 +456,8 @@ class PluginOperationService
             throw new RuntimeException('插件安装任务超时配置必须小于队列 retry_after，请调整 QUEUE_RETRY_AFTER 或 PLUGIN_OPERATION_TIMEOUT 后重试');
         }
 
-        if ($download + $composer + $overhead + ($artisan * 3) > $timeout) {
+        // curl 失败后 HTTP fallback 仍拥有完整单次超时，任务预算必须覆盖两次尝试。
+        if (($download * 2) + $composer + $overhead + ($artisan * 3) > $timeout) {
             throw new RuntimeException('插件安装任务 timeout 预算不足，请调整 PLUGIN_OPERATION_TIMEOUT / PLUGIN_DOWNLOAD_TIMEOUT / PLUGIN_COMPOSER_TIMEOUT / PLUGIN_OPERATION_ARTISAN_TIMEOUT');
         }
     }
@@ -442,7 +471,7 @@ class PluginOperationService
 
     private function lockTtl(): int
     {
-        return (int) config('plugin.operations.timeout', 480)
+        return (int) config('plugin.operations.timeout', 720)
             + (int) config('plugin.operations.timeout_margin', 60);
     }
 

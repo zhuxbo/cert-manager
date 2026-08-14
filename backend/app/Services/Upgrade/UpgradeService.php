@@ -214,7 +214,7 @@ class UpgradeService
             $needComposerInstall = $this->hasComposerChanges($oldComposerHashes, $newComposerHashes);
 
             if ($bundledVendorApplied) {
-                Log::info('[Upgrade] 发布包 vendor 已与 composer.lock 对齐，跳过 Composer install');
+                Log::info('[Upgrade] 当前 vendor 已与目标 composer.lock 对齐');
             } elseif ($needComposerInstall) {
                 $statusManager->startStep('composer_install');
                 Log::info('[Upgrade] Detected composer changes, running composer install');
@@ -223,7 +223,7 @@ class UpgradeService
                 }
                 $statusManager->completeStep('composer_install');
             } else {
-                Log::info('[Upgrade] No composer changes detected, skipping composer install');
+                Log::info('[Upgrade] Composer 文件未变化，复用现有依赖');
             }
 
             // 包内 vendor 在发布构建时已优化 autoload，运行时不再要求 Composer 或网络。

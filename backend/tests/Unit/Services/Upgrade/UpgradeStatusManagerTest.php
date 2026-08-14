@@ -204,6 +204,23 @@ test('save uses file lock', function () {
     expect($data['status'])->toBe('running');
 });
 
+test('状态文件无法打开时抛出稳定的领域错误', function () {
+    $normalStatusFile = $this->statusFile;
+    $invalidStatusFile = storage_path('upgrades/status-open-failure');
+    mkdir($invalidStatusFile, 0777, true);
+
+    $property = (new ReflectionClass($this->statusManager))->getProperty('statusFile');
+    $property->setValue($this->statusManager, $invalidStatusFile);
+
+    try {
+        expect(fn () => $this->statusManager->start('v1.0.0'))
+            ->toThrow(RuntimeException::class, '无法打开状态文件');
+    } finally {
+        $property->setValue($this->statusManager, $normalStatusFile);
+        rmdir($invalidStatusFile);
+    }
+});
+
 test('get uses shared lock', function () {
     // 验证 get 方法可以正确读取数据
     $this->statusManager->start('v1.0.0');

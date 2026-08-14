@@ -9,6 +9,23 @@ if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php'))
     require $maintenance;
 }
 
+// SSL_MANAGER_BOOTSTRAP_LOCK_V1_BEGIN
+// Hold a shared bootstrap lock for the whole HTTP request. Upgrade and plugin
+// publishers take the exclusive lock while replacing runtime files, so no
+// request can observe a missing or partially updated application tree.
+$upgradeBootstrapLock = @fopen(__DIR__.'/../../.upgrade-bootstrap.lock', 'c');
+if ($upgradeBootstrapLock !== false) {
+    if (flock($upgradeBootstrapLock, LOCK_SH)) {
+        register_shutdown_function(static function () use ($upgradeBootstrapLock): void {
+            flock($upgradeBootstrapLock, LOCK_UN);
+            fclose($upgradeBootstrapLock);
+        });
+    } else {
+        fclose($upgradeBootstrapLock);
+    }
+}
+// SSL_MANAGER_BOOTSTRAP_LOCK_V1_END
+
 // Register the Composer autoloader...
 require __DIR__.'/../vendor/autoload.php';
 

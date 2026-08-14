@@ -689,7 +689,7 @@ run_composer_install() {
     }
 
     if bundled_vendor_matches_lock "$INSTALL_DIR/backend"; then
-        log_info "包内 vendor 已与 composer.lock 对齐，跳过 composer install"
+        log_info "包内 vendor 已与 composer.lock 对齐"
         return 0
     fi
 

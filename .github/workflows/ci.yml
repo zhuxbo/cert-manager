@@ -686,6 +686,9 @@ jobs:
       - name: 对称副本字节等价 + redis 解析 bash↔PHP 等价
         run: bash deploy/test/test-symmetric-copies.sh
 
+      - name: 安装与升级包单次下载超时下限
+        run: bash deploy/test/test-package-download-timeouts.sh
+
       - name: upgrade storage 防删守卫 + 信号还原演练（验收⑦）
         run: bash deploy/test/test-upgrade-preserve-guard.sh
 
@@ -694,6 +697,9 @@ jobs:
 
       - name: 构建产物运行数据隔离
         run: bash build/tests/collect-artifacts-test.sh
+
+      - name: 前端依赖变更使构建缓存失效
+        run: bash build/tests/build-frontend-cache-test.sh
 
       - name: upgrade cron 管理段（M3/M6 §1.5）mock 演练
         run: bash deploy/test/test-cron-manage.sh

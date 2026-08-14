@@ -264,6 +264,7 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::get('operations/{uuid}', [PluginController::class, 'operation']);
         Route::post('operations/{uuid}/fail-stale', [PluginController::class, 'failStaleOperation']);
         Route::post('operations/{uuid}/retry', [PluginController::class, 'retryOperation']);
+        Route::post('operations/{uuid}/cancel', [PluginController::class, 'cancelFailedUpdateOperation']);
         Route::post('operations/{uuid}/uninstall', [PluginController::class, 'uninstallFailedOperation']);
         Route::post('install', [PluginController::class, 'install']);
         Route::post('update', [PluginController::class, 'update']);

@@ -74,7 +74,7 @@
         :total="pagination.total"
         layout="total, sizes, prev, pager, next"
         background
-        small
+        size="small"
         @size-change="handleSizeChange"
         @current-change="loadReports"
       />

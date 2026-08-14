@@ -10,6 +10,7 @@ import {
   getPluginOperations,
   failStalePluginOperation,
   retryPluginOperation,
+  cancelFailedPluginUpdate,
   uninstallFailedPluginOperation,
   type PluginInfo,
   type PluginOperation,
@@ -340,6 +341,10 @@ const isFailedInstallOperation = (op: PluginOperation): boolean => {
 
 const canUninstallFailedOperation = isFailedInstallOperation;
 
+const canCancelUpdateOperation = (op: PluginOperation): boolean => {
+  return op.status === "failed" && op.type === "update";
+};
+
 const handleRetryOperation = async (op: PluginOperation) => {
   operatingOperation.value = `${op.uuid}:retry`;
   try {
@@ -371,6 +376,20 @@ const handleUninstallFailedOperation = async (op: PluginOperation) => {
     );
     message(data.message || "插件失败安装记录已清理", { type: "success" });
     await loadPlugins();
+  } finally {
+    operatingOperation.value = null;
+  }
+};
+
+const handleCancelUpdateOperation = async (op: PluginOperation) => {
+  operatingOperation.value = `${op.uuid}:cancel`;
+  try {
+    const { data } = await cancelFailedPluginUpdate(op.uuid);
+    operations.value = operations.value.filter(item => item.uuid !== op.uuid);
+    notifiedTerminals.delete(op.uuid);
+    message(data.message || "插件更新已取消，保留当前版本", {
+      type: "success"
+    });
   } finally {
     operatingOperation.value = null;
   }
@@ -460,6 +479,24 @@ onBeforeUnmount(() => {
             >
               重试
             </el-button>
+            <el-popconfirm
+              v-if="canCancelUpdateOperation(op)"
+              title="确定取消本次更新并保留当前已安装版本吗？"
+              confirm-button-text="取消更新"
+              cancel-button-text="返回"
+              @confirm="handleCancelUpdateOperation(op)"
+            >
+              <template #reference>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :loading="operatingOperation === `${op.uuid}:cancel`"
+                >
+                  取消
+                </el-button>
+              </template>
+            </el-popconfirm>
             <el-popconfirm
               v-if="canUninstallFailedOperation(op)"
               title="确定清理该插件的失败安装记录吗？"

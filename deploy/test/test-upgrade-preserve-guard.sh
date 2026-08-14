@@ -518,9 +518,11 @@ TEMP_DIR="$base/tmp"
 PRESERVE_DIR="$base/.upgrade-preserve-clx"
 FREEZE_FIRED=0
 UPGRADE_DONE=1
+BOOTSTRAP_LOCK_HELD=0
 HDR
     extract_fn "$UPGRADE" _restore_preserved_storage >>"$harness"
     extract_fn "$UPGRADE" _restore_preserved_extras >>"$harness"
+    extract_fn "$UPGRADE" _release_bootstrap_lock >>"$harness"
     extract_fn "$UPGRADE" cleanup >>"$harness"
     cat >>"$harness" <<'MAIN'
 trap cleanup EXIT
@@ -752,10 +754,12 @@ TEMP_DIR="$inst/tmp"
 PRESERVE_DIR="$inst/.upgrade-preserve-harness"
 FREEZE_FIRED=0
 UPGRADE_DONE=0
+BOOTSTRAP_LOCK_HELD=0
 PHP_CMD=php
 HDR
     extract_fn "$UPGRADE" _restore_preserved_storage >>"$hf"
     extract_fn "$UPGRADE" _restore_preserved_extras >>"$hf"
+    extract_fn "$UPGRADE" _release_bootstrap_lock >>"$hf"
     extract_fn "$UPGRADE" cleanup >>"$hf"
     cat >>"$hf" <<MAIN
 trap cleanup EXIT
@@ -884,6 +888,52 @@ if grep -qE 'trap cleanup INT TERM HUP' "$UPGRADE"; then
     pass "C 生产信号 trap 装配行钉死（trap cleanup INT TERM HUP）"
 else
     fail "C 生产信号 trap 装配行缺失（应有 trap cleanup INT TERM HUP）"
+fi
+
+lock_acquire_line=$(grep -nE '^[[:space:]]*_acquire_bootstrap_lock$' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+legacy_prepare_line=$(grep -nE '^[[:space:]]*_prepare_legacy_bootstrap_entry ' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+vendor_preserve_line=$(grep -nF 'mv "$INSTALL_DIR/backend/vendor" "$PRESERVE_DIR/"' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+lock_release_line=$(grep -nE '^[[:space:]]*_release_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+if grep -qF 'local lock_file="$INSTALL_DIR/.upgrade-bootstrap.lock"' "$UPGRADE" &&
+    grep -qF 'UPGRADE_LEGACY_REQUEST_DRAIN_TIMEOUT' "$UPGRADE" &&
+    grep -qF 'ApplicationBootstrapLock::prepareLegacyHttpEntry' "$UPGRADE" &&
+    [ -n "$legacy_prepare_line" ] && [ -n "$lock_acquire_line" ] && [ -n "$vendor_preserve_line" ] && [ -n "$lock_release_line" ] &&
+    [ "$legacy_prepare_line" -lt "$lock_acquire_line" ] && [ "$lock_acquire_line" -lt "$vendor_preserve_line" ] &&
+    [ "$vendor_preserve_line" -lt "$lock_release_line" ]; then
+    pass "C Shell 首次升级先排空旧请求，随后目录替换全程持应用启动独占锁"
+else
+    fail "C Shell 首次升级排空或启动锁未覆盖 vendor/代码切换窗口"
+fi
+
+if grep -qF '_vendor_dir_matches_lock "$INSTALL_DIR/backend/vendor" "$src_dir/backend/composer.lock"' "$UPGRADE" &&
+    grep -qF 'BUNDLED_VENDOR_REUSED=1' "$UPGRADE" &&
+    grep -qF '[ "$BUNDLED_VENDOR_REUSED" -eq 0 ] && [ -d "$INSTALL_DIR/backend/vendor" ]' "$UPGRADE"; then
+    pass "C Shell 目标 lock 未变化时原地复用在线 vendor"
+else
+    fail "C Shell 未在目标 lock 相同时避免 vendor 暂存与切换"
+fi
+
+if ! grep -qF 'rm -rf "$INSTALL_DIR/backend/public"' "$UPGRADE" &&
+    grep -qF '! -name index.php' "$UPGRADE"; then
+    pass "C Shell 切换窗保留 public/index.php 作为共享锁稳定入口"
+else
+    fail "C Shell 仍会在独占锁期间删除 public/index.php"
+fi
+
+rollback_start_line=$(grep -nE '^rollback\(\)' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+rollback_lock_line=$(grep -nE '^[[:space:]]*_acquire_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+rollback_restore_line=$(grep -nF 'rm -rf "$INSTALL_DIR/backend/$dir"' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+rollback_unlock_line=$(grep -nE '^[[:space:]]*_release_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+rollback_up_line=$(grep -nF 'artisan upgrade:unfreeze' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+if [ -n "$rollback_start_line" ] && [ -n "$rollback_lock_line" ] && [ -n "$rollback_restore_line" ] &&
+    [ -n "$rollback_unlock_line" ] && [ -n "$rollback_up_line" ] &&
+    [ "$rollback_start_line" -lt "$rollback_lock_line" ] &&
+    [ "$rollback_lock_line" -lt "$rollback_restore_line" ] &&
+    [ "$rollback_restore_line" -lt "$rollback_unlock_line" ] &&
+    [ "$rollback_unlock_line" -lt "$rollback_up_line" ]; then
+    pass "C Shell 回滚文件替换同样受应用启动独占锁保护"
+else
+    fail "C Shell 回滚未完整覆盖启动锁或释放顺序错误"
 fi
 
 # ⑧ 钉死 composer 触发的 vendor 缺失兜底：删掉它 → 中断丢 vendor 重跑因 hash 相等跳过 composer → 砖机。

@@ -5,6 +5,7 @@ packages:
 
 overrides:
   vue: ^3.5.13
+  '@vueuse/core@14.3.0': 14.4.0
 
 allowedDeprecatedVersions:
   are-we-there-yet: '*'

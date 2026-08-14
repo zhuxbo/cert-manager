@@ -6,6 +6,7 @@ use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Upgrade\ArchiveGuard;
 use App\Services\Upgrade\VersionManager;
+use App\Support\ApplicationBootstrapLock;
 use App\Support\Opcache;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
@@ -257,10 +258,12 @@ class PluginManager
         }
 
         $applied = false;
+        $bootstrapLock = null;
         $migrationRecordsBefore = [];
         $migrationAttempted = false;
 
         try {
+            $bootstrapLock = ApplicationBootstrapLock::acquireExclusive();
             $this->report('applying', '正在安装插件文件...');
             $this->applyPlugin($pluginSourceDir, $pluginDir);
             $applied = true;
@@ -309,6 +312,8 @@ class PluginManager
             }
 
             throw $e;
+        } finally {
+            ApplicationBootstrapLock::release($bootstrapLock);
         }
     }
 
@@ -359,6 +364,7 @@ class PluginManager
 
         // 旧 vendor 暂存路径（删旧目录前移出，lock 未变时移回复用，避免重拉大体量 vendor）
         $vendorStash = null;
+        $bootstrapLock = null;
         $migrationRecordsBefore = [];
         $migrationAttempted = false;
 
@@ -390,6 +396,7 @@ class PluginManager
 
             // 删除旧版本 → 移入新版本（校验路径归属，防止 symlink 攻击）
             $this->validatePluginPath($pluginDir);
+            $bootstrapLock = ApplicationBootstrapLock::acquireExclusive();
 
             // 删目录前暂存旧 vendor：新包自带 vendor 时会丢弃该暂存；历史包仍可在
             // lock 未变时复用，避免无意丢失已安装依赖。
@@ -497,6 +504,7 @@ class PluginManager
 
             throw $e;
         } finally {
+            ApplicationBootstrapLock::release($bootstrapLock);
             $this->cleanupTemp($zipPath, $extractDir ?? null);
             // 清理未被复用的 vendor 暂存（lock 变化重装 / 异常恢复备份后，暂存即为冗余）
             if ($vendorStash && is_dir($vendorStash)) {
@@ -640,20 +648,33 @@ class PluginManager
         $this->validateReleaseUrl($url);
 
         $timeout = $this->progressReporter !== null
-            ? (int) Config::get('plugin.download.timeout', 30)
+            ? (int) Config::get('plugin.download.timeout', 120)
             : (int) Config::get('upgrade.package.download_timeout', 300);
-        $attemptTimeout = $this->progressReporter !== null
-            ? max(1, intdiv($timeout, 2))
-            : $timeout;
+        $attemptTimeout = max(1, $timeout);
 
         // 优先使用 curl
-        if ($this->downloadWithCurl($url, $savePath, $attemptTimeout)) {
-            return;
+        try {
+            if ($this->downloadWithCurl($url, $savePath, $attemptTimeout)) {
+                return;
+            }
+        } catch (RuntimeException $e) {
+            Log::warning('curl 下载插件包失败，将回退到 HTTP 客户端', [
+                'error' => $this->safeError($e),
+            ]);
         }
 
-        // 回退到 PHP HTTP
+        // curl 失败或超时可能留下半包，HTTP fallback 必须从空文件重新写入。
+        File::delete($savePath);
+        $this->downloadWithHttp($url, $savePath, $attemptTimeout);
+    }
+
+    /**
+     * 使用 PHP HTTP 客户端下载
+     */
+    protected function downloadWithHttp(string $url, string $savePath, int $timeout): void
+    {
         try {
-            $response = Http::timeout($attemptTimeout)
+            $response = Http::timeout($timeout)
                 ->withOptions([
                     'sink' => $savePath,
                     // 与 curl 对称：重定向仅允许 https（防降级到 http 内网/元数据 SSRF），限 5 跳
@@ -661,7 +682,7 @@ class PluginManager
                 ])
                 ->get($url);
 
-            if ($response->successful() && file_exists($savePath)) {
+            if ($response->successful() && file_exists($savePath) && filesize($savePath) > 0) {
                 return;
             }
 
@@ -695,7 +716,8 @@ class PluginManager
         );
 
         $process = Process::fromShellCommandline($command);
-        $process->setTimeout($timeout);
+        // 让 curl 自己先按 --max-time 结束，Symfony 仅作为额外的失控保护。
+        $process->setTimeout($timeout + 5);
 
         try {
             $process->run();
@@ -902,7 +924,7 @@ class PluginManager
         }
 
         if ($this->composerRunner->bundledVendorMatchesLock($pluginDir)) {
-            Log::info("[Plugin] 包内 vendor 已与 composer.lock 对齐，跳过 Composer: $name");
+            Log::info("[Plugin] 包内 vendor 已与 composer.lock 对齐: $name");
 
             return;
         }

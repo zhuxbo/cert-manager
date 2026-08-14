@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import AccessFormDialog from "./AccessFormDialog.vue";
 import SchemaFieldLabel from "./SchemaFieldLabel.vue";
 import { isBooleanConfigField } from "./schemaConfig";
 import {
@@ -32,6 +33,20 @@ export interface ProviderProduct {
 export interface ProviderCatalogItem {
   key: string;
   label: string;
+  credentialSchema: Array<{
+    key: string;
+    label: string;
+    type?: "string" | "number" | "select" | "bool" | "boolean";
+    required?: boolean;
+    default?: unknown;
+    required_when?: { key: string; equals: unknown };
+    visible_when?: { key: string; equals: unknown };
+    options?: Array<{ label: string; value: string }>;
+    secret?: boolean;
+    description?: string;
+    help?: string;
+    tip?: string;
+  }>;
   products: ProviderProduct[];
 }
 
@@ -39,6 +54,8 @@ export interface TargetFormApi {
   accessList: (params: Record<string, any>) => Promise<any>;
   getProviders: (force?: boolean) => Promise<ProviderCatalogItem[]>;
   targetShow?: (id: number) => Promise<any>;
+  accessStore: (data: Record<string, any>) => Promise<any>;
+  accessUpdate: (id: number, data: Record<string, any>) => Promise<any>;
   targetStore: (data: Record<string, any>) => Promise<any>;
   targetUpdate: (id: number, data: Record<string, any>) => Promise<any>;
 }
@@ -71,6 +88,9 @@ const catalog = ref<ProviderCatalogItem[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const suppressReset = ref(false);
+const accessDialog = ref(false);
+const editingAccess = ref<any | null>(null);
+const accessIdsBeforeCreate = ref<Set<string>>(new Set());
 const form = ref<any>({
   user_id: undefined,
   access_id: undefined,
@@ -171,6 +191,43 @@ async function loadAccesses(userId?: number | string) {
   if (isAdmin.value && userId) params.user_id = userId;
   const res = await props.api.accessList(params);
   accesses.value = res.data.items;
+}
+
+function openAccessCreate() {
+  editingAccess.value = null;
+  accessIdsBeforeCreate.value = new Set(
+    accesses.value.map(access => String(access.id))
+  );
+  accessDialog.value = true;
+}
+
+function openAccessEdit() {
+  if (!selectedAccess.value) return;
+  editingAccess.value = selectedAccess.value;
+  accessDialog.value = true;
+}
+
+async function onAccessSaved(result: {
+  id?: number;
+  name: string;
+  provider: string;
+  created: boolean;
+}) {
+  const selectedId = form.value.access_id;
+  await loadAccesses(form.value.user_id);
+
+  if (result.created) {
+    const createdAccess = accesses.value.find(
+      access =>
+        !accessIdsBeforeCreate.value.has(String(access.id)) &&
+        access.name === result.name &&
+        access.provider === result.provider
+    );
+    if (createdAccess) form.value.access_id = createdAccess.id;
+    return;
+  }
+
+  form.value.access_id = result.id ?? selectedId;
 }
 
 async function open() {
@@ -335,19 +392,37 @@ function sameConfig(
       </el-form-item>
 
       <el-form-item label="云凭证">
-        <el-select
-          v-model="form.access_id"
-          :placeholder="accessPlaceholder"
-          :disabled="accessDisabled"
-          style="width: 100%"
+        <div
+          style="display: flex; width: 100%; align-items: center; gap: 8px"
         >
-          <el-option
-            v-for="a in accesses"
-            :key="a.id"
-            :label="accessLabel(a)"
-            :value="a.id"
-          />
-        </el-select>
+          <el-select
+            v-model="form.access_id"
+            :placeholder="accessPlaceholder"
+            :disabled="accessDisabled"
+            clearable
+            style="flex: 1; min-width: 0"
+          >
+            <el-option
+              v-for="a in accesses"
+              :key="a.id"
+              :label="accessLabel(a)"
+              :value="a.id"
+            />
+          </el-select>
+          <template v-if="hideOrder">
+            <el-button
+              v-if="!selectedAccess"
+              type="primary"
+              :disabled="accessDisabled"
+              @click="openAccessCreate"
+            >
+              新增
+            </el-button>
+            <el-button v-else type="primary" @click="openAccessEdit">
+              编辑
+            </el-button>
+          </template>
+        </div>
       </el-form-item>
 
       <el-form-item v-if="!hideOrder" label="订单">
@@ -433,4 +508,13 @@ function sameConfig(
       </el-button>
     </template>
   </el-dialog>
+
+  <AccessFormDialog
+    v-model="accessDialog"
+    :api="api"
+    :catalog="catalog"
+    :access="editingAccess"
+    :user-id="isAdmin ? form.user_id : null"
+    @saved="onAccessSaved"
+  />
 </template>

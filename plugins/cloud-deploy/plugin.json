@@ -1,6 +1,6 @@
 {
   "name": "cloud-deploy",
-  "requires": ">=0.6.3",
+  "requires": ">=0.6.8",
   "description": "证书自动推送到云平台",
   "provider": "CloudDeployServiceProvider",
   "php_ext": [],

@@ -4,6 +4,7 @@ namespace App\Services\Upgrade;
 
 use App\Services\Composer\ComposerVendorBundle;
 use App\Services\Nginx\NginxRenderer;
+use App\Support\ApplicationBootstrapLock;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -204,15 +205,35 @@ class PackageExtractor
         $this->appliedBundledVendor = false;
 
         $vendorSource = "$sourceDir/vendor";
+        $vendorTarget = "$targetDir/vendor";
         $stagedVendor = null;
-        if (File::isDirectory($vendorSource)) {
-            // 大体量 vendor 必须在覆盖任何运行代码前完成复制和二次校验。
-            // 磁盘满、权限变化等失败应保持旧代码与旧 vendor 原样可用。
-            ComposerVendorBundle::assertMatchesLock($sourceDir);
-            $stagedVendor = $this->stageBundledVendor($vendorSource, "$targetDir/vendor", $sourceDir);
-        }
-
+        $bootstrapLock = null;
         try {
+            if (File::isDirectory($vendorSource)) {
+                ComposerVendorBundle::assertMatchesLock($sourceDir);
+
+                if (ComposerVendorBundle::vendorMatchesLock($vendorTarget, "$sourceDir/composer.lock")) {
+                    // 目标 lock 未变化时保留当前 vendor，避免无意义的大目录复制和切换窗口。
+                    $this->appliedBundledVendor = true;
+                    Log::info('[Upgrade] 当前 vendor 已与目标 composer.lock 对齐，跳过目录切换');
+                } else {
+                    // 大体量 vendor 必须在覆盖任何运行代码前完成复制和二次校验。
+                    // 磁盘满、权限变化等失败应保持旧代码与旧 vendor 原样可用。
+                    $stagedVendor = $this->stageBundledVendor($vendorSource, $vendorTarget, $sourceDir);
+                }
+            }
+
+            $sourceIndex = "$sourceDir/public/index.php";
+            $targetIndex = "$targetDir/public/index.php";
+            if (File::exists($sourceIndex) && File::exists($targetIndex)) {
+                ApplicationBootstrapLock::prepareLegacyHttpEntry(
+                    $sourceIndex,
+                    $targetIndex,
+                    (int) config('plugin.upgrade.legacy_request_drain_timeout', 300)
+                );
+            }
+            $bootstrapLock = ApplicationBootstrapLock::acquireExclusive();
+
             // 保护自定义 API 适配器：先备份
             $preservedApiAdapters = $this->preserveCustomApiAdapters($targetDir);
 
@@ -237,7 +258,7 @@ class PackageExtractor
 
             // 包内 vendor 已在覆盖代码前完整复制并校验，此处只做同文件系统目录切换。
             if ($stagedVendor !== null) {
-                $this->activateStagedVendor($stagedVendor, "$targetDir/vendor");
+                $this->activateStagedVendor($stagedVendor, $vendorTarget);
                 $this->appliedBundledVendor = true;
             }
 
@@ -257,6 +278,7 @@ class PackageExtractor
             if ($stagedVendor !== null && File::isDirectory($stagedVendor)) {
                 File::deleteDirectory($stagedVendor);
             }
+            ApplicationBootstrapLock::release($bootstrapLock);
         }
     }
 
@@ -290,7 +312,6 @@ class PackageExtractor
         $suffix = bin2hex(random_bytes(6));
         $previous = dirname($target).'/.vendor-previous-'.$suffix;
         File::deleteDirectory($previous);
-
         try {
             if (File::isDirectory($target) && ! rename($target, $previous)) {
                 throw new RuntimeException('旧 vendor 备份失败');

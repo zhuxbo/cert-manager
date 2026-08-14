@@ -39,9 +39,9 @@ return [
             'connection' => env('DB_CONNECTION', 'mysql'),
             'table' => 'jobs',
             'queue' => 'default',
-            // 600s：覆盖普通订单任务，也为插件安装的 composer + migrate/seed/rollback
+            // 900s：覆盖普通订单任务，也为插件包两次完整下载尝试、composer 与迁移
             // 异步长任务留足可见性超时，避免任务尚未结束就被重新投递。
-            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 600),
+            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 900),
             'block_for' => null,
             'after_commit' => false,
         ],
@@ -50,7 +50,7 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 600),
+            'retry_after' => (int) env('QUEUE_RETRY_AFTER', 900),
             'block_for' => null,
             'after_commit' => false,
         ],
@@ -59,7 +59,7 @@ return [
             'driver' => 'beanstalkd',
             'host' => env('BEANSTALKD_QUEUE_HOST', 'localhost'),
             'queue' => env('BEANSTALKD_QUEUE', 'default'),
-            'retry_after' => (int) env('BEANSTALKD_QUEUE_RETRY_AFTER', 90),
+            'retry_after' => (int) env('BEANSTALKD_QUEUE_RETRY_AFTER', 900),
             'block_for' => 0,
             'after_commit' => false,
         ],

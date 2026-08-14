@@ -15,7 +15,7 @@
 #### freeze 接入生产升级路径（危险窗挡 HTTP 写）
 
 - **核心机理**：本仓已删 Laravel `PreventRequestsDuringMaintenance` 全局中间件，`artisan down` **对 HTTP 零拦截**（只暂停 worker/scheduler）；`freeze`（`MaintenanceMode` 中间件）才是唯一真正挡外部写请求（下单/支付回调/文档上传）的 HTTP 闸。
-- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 在危险动作前点火（web 于 `apply` 前全程有效；shell 于 down 后立即点火，但锁存 `storage/`、随 `mv storage → preserve` 离开规范路径——**切代码窗 [mv, 恢复] 内 `isFrozen()=false`，由 storage 缺失致 app 无法 bootstrap（500）兜底，HTTP-503 有效覆盖自 storage 恢复起的 migrate/seed 窗**，upgrade.sh 注释已按此校准），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
+- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 在危险动作前点火（web 于 `apply` 前全程有效；shell 于 down 后立即点火，锁存 `storage/` 并会随 `mv storage → preserve` 暂时离开规范路径；该切代码窗由稳定放在安装根目录的 `.upgrade-bootstrap.lock` 独占锁阻塞新 HTTP 请求，不再依赖 bootstrap 500 兜底；storage 恢复后 HTTP-503 继续覆盖 migrate/seed 窗），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
 - **顺序契约（两侧对称）**：`unfreeze` 必须**严格先于** `artisan up`——up 唤醒被 down 暂停的 worker 去 pop job，若 freeze 仍在则 `SkipWhenUpgradeFrozen` 的 `release(60)` 开始烧 job attempts（tries=5 的 job ~5min 全落 failed_jobs）。**全子系统 6 处 up 全部与 unfreeze 配对且序正确**：web 成功路径 / web catch(\Throwable) / web rollback 成功+catch 两入口 / shell perform / shell rollback / fatal shutdown handler。测试断言：`UpgradePerformUpgradeFreezeTest` H2-A 用 Artisan facade mock 捕获 'up' 调用时刻 `!isFrozen`（CommandStarting 事件在测试态被框架不桥接，只能走 facade mock）；`UpgradeRunCommandTest` 对 fatal 路径同款序断言；`upgrade.sh` 靠行序 + 注释固化。
 - **rollback 两入口补 unfreeze**（`UpgradeService::rollback` + `upgrade.sh rollback()`）：防失败升级滞留 freeze，先于 up；rollback 自身不 freeze。
 - **失败/中断兜底**：`performUpgradeWithStatus` catch 扩到 `\Throwable`（`\Error`/TypeError 也就地 unfreeze + up），且 unfreeze 无条件（与 maintenance_mode 解耦——freeze 点火无条件，若 unfreeze 挂在 `if($inMaintenanceMode)` 内，配置关维护时失败会滞留 freeze 到 TTL）；**真 fatal（OOM/E_PARSE/E_COMPILE_ERROR，catch 接不住）走 `UpgradeRunCommand::handleFatalShutdown`：`unfreeze` → `up` → `fail`**（曾漏 unfreeze：up 后 worker 醒来烧 attempts + 2h 503——shutdown 自愈必须自己配对 unfreeze；**fail 置终态放最后**：up 在 shutdown 阶段二次 fatal 时 catch 接不住、fail 未执行 → status 保持 running 交 watchdog 接管重试，若先 fail 则 watchdog 只救 running 永不兜、down 永久残留）；SIGKILL 由 watchdog 兜底；shell 失败/中断的**数据侧已由 `deploy/upgrade.sh` 的 `cleanup` 守卫 + 入口残留检测兜底**（切代码窗 storage/databak 自动还原到原位；PRESERVE 目录在安装目录同 fs 持久盘，SIGKILL/断电 trap 不跑时数据仍存活、重跑入口 `_check_stranded_preserve` 拦截防新建空 storage 埋数据；见 P0-2 包U），**服务侧仍不自动 up**（freeze-TTL 只解 503，worker/scheduler 停摆待人工——失败时终端自动打印 runbook，与 watchdog「误 up 半迁移库比卡死更坏」同哲学，恢复指引见 `skills/ops/deploy-ops.md`）。
@@ -57,21 +57,23 @@
 | `BackupManager`        | 备份和恢复                                                             |
 | `VersionManager`       | 版本比较，环境检测                                                     |
 
-**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：普通顶层目录动态同步，`storage` 始终排除；包内 `vendor` 必须在覆盖任何代码前复制到安装盘同级临时目录并再次通过 lock SHA-256 标记校验，磁盘满或权限失败时旧代码与旧 vendor 都保持不变；随后用同文件系统目录切换整体替换，不与旧 vendor 合并。升级成功后跳过运行时 Composer；不带 vendor 的历史包仍走原 Composer 兼容路径。
+**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：普通顶层目录动态同步，`storage` 始终排除；包内 `vendor` 先通过 lock SHA-256 标记校验。当前 `vendor` 已与目标 lock 对齐时直接原地复用，避免无意义的大目录复制和目录切换窗口；不一致或缺失时，才在覆盖任何代码前复制到安装盘同级临时目录并二次校验，磁盘满或权限失败时旧代码与旧 vendor 都保持不变，随后用同文件系统目录切换整体替换且不与旧 vendor 合并。HTTP 入口在加载 Composer 前持有安装根目录 `.upgrade-bootstrap.lock` 共享锁，后台升级、`upgrade.sh` 及插件安装/更新在发布文件时持独占锁；已进入请求执行完后才切换，新请求等待完整发布或失败回退结束。首次从无锁入口采用该机制时，升级器先把自包含锁片段原子注入旧 `public/index.php`，再按 `UPGRADE_LEGACY_REQUEST_DRAIN_TIMEOUT`（默认 300 秒，应不小于 FPM 请求硬上限）排空注入前已进入的旧请求；准备状态持久化在项目根，进程中断后重试继续剩余时间。正常发布包直接使用已校验依赖；不带 vendor 的历史包仍走原 Composer 兼容路径。
 
 **两条升级路径删除语义不同、且都正确**：后台升级（PHP，在被升级代码内运行、不能全量删自身）→ 只覆盖不删除，旧版删除的文件会残留（本项目路由是显式白名单不扫目录，残留基本无害）；需彻底清理残留时走 `upgrade.sh`（外部 shell，`rm -rf` 各目录 + 整体 `cp` 全量替换、天然无残留）。一致性目标是「都不漏应更新的目录」，删除策略因运行环境不同而必须不同。
 
-**升级器自更新有一次时序滞后**：本次升级跑的是服务器上的旧 `PackageExtractor`，逻辑修复要下一次升级才生效（或本次升级后手动补缺失资源）。回归测试见 `PackageExtractorTest`（动态发现新目录 / storage 跳过 / resources 同步）。
+**升级器自更新有一次时序滞后**：本次后台升级跑的是服务器上的旧 `PackageExtractor`，逻辑修复要下一次升级才生效（或本次升级后手动补缺失资源）。因此从不带 `SSL_MANAGER_BOOTSTRAP_LOCK_V1` 的历史版本首次进入启动锁机制时，不能依赖目标包里的新 PHP 升级器自救，必须使用本次发布的 `upgrade.sh` 完成首次握手。入口已具备标记后，后台升级才受上述共享/独占锁保护。另一种可行设计是先发布桥接版本，但当前尚未实现；桥接版本除注入入口 marker 外，还必须持久化 draining 状态并等待旧请求排空。回归测试见 `PackageExtractorTest`（动态发现新目录 / storage 跳过 / resources 同步）与 `ApplicationBootstrapLockTest`（首次注入 / 中断续等 / 原生新装快路径 / 失败关闭）。
 
 ### 升级模式
 
-| 特性             | PHP API 升级                      | Shell 脚本升级                                        |
-| ---------------- | --------------------------------- | ----------------------------------------------------- |
-| 触发方式         | 管理后台 API                      | `deploy/upgrade.sh`                                   |
-| 升级包           | `upgrade` 包                      | `full` 包                                             |
-| 维护模式         | 自动进入/退出                     | 自动进入/退出                                         |
-| PHP 环境不达标   | 仅检测；前端弹窗指引用 upgrade.sh | 询问 BT API key 自动装扩展/启用函数；否则手工指引     |
-| composer install | `--no-scripts` + 单独 discover    | `--no-dev --optimize-autoloader` + 兜底 dump-autoload |
+| 特性           | PHP API 升级                                    | Shell 脚本升级                                           |
+| -------------- | ----------------------------------------------- | -------------------------------------------------------- |
+| 触发方式       | 管理后台 API                                    | `deploy/upgrade.sh`                                      |
+| 升级包         | `upgrade` 包                                    | `full` 包                                                |
+| 维护模式       | 自动进入/退出                                   | 自动进入/退出                                            |
+| PHP 环境不达标 | 仅检测；前端弹窗指引用 upgrade.sh               | 询问 BT API key 自动装扩展/启用函数；否则手工指引        |
+| Composer       | 包内 vendor 校验复用；历史包兼容 `--no-scripts` | 包内 vendor 校验复用；历史包兼容 install + dump-autoload |
+
+发布包变大后，各入口都按单次下载设置完整超时：`install.sh` 的入口脚本包为 120 秒，安装完整包、`upgrade.sh` 完整包和后台 `ReleaseClient` 升级包均为 300 秒；后台 curl 失败后，HTTP 客户端仍拥有完整的 300 秒回退尝试。`deploy/test/test-package-download-timeouts.sh` 固化这些下限，并同时守卫插件包的单次 120 秒配置。
 
 ### PHP 环境检测
 
