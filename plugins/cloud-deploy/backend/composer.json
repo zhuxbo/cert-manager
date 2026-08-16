@@ -8,6 +8,7 @@
         "alibabacloud/apig-20240327": "^7.0",
         "alibabacloud/cas-20200407": "^3.5",
         "alibabacloud/cdn-20180510": "^9.0",
+        "alibabacloud/cloudapi-20160714": "^4.9",
         "alibabacloud/dcdn-20180115": "^3.1",
         "alibabacloud/ddoscoo-20200101": "^4.0",
         "alibabacloud/esa-20240910": "^3.0",
@@ -21,6 +22,7 @@
         "alibabacloud/waf-openapi-20211001": "^7.8",
         "aws/aws-sdk-php": "^3.0",
         "baidubce/bce-sdk-php": "^0.8.22",
+        "phpseclib/phpseclib": "^3.0.48",
         "qiniu/php-sdk": "^7.14",
         "tencentcloud/cdn": "^3.0",
         "tencentcloud/clb": "^3.0",
@@ -38,6 +40,11 @@
         "psr/log": "*",
         "guzzle/guzzle": "*",
         "symfony/event-dispatcher": "*"
+    },
+    "scripts": {
+        "post-autoload-dump": [
+            "@php ../../../backend/scripts/write-composer-lock-marker.php ."
+        ]
     },
     "config": {
         "allow-plugins": false,

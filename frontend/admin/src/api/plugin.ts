@@ -129,6 +129,15 @@ export function retryPluginOperation(
   );
 }
 
+export function cancelFailedPluginUpdate(
+  uuid: string
+): Promise<BaseResponse<PluginActionResult>> {
+  return http.request<BaseResponse<PluginActionResult>>(
+    "post",
+    `/plugin/operations/${uuid}/cancel`
+  );
+}
+
 export function uninstallFailedPluginOperation(
   uuid: string
 ): Promise<BaseResponse<PluginActionResult>> {

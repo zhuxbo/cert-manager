@@ -6,20 +6,23 @@ use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Cookie\CookieJar;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
  * 又拍云 CDN（证书服务型）：证书先经又拍云控制台证书库上传拿 certificate_id（走 RemoteCertStore 去重），
  * 再按域名当前 HTTPS 状态绑定（未启用→启用并绑；已启用且证书不同→迁移；相同→无操作）。
  *
- * 对齐 certimate upyun-cdn 的 exact 单域名核心路径；不做其 wildcard/certsan 多域名遍历
- * （GetBuckets 拉全量域名再匹配）——本插件统一只 exact 匹配 config.domain。
+ * 对齐 certimate upyun-cdn 的 exact/wildcard/certsan；certsan 经可选远端证书材料契约取得叶证书，
+ * 私钥不进入 bind 上下文。
  *
- * config：domain（加速域名，必填）。
+ * config：非 certsan 时 domain 为必填加速域名。
  */
-class UpyunCdnDeployer extends AbstractDeployer
+class UpyunCdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
     use BindsUpyunDomainHttps;
+    use MatchesCertificateHostnames;
 
     private const BASE_URI = 'https://console.upyun.com';
 
@@ -41,7 +44,8 @@ class UpyunCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配（exact/wildcard/certsan）', 'type' => 'string', 'required' => false],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -57,14 +61,49 @@ class UpyunCdnDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  remote_cert_id（又拍云 certificate_id）
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  证书 id 或 opt-in 的 leaf/中间链上下文
      * @param  array{username:string,password:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain?:string,domain_match_pattern?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $this->bindUpyunDomain((string) $certRef, $domain, $credentials);
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $remoteCertId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $domain = $pattern === 'certsan' ? '' : (string) $this->requireConfig($config, 'domain');
+        if ($pattern === '' || $pattern === 'exact' || ($pattern === 'wildcard' && ! str_starts_with($domain, '*.'))) {
+            $domains = [$domain];
+        } elseif ($pattern === 'wildcard') {
+            /** @var UpyunRestClient $client */
+            $client = $this->makeClient('api', $credentials);
+            $domains = array_values(array_filter($client->getDomains(), fn (string $candidate): bool => $this->matchesWildcard($domain, $candidate)));
+            if ($domains === []) {
+                $this->fail('未找到 wildcard 匹配的又拍云 CDN 域名');
+            }
+        } elseif ($pattern === 'certsan') {
+            /** @var UpyunRestClient $client */
+            $client = $this->makeClient('api', $credentials);
+            $domains = array_values(array_filter($client->getDomains(), fn (string $candidate): bool => $this->certificateMatchesHostname($certificate, $candidate)));
+            if ($domains === []) {
+                $this->fail('未找到证书匹配的又拍云 CDN 域名');
+            }
+        } else {
+            $this->fail("不支持的域名匹配模式: $pattern");
+        }
+        foreach ($domains as $candidate) {
+            $this->bindUpyunDomain($remoteCertId, $candidate, $credentials);
+        }
+    }
+
+    private function matchesWildcard(string $pattern, string $hostname): bool
+    {
+        if (str_starts_with($hostname, '.') || str_starts_with($hostname, '*.')) {
+            return strcasecmp(ltrim($pattern, '*'), ltrim($hostname, '*')) === 0;
+        }
+        $suffix = substr($pattern, 2);
+        $prefix = substr($hostname, 0, -strlen('.'.$suffix));
+
+        return str_ends_with(strtolower($hostname), '.'.strtolower($suffix)) && $prefix !== '' && ! str_contains($prefix, '.');
     }
 
     protected function makeClient(string $kind, array $credentials): object

@@ -725,13 +725,14 @@ function mockCancelApi(string $mode = 'success'): MockInterface
     return $mockApi;
 }
 
-test('cancelLocked reissue 增域名（amount=20）：只退增量 20 非 120 + 前驱保持 reissued + latest_cert_id 不回切 + reissue cert=cancelled 不删 + last_cert_id 保留', function () {
+test('cancelLocked reissue 增域名：按订单总额 120 退款 + 前驱保持 reissued + latest_cert_id 不回切 + reissue cert=cancelled 不删 + last_cert_id 保留', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);
 
-    [$order, $oldCert, $reissueCert] = makeReissueCancelling();
+    [$order, $oldCert, $reissueCert] = makeReissueCancelling([], ['amount' => '120.00']);
+    $oldCert->update(['amount' => '100.00']);
 
-    // 原始 new 扣费 -100 + reissue 增域名扣费 -20（若误用 getCancelTransaction 求和会退 120）
+    // 原始 new 扣费 -100 + reissue 增域名扣费 -20，交易净额与订单/证书总额均为 120。
     Transaction::create([
         'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
         'amount' => '-100.00', 'standard_count' => 1, 'wildcard_count' => 0,
@@ -746,19 +747,17 @@ test('cancelLocked reissue 增域名（amount=20）：只退增量 20 非 120 + 
     mockCancelApi('success');
     expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
 
-    // 只退增量 20（非 120）：cancel 流水 +20
+    // 恢复原口径：订单金额 = 证书总金额 = 交易净额 = 120，取消流水退全额 120。
     $cancelTx = Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->first();
     expect($cancelTx)->not->toBeNull();
-    expect((float) $cancelTx->amount)->toBe(20.0);
-    // counts 取 -last_transaction（增量非累计）
-    expect($cancelTx->standard_count)->toBe(-1);
+    expect((float) $cancelTx->amount)->toBe(120.0);
+    expect($cancelTx->standard_count)->toBe(-2);
 
-    // 余额只增 20
-    expect((float) $this->user->fresh()->balance - (float) $balanceBefore)->toBe(20.0);
+    expect((float) $this->user->fresh()->balance - (float) $balanceBefore)->toBe(120.0);
 
-    // purchased_* 递减（2 - 1 = 1）
+    // 全额取消使用订单累计购买数量，不再按最后一笔增量递减订单累计值。
     $order->refresh();
-    expect($order->purchased_standard_count)->toBe(1);
+    expect($order->purchased_standard_count)->toBe(2);
 
     // 订单终结（收窄后）：前驱保持 reissued（不恢复）+ latest_cert_id 保持指向 reissue cert（不回切）
     // + reissue cert 置 cancelled 不删 + last_cert_id 保留指向前驱（占槽 inert）
@@ -769,17 +768,24 @@ test('cancelLocked reissue 增域名（amount=20）：只退增量 20 非 120 + 
     expect($reissueCert->fresh()->last_cert_id)->toBe($oldCert->id);
 });
 
-test('cancelLocked reissue 未增域名（amount=0）：无 cancel 流水 + 前驱保持 reissued 不恢复不删', function () {
+test('cancelLocked reissue 未增域名（cert.amount=0）：仍按订单金额 100 全额退款 + 前驱保持 reissued 不恢复不删', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);
 
     [$order, $oldCert, $reissueCert] = makeReissueCancelling(['amount' => '0.00']);
+    $oldCert->update(['amount' => '100.00']);
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-100.00', 'standard_count' => 2, 'wildcard_count' => 0,
+    ]);
 
     mockCancelApi('success');
     expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
 
-    // amount=0：外层守卫整体跳过退款块，不建 cancel 流水（天然不触发 F1 唯一索引）
-    expect(Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->count())->toBe(0);
+    // 已提交上游后终结整单：即使 reissue 本次增量为 0，也退原订单全额。
+    $cancelTx = Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->first();
+    expect((float) $cancelTx->amount)->toBe(100.0);
+    expect($cancelTx->standard_count)->toBe(-2);
 
     // 订单终结（收窄后）：前驱保持 reissued（不恢复）+ latest_cert_id 不回切 + reissue cert=cancelled 不删
     expect($oldCert->fresh()->status)->toBe('reissued');
@@ -788,12 +794,17 @@ test('cancelLocked reissue 未增域名（amount=0）：无 cancel 流水 + 前�
     expect(Cert::where('id', $reissueCert->id)->exists())->toBeTrue();
 });
 
-test('cancelLocked 已签发 reissue（issued_at 非 null）：退增量 + cert=cancelled + 旧证书保持 reissued + cert 不删 + cancelled_at', function () {
+test('cancelLocked 已签发 reissue（issued_at 非 null）：按订单金额全额退款 + cert=cancelled + 旧证书保持 reissued + cert 不删 + cancelled_at', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);
 
     [$order, $oldCert, $reissueCert] = makeReissueCancelling(['issued_at' => now()]);
+    $oldCert->update(['amount' => '80.00']);
 
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-80.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
     Transaction::create([
         'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
         'amount' => '-20.00', 'standard_count' => 1, 'wildcard_count' => 0,
@@ -802,9 +813,9 @@ test('cancelLocked 已签发 reissue（issued_at 非 null）：退增量 + cert=
     mockCancelApi('success');
     expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
 
-    // 退增量仍发生
+    // 订单金额、证书总金额和交易净额均为 100，取消退全额 100。
     $cancelTx = Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->first();
-    expect((float) $cancelTx->amount)->toBe(20.0);
+    expect((float) $cancelTx->amount)->toBe(100.0);
 
     // 已签发 gate：cert→cancelled、不删、cancelled_at 写入；旧证书保持 reissued（不恢复）
     $reissueCert->refresh();
@@ -888,7 +899,7 @@ test('cancelLocked 透传上游取消错误消息和详情', function () {
     }
 });
 
-// —— 收窄后新增：订单终结门 + last_cert_id 保留 + 未签发仍退增量 ——
+// —— 订单终结门 + last_cert_id 保留 + 未签发仍按订单口径退款 ——
 
 test('cancelLocked reissue 取消后订单终结：再 reissue 报「订单已取消，无法重签」+ commitCancel 报「订单已取消」', function () {
     Queue::fake();
@@ -943,14 +954,19 @@ test('cancelLocked reissue 取消后 last_cert_id 保留：cancelled reissue cer
     expect($reissueCert->last_cert_id)->not->toBeNull();
 });
 
-test('cancelLocked reissue 未签发（issued_at=null，processing 语义）取消：仍退增量（cancel 流水 +20）+ cert=cancelled 不删', function () {
+test('cancelLocked reissue 未签发（issued_at=null，processing 语义）取消：按订单金额全额退款 + cert=cancelled 不删', function () {
     Queue::fake();
     test()->product->update(['refund_period' => 30]);
 
     // makeReissueCancelling 默认 issued_at=null（processing/approving 语义，未签发）
     [$order, $oldCert, $reissueCert] = makeReissueCancelling();
     expect($reissueCert->issued_at)->toBeNull();
+    $oldCert->update(['amount' => '80.00']);
 
+    Transaction::create([
+        'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
+        'amount' => '-80.00', 'standard_count' => 1, 'wildcard_count' => 0,
+    ]);
     Transaction::create([
         'user_id' => $this->user->id, 'type' => 'order', 'transaction_id' => $order->id,
         'amount' => '-20.00', 'standard_count' => 1, 'wildcard_count' => 0,
@@ -959,11 +975,11 @@ test('cancelLocked reissue 未签发（issued_at=null，processing 语义）取�
     mockCancelApi('success');
     expectOrderApiSuccess(fn () => $this->service->cancel($order->id));
 
-    // 收窄前未签发走恢复分支不退增量地删 cert；收窄后与 F3 合流，未签发同样退增量口径
+    // 未签发也已提交上游，取消终结整单并按订单口径退款。
     $cancelTx = Transaction::where('transaction_id', $order->id)->where('type', 'cancel')->first();
     expect($cancelTx)->not->toBeNull();
-    expect((float) $cancelTx->amount)->toBe(20.0);
-    expect($cancelTx->standard_count)->toBe(-1);
+    expect((float) $cancelTx->amount)->toBe(100.0);
+    expect($cancelTx->standard_count)->toBe(-2);
 
     // cert=cancelled、不删、cancelled_at 写入
     expect($reissueCert->fresh()->status)->toBe('cancelled');
@@ -1232,7 +1248,7 @@ test('cancelPending reissue F1：二次取消预检报错（共享 helper 生效
         'amount' => '20.00', 'standard_count' => -1, 'wildcard_count' => 0,
     ]);
 
-    // 共享 prepareReissueRefund 的 F1 预检在 cancelPending 也生效（pending 无上游调用，预检失败仅本地回滚）
+    // preparePendingReissueRefund 的 F1 预检生效（pending 无上游调用，预检失败仅本地回滚）
     expectOrderApiError(
         fn () => $this->service->cancelPending($order->id),
         '该订单已存在取消退款流水'
@@ -1725,6 +1741,131 @@ test('checkDuplicate 原子占位：首次放行 0，同参数重复返回剩余
     expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBeGreaterThan(0);
     // 不同参数 → 独立 cacheKey 放行（0）
     expect($method->invoke($this->service, 'atomicDupTest', ['p2'], 10))->toBe(0);
+});
+
+test('guardCancelDuplicate 首次放行且 60 秒内重复取消返回剩余秒数', function () {
+    $orderId = 76164642075584;
+
+    $this->service->guardCancelDuplicate($orderId);
+
+    try {
+        $this->service->guardCancelDuplicate($orderId);
+        $this->fail('期望重复取消被拦截');
+    } catch (ApiResponseException $e) {
+        $response = $e->getApiResponse();
+        $retryAfter = $response['errors']['retry_after'] ?? null;
+
+        expect($response['code'])->toBe(0)
+            ->and($retryAfter)->toBeInt()->toBeGreaterThan(0)->toBeLessThanOrEqual(60)
+            ->and($response['msg'])->toBe("Duplicate cancel request, retry after {$retryAfter} seconds");
+    }
+
+    $this->travel(61)->seconds();
+    $this->service->guardCancelDuplicate($orderId);
+});
+
+test('prepareImmediateCancel 按 task 到 order 锁序删除同步任务并保留 cancel 任务', function () {
+    test()->product->update(['refund_period' => 30]);
+    [$order, $cert] = createOrderWithCertForAction('active');
+
+    foreach (['sync', 'revalidate', 'cancel'] as $action) {
+        Task::factory()->create([
+            'order_id' => $order->id,
+            'action' => $action,
+            'status' => 'executing',
+            'started_at' => now(),
+        ]);
+    }
+    Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'sync',
+        'status' => 'stopped',
+        'started_at' => now(),
+    ]);
+    Task::factory()->create([
+        'order_id' => $order->id,
+        'action' => 'revalidate',
+        'status' => 'successful',
+        'started_at' => now(),
+    ]);
+
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = ['sql' => $query->sql, 'bindings' => $query->bindings];
+    });
+
+    $alreadyCancelled = $this->service->prepareImmediateCancel($order->id);
+
+    $taskLockIndex = collect($queries)->search(fn (array $query) => str_contains($query['sql'], 'from `tasks`')
+        && str_contains($query['sql'], 'for update'));
+    $orderLockIndex = collect($queries)->search(fn (array $query) => str_contains($query['sql'], 'from `orders`')
+        && str_contains($query['sql'], 'for update'));
+    $taskLock = $queries[$taskLockIndex];
+
+    expect($alreadyCancelled)->toBeFalse()
+        ->and($cert->fresh()->status)->toBe('cancelling')
+        ->and(Task::where('order_id', $order->id)->whereIn('action', ['sync', 'revalidate'])
+            ->whereIn('status', ['executing', 'stopped'])->exists())->toBeFalse()
+        ->and(Task::where('order_id', $order->id)->where('action', 'revalidate')
+            ->where('status', 'successful')->exists())->toBeTrue()
+        ->and(Task::where('order_id', $order->id)->where('action', 'cancel')->exists())->toBeTrue()
+        ->and($taskLockIndex)->toBeInt()
+        ->and($orderLockIndex)->toBeInt()->toBeGreaterThan($taskLockIndex)
+        ->and($taskLock['sql'])->toContain('force index (tasks_order_action_status_index)')
+        ->and($taskLock['bindings'])->toContain('sync', 'revalidate', 'executing', 'stopped')
+        ->not->toContain('cancel');
+});
+
+test('prepareImmediateCancel 锁内发现订单已取消时返回幂等结果', function () {
+    [$order, $cert] = createOrderWithCertForAction('cancelled');
+
+    $alreadyCancelled = $this->service->prepareImmediateCancel($order->id);
+
+    expect($alreadyCancelled)->toBeTrue()
+        ->and($cert->fresh()->status)->toBe('cancelled');
+});
+
+test('prepareImmediateCancel 接受可取消状态并统一进入 cancelling', function (string $status) {
+    test()->product->update(['refund_period' => 30]);
+    [$order, $cert] = createOrderWithCertForAction($status);
+
+    $alreadyCancelled = $this->service->prepareImmediateCancel($order->id);
+
+    expect($alreadyCancelled)->toBeFalse()
+        ->and($cert->fresh()->status)->toBe('cancelling');
+})->with(['processing', 'approving', 'cancelling']);
+
+test('prepareImmediateCancel 在退款期边界允许取消且超出一秒拒绝', function () {
+    $this->travelTo(now()->startOfSecond());
+    test()->product->update(['refund_period' => 1]);
+
+    [$boundaryOrder, $boundaryCert] = createOrderWithCertForAction('active', [
+        'created_at' => now()->subDay(),
+    ]);
+
+    expect($this->service->prepareImmediateCancel($boundaryOrder->id))->toBeFalse()
+        ->and($boundaryCert->fresh()->status)->toBe('cancelling');
+
+    [$expiredOrder, $expiredCert] = createOrderWithCertForAction('active', [
+        'created_at' => now()->subDay()->subSecond(),
+    ]);
+
+    expectOrderApiError(
+        fn () => $this->service->prepareImmediateCancel($expiredOrder->id),
+        'Order cannot be cancelled after 1 days'
+    );
+    expect($expiredCert->fresh()->status)->toBe('active');
+});
+
+test('prepareImmediateCancel 按退款天数换算有效期', function () {
+    $this->travelTo(now()->startOfSecond());
+    test()->product->update(['refund_period' => 2]);
+    [$order, $cert] = createOrderWithCertForAction('active', [
+        'created_at' => now()->subDay(),
+    ]);
+
+    expect($this->service->prepareImmediateCancel($order->id))->toBeFalse()
+        ->and($cert->fresh()->status)->toBe('cancelling');
 });
 
 // ==================== B 锁下沉：new(renew) / reissue 守卫（任务2）====================

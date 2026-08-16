@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Ctcccloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -24,8 +25,10 @@ use Throwable;
  *
  * 仅 exact（见 CtcccloudCdnDeployer 说明）。endpoint host：accessone-global.ctapi.ctyun.cn。
  */
-class CtcccloudAoDeployer extends AbstractDeployer
+class CtcccloudAoDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCtcccloudDomains;
+
     /** 查询域名配置时的产品码（对齐 certimate，固定 020）。 */
     private const QUERY_PRODUCT_CODE = '020';
 
@@ -47,7 +50,8 @@ class CtcccloudAoDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -72,32 +76,35 @@ class CtcccloudAoDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certName = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $certName = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $domain, $certName) {
+        $this->guardSdk(function () use ($credentials, $domain, $pattern, $certificate, $certName) {
             /** @var CtcccloudRestClient $client */
             $client = $this->makeClient('ao', $credentials);
 
-            // 查询域名基础及加速配置（拿 product_code + origin 回写）。
-            $detail = $client->post('/ctapi/v1/accessone/domain/config', [
-                'domain' => $domain,
-                'product_code' => self::QUERY_PRODUCT_CODE,
-            ]);
+            $domains = $this->matchingDomains($client, '/ctapi/v2/domain/query', $domain, $pattern, self::QUERY_PRODUCT_CODE, true, $certificate);
+            foreach ($domains as $matchedDomain) {
+                $detail = $client->post('/ctapi/v1/accessone/domain/config', [
+                    'domain' => $matchedDomain,
+                    'product_code' => self::QUERY_PRODUCT_CODE,
+                ]);
 
-            $returnObj = is_array($detail['returnObj'] ?? null) ? $detail['returnObj'] : [];
-            $productCode = is_string($returnObj['product_code'] ?? null) && $returnObj['product_code'] !== ''
-                ? $returnObj['product_code']
-                : self::QUERY_PRODUCT_CODE;
+                $returnObj = is_array($detail['returnObj'] ?? null) ? $detail['returnObj'] : [];
+                $productCode = is_string($returnObj['product_code'] ?? null) && $returnObj['product_code'] !== ''
+                    ? $returnObj['product_code']
+                    : self::QUERY_PRODUCT_CODE;
 
-            // 修改域名配置：开 HTTPS + 绑证书，回写源站（weight 0→1 且转字符串），避免清空已有源站。
-            $client->post('/ctapi/v1/scdn/domain/modify_config', [
-                'domain' => $domain,
-                'product_code' => $productCode,
-                'origin' => $this->remapOrigin($returnObj['origin'] ?? null),
-                'https_status' => 'on',
-                'cert_name' => $certName,
-            ]);
+                $client->post('/ctapi/v1/scdn/domain/modify_config', [
+                    'domain' => $matchedDomain,
+                    'product_code' => $productCode,
+                    'origin' => $this->remapOrigin($returnObj['origin'] ?? null),
+                    'https_status' => 'on',
+                    'cert_name' => $certName,
+                ]);
+            }
         });
     }
 

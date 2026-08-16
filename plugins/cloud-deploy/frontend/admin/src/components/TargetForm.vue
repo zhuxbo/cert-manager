@@ -2,6 +2,8 @@
 import SharedTargetForm from "@cloud-deploy/shared/TargetForm.vue";
 import {
   accessList,
+  accessStore,
+  accessUpdate,
   getProviders,
   targetShow,
   targetStore,
@@ -31,6 +33,8 @@ const emit = defineEmits<{
 
 const api = {
   accessList,
+  accessStore,
+  accessUpdate,
   getProviders,
   targetShow,
   targetStore,

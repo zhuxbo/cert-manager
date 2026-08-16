@@ -95,7 +95,8 @@ class AwsNlbDeployer extends AbstractDeployer
 
         if ($isDefault) {
             foreach ($listeners[0]['Certificates'] ?? [] as $cert) {
-                if (($cert['CertificateArn'] ?? null) === $certificateArn) {
+                if (($cert['CertificateArn'] ?? null) === $certificateArn
+                    && filter_var($cert['IsDefault'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
                     return;
                 }
             }
@@ -104,6 +105,12 @@ class AwsNlbDeployer extends AbstractDeployer
                 'Certificates' => [['CertificateArn' => $certificateArn]],
             ]));
         } else {
+            foreach ($listeners[0]['Certificates'] ?? [] as $cert) {
+                if (($cert['CertificateArn'] ?? null) === $certificateArn
+                    && ! filter_var($cert['IsDefault'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                    return;
+                }
+            }
             $this->guardSdk(fn () => $client->addListenerCertificates([
                 'ListenerArn' => $listenerArn,
                 'Certificates' => [['CertificateArn' => $certificateArn]],

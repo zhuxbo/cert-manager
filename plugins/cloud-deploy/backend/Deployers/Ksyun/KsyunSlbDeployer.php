@@ -44,6 +44,7 @@ class KsyunSlbDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'project_id', 'label' => '项目 ID（选填）', 'type' => 'string', 'required' => false],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
             ['key' => 'certificate_id', 'label' => '负载均衡证书 ID', 'type' => 'string', 'required' => true],
         ];
@@ -57,7 +58,10 @@ class KsyunSlbDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // KCM 托管为 region-less，与 SLB 的 region 维度无关（region 仅在 bind 的 ModifyCertificate 生效）。
-        return new KsyunKcmUploader(fn (array $credentials): object => $this->makeClient('kcm', $credentials));
+        return new KsyunKcmUploader(
+            fn (array $credentials): object => $this->makeClient('kcm', $credentials),
+            isset($config['project_id']) ? (string) $config['project_id'] : '',
+        );
     }
 
     /**

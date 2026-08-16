@@ -65,6 +65,7 @@ class BaiduCertDeployer extends AbstractDeployer implements UploadOnlyDeployerIn
         return match ($kind) {
             // 证书中心为 region-less endpoint。
             'cert' => new BaiduRestClient('certificate.baidubce.com', $credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

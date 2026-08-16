@@ -78,6 +78,24 @@ test('bind is_default=true → ModifyListener', function () use ($nlbCreds, $nlb
     expect($captured['Certificates'][0]['CertificateArn'])->toBe('arn:cert');
 });
 
+test('bind is_default=true 但同 ARN 仅为 SNI → 仍设为默认证书', function () use ($nlbCreds, $nlbCfg) {
+    $elbv2 = Mockery::mock(ElasticLoadBalancingV2Client::class);
+    $elbv2->shouldReceive('describeLoadBalancers')->andReturn(new Result(['LoadBalancers' => [['Type' => 'network']]]));
+    $elbv2->shouldReceive('describeListeners')->andReturn(new Result(['Listeners' => [['Certificates' => [['CertificateArn' => 'arn:cert', 'IsDefault' => false]]]]]));
+    $elbv2->shouldReceive('modifyListener')->once();
+
+    awsNlbDeployerWith(fn () => $elbv2)->bind('arn:cert', $nlbCreds, $nlbCfg + ['is_default' => true]);
+});
+
+test('bind is_default=false 且同 ARN 已为 SNI → 跳过重复添加', function () use ($nlbCreds, $nlbCfg) {
+    $elbv2 = Mockery::mock(ElasticLoadBalancingV2Client::class);
+    $elbv2->shouldReceive('describeLoadBalancers')->andReturn(new Result(['LoadBalancers' => [['Type' => 'network']]]));
+    $elbv2->shouldReceive('describeListeners')->andReturn(new Result(['Listeners' => [['Certificates' => [['CertificateArn' => 'arn:cert', 'IsDefault' => false]]]]]));
+    $elbv2->shouldReceive('addListenerCertificates')->never();
+
+    awsNlbDeployerWith(fn () => $elbv2)->bind('arn:cert', $nlbCreds, $nlbCfg);
+});
+
 test('bind 非 network 类型 LB（application）→ 业务错误', function () use ($nlbCreds, $nlbCfg) {
     $elbv2 = Mockery::mock(ElasticLoadBalancingV2Client::class);
     $elbv2->shouldReceive('describeLoadBalancers')->andReturn(new Result(['LoadBalancers' => [['Type' => 'application']]]));

@@ -35,11 +35,12 @@ class ZenlayerCertUploader implements CertUploaderInterface
     public function __construct(
         private readonly Closure $clientFactory,
         private readonly string $storeKind,
+        private readonly string $certificateId = '',
     ) {}
 
     public function storeKind(): string
     {
-        return $this->storeKind;
+        return $this->certificateId === '' ? $this->storeKind : $this->storeKind.':'.$this->certificateId;
     }
 
     /**
@@ -65,6 +66,15 @@ class ZenlayerCertUploader implements CertUploaderInterface
         try {
             /** @var ZenlayerRestClient $client */
             $client = ($this->clientFactory)($credentials);
+            if ($this->certificateId !== '') {
+                $client->call('ModifyCertificate', [
+                    'certificateId' => $this->certificateId,
+                    'certificateContent' => $fullChain,
+                    'certificateKey' => trim($keyPem),
+                ]);
+
+                return $this->certificateId;
+            }
             $result = $client->call('CreateCertificate', $body);
         } catch (Throwable $e) {
             throw new RuntimeException(ZenlayerErrorSanitizer::sanitize($e), 0);

@@ -133,9 +133,12 @@ touch \
     "$WORKSPACE/backend/.env" \
     "$WORKSPACE/backend/.env.example" \
     "$WORKSPACE/backend/.ssl-manager" \
+    "$WORKSPACE/backend/.upgrade-bootstrap.lock" \
+    "$WORKSPACE/backend/.upgrade-bootstrap-prepared.json" \
     "$WORKSPACE/backend/artisan" \
     "$WORKSPACE/backend/bootstrap/cache/services.php" \
     "$WORKSPACE/backend/scripts/test-mutate.sh" \
+    "$WORKSPACE/backend/scripts/write-composer-lock-marker.php" \
     "$WORKSPACE/backend/storage/app/private/customer.txt" \
     "$WORKSPACE/backend/storage/databak/backup.sql.gz" \
     "$WORKSPACE/backend/storage/framework/views/compiled.php" \
@@ -199,6 +202,8 @@ cmp "$SOURCE/backend/tests/Fixtures/public_suffix_list.dat" \
 
 for forbidden in \
     backend/.env \
+    backend/.upgrade-bootstrap.lock \
+    backend/.upgrade-bootstrap-prepared.json \
     backend/bootstrap/cache/services.php \
     backend/bootstrap/cache/stale.php \
     backend/scripts/test-mutate.sh \
@@ -220,6 +225,7 @@ for required in \
     backend/.env.example \
     backend/.ssl-manager \
     backend/artisan \
+    backend/scripts/write-composer-lock-marker.php \
     backend/storage/app/public \
     backend/storage/app/private \
     backend/storage/framework/cache \

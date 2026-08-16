@@ -87,6 +87,7 @@ class BaiduAppblbDeployer extends AbstractDeployer
             'cert' => new BaiduRestClient('certificate.baidubce.com', $credentials),
             // AppBLB 与 BLB 同 host（blb.{region}.baidubce.com），仅路径前缀不同；region 可经 :port/ 注入（反模式 18）
             'blb' => new BaiduRestClient($this->authorizedRegionHost("blb.$region.baidubce.com"), $credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

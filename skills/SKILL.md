@@ -8,6 +8,7 @@
 | --------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 后端·核心       | `backend/core.md`                             | 技术栈/架构/代码规范/Artisan/缓存日志/关键文件索引/测试/变异测试/健康监控与调度心跳                                                                                                    |
 | 后端·订单资金   | `backend/order-fund.md`                       | 产品价格初始化成本/预览/命名锁、order 互斥、下单韧性、资金四道网、退款/Purge、续费孤儿止血/卡单对账、续费重签锁下沉/取消恢复窗口                                                       |
+| 后端·退款矩阵   | `backend/refund-matrix.md`                    | 普通证书与 ACME 的退款入口、状态、金额口径、退款期、前驱恢复和 task 清理总表                                                                                                           |
 | 后端·认证安全   | `backend/auth.md`                             | Token 认证、安全补强（tasks 死锁/归档解压/节流/凭据 URL）                                                                                                                              |
 | 后端·升级       | `backend/upgrade.md`                          | 升级系统、freeze 冻结契约（unfreeze 先于 up/watchdog 自愈/备份互斥）、upgrade.sh 数据防删守卫、BinaryLocator                                                                           |
 | 后端·数据库     | `backend/database.md`                         | 迁移规范、列类型防溢出、MySQL 5.7/8.x 兼容、DB 时区固化                                                                                                                                |
@@ -29,7 +30,7 @@
 | 数据库结构导出  | `db-structure.md`                             | 重新生成并验证主系统 `backend/database/structure.json`                                                                                                                                 |
 | 完成检查        | `finish-check.md`                             | 完整本地门禁、范围推导、专项验证、文档同步与 reviewer 循环                                                                                                                             |
 | 远程发布        | `remote-release.md`                           | dev/main 通道判定、发布前门禁、远端发布与发布后分支同步                                                                                                                                |
-| 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、后台健康度/可选外部监控/孤儿退款 arm-switch                                                                                                  |
+| 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、后台健康度/可选外部监控/孤儿订单收尾                                                                                                         |
 | 构建发布        | `ops/build-release.md`                        | 版本发布、打包、CI/CD                                                                                                                                                                  |
 | Review 清单     | `review-checklist.md`                         | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描                                                                                                                |
 | ACME E2E 测试   | `acme-e2e-test/`                              | certbot 端到端测试（Manager + 上游系统）                                                                                                                                               |
@@ -49,5 +50,5 @@
 
 - 只记录已确定且经过验证的信息
 - 保持简洁，避免冗余
-- **按领域子目录归类**：`backend/`（core/order-fund/auth/upgrade/database/delegation/acme-module/source-api/auto-renew/sm2-cert/certum-document/enterprise-lookup/notification）、`frontend/`（core/ui/table）、`plugins/`（core/frontend/lifecycle）、`ops/`；跨领域（review-checklist、acme-e2e-test）放根目录。单文件过大或多主题混杂（经验阈值 ~600 行）时按子主题拆分
+- **按领域子目录归类**：`backend/`（core/order-fund/refund-matrix/auth/upgrade/database/delegation/acme-module/source-api/auto-renew/sm2-cert/certum-document/enterprise-lookup/notification）、`frontend/`（core/ui/table）、`plugins/`（core/frontend/lifecycle）、`ops/`；跨领域（review-checklist、acme-e2e-test）放根目录。单文件过大或多主题混杂（经验阈值 ~600 行）时按子主题拆分
 - **详情下沉、红线上浮**：skill 是实现细节/坑/复现的**唯一落点**；仅当某约定属于长期、项目级、会影响智能体行为的安全铁律时，才在 `AGENTS.md` 简述约束并指向本目录，绝不把细节复制进 `AGENTS.md` 或 `CLAUDE.md`

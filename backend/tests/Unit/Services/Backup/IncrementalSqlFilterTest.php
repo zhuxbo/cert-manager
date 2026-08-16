@@ -1,6 +1,9 @@
 <?php
 
 use App\Services\Backup\IncrementalSqlFilter;
+use Tests\TestCase;
+
+uses(TestCase::class);
 
 function writeGzipSql(string $content): string
 {
@@ -116,4 +119,18 @@ test('INSERT 的跨行 VALUES 保留完整（只改首行）', function () {
 
     @unlink($src);
     @unlink($dst);
+});
+
+test('目标文件无法打开时抛出稳定的领域错误并关闭 gzip 源', function () {
+    $src = writeGzipSql("INSERT INTO `t` VALUES (1);\n");
+    $dst = sys_get_temp_dir().'/incr_out_dir_'.uniqid();
+    mkdir($dst);
+
+    try {
+        expect(fn () => (new IncrementalSqlFilter)->filter($src, $dst))
+            ->toThrow(RuntimeException::class, "无法写入目标: $dst");
+    } finally {
+        expect(@unlink($src))->toBeTrue();
+        expect(@rmdir($dst))->toBeTrue();
+    }
 });

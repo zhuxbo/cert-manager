@@ -38,8 +38,9 @@ class AliyunCasDeployer extends AbstractDeployer implements UploadOnlyDeployerIn
 
     public function configSchema(): array
     {
-        // 纯上传无资源配置。
-        return [];
+        return [
+            ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => false],
+        ];
     }
 
     public function usesRemoteCertStore(): bool
@@ -49,8 +50,12 @@ class AliyunCasDeployer extends AbstractDeployer implements UploadOnlyDeployerIn
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        // CAS 全局，上传不需要 region；复用 deployer 注入缝
-        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials));
+        $region = (string) ($config['region'] ?? '');
+
+        return new AliyunCasUploader(
+            fn (array $credentials): object => $this->makeClient('cas', $credentials),
+            $region,
+        );
     }
 
     /**
@@ -67,8 +72,13 @@ class AliyunCasDeployer extends AbstractDeployer implements UploadOnlyDeployerIn
 
     protected function makeClient(string $kind, array $credentials): object
     {
+        $region = (string) ($credentials['region'] ?? '');
+        $endpoint = $region === '' || $region === 'cn-hangzhou'
+            ? 'cas.aliyuncs.com'
+            : "cas.$region.aliyuncs.com";
+
         return match ($kind) {
-            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'cas' => new Cas($this->aliyunConfig($credentials, $endpoint)),
         };
     }
 

@@ -40,10 +40,19 @@ class AwsAcmUploader implements CertUploaderInterface
      * @param  Closure(array<string,mixed>):object  $clientFactory  返回 Aws\Acm\AcmClient
      * @param  string  $region  上传目标 region（决定 endpoint + storeKind 隔离段）
      */
-    public function __construct(private readonly Closure $clientFactory, private readonly string $region) {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly string $region,
+        private readonly string $certificateArn = '',
+    ) {}
 
     public function storeKind(): string
     {
+        if ($this->certificateArn !== '') {
+            // store_kind 列最长 32；ARN 自带 region，以稳定短 hash 隔离不同原地替换目标。
+            return 'acm-replace:'.substr(hash('sha256', $this->certificateArn), 0, 16);
+        }
+
         return 'acm:'.$this->region;
     }
 
@@ -56,11 +65,15 @@ class AwsAcmUploader implements CertUploaderInterface
             /** @var AcmClient $client */
             $client = ($this->clientFactory)($credentials);
 
-            $result = $client->importCertificate([
+            $request = [
                 'Certificate' => $certPem,
                 'CertificateChain' => $chainPem,
                 'PrivateKey' => $keyPem,
-            ]);
+            ];
+            if ($this->certificateArn !== '') {
+                $request['CertificateArn'] = $this->certificateArn;
+            }
+            $result = $client->importCertificate($request);
             $arn = $result['CertificateArn'] ?? null;
         } catch (Throwable $e) {
             throw new RuntimeException(AwsErrorSanitizer::sanitize($e), 0);

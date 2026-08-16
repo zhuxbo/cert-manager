@@ -3,6 +3,7 @@
 use Plugins\CloudDeploy\Deployers\Ucloud\UcloudApiException;
 use Plugins\CloudDeploy\Deployers\Ucloud\UcloudRestClient;
 use Plugins\CloudDeploy\Deployers\Ucloud\UcloudUcdnDeployer;
+use Plugins\CloudDeploy\Support\OutboundDestinationException;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -64,6 +65,33 @@ test('uploader.upload 调 UploadNormalCertificate 返回复合 "{certId}|{certNa
     // SslMD5 = md5(base64cert + base64key)，hex 32 位
     expect($args['md5'])->toBe(md5($args['pub'].$args['priv']));
     expect($args['md5'])->toMatch('/^[0-9a-f]{32}$/');
+});
+
+test('自定义 endpoint 透传到 uploader client 且私网地址被出站策略拒绝', function () {
+    $seenEndpoint = null;
+    $client = Mockery::mock(UcloudRestClient::class);
+    $client->shouldReceive('uploadNormalCertificate')->once()->andReturn(123);
+    $deployer = ucloudUcdnDeployerWith(function (string $kind, array $credentials) use (&$seenEndpoint, $client) {
+        $seenEndpoint = $credentials['endpoint'] ?? null;
+
+        return $client;
+    });
+    $deployer->certUploader(['endpoint' => 'https://api.example.com'])->upload('C', 'K', 'CH', ucloudCreds());
+    expect($seenEndpoint)->toBe('https://api.example.com');
+
+    $realFactory = new class extends UcloudUcdnDeployer
+    {
+        public function exposeClient(array $credentials): object
+        {
+            return $this->makeClient('api', $credentials);
+        }
+    };
+    try {
+        $realFactory->exposeClient(ucloudCreds() + ['endpoint' => 'http://127.0.0.1']);
+        expect(false)->toBeTrue('私网 endpoint 应被拒绝');
+    } catch (OutboundDestinationException $e) {
+        expect($e->reasonCode())->toBe('forbidden_address');
+    }
 });
 
 test('upload 未返回 CertificateID 抛明确异常', function () {

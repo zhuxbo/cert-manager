@@ -20,6 +20,16 @@ function qiniuPiliDeployerWith(callable $clientFactory): QiniuPiliDeployer
     };
 }
 
+function qiniuPiliCertificate(string $commonName): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => $commonName], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('七牛云 Pili 走证书服务（storeKind=qiniu）', function () {
     $deployer = new QiniuPiliDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -53,6 +63,20 @@ test('bind 用 certName（非 certID）调 setPiliDomainCert（POST /v2/hubs/{hu
     $deployer->bind('pilicert-5|clouddeploy_777', ['access_key' => 'AK', 'secret_key' => 'SK'], ['hub' => 'myhub', 'domain' => 'live.example.com']);
 
     expect($captured)->toBe(['hub' => 'myhub', 'domain' => 'live.example.com', 'certName' => 'clouddeploy_777']);
+});
+
+test('certsan 列举 hub 域名并按证书主机名批量绑定 certName', function () {
+    $client = Mockery::mock(QiniuRestClient::class);
+    $client->shouldReceive('listPiliDomains')->once()->with('myhub')->andReturn(['a.example.com', 'b.example.com']);
+    $client->shouldReceive('setPiliDomainCert')->once()->with('myhub', 'a.example.com', 'name-1');
+
+    $deployer = qiniuPiliDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1|name-1', 'cert' => qiniuPiliCertificate('a.example.com'), 'chain' => ''], ['access_key' => 'AK', 'secret_key' => 'SK'], [
+        'hub' => 'myhub',
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect(true)->toBeTrue();
 });
 
 test('缺 hub 配置抛业务错误', function () {

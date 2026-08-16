@@ -37,6 +37,21 @@ function npmCreds(): array
     return ['server_url' => 'https://npm.example.com:81', 'auth_method' => 'token', 'api_token' => 'JWT-TOKEN'];
 }
 
+function npmCertificateWithSan(): string
+{
+    $conf = tempnam(sys_get_temp_dir(), 'npm_san_');
+    file_put_contents($conf, "[v3]\nsubjectAltName=DNS:a.example.com,DNS:*.wild.example.com\n");
+    $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'a.example.com'], $key, ['digest_alg' => 'sha256']);
+    $cert = openssl_csr_sign($csr, null, $key, 1, [
+        'digest_alg' => 'sha256', 'config' => $conf, 'x509_extensions' => 'v3',
+    ]);
+    openssl_x509_export($cert, $pem);
+    @unlink($conf);
+
+    return $pem;
+}
+
 /** 构造注入 MockHandler 的真实 NginxproxymanagerClient，外发请求写入 $history。 */
 function npmClientWithMock(array $responses, ArrayObject $history, string $username = '', string $password = '', string $apiToken = ''): NginxproxymanagerClient
 {
@@ -54,7 +69,34 @@ test('NPM 为内联型（usesRemoteCertStore=false）+ 元信息', function () {
     expect($deployer->product())->toBe('certificate');
     expect($deployer->usesRemoteCertStore())->toBeFalse();
     expect($deployer->certUploader())->toBeNull();
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('certificate_id');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('deploy_target')->toContain('host_type')->toContain('host_id')->toContain('certificate_id');
+});
+
+test('bind：host specified 创建证书并更新指定 proxy host', function () {
+    $client = Mockery::mock(NginxproxymanagerClient::class);
+    $client->shouldReceive('ensureCertificate')->once()->with(Mockery::type('string'), 'CERTPEM', 'KEYPEM', 'CHAINPEM')->andReturn(77);
+    $client->shouldReceive('listHosts')->once()->with('proxy')->andReturn([['id' => 5, 'domain_names' => ['a.example.com'], 'certificate_id' => 1]]);
+    $client->shouldReceive('updateHostCertificate')->once()->with('proxy', 5, 77);
+
+    npmDeployerWith(fn () => $client)->bind(npmCertRef(), npmCreds(), [
+        'deploy_target' => 'host', 'host_type' => 'proxy', 'host_match_pattern' => 'specified', 'host_id' => 5,
+    ]);
+});
+
+test('bind：host certsan 仅更新所有域名均被证书覆盖的主机', function () {
+    $certRef = npmCertRef();
+    $certRef['cert'] = npmCertificateWithSan();
+    $client = Mockery::mock(NginxproxymanagerClient::class);
+    $client->shouldReceive('ensureCertificate')->once()->andReturn(77);
+    $client->shouldReceive('listHosts')->once()->with('proxy')->andReturn([
+        ['id' => 5, 'domain_names' => ['a.example.com', 'x.wild.example.com'], 'certificate_id' => 1],
+        ['id' => 6, 'domain_names' => ['a.example.com', 'other.example.com'], 'certificate_id' => 1],
+    ]);
+    $client->shouldReceive('updateHostCertificate')->once()->with('proxy', 5, 77);
+
+    npmDeployerWith(fn () => $client)->bind($certRef, npmCreds(), [
+        'deploy_target' => 'host', 'host_type' => 'proxy', 'host_match_pattern' => 'certsan',
+    ]);
 });
 
 test('bind：uploadCertificate(certId, 叶证书/key/中间证书) → 默认站点 get+set 触发重启', function () {
@@ -130,6 +172,37 @@ test('client：token 鉴权下 uploadCertificate POST multipart（带 Bearer 头
     $body = (string) $req->getBody();
     expect($body)->toContain('name="certificate"')->toContain('name="certificate_key"')->toContain('name="intermediate_certificate"');
     expect($body)->toContain('CERT')->toContain('KEY')->toContain('INTER');
+});
+
+test('client：主机证书目标使用 NPM 对应 list/create/update 路径', function () {
+    $history = new ArrayObject;
+    $client = npmClientWithMock([
+        new Response(200, [], json_encode([])),
+        new Response(201, [], json_encode(['id' => 77, 'nice_name' => 'new'])),
+        new Response(200, [], json_encode(['id' => 77])),
+        new Response(200, [], json_encode([['id' => 5, 'domain_names' => ['a.example.com'], 'certificate_id' => 1]])),
+        new Response(200, [], json_encode(['id' => 5])),
+    ], $history, '', '', 'JWT-TOKEN');
+    expect($client->ensureCertificate('new', 'CERT', 'KEY', 'CHAIN'))->toBe(77);
+    expect($client->listHosts('proxy'))->toHaveCount(1);
+    $client->updateHostCertificate('proxy', 5, 77);
+    expect(array_map(fn ($entry) => [$entry['request']->getMethod(), $entry['request']->getUri()->getPath()], $history->getArrayCopy()))
+        ->toBe([
+            ['GET', '/api/nginx/certificates'],
+            ['POST', '/api/nginx/certificates'],
+            ['POST', '/api/nginx/certificates/77/upload'],
+            ['GET', '/api/nginx/proxy-hosts'],
+            ['PUT', '/api/nginx/proxy-hosts/5'],
+        ]);
+});
+
+test('client：ensureCertificate 复用 PEM 三元组完全相同的既有证书', function () {
+    $history = new ArrayObject;
+    $client = npmClientWithMock([new Response(200, [], json_encode([[
+        'id' => 8, 'meta' => ['certificate' => 'CERT', 'certificate_key' => 'KEY', 'intermediate_certificate' => 'CHAIN'],
+    ]]))], $history, '', '', 'JWT-TOKEN');
+    expect($client->ensureCertificate('ignored', 'CERT', 'KEY', 'CHAIN'))->toBe(8);
+    expect($history)->toHaveCount(1);
 });
 
 test('client：password 鉴权下首调先 POST /tokens 登录拿 token，再带 Bearer 调业务', function () {

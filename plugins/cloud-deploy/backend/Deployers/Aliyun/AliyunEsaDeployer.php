@@ -35,7 +35,7 @@ use Throwable;
  */
 class AliyunEsaDeployer extends AbstractDeployer
 {
-    use BuildsAliyunConfig;
+    use BuildsAliyunConfig, MatchesAliyunDomains;
     use ParsesCasCertIdentifier;
 
     /** ESA 已配置同证书时的幂等错误码（视为成功）。 */
@@ -72,7 +72,7 @@ class AliyunEsaDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // CAS 全局，上传不需要 region；复用 deployer 注入缝：测试 override makeClient('cas') 即作用于上传
-        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials));
+        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials), $this->casRegion($config));
     }
 
     /**
@@ -115,7 +115,7 @@ class AliyunEsaDeployer extends AbstractDeployer
     {
 
         return match ($kind) {
-            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
+            'cas' => new Cas($this->aliyunConfig($credentials, $this->casEndpoint($credentials))),
             // 接入点：esa.{region}.aliyuncs.com（空 region 回落 cn-hangzhou，对齐 certimate）
             'esa' => new ESA($this->aliyunConfig($credentials, $this->endpointForRegion($credentials['region'] ?? ''))),
         };

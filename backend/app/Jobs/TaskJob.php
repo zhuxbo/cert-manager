@@ -121,8 +121,8 @@ class TaskJob implements ShouldQueue
                     // 订单永久卡 cancelling，无重试无告警（只能靠用户投诉）。commit 业务失败由 reconcile
                     // 兜底告警、sync 为 best-effort 不告警，故仅限退款类，不扩散到全部业务失败（防告警风暴）。
                     // 守卫 status==='failed'：成功路径（code=1→'successful'）绝不触发 fail()，不回归「取消静默成功」。
-                    // Imp-1 幂等豁免：refundForSyncedCancel 退款置 cancelled 后刻意保留的 cancel task、
-                    // 或孤儿 cancel_acme 任务被唤醒时，会撞业务行已终态而 code=0 拒绝（「订单已取消」/
+                    // Imp-1 幂等豁免：并发/历史遗留的 cancel task，或孤儿 cancel_acme 任务被唤醒时，
+                    // 会撞业务行已终态而 code=0 拒绝（「订单已取消」/
                     // 「订单状态不是取消中」）——退款已发生，属幂等 no-op，不是真·CA 失败，绝不再假告警。
                     // 仅当锁内实测业务行仍非终态（真失败：退款未发生、卡 cancelling）才 fail()。
                     if ($data['status'] === 'failed'
@@ -200,8 +200,8 @@ class TaskJob implements ShouldQueue
     /**
      * 取消类任务失败时判定业务行是否已终态（退款已发生的幂等 no-op vs 真·CA 失败）。
      *
-     * Imp-1：refundForSyncedCancel 退款后刻意保留的 cancel task 被唤醒会撞「订单已取消」，
-     * 孤儿延时 cancel_acme 会撞「订单状态不是取消中」——均为 code=0 幂等拒绝，退款已发生，非真失败；
+     * Imp-1：并发/历史遗留的 cancel task 会撞「订单已取消」，孤儿延时 cancel_acme 会撞
+     * 「订单状态不是取消中」——均为 code=0 幂等拒绝，退款已发生，非真失败；
      * 仅在真失败（退款应发生却未发生 / 仍卡 cancelling）时才应告警。
      *
      * order 侧判据（② 收窄，非无差别按状态豁免）：
@@ -239,9 +239,9 @@ class TaskJob implements ShouldQueue
             return true;
         }
 
-        // cancelled：已退款（有 cancel 流水）或应退金额为 0（0 元订单 / reissue 零增量，本就不建流水）
+        // cancelled：已退款（有 cancel 流水）或订单应退金额为 0（0 元订单，本就不建流水）
         // → 合法幂等豁免；应退金额>0 却无 cancel 流水 = 退款未发生的真失败 → 不豁免、告警。
-        // 应退口径按 action：reissue = 当次增量 cert.amount；new/renew = order.amount（与退款 helper 一致）。
+        // 已提交上游的 new/renew/reissue 均按 order.amount 退款；pending reissue 的增量退款不会留下 cancel task。
         if ($status === 'cancelled') {
             $hasCancelRefund = Transaction::where('type', 'cancel')
                 ->where('transaction_id', $targetId)
@@ -250,9 +250,7 @@ class TaskJob implements ShouldQueue
                 return true;
             }
 
-            $refundable = $cert->action === 'reissue' ? (string) $cert->amount : (string) $order->amount;
-
-            return bccomp($refundable, '0', 2) <= 0;
+            return bccomp((string) $order->amount, '0', 2) <= 0;
         }
 
         return false;

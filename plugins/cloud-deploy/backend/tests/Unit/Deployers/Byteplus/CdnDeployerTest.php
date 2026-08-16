@@ -37,6 +37,66 @@ test('BytePlus CDN：证书服务型（storeKind=byteplus_cdn）', function () {
     expect($deployer->provider())->toBe('byteplus');
     expect($deployer->product())->toBe('cdn');
     expect($deployer->label())->toBe('BytePlus CDN');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain_match_pattern')->toContain('domain');
+});
+
+test('bind wildcard：ListCdnDomains 仅选单层在线匹配域名并逐个 BatchDeployCert', function () {
+    $list = null;
+    $deployed = [];
+    $client = Mockery::mock(BytePlusRestClient::class);
+    $client->shouldReceive('openApi')->once()->withArgs(function (string $method, string $action, string $version, array $query, ?array $body) use (&$list) {
+        if ($action !== 'ListCdnDomains') {
+            return false;
+        }
+        $list = $body;
+
+        return true;
+    })->andReturn((object) ['Result' => (object) ['Data' => [
+        (object) ['Domain' => 'a.example.com'],
+        (object) ['Domain' => 'b.example.com'],
+        (object) ['Domain' => 'deep.a.example.com'],
+    ]]]);
+    $client->shouldReceive('openApi')->twice()->withArgs(function (string $method, string $action, string $version, array $query, ?array $body) use (&$deployed) {
+        if ($action !== 'BatchDeployCert') {
+            return false;
+        }
+        $deployed[] = $body['Domain'];
+
+        return true;
+    })->andReturn(new stdClass);
+
+    $deployer = byteplusCdnDeployerWith(fn () => $client);
+    $deployer->bind('cdn-cert-001', array_replace(byteplusCdnCreds(), ['project_name' => 'proj-1']), [
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($list)->toMatchArray(['Project' => 'proj-1', 'Domain' => 'example.com', 'Status' => 'online', 'PageNum' => 1, 'PageSize' => 100]);
+    expect($deployed)->toBe(['a.example.com', 'b.example.com']);
+});
+
+test('bind certsan：DescribeCertConfig 返回待配置与其他证书域名并逐个部署', function () {
+    $deployed = [];
+    $client = Mockery::mock(BytePlusRestClient::class);
+    $client->shouldReceive('openApi')->once()->withArgs(fn (string $method, string $action, string $version, array $query, ?array $body) => $action === 'DescribeCertConfig' && $body === ['CertId' => 'cdn-cert-001'])
+        ->andReturn((object) ['Result' => (object) [
+            'CertNotConfig' => [(object) ['Domain' => 'new.example.com']],
+            'OtherCertConfig' => [(object) ['Domain' => 'replace.example.com']],
+            'SpecifiedCertConfig' => [(object) ['Domain' => 'same.example.com']],
+        ]]);
+    $client->shouldReceive('openApi')->twice()->withArgs(function (string $method, string $action, string $version, array $query, ?array $body) use (&$deployed) {
+        if ($action !== 'BatchDeployCert') {
+            return false;
+        }
+        $deployed[] = $body['Domain'];
+
+        return true;
+    })->andReturn(new stdClass);
+
+    $deployer = byteplusCdnDeployerWith(fn () => $client);
+    $deployer->bind('cdn-cert-001', byteplusCdnCreds(), ['domain_match_pattern' => 'certsan']);
+
+    expect($deployed)->toBe(['new.example.com', 'replace.example.com']);
 });
 
 test('uploader.upload 调 CDN AddCertificate（source=cert_center）返回 CertId', function () {

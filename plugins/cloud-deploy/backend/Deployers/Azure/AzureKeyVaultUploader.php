@@ -18,7 +18,8 @@ use Throwable;
  * PEM→PKCS12：Azure Key Vault 不支持导入带链 PEM（Azure/azure-cli#19017），必须转 PFX。用 PHP 原生
  * openssl_pkcs12_export（无需外部二进制），把 leaf + 私钥 + 中间证书链（extracerts）打成空口令 PKCS12。
  *
- * storeKind 含 vault 名 —— 同账号导入到不同 Key Vault 各落一行、各持本 vault 的 kid，避免跨 vault 误复用。
+ * storeKind 含 vault 名；指定 certificate_name 时用 vault + 证书名的短哈希区分原地替换目标，
+ * 同时满足 remote_cert_stores.store_kind 的 32 字符上限。
  *
  * 鉴权：经 $oauthFactory 取 OAuth2 helper（client_credentials 换 token），再用 $clientFactory(token, vaultBaseUrl)
  * 构造带 Bearer 的 REST client。vaultBaseUrl 按主权云环境 + vault 名派生。两工厂经注入缝（测试可 mock）。
@@ -30,17 +31,21 @@ class AzureKeyVaultUploader implements CertUploaderInterface
      * @param  Closure():AzureOAuth2  $oauthFactory  返回 OAuth2 helper（client_credentials 换 token）
      * @param  Closure(string,string):object  $clientFactory  入参 (access_token, vaultBaseUrl)，返回 AzureKeyVaultClient
      * @param  string  $vaultName  Key Vault 名称
-     * @param  string  $cloudName  主权云环境（决定登录端点/scope/DNS 后缀）
+     * @param  string  $certificateName  指定时向同名证书导入新版本；留空时生成新名称
      */
     public function __construct(
         private readonly Closure $oauthFactory,
         private readonly Closure $clientFactory,
         private readonly string $vaultName,
-        private readonly string $cloudName,
+        private readonly string $certificateName,
     ) {}
 
     public function storeKind(): string
     {
+        if ($this->certificateName !== '') {
+            return 'azure-kv-r:'.substr(hash('sha256', $this->vaultName."\0".$this->certificateName), 0, 20);
+        }
+
         return 'azure_keyvault:'.$this->vaultName;
     }
 
@@ -55,9 +60,12 @@ class AzureKeyVaultUploader implements CertUploaderInterface
 
         $pkcs12 = $this->toPkcs12($certPem, $keyPem, $chainPem);
         [$certCN, $certSN] = $this->certIdentity($certPem);
-        $certName = 'clouddeploy-'.(int) (microtime(true) * 1000);
+        $certName = $this->certificateName !== ''
+            ? $this->certificateName
+            : 'certimate-'.(int) (microtime(true) * 1000);
+        $cloudName = (string) ($credentials['cloud_name'] ?? '');
 
-        $env = AzureCloudEnv::resolve($this->cloudName);
+        $env = AzureCloudEnv::resolve($cloudName);
         $vaultBaseUrl = 'https://'.$this->vaultName.'.'.$env['vaultDnsSuffix'];
 
         // vault_name 是租户可控字段，可经 :port/ 注入突破 DNS 后缀直连内网（反模式 18）
@@ -72,14 +80,14 @@ class AzureKeyVaultUploader implements CertUploaderInterface
                 (string) ($credentials['tenant_id'] ?? ''),
                 (string) ($credentials['client_id'] ?? ''),
                 (string) ($credentials['client_secret'] ?? ''),
-                $this->cloudName,
+                $cloudName,
             );
 
             /** @var AzureKeyVaultClient $client */
             $client = ($this->clientFactory)($token, $vaultBaseUrl);
             $kid = $client->importCertificate($certName, base64_encode($pkcs12), array_filter([
-                'clouddeploy/cert-cn' => $certCN,
-                'clouddeploy/cert-sn' => $certSN,
+                'certimate/cert-cn' => $certCN,
+                'certimate/cert-sn' => $certSN,
             ], fn (string $v) => $v !== ''));
         } catch (Throwable $e) {
             throw new RuntimeException(AzureErrorSanitizer::sanitize($e), 0);

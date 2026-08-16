@@ -76,6 +76,22 @@ test('lockHash 返回 composer.lock 的 sha256，不存在返回空串', functio
     expect($runner->lockHash($withLockB))->not->toBe($runner->lockHash($withLock));
 });
 
+test('bundledVendorMatchesLock 仅接受 autoload 和锁文件标记完整的包内 vendor', function () {
+    $runner = new PluginComposerRunner(Mockery::mock(BinaryLocator::class), passingPreflight());
+    $pluginDir = makePluginDir(lockContent: 'LOCK-A');
+    File::ensureDirectoryExists("$pluginDir/backend/vendor/composer");
+    File::put("$pluginDir/backend/vendor/autoload.php", '<?php return true;');
+    File::put(
+        "$pluginDir/backend/vendor/composer/.ssl-manager-lock.sha256",
+        hash('sha256', 'LOCK-A')."\n"
+    );
+
+    expect($runner->bundledVendorMatchesLock($pluginDir))->toBeTrue();
+
+    File::put("$pluginDir/backend/composer.lock", 'LOCK-B');
+    expect($runner->bundledVendorMatchesLock($pluginDir))->toBeFalse();
+});
+
 // ==================== install — 命令构造（不真跑 composer）====================
 
 test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路径已 escape', function () {
@@ -101,7 +117,9 @@ test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路
         }
     };
 
-    $pluginDir = makePluginDir();
+    $pluginDir = makePluginDir(lockContent: 'LOCK-A');
+    File::ensureDirectoryExists("$pluginDir/backend/vendor/composer");
+    File::put("$pluginDir/backend/vendor/autoload.php", '<?php');
     $runner->install($pluginDir, 'cloud-deploy');
 
     expect($runner->commands)->toHaveCount(1);
@@ -111,6 +129,8 @@ test('install 在 backend 目录跑 composer install，命令含 --no-dev 且路
     expect($cmd)->toContain(escapeshellarg("$pluginDir/backend"));
     // composer 前缀原样拼入
     expect($cmd)->toContain("'/usr/bin/php' '/usr/local/bin/composer'");
+    expect(trim(File::get("$pluginDir/backend/vendor/composer/.ssl-manager-lock.sha256")))
+        ->toBe(hash('sha256', 'LOCK-A'));
 });
 
 test('runShell 为 composer 子进程提供可写 HOME 和 COMPOSER_HOME', function () {
@@ -297,7 +317,9 @@ test('install 仅 FPM proc_open 阻塞（CLI 正常）时不拦截 composer（�
         }
     };
 
-    $pluginDir = makePluginDir();
+    $pluginDir = makePluginDir(lockContent: 'LOCK-A');
+    File::ensureDirectoryExists("$pluginDir/backend/vendor/composer");
+    File::put("$pluginDir/backend/vendor/autoload.php", '<?php');
     $runner->install($pluginDir, 'cloud-deploy'); // 不抛
 
     expect($runner->ran)->toBeTrue();

@@ -89,6 +89,20 @@ test('GET findVodDomainId：query 按 key 排序编码、单页命中转 int', f
     expect((string) $req->getBody())->toBe('');
 });
 
+test('GET listCdnDomains：/v1/domains 分页并过滤 offline', function () {
+    $captured = [];
+    $client = jdRestClient('cdn.jdcloud-api.com', 'cdn', [
+        new Response(200, [], json_encode(['result' => ['domains' => [
+            ['domain' => 'a.example.com', 'status' => 'online'],
+            ['domain' => 'off.example.com', 'status' => 'offline'],
+        ]]])),
+    ], $captured);
+
+    expect($client->listCdnDomains())->toBe(['a.example.com']);
+    expect($captured[0]->getUri()->getPath())->toBe('/v1/domains');
+    expect($captured[0]->getUri()->getQuery())->toBe('pageNumber=1&pageSize=50');
+});
+
 test('GET listAlbHttpsListenerIds：filters 数组索引编码 + 过滤 https/tls', function () {
     $captured = [];
     $client = jdRestClient('lb.jdcloud-api.com', 'lb', [

@@ -33,11 +33,16 @@ use Throwable;
 class KsyunKcmUploader implements CertUploaderInterface
 {
     /** @param Closure(array<string,mixed>):object $clientFactory 返回 KsyunRestClient（或测试 mock，需有 post() 方法） */
-    public function __construct(private readonly Closure $clientFactory) {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly string $projectId = '',
+    ) {}
 
     public function storeKind(): string
     {
-        return 'ksyun_kcm';
+        return $this->projectId !== '' && $this->projectId !== '0'
+            ? 'ksyun_kcm:'.$this->projectId
+            : 'ksyun_kcm';
     }
 
     /**
@@ -56,7 +61,7 @@ class KsyunKcmUploader implements CertUploaderInterface
             $result = $client->post('/', [
                 'Action' => 'UploadCertificate',
                 'Version' => '2016-03-04',
-                'ProjectId' => '0',
+                'ProjectId' => $this->projectId !== '' ? $this->projectId : '0',
                 'CertName' => $certName,
                 'CertFile' => $fullChain,
                 'CertKey' => trim($keyPem),

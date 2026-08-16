@@ -6,6 +6,8 @@ use Plugins\CloudDeploy\Deployers\Tencent\TencentCosDeployer;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Ssl\V20191205\Models\DeployCertificateInstanceRequest;
 use TencentCloud\Ssl\V20191205\Models\DeployCertificateInstanceResponse;
+use TencentCloud\Ssl\V20191205\Models\DescribeHostCosInstanceListRequest;
+use TencentCloud\Ssl\V20191205\Models\DescribeHostCosInstanceListResponse;
 use TencentCloud\Ssl\V20191205\Models\DescribeHostDeployRecordDetailRequest;
 use TencentCloud\Ssl\V20191205\Models\DescribeHostDeployRecordDetailResponse;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateRequest;
@@ -27,12 +29,31 @@ function tencentCosDeployerWith(callable $clientFactory): TencentCosDeployer
 
         protected function makeClient(string $kind, array $credentials): object
         {
-            return ($this->factory)($kind, $credentials);
+            $client = ($this->factory)($kind, $credentials);
+            if ($kind === 'ssl' && $client instanceof SslClient) {
+                $client->shouldReceive('DescribeHostCosInstanceList')
+                    ->byDefault()
+                    ->andReturn(cosInstanceListResponse([]));
+            }
+
+            return $client;
         }
 
         // 测试不真实 sleep（否则轮询每次卡 10s）
         protected function sleep(int $seconds): void {}
     };
+}
+
+function cosInstanceListResponse(array $instances): DescribeHostCosInstanceListResponse
+{
+    $resp = new DescribeHostCosInstanceListResponse;
+    $resp->deserialize([
+        'InstanceList' => $instances,
+        'TotalCount' => count($instances),
+        'RequestId' => 'r',
+    ]);
+
+    return $resp;
 }
 
 function cosUploadCertResponse(string $id): UploadCertificateResponse
@@ -128,19 +149,55 @@ test('COS bind 调 ssl.DeployCertificateInstance 设 ResourceType=cos + Instance
     expect($detailReq->DeployRecordId)->toBe('12345');
 });
 
-test('COS bind 轮询多轮直到 succeeded+failed==total 才返回', function () {
+test('COS 目标已绑定当前证书时不重复创建部署任务', function () {
+    $listReq = null;
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('DescribeHostCosInstanceList')
+        ->once()
+        ->andReturnUsing(function (DescribeHostCosInstanceListRequest $req) use (&$listReq) {
+            $listReq = $req;
+
+            return cosInstanceListResponse([[
+                'Bucket' => 'my-bucket-1250000000',
+                'Domain' => 'cos.example.com',
+                'Status' => 'ENABLED',
+            ]]);
+        });
+    $ssl->shouldNotReceive('DeployCertificateInstance');
+
+    $deployer = tencentCosDeployerWith(fn () => $ssl);
+    $deployer->bind('cert-cos', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+        'region' => 'ap-guangzhou',
+        'bucket' => 'my-bucket-1250000000',
+        'domain' => 'cos.example.com',
+    ]);
+
+    expect($listReq->OldCertificateId)->toBe('cert-cos');
+    expect($listReq->ResourceType)->toBe('cos');
+    expect($listReq->IsCache)->toBe(0);
+    expect($listReq->Offset)->toBe(0);
+    expect($listReq->Limit)->toBe(100);
+});
+
+test('COS bind 首查未完成时持久化 recordId，resumePoll 续查至终态', function () {
     $ssl = Mockery::mock(SslClient::class);
     $ssl->shouldReceive('DeployCertificateInstance')->once()->andReturn(cosDeployResponse(999));
-    // 第一轮 running（0+0<1），第二轮成功（1+0==1）
+    // bind 首查 running（0+0<1），resumePoll 续查成功（1+0==1）
     $ssl->shouldReceive('DescribeHostDeployRecordDetail')
         ->twice()
         ->andReturn(cosRecordDetailResponse(1, 0, 0), cosRecordDetailResponse(1, 1, 0));
 
     $deployer = tencentCosDeployerWith(fn () => $ssl);
-    // 不抛即通过
-    $deployer->bind('cert-cos', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
-        'region' => 'ap-guangzhou', 'bucket' => 'b', 'domain' => 'd.example.com',
-    ]);
+    try {
+        $deployer->bind('cert-cos', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+            'region' => 'ap-guangzhou', 'bucket' => 'b', 'domain' => 'd.example.com',
+        ]);
+        expect(false)->toBeTrue('应抛 poll_pending');
+    } catch (DeployPollPendingException $e) {
+        expect($e->remoteJobId)->toBe('999');
+    }
+
+    $deployer->resumePoll('999', ['secret_id' => 'AK', 'secret_key' => 'SK'], []);
 
     expect(true)->toBeTrue();
 });

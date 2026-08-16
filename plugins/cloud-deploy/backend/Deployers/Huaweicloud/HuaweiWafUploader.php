@@ -30,10 +30,15 @@ class HuaweiWafUploader implements CertUploaderInterface
         private readonly string $region,
         private readonly Closure $iamFactory,
         private readonly Closure $wafFactory,
+        private readonly string $replaceCertificateId = '',
     ) {}
 
     public function storeKind(): string
     {
+        if ($this->replaceCertificateId !== '') {
+            return 'huawei-waf-r:'.substr(hash('sha256', $this->region."\0".$this->replaceCertificateId), 0, 18);
+        }
+
         return 'huawei_waf:'.($this->region !== '' ? $this->region : 'default');
     }
 
@@ -64,9 +69,21 @@ class HuaweiWafUploader implements CertUploaderInterface
                 $query['enterprise_project_id'] = $enterpriseProjectId;
             }
 
-            // WAF CreateCertificate：字段名 content / key（严格对齐 certimate，写错会静默丢）。
             /** @var HuaweicloudRestClient $waf */
             $waf = ($this->wafFactory)($credentials, $projectId);
+            if ($this->replaceCertificateId !== '') {
+                $path = "/v1/$projectId/waf/certificate/{$this->replaceCertificateId}";
+                $existing = $waf->get($path, $query);
+                $waf->put($path, [
+                    'name' => (string) ($existing['name'] ?? ''),
+                    'content' => $fullChain,
+                    'key' => trim($keyPem),
+                ], $query);
+
+                return $this->replaceCertificateId;
+            }
+
+            // WAF CreateCertificate：字段名 content / key（严格对齐 certimate，写错会静默丢）。
             $result = $waf->post("/v1/$projectId/waf/certificate", [
                 'name' => $certName,
                 'content' => $fullChain,

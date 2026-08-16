@@ -37,9 +37,10 @@ fi
 log_info "开始构建前端..."
 
 # 锁文件级别的智能安装跳过
-mkdir -p /workspace/.dep_hashes
+DEP_HASH_DIR="$WORKSPACE_DIR/.dep_hashes"
+mkdir -p "$DEP_HASH_DIR"
 LOCK_FILE="pnpm-lock.yaml"
-HASH_FILE="/workspace/.dep_hashes/monorepo_pnpm-lock.yaml.sha256"
+HASH_FILE="$DEP_HASH_DIR/monorepo_pnpm-lock.yaml.sha256"
 
 CURRENT_HASH="missing"
 if [ -f "$LOCK_FILE" ]; then
@@ -92,16 +93,29 @@ fix_bin_permissions "$WORKSPACE_DIR/frontend/shared"
 [ "${BUILD_ADMIN:-false}" = "true" ] && fix_bin_permissions "$WORKSPACE_DIR/frontend/admin"
 [ "${BUILD_USER:-false}" = "true" ] && fix_bin_permissions "$WORKSPACE_DIR/frontend/user"
 
-# 计算目录内容 hash（用于增量构建检测）
+# 计算前端构建输入 hash（用于增量构建检测）
 # 参数：主目录 [依赖目录...]
 calc_dir_hash() {
     local dirs=("$@")
-    # 对目录下所有源文件内容计算 hash，排除 node_modules 和 dist
-    for dir in "${dirs[@]}"; do
-        find "$dir" -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.vue" -o -name "*.js" -o -name "*.css" -o -name "*.scss" -o -name "*.json" -o -name "*.html" -o -name "*.md" \) \
-            ! -path "*/node_modules/*" ! -path "*/dist/*" \
-            -exec sha256sum {} \; 2>/dev/null
-    done | sort | sha256sum | awk '{print $1}'
+    local dependency_files=(
+        "$WORKSPACE_DIR/package.json"
+        "$WORKSPACE_DIR/pnpm-workspace.yaml"
+        "$WORKSPACE_DIR/pnpm-lock.yaml"
+        "$WORKSPACE_DIR/.npmrc"
+    )
+
+    {
+        # 对目录下所有源文件内容计算 hash，排除 node_modules 和 dist
+        for dir in "${dirs[@]}"; do
+            find "$dir" -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.vue" -o -name "*.js" -o -name "*.css" -o -name "*.scss" -o -name "*.json" -o -name "*.html" -o -name "*.md" \) \
+                ! -path "*/node_modules/*" ! -path "*/dist/*" \
+                -exec sha256sum {} \; 2>/dev/null
+        done
+
+        for file in "${dependency_files[@]}"; do
+            [ -f "$file" ] && sha256sum "$file"
+        done
+    } | sort | sha256sum | awk '{print $1}'
 }
 
 # 构建函数
@@ -112,9 +126,9 @@ build_component() {
     local src_dir="$WORKSPACE_DIR/frontend/$filter"
     local shared_dir="$WORKSPACE_DIR/frontend/shared"
     local dist_dir="$src_dir/dist"
-    local hash_file="/workspace/.dep_hashes/${filter}_src.sha256"
+    local hash_file="$DEP_HASH_DIR/${filter}_src.sha256"
 
-    # 增量构建检测：检查源码是否变更（包括 shared 依赖）
+    # 增量构建检测：检查源码及根依赖配置是否变更（包括 shared 依赖）
     # 接口文档已改由 api-docs 插件提供，不再 build 期编译进 SPA，无需纳入前端 hash
     local current_hash
     current_hash=$(calc_dir_hash "$src_dir" "$shared_dir")
@@ -125,12 +139,12 @@ build_component() {
         [ "$current_hash" = "$prev_hash" ] &&
         [ -d "$dist_dir" ] &&
         [ "$(find "$dist_dir" -type f | wc -l)" -gt 0 ]; then
-        log_success "[$component] 源码未变更，跳过构建（使用缓存）"
+        log_success "[$component] 构建输入未变更，跳过构建（使用缓存）"
         return 0
     fi
 
     log_info "[$component] 开始构建..."
-    [ "$current_hash" != "$prev_hash" ] && log_info "[$component] 检测到源码变更"
+    [ "$current_hash" != "$prev_hash" ] && log_info "[$component] 检测到构建输入变更"
 
     # 清理旧的构建产物
     if [ -d "$dist_dir" ]; then

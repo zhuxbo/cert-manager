@@ -99,12 +99,30 @@ test('bind is_default=true → ModifyListener（设默认证书）', function ()
 test('bind is_default=true 且证书已是默认 → 跳过（不调 ModifyListener）', function () use ($albCreds, $albCfg) {
     $elbv2 = Mockery::mock(ElasticLoadBalancingV2Client::class);
     $elbv2->shouldReceive('describeLoadBalancers')->andReturn(new Result(['LoadBalancers' => [['Type' => 'application']]]));
-    $elbv2->shouldReceive('describeListeners')->andReturn(new Result(['Listeners' => [['Certificates' => [['CertificateArn' => 'arn:cert']]]]]));
+    $elbv2->shouldReceive('describeListeners')->andReturn(new Result(['Listeners' => [['Certificates' => [['CertificateArn' => 'arn:cert', 'IsDefault' => true]]]]]));
     $elbv2->shouldReceive('modifyListener')->never();
 
     $deployer = awsAlbDeployerWith(fn () => $elbv2);
     $deployer->bind('arn:cert', $albCreds, $albCfg + ['is_default' => true]);
     expect(true)->toBeTrue();
+});
+
+test('bind is_default=true 但同 ARN 仅为 SNI → 仍设为默认证书', function () use ($albCreds, $albCfg) {
+    $elbv2 = Mockery::mock(ElasticLoadBalancingV2Client::class);
+    $elbv2->shouldReceive('describeLoadBalancers')->andReturn(new Result(['LoadBalancers' => [['Type' => 'application']]]));
+    $elbv2->shouldReceive('describeListeners')->andReturn(new Result(['Listeners' => [['Certificates' => [['CertificateArn' => 'arn:cert', 'IsDefault' => false]]]]]));
+    $elbv2->shouldReceive('modifyListener')->once();
+
+    awsAlbDeployerWith(fn () => $elbv2)->bind('arn:cert', $albCreds, $albCfg + ['is_default' => true]);
+});
+
+test('bind is_default=false 且同 ARN 已为 SNI → 跳过重复添加', function () use ($albCreds, $albCfg) {
+    $elbv2 = Mockery::mock(ElasticLoadBalancingV2Client::class);
+    $elbv2->shouldReceive('describeLoadBalancers')->andReturn(new Result(['LoadBalancers' => [['Type' => 'application']]]));
+    $elbv2->shouldReceive('describeListeners')->andReturn(new Result(['Listeners' => [['Certificates' => [['CertificateArn' => 'arn:cert', 'IsDefault' => false]]]]]));
+    $elbv2->shouldReceive('addListenerCertificates')->never();
+
+    awsAlbDeployerWith(fn () => $elbv2)->bind('arn:cert', $albCreds, $albCfg);
 });
 
 test('bind 非 application 类型 LB → 业务错误（可读、未脱敏）', function () use ($albCreds, $albCfg) {

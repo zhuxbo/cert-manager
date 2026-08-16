@@ -29,11 +29,14 @@ use Throwable;
 class AliyunCasUploader implements CertUploaderInterface
 {
     /** @param Closure(array<string,mixed>):object $clientFactory 返回 AlibabaCloud\SDK\Cas\V20200407\Cas */
-    public function __construct(private readonly Closure $clientFactory) {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly string $region = '',
+    ) {}
 
     public function storeKind(): string
     {
-        return 'cas';
+        return $this->region === '' ? 'cas' : 'cas:'.$this->region;
     }
 
     /**
@@ -52,13 +55,19 @@ class AliyunCasUploader implements CertUploaderInterface
         // （含签名 URI/AK）绕过脱敏泄露。两次 SDK 调用合并一个 try、共用一个 client，返回原始值，校验放 try 外。
         try {
             /** @var Cas $client */
-            $client = ($this->clientFactory)($credentials);
+            $client = ($this->clientFactory)($credentials + ['region' => $this->region]);
 
-            $certId = $client->uploadUserCertificate(new UploadUserCertificateRequest([
+            $request = [
                 'name' => $certName,
                 'cert' => $fullChain,
                 'key' => $keyPem,
-            ]))->body?->certId;
+            ];
+            $resourceGroupId = (string) ($credentials['resource_group_id'] ?? '');
+            if ($resourceGroupId !== '') {
+                $request['resourceGroupId'] = $resourceGroupId;
+            }
+
+            $certId = $client->uploadUserCertificate(new UploadUserCertificateRequest($request))->body?->certId;
 
             // 拿 CertIdentifier（"{certId}-{region}"），dcdn/vod 绑定需按 "-" 拆 CertId + CertRegion。
             // certId 为空时传 0 给详情接口必失败，但仍由下方 try 外校验给出明确文案——故此处先判空短路。

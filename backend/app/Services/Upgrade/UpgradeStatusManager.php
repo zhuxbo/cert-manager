@@ -179,7 +179,7 @@ class UpgradeStatusManager
             return null;
         }
 
-        $handle = fopen($this->statusFile, 'r');
+        $handle = @fopen($this->statusFile, 'r');
         if ($handle === false) {
             return null;
         }
@@ -359,7 +359,7 @@ class UpgradeStatusManager
         // 单一写入口注入心跳时间戳（Carbon/now()，与 Carbon::setTestNow 同源，供 watchdog 判 stale）。
         $data['updated_at'] = now()->toDateTimeString();
 
-        $handle = fopen($this->statusFile, 'c');
+        $handle = @fopen($this->statusFile, 'c');
         if ($handle === false) {
             $error = "无法打开状态文件: {$this->statusFile}";
             Log::error($error);

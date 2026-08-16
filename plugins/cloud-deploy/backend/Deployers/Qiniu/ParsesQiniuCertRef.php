@@ -32,7 +32,7 @@ trait ParsesQiniuCertRef
 
         $certId = substr($certRef, 0, $pos);
         $certName = substr($certRef, $pos + 1);
-        if ($certId === '' || $certName === '') {
+        if ($certName === '') {
             throw new RuntimeException("无效的七牛 remote_cert_id: $certRef");
         }
 

@@ -5,6 +5,7 @@ namespace App\Services\Plugin;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
 use App\Services\Composer\ComposerMirror;
+use App\Services\Composer\ComposerVendorBundle;
 use App\Services\Upgrade\UpgradePreflight;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -13,11 +14,11 @@ use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 /**
- * 插件运行时 composer 安装器。
+ * 历史插件包的运行时 Composer 兼容安装器。
  *
  * 通用能力：当被安装/更新的插件自带 `backend/composer.json` 时，在插件目录内跑
- * `composer install --no-dev`，把第三方依赖（如 cloud-deploy 的阿里/腾讯官方 SDK）拉到
- * 插件自己的 `backend/vendor/`——使这些插件的 vendor **不必入 git / 不必随发布包分发**。
+ * `composer install --no-dev`，把第三方依赖拉到插件自己的 `backend/vendor/`。新发布包
+ * 已携带该目录，本服务仅在安装不带 vendor 的历史包时回落使用。
  *
  * 设计取舍：
  *   - 复用 {@see BinaryLocator::composer()}（escapeshellarg 过的 `php phar` 命令前缀，多版本 PHP 下
@@ -60,6 +61,11 @@ class PluginComposerRunner
         $lock = "$pluginDir/backend/composer.lock";
 
         return is_file($lock) ? hash_file('sha256', $lock) : '';
+    }
+
+    public function bundledVendorMatchesLock(string $pluginDir): bool
+    {
+        return ComposerVendorBundle::matchesLock("$pluginDir/backend");
     }
 
     /**
@@ -131,6 +137,7 @@ class PluginComposerRunner
             );
         }
 
+        ComposerVendorBundle::writeMarker($backendDir);
         Log::info("[Plugin] composer install 完成: $name");
         $this->report($reporter, 'composer_done', 'Composer 依赖安装完成');
     }

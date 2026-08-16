@@ -42,6 +42,7 @@ class UcloudPathxDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'accelerator_id', 'label' => '加速器实例 ID', 'type' => 'string', 'required' => true],
             ['key' => 'listener_port', 'label' => '监听端口', 'type' => 'number', 'required' => true],
         ];
@@ -54,7 +55,7 @@ class UcloudPathxDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new UcloudUsslUploader(fn (array $credentials): object => $this->makeClient('api', $credentials));
+        return new UcloudUsslUploader(fn (array $credentials): object => $this->makeClient('api', $this->withUcloudEndpoint($credentials, $config)));
     }
 
     /**
@@ -64,6 +65,7 @@ class UcloudPathxDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withUcloudEndpoint($credentials, $config);
         $acceleratorId = (string) $this->requireConfig($config, 'accelerator_id');
         $port = (int) $this->requireConfig($config, 'listener_port');
         [$certIdStr] = $this->parseCertRef((string) $certRef);

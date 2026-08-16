@@ -97,6 +97,13 @@ log_error() { :; }
 log_warning() { :; }
 log_step() { :; }
 _print_recovery_runbook() { :; }
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
 
 # 抽取守卫函数进当前 shell（A 组直接驱动）
 eval "$(extract_fn "$UPGRADE" _fs_device)"
@@ -105,12 +112,19 @@ eval "$(extract_fn "$UPGRADE" _check_stranded_preserve)"
 eval "$(extract_fn "$UPGRADE" _restore_preserved_storage)"
 eval "$(extract_fn "$UPGRADE" _restore_preserved_extras)"
 eval "$(extract_fn "$UPGRADE" _need_composer_install)"
+eval "$(extract_fn "$UPGRADE" _bundled_vendor_matches_lock)"
+eval "$(extract_fn "$UPGRADE" _vendor_dir_matches_lock)"
+eval "$(extract_fn "$UPGRADE" _write_composer_lock_marker)"
+eval "$(extract_fn "$BT_INSTALL" write_composer_lock_marker)"
+eval "$(extract_fn "$UPGRADE" _stage_bundled_vendor)"
 eval "$(extract_fn "$UPGRADE" _ensure_runtime_directories)"
 eval "$(extract_fn "$UPGRADE" _print_recovery_runbook)"
 
 # 抽取健全性校验：任一函数未抽出即整体失败（防 upgrade.sh 改结构后静默失测）
 for fn in _fs_device _assert_storage_same_fs _check_stranded_preserve _restore_preserved_storage \
-    _restore_preserved_extras _need_composer_install _ensure_runtime_directories; do
+    _restore_preserved_extras _need_composer_install _bundled_vendor_matches_lock _vendor_dir_matches_lock \
+    _write_composer_lock_marker write_composer_lock_marker \
+    _stage_bundled_vendor _ensure_runtime_directories; do
     if ! declare -f "$fn" >/dev/null 2>&1; then
         echo "✗ 抽取失败：$fn 未从 $UPGRADE 提取到（函数结构变化？）"
         exit 1
@@ -409,6 +423,116 @@ test_a9() {
     rm -rf "$base"
 }
 
+test_a9b() {
+    local base expected ok=1
+    base="$(mktemp -d)"
+    mkdir -p "$base/vendor/composer"
+    printf 'LOCK' >"$base/composer.lock"
+    printf 'AUTOLOAD' >"$base/vendor/autoload.php"
+    expected="$(file_sha256 "$base/composer.lock")"
+    printf '%s\n' "$expected" >"$base/vendor/composer/.ssl-manager-lock.sha256"
+
+    _bundled_vendor_matches_lock "$base" || ok=0
+    printf 'BROKEN' >"$base/vendor/composer/.ssl-manager-lock.sha256"
+    if _bundled_vendor_matches_lock "$base"; then ok=0; fi
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A9b 包内 vendor 仅在 autoload 与 lock SHA-256 标记对齐时通过"
+    else
+        fail "A9b 包内 vendor 完整性校验"
+    fi
+    rm -rf "$base"
+}
+
+test_a9c() {
+    local base expected ok=1
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base/install"
+    BUNDLED_VENDOR_STAGE=""
+    mkdir -p "$INSTALL_DIR/backend" "$base/source/vendor/composer"
+    printf 'LOCK' >"$base/source/composer.lock"
+    printf 'AUTOLOAD' >"$base/source/vendor/autoload.php"
+    printf 'PACKAGE' >"$base/source/vendor/package.php"
+    expected="$(file_sha256 "$base/source/composer.lock")"
+    printf '%s\n' "$expected" >"$base/source/vendor/composer/.ssl-manager-lock.sha256"
+
+    _stage_bundled_vendor "$base/source" || ok=0
+    [ -d "$BUNDLED_VENDOR_STAGE" ] || ok=0
+    [ -f "$BUNDLED_VENDOR_STAGE/composer/.ssl-manager-lock.sha256" ] || ok=0
+    [ ! -d "$base/source/vendor" ] || ok=0
+    _vendor_dir_matches_lock "$BUNDLED_VENDOR_STAGE" "$base/source/composer.lock" || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A9c 新 vendor 在安装盘完整预拷贝并校验后，源 vendor 才被隔离"
+    else
+        fail "A9c 新 vendor 原子启用预备"
+    fi
+    rm -rf "$base"
+    BUNDLED_VENDOR_STAGE=""
+}
+
+test_a9d() {
+    local base ok=1 rc
+    base="$(mktemp -d)"
+    INSTALL_DIR="$base/install"
+    BUNDLED_VENDOR_STAGE=""
+    mkdir -p "$INSTALL_DIR/backend/vendor" "$base/source/vendor/composer"
+    printf 'OLD-AUTOLOAD' >"$INSTALL_DIR/backend/vendor/autoload.php"
+    printf 'LOCK' >"$base/source/composer.lock"
+    printf 'NEW-AUTOLOAD' >"$base/source/vendor/autoload.php"
+    printf 'BROKEN\n' >"$base/source/vendor/composer/.ssl-manager-lock.sha256"
+
+    _stage_bundled_vendor "$base/source"
+    rc=$?
+    [ "$rc" -ne 0 ] || ok=0
+    [ "$(cat "$INSTALL_DIR/backend/vendor/autoload.php" 2>/dev/null || true)" = "OLD-AUTOLOAD" ] || ok=0
+    [ -d "$base/source/vendor" ] || ok=0
+    [ -z "$BUNDLED_VENDOR_STAGE" ] || ok=0
+    if find "$INSTALL_DIR/backend" -maxdepth 1 -name '.vendor-next-*' -print -quit | grep -q .; then
+        ok=0
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        pass "A9d 新 vendor 校验失败时，旧 vendor 未触碰且临时预拷贝已清理"
+    else
+        fail "A9d 新 vendor 校验失败的覆盖前保护（rc=${rc}）"
+    fi
+    rm -rf "$base"
+    BUNDLED_VENDOR_STAGE=""
+}
+
+test_a9e() {
+    local base expected ok=1 rc
+    base="$(mktemp -d)"
+    mkdir -p "$base/vendor/composer"
+    printf 'LOCK-A' >"$base/composer.lock"
+    printf 'AUTOLOAD' >"$base/vendor/autoload.php"
+    printf 'STALE' >"$base/vendor/composer/.ssl-manager-lock.sha256"
+
+    _write_composer_lock_marker "$base" || ok=0
+    expected="$(file_sha256 "$base/composer.lock")"
+    [ "$(tr -d '[:space:]' <"$base/vendor/composer/.ssl-manager-lock.sha256")" = "$expected" ] || ok=0
+
+    printf 'LOCK-B' >"$base/composer.lock"
+    write_composer_lock_marker "$base" || ok=0
+    expected="$(file_sha256 "$base/composer.lock")"
+    [ "$(tr -d '[:space:]' <"$base/vendor/composer/.ssl-manager-lock.sha256")" = "$expected" ] || ok=0
+    if find "$base/vendor/composer" -name '.ssl-manager-lock.sha256.tmp.*' -print -quit | grep -q .; then
+        ok=0
+    fi
+
+    rm -f "$base/vendor/autoload.php"
+    _write_composer_lock_marker "$base"
+    rc=$?
+    [ "$rc" -ne 0 ] || ok=0
+    if [ "$ok" -eq 1 ]; then
+        pass "A9e Shell 安装与升级在 Composer 成功后原子刷新 lock 标记，前置缺失时失败关闭"
+    else
+        fail "A9e Shell Composer lock 标记刷新（rc=${rc}）"
+    fi
+    rm -rf "$base"
+}
+
 # A10 cleanup 删 preserve 前还原 extras（⑨ 集成）：模拟中断在「rm 原件 ~ step9 还原」窗内，
 # preserve 存自定义适配器唯一副本、原件已删 → cleanup 触发后适配器还原到位 + preserve 清理（不静默销毁）
 test_a10() {
@@ -429,9 +553,11 @@ TEMP_DIR="$base/tmp"
 PRESERVE_DIR="$base/.upgrade-preserve-clx"
 FREEZE_FIRED=0
 UPGRADE_DONE=1
+BOOTSTRAP_LOCK_HELD=0
 HDR
     extract_fn "$UPGRADE" _restore_preserved_storage >>"$harness"
     extract_fn "$UPGRADE" _restore_preserved_extras >>"$harness"
+    extract_fn "$UPGRADE" _release_bootstrap_lock >>"$harness"
     extract_fn "$UPGRADE" cleanup >>"$harness"
     cat >>"$harness" <<'MAIN'
 trap cleanup EXIT
@@ -630,6 +756,10 @@ test_a6
 test_a7
 test_a8
 test_a9
+test_a9b
+test_a9c
+test_a9d
+test_a9e
 test_a10
 test_a11
 test_a12
@@ -660,10 +790,12 @@ TEMP_DIR="$inst/tmp"
 PRESERVE_DIR="$inst/.upgrade-preserve-harness"
 FREEZE_FIRED=0
 UPGRADE_DONE=0
+BOOTSTRAP_LOCK_HELD=0
 PHP_CMD=php
 HDR
     extract_fn "$UPGRADE" _restore_preserved_storage >>"$hf"
     extract_fn "$UPGRADE" _restore_preserved_extras >>"$hf"
+    extract_fn "$UPGRADE" _release_bootstrap_lock >>"$hf"
     extract_fn "$UPGRADE" cleanup >>"$hf"
     cat >>"$hf" <<MAIN
 trap cleanup EXIT
@@ -792,6 +924,68 @@ if grep -qE 'trap cleanup INT TERM HUP' "$UPGRADE"; then
     pass "C 生产信号 trap 装配行钉死（trap cleanup INT TERM HUP）"
 else
     fail "C 生产信号 trap 装配行缺失（应有 trap cleanup INT TERM HUP）"
+fi
+
+lock_acquire_line=$(grep -nE '^[[:space:]]*_acquire_bootstrap_lock$' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+legacy_prepare_line=$(grep -nE '^[[:space:]]*_prepare_legacy_bootstrap_entry ' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+vendor_preserve_line=$(grep -nF 'mv "$INSTALL_DIR/backend/vendor" "$PRESERVE_DIR/"' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+lock_release_line=$(grep -nE '^[[:space:]]*_release_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+if grep -qF 'local lock_file="$INSTALL_DIR/backend/.upgrade-bootstrap.lock"' "$UPGRADE" &&
+    grep -qF 'UPGRADE_LEGACY_REQUEST_DRAIN_TIMEOUT' "$UPGRADE" &&
+    grep -qF 'ApplicationBootstrapLock::prepareLegacyHttpEntry' "$UPGRADE" &&
+    [ -n "$legacy_prepare_line" ] && [ -n "$lock_acquire_line" ] && [ -n "$vendor_preserve_line" ] && [ -n "$lock_release_line" ] &&
+    [ "$legacy_prepare_line" -lt "$lock_acquire_line" ] && [ "$lock_acquire_line" -lt "$vendor_preserve_line" ] &&
+    [ "$vendor_preserve_line" -lt "$lock_release_line" ]; then
+    pass "C Shell 首次升级先排空旧请求，随后目录替换全程持应用启动独占锁"
+else
+    fail "C Shell 首次升级排空或启动锁未覆盖 vendor/代码切换窗口"
+fi
+
+if ! grep -qF 'rm -rf "$INSTALL_DIR/backend"' "$UPGRADE" &&
+    grep -qF '! -name index.php' "$UPGRADE"; then
+    pass "C Shell 回滚保留 backend 锁 inode 与 public/index.php 稳定入口"
+else
+    fail "C Shell 回滚仍可能替换 backend 锁 inode 或共享锁入口"
+fi
+
+if grep -qF 'scripts/write-composer-lock-marker.php' "$ROOT/backend/composer.json" &&
+    grep -qF '@php ../../../backend/scripts/write-composer-lock-marker.php .' "$ROOT/plugins/cloud-deploy/backend/composer.json" &&
+    [ -f "$ROOT/backend/scripts/write-composer-lock-marker.php" ] &&
+    [ ! -e "$ROOT/plugins/cloud-deploy/backend/scripts/write-composer-lock-marker.php" ]; then
+    pass "C 主系统与云部署插件的 Composer install/update/dump 共享唯一 marker 入口"
+else
+    fail "C 主系统或云部署插件未共享唯一 Composer marker 入口"
+fi
+
+if grep -qF '_vendor_dir_matches_lock "$INSTALL_DIR/backend/vendor" "$src_dir/backend/composer.lock"' "$UPGRADE" &&
+    grep -qF 'BUNDLED_VENDOR_REUSED=1' "$UPGRADE" &&
+    grep -qF '[ "$BUNDLED_VENDOR_REUSED" -eq 0 ] && [ -d "$INSTALL_DIR/backend/vendor" ]' "$UPGRADE"; then
+    pass "C Shell 目标 lock 未变化时原地复用在线 vendor"
+else
+    fail "C Shell 未在目标 lock 相同时避免 vendor 暂存与切换"
+fi
+
+if ! grep -qF 'rm -rf "$INSTALL_DIR/backend/public"' "$UPGRADE" &&
+    grep -qF '! -name index.php' "$UPGRADE"; then
+    pass "C Shell 切换窗保留 public/index.php 作为共享锁稳定入口"
+else
+    fail "C Shell 仍会在独占锁期间删除 public/index.php"
+fi
+
+rollback_start_line=$(grep -nE '^rollback\(\)' "$UPGRADE" | head -1 | cut -d: -f1 || true)
+rollback_lock_line=$(grep -nE '^[[:space:]]*_acquire_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+rollback_restore_line=$(grep -nF 'rm -rf "$INSTALL_DIR/backend/$dir"' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+rollback_unlock_line=$(grep -nE '^[[:space:]]*_release_bootstrap_lock$' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+rollback_up_line=$(grep -nF 'artisan upgrade:unfreeze' "$UPGRADE" | tail -1 | cut -d: -f1 || true)
+if [ -n "$rollback_start_line" ] && [ -n "$rollback_lock_line" ] && [ -n "$rollback_restore_line" ] &&
+    [ -n "$rollback_unlock_line" ] && [ -n "$rollback_up_line" ] &&
+    [ "$rollback_start_line" -lt "$rollback_lock_line" ] &&
+    [ "$rollback_lock_line" -lt "$rollback_restore_line" ] &&
+    [ "$rollback_restore_line" -lt "$rollback_unlock_line" ] &&
+    [ "$rollback_unlock_line" -lt "$rollback_up_line" ]; then
+    pass "C Shell 回滚文件替换同样受应用启动独占锁保护"
+else
+    fail "C Shell 回滚未完整覆盖启动锁或释放顺序错误"
 fi
 
 # ⑧ 钉死 composer 触发的 vendor 缺失兜底：删掉它 → 中断丢 vendor 重跑因 hash 相等跳过 composer → 砖机。

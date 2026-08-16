@@ -541,7 +541,7 @@ test('sync 自动退款精确落账、回调并只清理指定任务', function 
         ->and($refund->user_id)->toBe($user->id)
         ->and($refund->standard_count)->toBe(-1)
         ->and($refund->wildcard_count)->toBe(0)
-        ->and(Task::where('order_id', $order->id)->orderBy('action')->pluck('action')->all())->toBe(['callback', 'cancel']);
+        ->and(Task::where('order_id', $order->id)->orderBy('action')->pluck('action')->all())->toBe(['callback']);
 });
 
 test('updateDCV 重复提交返回包含精确剩余秒数的错误', function () {

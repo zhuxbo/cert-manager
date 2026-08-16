@@ -31,7 +31,7 @@ class CloudDeployServiceProvider extends ServiceProvider
         $this->app->singleton(Registry::class, function () {
             $registry = new Registry;
             foreach (['aliyun', 'tencent', 'qiniu', 'baidu', 'cloudflare', 'aws', 'upyun', 'digitalocean', 'ksyun', 'volcengine', 'jdcloud', 'byteplus', 'ucloud', 'vercel', 'netlify', 'bunny', 'gcore', 'linode', 'wangsu', 'ctcccloud', 'huaweicloud', 'rainyun', 'mohua', 'unicloud', 'cachefly', 'cdnfly', 'flyio', 'googlecloud', 'azure', 'oraclecloud', 's3', 'cmcccloud', 'zenlayer', 'qingcloud', 'baishan', 'dogecloud',
-                'k8s', 'webhook', 'onepanel', 'baotapanel', 'baotapanelgo', 'baotawaf', 'ratpanel', 'cpanel', 'safeline', 'samwaf', 'goedge', 'flexcdn', 'lecdn', 'nginxproxymanager', 'synologydsm', 'proxmoxve', 'dokploy', 'kong', 'apisix'] as $name) {
+                'k8s', 'webhook', 'onepanel', 'baotapanel', 'baotapanelgo', 'baotawaf', 'ratpanel', 'cpanel', 'safeline', 'samwaf', 'goedge', 'flexcdn', 'lecdn', 'nginxproxymanager', 'synologydsm', 'proxmoxve', 'proxmoxbs', 'huaweiibmc', 'axisnow', 'yandexcloud', 'dokploy', 'kong', 'apisix'] as $name) {
                 (require __DIR__."/Deployers/registry/$name.php")($registry);
             }
 

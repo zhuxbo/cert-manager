@@ -17,6 +17,8 @@ use Throwable;
  */
 class JdcloudLiveDeployer extends AbstractDeployer
 {
+    use MatchesJdcloudCertificateDomains;
+
     public function provider(): string
     {
         return 'jdcloud';
@@ -35,36 +37,47 @@ class JdcloudLiveDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => false],
         ];
     }
 
     /**
      * @param  string|array{cert:string,key:string,chain:string}  $certRef  内联 PEM 三元组
      * @param  array{access_key_id:string,access_key_secret:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
         if (! is_array($certRef)) {
             $this->fail('京东云直播为内联型，需 PEM 三元组');
         }
         // 证书 + 中间证书拼完整链（与上传器/其他内联端点一致）
-        $certPem = rtrim((string) ($certRef['cert'] ?? ''))."\n".trim((string) ($certRef['chain'] ?? ''));
-        $keyPem = (string) ($certRef['key'] ?? '');
+        $certPem = rtrim($certRef['cert'])."\n".trim($certRef['chain']);
+        $keyPem = $certRef['key'];
 
-        $this->guardSdk(function () use ($credentials, $domain, $certPem, $keyPem) {
-            /** @var JdcloudRestClient $client */
-            $client = $this->makeClient('live', $credentials);
-            $client->setLiveDomainCertificate($domain, trim($certPem), trim($keyPem));
-        });
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        /** @var JdcloudRestClient $client */
+        $client = $this->makeClient('live', $credentials);
+        $domains = match ($pattern) {
+            '', 'exact' => [(string) $this->requireConfig($config, 'domain')],
+            'certsan' => array_values(array_filter($this->guardSdk(fn () => $client->listLiveDomains()), fn (string $domain): bool => $this->certificateMatches((string) $certRef['cert'], $domain))),
+            default => $this->fail("不支持的域名匹配模式: $pattern"),
+        };
+        if ($domains === []) {
+            $this->fail('未找到证书 SAN 匹配的京东云直播域名');
+        }
+
+        foreach ($domains as $domain) {
+            $this->guardSdk(fn () => $client->setLiveDomainCertificate($domain, trim($certPem), trim($keyPem)));
+        }
     }
 
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
             'live' => JdcloudClientFactory::live($credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

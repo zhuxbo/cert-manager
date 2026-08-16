@@ -70,6 +70,39 @@ class UpyunRestClient
         return array_values(array_filter($list, 'is_array'));
     }
 
+    /** @return list<string> */
+    public function getDomains(): array
+    {
+        $domains = [];
+        for ($page = 1; ; $page++) {
+            $json = $this->call('GET', '/api/v2/buckets', null, [
+                'type' => 'ucdn', 'tag' => 'all', 'state' => 'all', 'security_cdn' => 'false',
+                'with_domains' => 'true', 'page' => (string) $page, 'perPage' => '10',
+            ]);
+            $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+            $buckets = is_array($data['buckets'] ?? null) ? $data['buckets'] : [];
+            foreach ($buckets as $bucket) {
+                if (! is_array($bucket) || ($bucket['visible'] ?? false) !== true) {
+                    continue;
+                }
+                foreach ((array) ($bucket['domains'] ?? []) as $item) {
+                    if (! is_array($item)) {
+                        continue;
+                    }
+                    $domain = (string) ($item['domain'] ?? '');
+                    if (strcasecmp((string) ($item['status'] ?? ''), 'NORMAL') === 0 && $domain !== '' && ! str_ends_with($domain, '.test.upcdn.net')) {
+                        $domains[] = $domain;
+                    }
+                }
+            }
+            if (count($buckets) < 10) {
+                break;
+            }
+        }
+
+        return $domains;
+    }
+
     /**
      * 为未启用 HTTPS 的域名启用 HTTPS 并绑定证书。
      * REF: certimate console api_update_https_certificate_manager —— POST /api/https/certificate/manager

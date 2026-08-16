@@ -31,6 +31,8 @@ trait ValidatesAgainstSchema
         }
 
         $this->assertRequiredFields($validator, 'credentials', $schema, $credentials);
+        $this->assertSelectFields($validator, 'credentials', $schema, $credentials);
+        $this->assertNoInvisibleFields($validator, 'credentials', $schema, $credentials);
         $this->assertNoUnknownFields($validator, 'credentials', $schema, $credentials);
         $this->assertDestinationFields($validator, $provider, 'credentials', $schema, $credentials);
     }
@@ -52,20 +54,64 @@ trait ValidatesAgainstSchema
 
         $schema = $registry->resolveDeployer($provider, $product)->configSchema();
         $this->assertRequiredFields($validator, 'config', $schema, $config);
+        $this->assertSelectFields($validator, 'config', $schema, $config);
+        $this->assertNoInvisibleFields($validator, 'config', $schema, $config);
+        $this->assertDomainMatchFields($validator, $schema, $config);
         $this->assertNoUnknownFields($validator, 'config', $schema, $config);
         $this->assertDestinationFields($validator, $provider, 'config', $schema, $config);
     }
 
     /**
+     * domain_match_pattern 缺省为 exact；exact/wildcard 必须有域名目标，certsan 才允许省略。
+     * 这条条件约束无法由 schema 的静态 required 布尔值表达，因此在统一保存入口补充校验。
+     *
+     * @param  list<array{key:string,label?:string,default?:mixed}>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function assertDomainMatchFields(Validator $validator, array $schema, array $values): void
+    {
+        $fields = collect($schema)->keyBy('key');
+        if (! $fields->has('domain_match_pattern')) {
+            return;
+        }
+
+        $patternField = $fields->get('domain_match_pattern');
+        $pattern = strtolower((string) ($values['domain_match_pattern'] ?? ($patternField['default'] ?? 'exact')));
+        if ($pattern === 'certsan') {
+            return;
+        }
+
+        $domainKeys = array_values(array_filter(
+            ['domains', 'domain'],
+            fn (string $key): bool => $fields->has($key) && $this->isVisibleField($fields->get($key), $schema, $values),
+        ));
+        if ($domainKeys === []) {
+            return;
+        }
+
+        foreach ($domainKeys as $key) {
+            $value = $values[$key] ?? null;
+            if ($value !== null && $value !== '' && $value !== []) {
+                return;
+            }
+        }
+
+        $key = $domainKeys[0];
+        $field = $fields->get($key);
+        $validator->errors()->add("config.$key", '缺少必填项：'.($field['label'] ?? $key));
+    }
+
+    /**
      * 逐 required 字段断言存在且非空（null / '' 视为缺失，与 AbstractDeployer::requireConfig 同口径）。
      *
-     * @param  list<array{key:string,label?:string,required?:bool}>  $schema
+     * @param  list<array{key:string,label?:string,required?:bool,default?:mixed,required_when?:array{key:string,equals:mixed}}>  $schema
      * @param  array<string,mixed>  $values
      */
     private function assertRequiredFields(Validator $validator, string $attribute, array $schema, array $values): void
     {
         foreach ($schema as $field) {
-            if (empty($field['required'])) {
+            if (! $this->isVisibleField($field, $schema, $values)
+                || ! $this->isRequiredField($field, $schema, $values)) {
                 continue;
             }
             $key = $field['key'];
@@ -73,6 +119,105 @@ trait ValidatesAgainstSchema
             if (! array_key_exists($key, $values) || $values[$key] === null || $values[$key] === '') {
                 $validator->errors()->add("$attribute.$key", "缺少必填项：$label");
             }
+        }
+    }
+
+    /**
+     * 条件必填和前端共用同一语义：未提交选择字段时先采用 schema default，
+     * 使存量记录/旧客户端仍落入明确的默认分支。
+     *
+     * @param  array<string,mixed>  $field
+     * @param  list<array<string,mixed>>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function isRequiredField(array $field, array $schema, array $values): bool
+    {
+        return ! empty($field['required'])
+            || $this->matchesSchemaCondition($field['required_when'] ?? null, $schema, $values);
+    }
+
+    /**
+     * 后端与前端共用 visible_when 语义。隐藏字段不参与 required；若客户端仍提交
+     * 旧值，下面 assertNoInvisibleFields 会拒绝请求，避免绕过 UI 裁剪把陈旧值持久化。
+     *
+     * @param  array<string,mixed>  $field
+     * @param  list<array<string,mixed>>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function isVisibleField(array $field, array $schema, array $values): bool
+    {
+        return ! array_key_exists('visible_when', $field)
+            || $this->matchesSchemaCondition($field['visible_when'], $schema, $values);
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function matchesSchemaCondition(mixed $condition, array $schema, array $values): bool
+    {
+        if (! is_array($condition)
+            || ! is_string($condition['key'] ?? null)
+            || $condition['key'] === ''
+            || ! array_key_exists('equals', $condition)) {
+            return false;
+        }
+
+        $key = $condition['key'];
+        $value = $values[$key] ?? null;
+        if ($value === null || $value === '') {
+            foreach ($schema as $candidate) {
+                if (($candidate['key'] ?? null) === $key && array_key_exists('default', $candidate)) {
+                    $value = $candidate['default'];
+
+                    break;
+                }
+            }
+        }
+
+        return $value === $condition['equals'];
+    }
+
+    /**
+     * select 的 options 是 catalog 契约的一部分：default 也必须可选，客户端显式提交
+     * 非法值要在保存入口拒绝，不能靠 deployer 运行时才失败。
+     *
+     * @param  list<array<string,mixed>>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function assertSelectFields(Validator $validator, string $attribute, array $schema, array $values): void
+    {
+        foreach ($schema as $field) {
+            if (($field['type'] ?? null) !== 'select' || ! isset($field['key']) || ! is_array($field['options'] ?? null)) {
+                continue;
+            }
+
+            $key = $field['key'];
+            $value = $values[$key] ?? ($field['default'] ?? null);
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $allowed = array_column($field['options'], 'value');
+            if (! in_array($value, $allowed, true)) {
+                $validator->errors()->add("$attribute.$key", '不支持的选项：'.$key);
+            }
+        }
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $schema
+     * @param  array<string,mixed>  $values
+     */
+    private function assertNoInvisibleFields(Validator $validator, string $attribute, array $schema, array $values): void
+    {
+        foreach ($schema as $field) {
+            $key = $field['key'] ?? null;
+            if (! is_string($key) || ! array_key_exists($key, $values) || $this->isVisibleField($field, $schema, $values)) {
+                continue;
+            }
+
+            $validator->errors()->add("$attribute.$key", '当前选项不支持字段：'.$key);
         }
     }
 

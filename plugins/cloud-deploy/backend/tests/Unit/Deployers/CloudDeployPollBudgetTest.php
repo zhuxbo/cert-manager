@@ -3,8 +3,10 @@
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunCasDeployDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
 use Plugins\CloudDeploy\Deployers\Registry;
+use Plugins\CloudDeploy\Deployers\Tencent\TencentClbDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentCosDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentSslDeployDeployer;
+use Plugins\CloudDeploy\Deployers\Tencent\TencentSslUpdateDeployer;
 use Plugins\CloudDeploy\Deployers\Wangsu\WangsuCdnProDeployer;
 use Plugins\CloudDeploy\Deployers\Zenlayer\ZenlayerCdnDeployer;
 use Plugins\CloudDeploy\Deployers\Zenlayer\ZenlayerGaDeployer;
@@ -29,8 +31,10 @@ uses(TestCase::class);
 dataset('long_poll_deployers', [
     'aliyun casdeploy' => [fn () => new AliyunCasDeployDeployer, 40],
     'wangsu cdnpro' => [fn () => new WangsuCdnProDeployer, 40],
-    'tencent cos' => [fn () => new TencentCosDeployer, 45],
+    'tencent clb' => [fn () => new TencentClbDeployer, 50],
+    'tencent cos' => [fn () => new TencentCosDeployer, 40],
     'tencent ssl-deploy' => [fn () => new TencentSslDeployDeployer, 45],
+    'tencent ssl-update' => [fn () => new TencentSslUpdateDeployer, 30],
     'zenlayer cdn' => [fn () => new ZenlayerCdnDeployer, 50],
     'zenlayer ga' => [fn () => new ZenlayerGaDeployer, 40],
 ]);
@@ -54,7 +58,7 @@ test('Aliyun 预算 T = readTimeout+connectTimeout 之和（darabonba Dara.php:3
         ->and(AliyunCasDeployDeployer::aliyunCallBudgetSeconds())->toBe($expected);
 });
 
-test('全仓恰好这 6 个 deployer 实现 HasPollBudget（新增轮询端点须补预算守门）', function () {
+test('全仓恰好这 8 个 deployer 实现 HasPollBudget（新增轮询端点须补预算守门）', function () {
     /** @var Registry $registry */
     $registry = app(Registry::class);
 
@@ -66,7 +70,16 @@ test('全仓恰好这 6 个 deployer 实现 HasPollBudget（新增轮询端点�
     }
     sort($implementing);
 
-    $expected = ['aliyun/casdeploy', 'tencent/cos', 'tencent/ssl-deploy', 'wangsu/cdnpro', 'zenlayer/cdn', 'zenlayer/ga'];
+    $expected = [
+        'aliyun/casdeploy',
+        'tencent/clb',
+        'tencent/cos',
+        'tencent/ssl-deploy',
+        'tencent/ssl-update',
+        'wangsu/cdnpro',
+        'zenlayer/cdn',
+        'zenlayer/ga',
+    ];
     sort($expected);
 
     expect($implementing)->toEqual($expected);

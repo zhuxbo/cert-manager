@@ -102,6 +102,7 @@ class BytePlusTosDeployer extends AbstractDeployer
             ),
             // TOS：S3 风格 TOS4 签名，host 含 bucket + region。
             'tos' => $this->newTosClient($credentials, $region, $bucket),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

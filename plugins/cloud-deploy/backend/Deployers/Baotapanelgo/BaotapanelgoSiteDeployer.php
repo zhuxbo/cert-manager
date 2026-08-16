@@ -13,9 +13,7 @@ use Throwable;
  * - 按站点类型查找站点：空类型 / IIS 类型（php/asp/aspx）走 datalist.GetDataList(table=sites)；
  *   其他类型走 site.GetProjectList(search_type=类型)，按名称精确匹配拿 site id。
  * - 非 IIS 服务器：site.SetSiteSSL(siteid, status=1, key, cert) 直灌 PEM。
- * - IIS 服务器：certimate 走「PEM→PFX 转换 + files.Upload + site.SetSitePFXSSL」——本插件为纯 REST、
- *   不含本地 PFX 转换（需 openssl/BinaryLocator，超出本批 HTTP REST 范围），故 IIS 服务器明确报错
- *   引导用户改用其它方式。
+ * - IIS 服务器：PEM→PFX 后经 files.Upload 上传，再由 site.SetSitePFXSSL 应用。
  *
  * 内联型（usesRemoteCertStore=false）：bind 收 {cert,key,chain}，证书用完整链（叶子 + 中间）。
  * provider key 'baotapanelgo'、product key 'site'。
@@ -77,29 +75,56 @@ class BaotapanelgoSiteDeployer extends AbstractDeployer
         $fullChainPEM = $intermediaPEM === '' ? $serverCertPEM : ($serverCertPEM."\n".$intermediaPEM);
         $privkeyPEM = $certRef['key'];
 
-        // 先检测 WebServer 类型（SDK 调用），再在 guardSdk 外做业务判定（IIS 不支持）
-        $webServer = $this->guardSdk(function () use ($credentials): string {
+        // 先检测 WebServer 类型与面板路径（SDK 调用），再按类型选择 PEM/PFX 流程。
+        $panelConfig = $this->guardSdk(function () use ($credentials): array {
             /** @var BaotapanelgoClient $client */
             $client = $this->makeClient('api', $credentials);
-            $panelConfig = $client->panelGetConfig();
-            $site = is_array($panelConfig['site'] ?? null) ? $panelConfig['site'] : [];
 
-            return strtolower(is_string($site['webserver'] ?? null) ? $site['webserver'] : '');
+            return $client->panelGetConfig();
         });
-        if ($webServer === 'iis') {
-            // IIS 走 PEM→PFX 转换 + 文件上传，超出本批纯 REST 范围，业务错误（不进 guardSdk）
-            $this->fail('宝塔（Windows）IIS 服务器需 PFX 证书转换，当前不支持，请改用其它部署方式');
-        }
+        $siteConfig = is_array($panelConfig['site'] ?? null) ? $panelConfig['site'] : [];
+        $webServer = strtolower(is_string($siteConfig['webserver'] ?? null) ? $siteConfig['webserver'] : '');
+        $paths = is_array($panelConfig['paths'] ?? null) ? $panelConfig['paths'] : [];
+        $softPath = rtrim((string) ($paths['soft'] ?? ''), '/\\');
 
-        $this->guardSdk(function () use ($credentials, $siteType, $siteNames, $fullChainPEM, $privkeyPEM) {
+        $this->guardSdk(function () use ($credentials, $siteType, $siteNames, $fullChainPEM, $privkeyPEM, $webServer, $softPath) {
             /** @var BaotapanelgoClient $client */
             $client = $this->makeClient('api', $credentials);
 
             foreach ($siteNames as $siteName) {
                 $siteId = $this->findSiteId($client, $siteType, $siteName);
-                $client->siteSetSiteSSL($siteId, true, $fullChainPEM, $privkeyPEM);
+                if ($webServer === 'iis') {
+                    if ($softPath === '') {
+                        throw new BaotapanelgoApiException('InvalidConfig', '宝塔面板未返回 paths.soft');
+                    }
+                    $password = 'certimate';
+                    $pfx = $this->buildPfx($fullChainPEM, $privkeyPEM, $password);
+                    $directory = $softPath.'/temp/ssl/certimate';
+                    $filename = hash('sha256', $pfx).'.pfx';
+                    $client->filesUpload($directory, $filename, $pfx, true);
+                    $client->siteSetSitePfxSsl($siteId, $directory.'/'.$filename, $password);
+                } else {
+                    $client->siteSetSiteSSL($siteId, true, $fullChainPEM, $privkeyPEM);
+                }
             }
         });
+    }
+
+    protected function buildPfx(string $certificate, string $privateKey, string $password): string
+    {
+        preg_match_all('/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/s', $certificate, $matches);
+        $certificates = $matches[0];
+        if ($certificates === []) {
+            throw new BaotapanelgoApiException('PfxConversionFailed', '证书转换为 PFX 失败：未找到证书');
+        }
+
+        $output = '';
+        $options = count($certificates) > 1 ? ['extracerts' => array_slice($certificates, 1)] : [];
+        if (! openssl_pkcs12_export($certificates[0], $output, $privateKey, $password, $options)) {
+            throw new BaotapanelgoApiException('PfxConversionFailed', '证书转换为 PFX 失败');
+        }
+
+        return $output;
     }
 
     /**

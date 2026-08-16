@@ -5,25 +5,29 @@ namespace Plugins\CloudDeploy\Deployers\Zenlayer;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use Plugins\CloudDeploy\Deployers\Contracts\HasPollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
 use Plugins\CloudDeploy\Deployers\Contracts\PollBudget;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
  * Zenlayer CDN（证书服务型）：证书先经 CDN 证书服务上传拿 certificateId（走 RemoteCertStore 去重），
  * 再绑定到 CDN 加速域名。
  *
- * 对齐 certimate zenlayer-cdn 的 deployToDomain（DEPLOY_TARGET_DOMAIN + exact）：
+ * 对齐 certimate zenlayer-cdn 的域名与证书两类部署目标：
  *   1. 证书经 ZenlayerCertUploader 上传（CreateCertificate，service=cdn）拿 certificateId（store_kind=zenlayer_cdn）。
  *   2. DescribeDomains（domainStatus=ENABLED）分页拉加速域名，exact 过滤 domainName == config.domain 得 domainId 列表。
  *   3. 逐个 domainId：DescribeDomainCertificate 若已是该证书则跳过；否则 ModifyDomainCertificate 绑定，
  *      再 DescribeDomains 轮询 configStatus 直到 DEPLOYED（FAILED 报错）。
  *
- * 与 certimate 对齐的取舍：certimate 支持 exact / wildcard / certsan 匹配 + DEPLOY_TARGET_CERTIFICATE。
- * 本端点**仅实现 exact + DEPLOY_TARGET_DOMAIN**（domain 必填、精确域名），与插件其他端点「仅 exact」口径一致。
+ * 域名目标支持 exact / wildcard / certsan；certificate 目标按 certificate_id 原位替换。
+ * certsan 经可选远端证书材料契约取得叶证书，私钥不进入 bind 上下文。
  * 轮询走 sleep() 注入缝（测试 no-op），上限 30 次（与 certimate 10s 间隔等价的有界收敛）。
  */
-class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
+class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget, ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
+
     private const PAGE_SIZE = 100;
 
     /** bind 轮询 configStatus 次数（G2 压窗）：状态轮询型，超窗抛 DeployTimeout（guardSdk 内重包装为可重试
@@ -51,7 +55,10 @@ class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'deploy_target', 'label' => '部署目标（domain/certificate）', 'type' => 'string', 'required' => false],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配（exact/wildcard/certsan）', 'type' => 'string', 'required' => false],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
+            ['key' => 'certificate_id', 'label' => '证书 ID（certificate 目标）', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -65,24 +72,36 @@ class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
         return new ZenlayerCertUploader(
             fn (array $credentials): object => $this->makeClient('cdn', $credentials),
             'zenlayer_cdn',
+            (string) (($config['deploy_target'] ?? 'domain') === 'certificate' ? ($config['certificate_id'] ?? '') : ''),
         );
     }
 
     /**
-     * @param  string  $certRef  remote_cert_id（Zenlayer CDN certificateId）
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  证书 id 或 opt-in 的 leaf/中间链上下文
      * @param  array{access_key_id:string,access_key_password:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{deploy_target?:string,domain_match_pattern?:string,domain?:string,certificate_id?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certId = (string) $certRef;
+        $deployTarget = (string) ($config['deploy_target'] ?? 'domain');
+        if ($deployTarget === 'certificate') {
+            $this->requireConfig($config, 'certificate_id');
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId) {
+            return;
+        }
+        if ($deployTarget !== 'domain') {
+            $this->fail("不支持的部署目标: $deployTarget");
+        }
+        $matchPattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $domain = $matchPattern === 'certsan' ? '' : (string) $this->requireConfig($config, 'domain');
+        $certId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+
+        $this->guardSdk(function () use ($credentials, $domain, $matchPattern, $certificate, $certId) {
             /** @var ZenlayerRestClient $client */
             $client = $this->makeClient('cdn', $credentials);
 
-            $domainIds = $this->findDomainIds($client, $domain);
+            $domainIds = $this->findDomainIds($client, $domain, $matchPattern, $certificate);
             if ($domainIds === []) {
                 throw new ZenlayerApiException('DomainNotFound', "未找到匹配的 Zenlayer CDN 域名: $domain");
             }
@@ -98,7 +117,7 @@ class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
      *
      * @return list<string>
      */
-    private function findDomainIds(ZenlayerRestClient $client, string $domain): array
+    private function findDomainIds(ZenlayerRestClient $client, string $domain, string $matchPattern, string $certificate): array
     {
         $domainIds = [];
         $page = 1;
@@ -117,7 +136,13 @@ class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
                 }
                 $name = is_string($item['domainName'] ?? null) ? $item['domainName'] : '';
                 $id = isset($item['domainId']) ? (string) $item['domainId'] : '';
-                if ($name === $domain && $id !== '') {
+                $matched = match ($matchPattern) {
+                    '', 'exact' => $name === $domain,
+                    'wildcard' => $this->matchesWildcard($domain, $name),
+                    'certsan' => $this->certificateMatchesHostname($certificate, $name),
+                    default => throw new ZenlayerApiException('InvalidMatchPattern', "不支持的域名匹配模式: $matchPattern"),
+                };
+                if ($matched && $id !== '') {
                     $domainIds[] = $id;
                 }
             }
@@ -129,6 +154,23 @@ class ZenlayerCdnDeployer extends AbstractDeployer implements HasPollBudget
         }
 
         return $domainIds;
+    }
+
+    private function matchesWildcard(string $pattern, string $hostname): bool
+    {
+        if (strcasecmp($pattern, $hostname) === 0) {
+            return true;
+        }
+        if (str_starts_with($hostname, '.') || str_starts_with($hostname, '*.')) {
+            return strcasecmp(ltrim($pattern, '*'), ltrim($hostname, '*')) === 0;
+        }
+        if (! str_starts_with($pattern, '*.')) {
+            return false;
+        }
+        $suffix = substr($pattern, 2);
+        $prefix = substr($hostname, 0, -strlen('.'.$suffix));
+
+        return str_ends_with(strtolower($hostname), '.'.strtolower($suffix)) && $prefix !== '' && ! str_contains($prefix, '.');
     }
 
     /**

@@ -38,7 +38,12 @@ class BaishanCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'deploy_target', 'label' => '部署目标', 'type' => 'select', 'required' => false, 'default' => 'domain', 'options' => [
+                ['label' => '加速域名', 'value' => 'domain'],
+                ['label' => '已有证书', 'value' => 'certificate'],
+            ]],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
+            ['key' => 'certificate_id', 'label' => '已有证书 ID', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -49,7 +54,17 @@ class BaishanCdnDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new BaishanCertUploader(fn (array $credentials): object => $this->makeClient('cdn', $credentials));
+        $replaceCertificateId = ($config['deploy_target'] ?? 'domain') === 'certificate'
+            ? (string) ($config['certificate_id'] ?? '')
+            : '';
+        if (($config['deploy_target'] ?? 'domain') === 'certificate' && $replaceCertificateId === '') {
+            $this->fail('缺少配置 certificate_id');
+        }
+
+        return new BaishanCertUploader(
+            fn (array $credentials): object => $this->makeClient('cdn', $credentials),
+            $replaceCertificateId,
+        );
     }
 
     /**
@@ -59,6 +74,15 @@ class BaishanCdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $deployTarget = isset($config['deploy_target']) && $config['deploy_target'] !== ''
+            ? (string) $config['deploy_target']
+            : 'domain';
+        if ($deployTarget === 'certificate') {
+            return;
+        }
+        if ($deployTarget !== 'domain') {
+            $this->fail("不支持的部署目标 $deployTarget");
+        }
         $domain = (string) $this->requireConfig($config, 'domain');
         $certId = (string) $certRef;
 

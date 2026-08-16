@@ -29,7 +29,30 @@ test('Gcore CDN 为证书服务型（usesRemoteCertStore=true）+ 元信息', fu
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader())->toBeInstanceOf(GcoreSslUploader::class);
     expect($deployer->certUploader()->storeKind())->toBe('gcore');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('resource_id');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('resource_id')->toContain('certificate_id');
+});
+
+test('配置 certificate_id 时 uploader 原位替换既有证书并复用该 id', function () {
+    $captured = null;
+    $client = Mockery::mock(GcoreClient::class);
+    $client->shouldReceive('getSslData')->once()->with(321)->andReturn(['id' => 321, 'name' => 'existing-cert']);
+    $client->shouldReceive('updateSslData')->once()->andReturnUsing(function (int $id, array $body) use (&$captured) {
+        $captured = [$id, $body];
+    });
+    $client->shouldNotReceive('createSslData');
+
+    $deployer = gcoreCdnDeployerWith(fn () => $client);
+    $uploader = $deployer->certUploader(['certificate_id' => 321]);
+    $id = $uploader->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', ['api_token' => 'TOKEN']);
+
+    expect($id)->toBe('321');
+    expect($uploader->storeKind())->toBe('gcore:321');
+    expect($captured)->toBe([321, [
+        'name' => 'existing-cert',
+        'sslCertificate' => "CERTPEM\nCHAINPEM",
+        'sslPrivateKey' => 'KEYPEM',
+        'validate_root_ca' => false,
+    ]]);
 });
 
 test('uploader.upload 调 createSslData（sslCertificate=完整链、sslPrivateKey=私钥）返回 id', function () {

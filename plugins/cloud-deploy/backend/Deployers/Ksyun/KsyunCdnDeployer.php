@@ -47,7 +47,17 @@ class KsyunCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'deploy_target', 'label' => '部署目标', 'type' => 'select', 'required' => false, 'default' => 'domain', 'options' => [
+                ['label' => '加速域名', 'value' => 'domain'],
+                ['label' => '已有证书', 'value' => 'certificate'],
+            ]],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'select', 'required' => false, 'default' => 'exact', 'options' => [
+                ['label' => '精确匹配', 'value' => 'exact'],
+                ['label' => '泛域名匹配', 'value' => 'wildcard'],
+                ['label' => '证书 SAN 匹配', 'value' => 'certsan'],
+            ]],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
+            ['key' => 'certificate_id', 'label' => '已有证书 ID', 'type' => 'string', 'required' => false],
             ['key' => 'project_id', 'label' => '项目 ID（选填）', 'type' => 'string', 'required' => false],
         ];
     }
@@ -59,18 +69,45 @@ class KsyunCdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
+        $deployTarget = isset($config['deploy_target']) && $config['deploy_target'] !== ''
+            ? (string) $config['deploy_target']
+            : 'domain';
+        $matchPattern = isset($config['domain_match_pattern']) && $config['domain_match_pattern'] !== ''
+            ? (string) $config['domain_match_pattern']
+            : 'exact';
         $projectId = isset($config['project_id']) ? (string) $config['project_id'] : '';
         $certName = 'clouddeploy_'.(int) (microtime(true) * 1000);
         // 内联型：$certRef 为 {cert,key,chain} 三元组。证书本体 + 中间证书拼完整链。
         $serverCert = is_array($certRef) ? rtrim((string) $certRef['cert'])."\n".trim((string) $certRef['chain']) : '';
         $privateKey = is_array($certRef) ? trim((string) $certRef['key']) : '';
 
-        $this->guardSdk(function () use ($credentials, $domain, $projectId, $certName, $serverCert, $privateKey) {
+        if ($deployTarget === 'certificate') {
+            $certificateId = (string) $this->requireConfig($config, 'certificate_id');
+            $this->guardSdk(function () use ($credentials, $certificateId, $certName, $serverCert, $privateKey) {
+                /** @var KsyunRestClient $client */
+                $client = $this->makeClient('cdn', $credentials);
+                $client->post('/2016-09-01/cert/SetCertificate', [
+                    'Action' => 'SetCertificate',
+                    'Version' => '2016-09-01',
+                    'CertificateId' => $certificateId,
+                    'CertificateName' => $certName,
+                    'ServerCertificate' => $serverCert,
+                    'PrivateKey' => $privateKey,
+                ]);
+            });
+
+            return;
+        }
+        if ($deployTarget !== 'domain') {
+            $this->fail("不支持的部署目标 $deployTarget");
+        }
+        $domain = $matchPattern === 'certsan' ? '' : (string) $this->requireConfig($config, 'domain');
+
+        $this->guardSdk(function () use ($credentials, $domain, $matchPattern, $projectId, $certName, $serverCert, $privateKey, $certRef) {
             /** @var KsyunRestClient $client */
             $client = $this->makeClient('cdn', $credentials);
 
-            $domainIds = $this->findDomainIds($client, $domain, $projectId);
+            $domainIds = $this->findDomainIds($client, $domain, $matchPattern, $projectId, is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '');
             if ($domainIds === []) {
                 throw new KsyunApiException('DomainNotFound', "未找到匹配的金山云 CDN 域名: $domain");
             }
@@ -94,7 +131,7 @@ class KsyunCdnDeployer extends AbstractDeployer
      *
      * @return list<string>
      */
-    private function findDomainIds(KsyunRestClient $client, string $domain, string $projectId): array
+    private function findDomainIds(KsyunRestClient $client, string $domain, string $matchPattern, string $projectId, string $certPem): array
     {
         $domainIds = [];
         $page = 1;
@@ -123,7 +160,13 @@ class KsyunCdnDeployer extends AbstractDeployer
                 }
                 $name = is_string($item['DomainName'] ?? null) ? $item['DomainName'] : '';
                 $id = isset($item['DomainId']) ? (string) $item['DomainId'] : '';
-                if ($name === $domain && $id !== '') {
+                $matched = match ($matchPattern) {
+                    'exact' => $name === $domain,
+                    'wildcard' => $this->hostnameMatches($domain, $name),
+                    'certsan' => $this->certificateMatches($certPem, $name),
+                    default => throw new KsyunApiException('InvalidDomainMatchPattern', "不支持的域名匹配模式: $matchPattern"),
+                };
+                if ($matched && $id !== '') {
                     $domainIds[] = $id;
                 }
             }
@@ -135,6 +178,57 @@ class KsyunCdnDeployer extends AbstractDeployer
         }
 
         return $domainIds;
+    }
+
+    private function hostnameMatches(string $pattern, string $hostname): bool
+    {
+        $pattern = strtolower(rtrim(trim($pattern), '.'));
+        $hostname = strtolower(rtrim(trim($hostname), '.'));
+        if (! str_starts_with($pattern, '*.')) {
+            return $pattern === $hostname;
+        }
+
+        $suffix = substr($pattern, 2);
+        if ($suffix === '' || ! str_ends_with($hostname, '.'.$suffix)) {
+            return false;
+        }
+
+        $prefix = substr($hostname, 0, -strlen('.'.$suffix));
+
+        return $prefix !== '' && ! str_contains($prefix, '.');
+    }
+
+    private function certificateMatches(string $certPem, string $hostname): bool
+    {
+        $parsed = @openssl_x509_parse($certPem);
+        if (! is_array($parsed)) {
+            return false;
+        }
+
+        $names = [];
+        $subjectAltName = $parsed['extensions']['subjectAltName'] ?? '';
+        if (is_string($subjectAltName)) {
+            foreach (explode(',', $subjectAltName) as $entry) {
+                $entry = trim($entry);
+                if (str_starts_with($entry, 'DNS:')) {
+                    $names[] = substr($entry, 4);
+                }
+            }
+        }
+        if ($names === []) {
+            $commonName = $parsed['subject']['CN'] ?? '';
+            if (is_string($commonName) && $commonName !== '') {
+                $names[] = $commonName;
+            }
+        }
+
+        foreach ($names as $name) {
+            if ($this->hostnameMatches($name, $hostname)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function makeClient(string $kind, array $credentials): object

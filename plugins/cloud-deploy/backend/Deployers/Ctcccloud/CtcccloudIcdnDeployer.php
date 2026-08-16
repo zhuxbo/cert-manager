@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Ctcccloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -18,8 +19,10 @@ use Throwable;
  *
  * endpoint host：icdn-global.ctapi.ctyun.cn（与 CDN 的 ctcdn-global 区分）。仅 exact（见 CtcccloudCdnDeployer 说明）。
  */
-class CtcccloudIcdnDeployer extends AbstractDeployer
+class CtcccloudIcdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCtcccloudDomains;
+
     public function provider(): string
     {
         return 'ctcccloud';
@@ -38,7 +41,8 @@ class CtcccloudIcdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -63,20 +67,21 @@ class CtcccloudIcdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certName = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $certName = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $domain, $certName) {
+        $this->guardSdk(function () use ($credentials, $domain, $pattern, $certificate, $certName) {
             /** @var CtcccloudRestClient $client */
             $client = $this->makeClient('icdn', $credentials);
 
-            $client->get('/v1/domain/query-domain-detail', ['domain' => $domain]);
-
-            $client->post('/v1/domain/update-domain', [
-                'domain' => $domain,
-                'https_status' => 'on',
-                'cert_name' => $certName,
-            ]);
+            foreach ($this->matchingDomains($client, '/v1/domain/query-domain-list', $domain, $pattern, certificate: $certificate) as $matchedDomain) {
+                $client->get('/v1/domain/query-domain-detail', ['domain' => $matchedDomain]);
+                $client->post('/v1/domain/update-domain', [
+                    'domain' => $matchedDomain, 'https_status' => 'on', 'cert_name' => $certName,
+                ]);
+            }
         });
     }
 

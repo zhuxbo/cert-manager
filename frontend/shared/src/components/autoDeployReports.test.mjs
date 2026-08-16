@@ -31,7 +31,9 @@ test("管理端和用户端订单详情使用可分页筛选的内嵌部署记�
   assert.match(component, /latestRequestId/);
   assert.match(component, /<el-form[^>]+size="small"/);
   assert.match(component, /<el-table[\s\S]+size="small"/);
-  assert.match(component, /<el-pagination[\s\S]+small/);
+  const pagination = component.match(/<el-pagination[\s\S]*?\/>/)?.[0] ?? "";
+  assert.match(pagination, /size="small"/);
+  assert.doesNotMatch(pagination, /\n\s+small\s*\n/);
   assert.match(
     component,
     /\.report-search-actions[\s\S]+margin-right: 0 !important;/

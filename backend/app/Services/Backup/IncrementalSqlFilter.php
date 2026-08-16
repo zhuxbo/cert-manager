@@ -38,7 +38,7 @@ class IncrementalSqlFilter
             throw new RuntimeException("无法打开 gzip 源: $sourceGz");
         }
 
-        $out = fopen($destSql, 'wb');
+        $out = @fopen($destSql, 'wb');
         if ($out === false) {
             gzclose($in);
             throw new RuntimeException("无法写入目标: $destSql");

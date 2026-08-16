@@ -509,7 +509,7 @@ test('commitCancel sets cancelling status for active order', function () {
     Carbon::setTestNow('2026-07-31 12:00:00');
 
     $user = $this->createTestUser(['balance' => '500.00']);
-    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'refund_period' => 30]);
     createAcmeProductPrice($product->id, $user);
 
     $acme = Acme::factory()->active()->create([
@@ -517,6 +517,7 @@ test('commitCancel sets cancelling status for active order', function () {
         'product_id' => $product->id,
         'api_id' => 'upstream-123',
         'amount' => '100.00',
+        'created_at' => now()->subDays(30),
     ]);
 
     expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
@@ -552,12 +553,13 @@ test('commitCancel sets cancelling status for active order', function () {
 test('commitCancel directly cancels pending order without api_id', function () {
     Queue::fake();
     $user = $this->createTestUser(['balance' => '500.00']);
-    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'refund_period' => 30]);
     createAcmeProductPrice($product->id, $user);
 
     $acme = createAcmeOrder($user, $product);
     expectApiSuccess(fn () => $this->service->pay($acme->id, false));
     $acme->refresh();
+    $acme->forceFill(['created_at' => now()->subDays(31)])->saveQuietly();
 
     expect($acme->status)->toBe(Acme::STATUS_PENDING);
     expect($acme->api_id)->toBeNull();
@@ -567,6 +569,26 @@ test('commitCancel directly cancels pending order without api_id', function () {
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
     expect($acme->cancelled_at)->not->toBeNull();
+});
+
+test('commitCancel 拒绝超过退款期的 active ACME，保持 active 且不创建取消任务', function () {
+    Queue::fake();
+    Carbon::setTestNow('2026-07-31 12:00:00');
+
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'refund_period' => 30]);
+    $acme = Acme::factory()->active()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'api_id' => 'upstream-expired',
+        'amount' => '100.00',
+        'created_at' => now()->subDays(30)->subSecond(),
+    ]);
+
+    expectApiError(fn () => $this->service->commitCancel($acme->id), '订单已超过30天不能取消');
+
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_ACTIVE);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
 });
 
 test('commitCancel rejects already cancelled order', function () {
@@ -734,6 +756,61 @@ test('cancelNow directly cancels pending order without api_id', function () {
 
     $acme->refresh();
     expect($acme->status)->toBe(Acme::STATUS_CANCELLED);
+});
+
+test('cancelNow 拒绝超过退款期的已提交 ACME，不调用上游也不退款', function () {
+    Carbon::setTestNow('2026-07-31 12:00:00');
+
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+        'refund_period' => 30,
+    ]);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'upstream-expired-now']);
+    $acme->forceFill(['created_at' => now()->subDays(30)->subSecond()])->saveQuietly();
+
+    setupGatewaySettings();
+    Http::fake();
+
+    expectApiError(fn () => $this->service->cancelNow($acme->id), '订单已超过30天不能取消');
+
+    Http::assertNothingSent();
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_ACTIVE);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0);
+});
+
+test('延时 cancel 执行时重新检查 ACME 退款期，越界后不调用上游也不退款', function () {
+    Queue::fake();
+    Carbon::setTestNow('2026-07-31 12:00:00');
+
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+        'refund_period' => 30,
+    ]);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'upstream-cross-boundary']);
+    $acme->forceFill(['created_at' => now()->subDays(30)])->saveQuietly();
+
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+    $this->travel(1)->seconds();
+
+    setupGatewaySettings();
+    Http::fake();
+    expectApiError(fn () => $this->service->cancel($acme->id), '订单已超过30天不能取消');
+
+    Http::assertNothingSent();
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0);
 });
 
 test('cancelNow upstream failure rolls back, order stays active', function () {
@@ -961,7 +1038,12 @@ test('sync 从 active 写回上游取消类终态并记录取消时间', functio
         ->and($acme->vendor_id)->toBe("vendor-$upstream")
         ->and($acme->contact_email)->toBe("$upstream@example.test")
         ->and($acme->period_from?->toDateTimeString())->toBe('2026-07-01 00:00:00')
-        ->and($acme->period_till?->toDateTimeString())->toBe('2027-07-01 00:00:00');
+        ->and($acme->period_till?->toDateTimeString())->toBe('2027-07-01 00:00:00')
+        // active 同步到取消类终态无法区分 CA 的取消/吊销语义，只写终态，不自动退款。
+        ->and($user->fresh()->balance)->toBe('500.00')
+        ->and(Transaction::where('transaction_id', $acme->id)
+            ->where('type', Transaction::TYPE_ACME_CANCEL)
+            ->count())->toBe(0);
 })->with([
     Acme::STATUS_CANCELLED,
     Acme::STATUS_REVOKED,
@@ -2057,6 +2139,35 @@ test('T7：cancelling + 上游 cancelled → sync 退款 + 删 cancel_acme 任�
     expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1);
     // 孤儿 cancel_acme 任务被删（延时任务不再断死）
     expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(0);
+});
+
+test('T7：cancelling 同步到上游终态时检查 ACME 退款期，越界不退款且保留取消任务转人工', function () {
+    Queue::fake();
+    Carbon::setTestNow('2026-07-31 12:00:00');
+
+    $user = $this->createTestUser(['balance' => '500.00']);
+    $product = $this->createTestProduct([
+        'product_type' => Product::TYPE_ACME,
+        'source' => 'default',
+        'refund_period' => 30,
+    ]);
+    createAcmeProductPrice($product->id, $user);
+
+    $acme = createAcmeOrder($user, $product);
+    expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+    $acme->update(['status' => Acme::STATUS_ACTIVE, 'api_id' => 'gw-t7-expired']);
+    $acme->forceFill(['created_at' => now()->subDays(30)])->saveQuietly();
+    expectApiSuccess(fn () => $this->service->commitCancel($acme->id));
+    $this->travel(1)->seconds();
+
+    setupGatewaySettings();
+    Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
+
+    expectApiError(fn () => $this->service->sync($acme->id, true), '订单已超过30天不能取消');
+
+    expect($acme->fresh()->status)->toBe(Acme::STATUS_CANCELLING);
+    expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(0);
+    expect(Task::where('order_id', $acme->id)->where('action', 'cancel_acme')->count())->toBe(1);
 });
 
 test('T7：cancelling + 上游 revoked/expired 同样退款置终态并删任务', function (string $upstream) {

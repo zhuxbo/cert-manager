@@ -48,7 +48,7 @@ test('uploader.upload 调 AddCertificate 返回 CertId（Source=volc_cert_center
         });
 
     $deployer = volcCdnDeployerWith(fn (string $kind) => $kind === 'cdn' ? $client : new stdClass);
-    $id = $deployer->certUploader()->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', volcCreds());
+    $id = $deployer->certUploader()->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', volcCreds() + ['project_name' => 'project-a']);
 
     expect($id)->toBe('volc-cert-001');
     expect($args['action'])->toBe('AddCertificate');
@@ -57,6 +57,7 @@ test('uploader.upload 调 AddCertificate 返回 CertId（Source=volc_cert_center
     expect($args['body']['Certificate'])->toContain('CERTPEM')->toContain('CHAINPEM');
     expect($args['body']['PrivateKey'])->toBe('KEYPEM');
     expect($args['body']['Desc'])->toStartWith('clouddeploy_');
+    expect($args['body']['Project'])->toBe('project-a');
 });
 
 test('upload 未返回 CertId 抛明确异常（非 TypeError）', function () {
@@ -85,6 +86,58 @@ test('bind 调 BatchDeployCert 把 CertId + Domain 传给资源', function () {
     expect($args['action'])->toBe('BatchDeployCert');
     expect($args['version'])->toBe('2021-03-01');
     expect($args['body'])->toBe(['Domain' => 'cdn.example.com', 'CertId' => 'volc-cert-001']);
+});
+
+test('wildcard 按 Project 分页列举在线域名并仅绑定单层匹配项', function () {
+    $actions = [];
+    $client = Mockery::mock(VolcRestClient::class);
+    $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$actions) {
+        $actions[] = compact('action', 'version', 'body');
+        if ($action === 'ListCdnDomains') {
+            return ['Data' => [
+                ['Domain' => 'a.example.com'],
+                ['Domain' => 'deep.a.example.com'],
+                ['Domain' => 'other.test'],
+            ]];
+        }
+
+        return [];
+    });
+
+    $deployer = volcCdnDeployerWith(fn () => $client);
+    $deployer->bind('cert-1', volcCreds() + ['project_name' => 'project-a'], [
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($actions[0]['action'])->toBe('ListCdnDomains');
+    expect($actions[0]['body'])->toMatchArray(['Project' => 'project-a', 'Domain' => 'example.com', 'Status' => 'online', 'PageNum' => 1, 'PageSize' => 100]);
+    expect($actions)->toHaveCount(2);
+    expect($actions[1]['body'])->toBe(['Domain' => 'a.example.com', 'CertId' => 'cert-1']);
+});
+
+test('certsan 使用 DescribeCertConfig 返回的可关联域名批量部署', function () {
+    $bound = [];
+    $client = Mockery::mock(VolcRestClient::class);
+    $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$bound) {
+        if ($action === 'DescribeCertConfig') {
+            return [
+                'CertNotConfig' => [['Domain' => 'a.example.com']],
+                'OtherCertConfig' => [['Domain' => 'b.example.com']],
+                'SpecifiedCertConfig' => [['Domain' => 'same.example.com']],
+            ];
+        }
+        $bound[] = $body['Domain'];
+
+        return [];
+    });
+
+    $deployer = volcCdnDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1', 'cert' => 'LEAF', 'chain' => 'CHAIN'], volcCreds(), [
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($bound)->toBe(['a.example.com', 'b.example.com']);
 });
 
 test('缺 domain 配置抛业务错误', function () {

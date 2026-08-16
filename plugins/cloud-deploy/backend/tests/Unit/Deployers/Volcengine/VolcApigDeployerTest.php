@@ -25,6 +25,16 @@ function volcApigCreds(): array
     return ['access_key_id' => 'AK', 'secret_access_key' => 'SK'];
 }
 
+function volcApigCertificate(string $commonName): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => $commonName], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('火山 APIG：证书服务型（storeKind volc_certcenter）', function () {
     $deployer = new VolcApigDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -59,6 +69,32 @@ test('bind：ListCustomDomains exact 定位 → GetCustomDomain 读协议 → Up
     expect($update['Id'])->toBe('dom-1');
     expect($update['Protocol'])->toBe(['HTTP', 'HTTPS']);
     expect($update['CertificateId'])->toBe('cert-9');
+});
+
+test('certsan 列举自定义域名并按证书主机名批量更新', function () {
+    $updated = [];
+    $client = Mockery::mock(VolcRestClient::class);
+    $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$updated) {
+        return match ($action) {
+            'ListCustomDomains' => ['Items' => [
+                ['Id' => 'dom-a', 'Domain' => 'a.example.com', 'Status' => 'Running'],
+                ['Id' => 'dom-b', 'Domain' => 'b.example.com', 'Status' => 'Running'],
+            ]],
+            'GetCustomDomain' => ['CustomDomain' => ['Protocol' => ['HTTPS']]],
+            'UpdateCustomDomain' => tap([], function () use (&$updated, $body) {
+                $updated[] = $body['Id'];
+            }),
+            default => [],
+        };
+    });
+
+    $deployer = volcApigDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1', 'cert' => volcApigCertificate('a.example.com'), 'chain' => ''], volcApigCreds(), [
+        'region' => 'cn-beijing',
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($updated)->toBe(['dom-a']);
 });
 
 test('过渡态域名（Creating 等）被过滤，不参与匹配', function () {

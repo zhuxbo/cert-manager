@@ -362,6 +362,7 @@ class Action
                 return;
             }
 
+            $this->ensureWithinRefundPeriod($acme);
             $acme->update(['status' => Acme::STATUS_CANCELLING]);
 
             // 检查是否已存在相同的执行中任务，避免重复创建
@@ -496,6 +497,8 @@ class Action
         $targetStatus = Acme::STATUS_CANCELLED;
 
         if ($acme->api_id) {
+            $this->ensureWithinRefundPeriod($acme);
+
             try {
                 $result = (new Api)->cancel($acme->id);
             } catch (ApiResponseException $e) {
@@ -581,6 +584,7 @@ class Action
                         ->where('transaction_id', $acme->id)
                         ->exists();
                     if (! $alreadyRefunded) {
+                        $this->ensureWithinRefundPeriod($acme);
                         // 与传统订单一致：退款异常直接回滚并沿任务失败链暴露；
                         // 每日 finance:audit 负责账本对账，不发送 ACME 专属即时告警。
                         $this->refund($acme);
@@ -931,6 +935,20 @@ class Action
             Transaction::TYPE_ACME_CANCEL
         );
         Transaction::create($transaction);
+    }
+
+    /**
+     * 已提交上游的 ACME 取消按订单创建时间检查产品退款期。
+     * pending 且 api_id=null 尚未提交上游，由调用方直接退款，不受此限制。
+     */
+    private function ensureWithinRefundPeriod(Acme $acme): void
+    {
+        $product = Product::find($acme->product_id);
+        $product || $this->error('产品不存在');
+
+        $refundPeriod = $product->refund_period;
+        $acme->created_at->timestamp < now()->timestamp - 86400 * $refundPeriod
+        && $this->error("订单已超过{$refundPeriod}天不能取消");
     }
 
     /**

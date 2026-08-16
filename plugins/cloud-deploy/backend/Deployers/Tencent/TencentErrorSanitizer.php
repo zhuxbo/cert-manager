@@ -26,8 +26,7 @@ class TencentErrorSanitizer
     private static function build(Throwable $e): string
     {
         if ($e instanceof TencentCloudSDKException) {
-            $code = $e->getErrorCode();
-            $code = is_string($code) && $code !== '' ? $code : 'TencentError';
+            $code = $e->getErrorCode() !== '' ? $e->getErrorCode() : 'TencentError';
             $msg = $e->getMessage();
             $msg = $msg !== '' ? $msg : '腾讯云接口返回错误';
 

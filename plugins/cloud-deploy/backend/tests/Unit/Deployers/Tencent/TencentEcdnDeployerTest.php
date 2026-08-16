@@ -2,6 +2,7 @@
 
 use Plugins\CloudDeploy\Deployers\Tencent\TencentEcdnDeployer;
 use TencentCloud\Cdn\V20180606\CdnClient;
+use TencentCloud\Cdn\V20180606\Models\DescribeDomainsConfigResponse;
 use TencentCloud\Cdn\V20180606\Models\UpdateDomainConfigRequest;
 use TencentCloud\Cdn\V20180606\Models\UpdateDomainConfigResponse;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
@@ -21,7 +22,14 @@ function tencentEcdnDeployerWith(callable $clientFactory): TencentEcdnDeployer
 
         protected function makeClient(string $kind, array $credentials): object
         {
-            return ($this->factory)($kind, $credentials);
+            $client = ($this->factory)($kind, $credentials);
+            if ($kind === 'cdn' && $client instanceof CdnClient) {
+                $response = new DescribeDomainsConfigResponse;
+                $response->deserialize(['Domains' => [['Domain' => 'unused.example.com']], 'RequestId' => 'r']);
+                $client->shouldReceive('DescribeDomainsConfig')->byDefault()->andReturn($response);
+            }
+
+            return $client;
         }
     };
 }

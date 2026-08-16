@@ -5,6 +5,7 @@ use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateRequest;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateResponse;
 use TencentCloud\Ssl\V20191205\SslClient;
+use TencentCloud\Teo\V20220901\Models\DescribeAccelerationDomainsResponse;
 use TencentCloud\Teo\V20220901\Models\ModifyHostsCertificateRequest;
 use TencentCloud\Teo\V20220901\Models\ModifyHostsCertificateResponse;
 use TencentCloud\Teo\V20220901\TeoClient;
@@ -34,6 +35,16 @@ function eoUploadCertResponse(string $id): UploadCertificateResponse
     return $resp;
 }
 
+function tencentEoRsaCertificate(): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'a.example.com'], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('腾讯云 EdgeOne 走证书服务（storeKind=tencent_ssl）', function () {
     $deployer = new TencentEoDeployer;
     expect($deployer->provider())->toBe('tencent');
@@ -58,6 +69,9 @@ test('EO uploader.upload 调 ssl.UploadCertificate 返回 certId', function () {
 test('EO bind 用 certId 调 teo.ModifyHostsCertificate 设 ZoneId/Mode/Hosts/ServerCertInfo.CertId', function () {
     $captured = null;
     $teo = Mockery::mock(TeoClient::class);
+    $listed = new DescribeAccelerationDomainsResponse;
+    $listed->deserialize(['AccelerationDomains' => [['DomainName' => 'eo.example.com']], 'RequestId' => 'r']);
+    $teo->shouldReceive('DescribeAccelerationDomains')->once()->andReturn($listed);
     $teo->shouldReceive('ModifyHostsCertificate')
         ->once()
         ->andReturnUsing(function (ModifyHostsCertificateRequest $req) use (&$captured) {
@@ -76,6 +90,56 @@ test('EO bind 用 certId 调 teo.ModifyHostsCertificate 设 ZoneId/Mode/Hosts/Se
     expect($captured->ServerCertInfo[0]->CertId)->toBe('cert-eo');
 });
 
+test('EO wildcard 列举站点域名并跳过已绑定当前证书的域名', function () {
+    $teo = Mockery::mock(TeoClient::class);
+    $listed = new DescribeAccelerationDomainsResponse;
+    $listed->deserialize(['AccelerationDomains' => [
+        ['DomainName' => 'a.example.com', 'Certificate' => ['List' => [['CertId' => 'old']]]],
+        ['DomainName' => 'b.example.com', 'Certificate' => ['List' => [['CertId' => 'cert-eo']]]],
+        ['DomainName' => 'a.b.example.com'],
+    ], 'RequestId' => 'r']);
+    $teo->shouldReceive('DescribeAccelerationDomains')->once()->andReturn($listed);
+    $teo->shouldReceive('ModifyHostsCertificate')->once()->withArgs(fn ($request) => $request->Hosts === ['a.example.com'])->andReturn(new ModifyHostsCertificateResponse);
+
+    tencentEoDeployerWith(fn () => $teo)->bind('cert-eo', ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+        'zone_id' => 'zone-1', 'domain_match_pattern' => 'wildcard', 'domains' => ['*.example.com'],
+    ]);
+});
+
+test('EO 多证书按当前证书算法保留未过期的另一算法证书', function () {
+    $captured = null;
+    $teo = Mockery::mock(TeoClient::class);
+    $listed = new DescribeAccelerationDomainsResponse;
+    $listed->deserialize(['AccelerationDomains' => [[
+        'DomainName' => 'a.example.com',
+        'Certificate' => ['List' => [
+            ['CertId' => 'rsa-old', 'SignAlgo' => 'RSA SHA256', 'ExpireTime' => '2099-01-01T00:00:00Z'],
+            ['CertId' => 'ecc-keep', 'SignAlgo' => 'ECC SHA256', 'ExpireTime' => '2099-01-01T00:00:00Z'],
+            ['CertId' => 'ecc-expired', 'SignAlgo' => 'ECC SHA256', 'ExpireTime' => '2000-01-01T00:00:00Z'],
+        ]],
+    ]], 'RequestId' => 'r']);
+    $teo->shouldReceive('DescribeAccelerationDomains')->once()->andReturn($listed);
+    $teo->shouldReceive('ModifyHostsCertificate')->once()->andReturnUsing(function (ModifyHostsCertificateRequest $request) use (&$captured) {
+        $captured = $request;
+
+        return new ModifyHostsCertificateResponse;
+    });
+
+    tencentEoDeployerWith(fn () => $teo)->bind([
+        'remote_cert_id' => 'rsa-new',
+        'cert' => tencentEoRsaCertificate(),
+        'chain' => '',
+    ], ['secret_id' => 'AK', 'secret_key' => 'SK'], [
+        'zone_id' => 'zone-1',
+        'domain_match_pattern' => 'exact',
+        'domains' => ['a.example.com'],
+        'enable_multiple_ssl' => true,
+    ]);
+
+    expect($captured->Hosts)->toBe(['a.example.com']);
+    expect(array_map(fn ($item) => $item->CertId, $captured->ServerCertInfo))->toBe(['rsa-new', 'ecc-keep']);
+});
+
 test('EO 缺 zone_id 配置抛业务错误', function () {
     $deployer = tencentEoDeployerWith(fn () => new stdClass);
     expect(fn () => $deployer->bind('cert-eo', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['domain' => 'eo.example.com']))
@@ -90,6 +154,9 @@ test('EO 缺 domain 配置抛业务错误', function () {
 
 test('EO bind SDK 抛 TencentCloudSDKException 时脱敏重抛（含错误码、无 AK/SK、不挂 previous）', function () {
     $teo = Mockery::mock(TeoClient::class);
+    $listed = new DescribeAccelerationDomainsResponse;
+    $listed->deserialize(['AccelerationDomains' => [['DomainName' => 'x.example.com']], 'RequestId' => 'r']);
+    $teo->shouldReceive('DescribeAccelerationDomains')->once()->andReturn($listed);
     $teo->shouldReceive('ModifyHostsCertificate')->andThrow(new TencentCloudSDKException('ResourceNotFound.Zone', 'zone missing', 'req-1'));
 
     $deployer = tencentEoDeployerWith(fn () => $teo);

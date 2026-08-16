@@ -33,6 +33,21 @@ function cmcccloudCertRef(): array
     return ['cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'];
 }
 
+function cmcccloudCertificateWithSan(): string
+{
+    $conf = tempnam(sys_get_temp_dir(), 'cmcc_san_');
+    file_put_contents($conf, "[v3]\nsubjectAltName=DNS:a.example.com,DNS:*.wild.example.com\n");
+    $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'a.example.com'], $key, ['digest_alg' => 'sha256']);
+    $cert = openssl_csr_sign($csr, null, $key, 1, [
+        'digest_alg' => 'sha256', 'config' => $conf, 'x509_extensions' => 'v3',
+    ]);
+    openssl_x509_export($cert, $pem);
+    @unlink($conf);
+
+    return $pem;
+}
+
 test('移动云 CDN：内联型（usesRemoteCertStore=false + certUploader=null + 元信息）', function () {
     $deployer = new CmcccloudCdnDeployer;
     expect($deployer->usesRemoteCertStore())->toBeFalse();
@@ -40,6 +55,52 @@ test('移动云 CDN：内联型（usesRemoteCertStore=false + certUploader=null 
     expect($deployer->provider())->toBe('cmcccloud');
     expect($deployer->product())->toBe('cdn');
     expect($deployer->label())->toBe('移动云 CDN');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain_match_pattern');
+});
+
+test('bind：wildcard 匹配所有符合证书通配规则的域名', function () {
+    $bound = [];
+    $client = Mockery::mock(CmcccloudRestClient::class);
+    $client->shouldReceive('call')->andReturnUsing(function (string $method, string $path, array $pathParams = [], array $query = [], ?array $body = null) use (&$bound) {
+        if (str_contains($path, 'describeUserDomains')) {
+            return ['body' => ['list' => [
+                ['domainId' => 1, 'domainName' => 'a.example.com', 'domainStatus' => 'RUNNING'],
+                ['domainId' => 2, 'domainName' => 'deep.a.example.com', 'domainStatus' => 'RUNNING'],
+                ['domainId' => 3, 'domainName' => '.example.com', 'domainStatus' => 'RUNNING'],
+            ]]];
+        }
+        $bound[] = $body['domainId'];
+
+        return [];
+    });
+    cmcccloudCdnDeployerWith(fn () => $client)->bind(cmcccloudCertRef(), cmcccloudCreds(), [
+        'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    expect($bound)->toBe([1, 3]);
+});
+
+test('bind：certsan 按叶证书 SAN/CN 枚举匹配域名且无需 domain', function () {
+    $bound = [];
+    $client = Mockery::mock(CmcccloudRestClient::class);
+    $client->shouldReceive('call')->andReturnUsing(function (string $method, string $path, array $pathParams = [], array $query = [], ?array $body = null) use (&$bound) {
+        if (str_contains($path, 'describeUserDomains')) {
+            return ['body' => ['list' => [
+                ['domainId' => 1, 'domainName' => 'a.example.com', 'domainStatus' => 'RUNNING'],
+                ['domainId' => 2, 'domainName' => 'x.wild.example.com', 'domainStatus' => 'RUNNING'],
+                ['domainId' => 3, 'domainName' => 'deep.x.wild.example.com', 'domainStatus' => 'RUNNING'],
+                ['domainId' => 4, 'domainName' => 'other.example.com', 'domainStatus' => 'RUNNING'],
+            ]]];
+        }
+        $bound[] = $body['domainId'];
+
+        return [];
+    });
+    $certRef = cmcccloudCertRef();
+    $certRef['cert'] = cmcccloudCertificateWithSan();
+    cmcccloudCdnDeployerWith(fn () => $client)->bind($certRef, cmcccloudCreds(), [
+        'domain_match_pattern' => 'certsan',
+    ]);
+    expect($bound)->toBe([1, 2]);
 });
 
 test('bind：exact 匹配域名后逐个 AddDomainServerCertificate（domainId(int) + certificate/privateKey）', function () {

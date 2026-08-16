@@ -25,7 +25,7 @@ uses(TestCase::class);
  */
 
 /** 全部依赖 mock 成功跑到 apply；applyUpgrade 行为由调用方注入（成功回调 / 抛异常） */
-function h2MakeService(Closure $applyBehavior): UpgradeService
+function h2MakeService(Closure $applyBehavior, bool|array $bundledVendor = false, bool $composerFails = false): UpgradeService
 {
     $tmp = sys_get_temp_dir();
 
@@ -47,20 +47,39 @@ function h2MakeService(Closure $applyBehavior): UpgradeService
     $packageExtractor->shouldReceive('validatePackage')->andReturn(true);
     $packageExtractor->shouldReceive('findRequirementsJson')->andReturnNull();
     $packageExtractor->shouldReceive('applyUpgrade')->andReturnUsing($applyBehavior);
+    $bundledValues = is_array($bundledVendor) ? $bundledVendor : [$bundledVendor];
+    $packageExtractor->shouldReceive('appliedBundledVendor')->andReturn(...$bundledValues);
     $packageExtractor->shouldReceive('cleanup')->andReturnNull();
     $packageExtractor->shouldReceive('cleanupOldPackages')->andReturn(0);
 
     $environmentChecker = Mockery::mock(EnvironmentChecker::class);
     $environmentChecker->shouldReceive('check')->andReturn(['ok' => true]);
 
-    return new UpgradeService(
+    $arguments = [
         $versionManager,
         $releaseClient,
         Mockery::mock(BackupManager::class),
         $packageExtractor,
         Mockery::mock(DatabaseStructureService::class),
         $environmentChecker,
-    );
+    ];
+
+    if (! $composerFails) {
+        return new UpgradeService(...$arguments);
+    }
+
+    return new class(...$arguments) extends UpgradeService
+    {
+        protected function hasComposerChanges(array $oldHashes, array $newHashes): bool
+        {
+            return true;
+        }
+
+        protected function runComposerInstall(): bool
+        {
+            return false;
+        }
+    };
 }
 
 /** BinaryLocator 返回无害的 shell true，让 dump-autoload / package:discover 的 exec 变 no-op */
@@ -128,6 +147,47 @@ test('H2-A 成功升级：apply 期间 freeze 生效，unfreeze 严格先于 up�
     $downIdx = collect($callLog)->search(fn ($c) => $c['cmd'] === 'down');
     $upIdx = collect($callLog)->search(fn ($c) => $c['cmd'] === 'up');
     expect($downIdx)->toBeLessThan($upIdx);
+});
+
+test('升级包已携带与 lock 对齐的 vendor 时不依赖 Composer 也能完成', function () {
+    $locator = Mockery::mock(BinaryLocator::class);
+    $locator->shouldNotReceive('composer');
+    app()->instance(BinaryLocator::class, $locator);
+    Artisan::shouldReceive('call')->andReturn(0);
+
+    $service = h2MakeService(fn () => true, bundledVendor: true);
+    $sm = new UpgradeStatusManager;
+    $sm->start('v1.0.0');
+
+    $result = $service->performUpgradeWithStatus('latest', $sm);
+
+    expect($result['success'])->toBeTrue();
+});
+
+test('旧代码首次 Composer 失败后退出维护，用户可以再次升级由新代码自愈', function () {
+    Artisan::shouldReceive('call')->andReturn(0);
+    $service = h2MakeService(
+        fn () => true,
+        bundledVendor: [false, true],
+        composerFails: true,
+    );
+
+    $firstStatus = new UpgradeStatusManager;
+    $firstStatus->start('v1.0.0');
+    $first = $service->performUpgradeWithStatus('latest', $firstStatus);
+
+    expect($first['success'])->toBeFalse()
+        ->and($firstStatus->get()['status'])->toBe('failed')
+        ->and(UpgradeFreezeLock::isFrozen())->toBeFalse();
+
+    $firstStatus->clear();
+    $secondStatus = new UpgradeStatusManager;
+    $secondStatus->start('v1.0.0');
+    $second = $service->performUpgradeWithStatus('latest', $secondStatus);
+
+    expect($second['success'])->toBeTrue()
+        ->and($secondStatus->get()['status'])->toBe('completed')
+        ->and(UpgradeFreezeLock::isFrozen())->toBeFalse();
 });
 
 test('H2-B / H1 apply 抛 TypeError：catch(\Throwable) 接住，失败路径 unfreeze + up，status failed', function () {

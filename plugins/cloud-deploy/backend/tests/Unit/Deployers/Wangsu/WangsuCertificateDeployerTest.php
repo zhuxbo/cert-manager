@@ -27,7 +27,25 @@ test('网宿云证书中心（仅上传）走证书服务 + 元信息', function
     expect($deployer->certUploader()->storeKind())->toBe('wangsu_certificate');
     expect($deployer->provider())->toBe('wangsu');
     expect($deployer->product())->toBe('certificate');
-    expect($deployer->configSchema())->toBe([]);
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('certificate_id');
+});
+
+test('配置 certificate_id 时原位更新既有证书', function () {
+    $args = null;
+    $client = Mockery::mock(WangsuRestClient::class);
+    $client->shouldReceive('updateCertificate')->once()->andReturnUsing(function (string $id, string $name, string $cert, string $key, string $comment) use (&$args) {
+        $args = compact('id', 'name', 'cert', 'key', 'comment');
+    });
+    $client->shouldNotReceive('createCertificate');
+
+    $deployer = wangsuCertificateDeployerWith(fn () => $client);
+    $uploader = $deployer->certUploader(['certificate_id' => '200002']);
+    $id = $uploader->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', ['access_key_id' => 'AK', 'access_key_secret' => 'SK']);
+
+    expect($id)->toBe('200002');
+    expect($uploader->storeKind())->toBe('wangsu_certificate:200002');
+    expect($args['id'])->toBe('200002');
+    expect($args['cert'])->toBe("CERTPEM\nCHAINPEM");
 });
 
 test('uploader.upload 调 createCertificate（完整链 + 私钥）返回 certId', function () {

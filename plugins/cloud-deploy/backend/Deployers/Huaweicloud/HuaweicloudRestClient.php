@@ -16,7 +16,7 @@ use GuzzleHttp\RequestOptions;
  *      - CanonicalURI：path 按 RFC3986 编码（保留 `/`），**必须以 `/` 结尾**。
  *      - CanonicalQuery：键升序，每项 enc(k)=enc(v)（RFC3986，空格 %20），`&` 连接。
  *      - CanonicalHeaders：参与签名的头，name 小写、value trim，按 name 升序，每行 `name:value\n`。
- *      - SignedHeaders：参与签名头名（小写）升序、`;` 连接。固定含 host + x-sdk-date。
+ *      - SignedHeaders：参与签名头名（小写）升序、`;` 连接。固定含 host + x-sdk-date；项目 ID 非空时含 x-project-id。
  *   2. StringToSign = "SDK-HMAC-SHA256\n{X-Sdk-Date}\nHexSHA256(CanonicalRequest)"。
  *   3. signature = HexHMACSHA256(SK, StringToSign)。
  *   4. Authorization = "SDK-HMAC-SHA256 Access={AK}, SignedHeaders={signedHeaders}, Signature={signature}"。
@@ -112,7 +112,6 @@ class HuaweicloudRestClient
         ];
         if ($this->projectId !== '') {
             // region 服务的项目隔离头（对齐 certimate basic.NewCredentialsBuilder().WithProjectId）。
-            // 不参与签名（华为云只强制签 host + x-sdk-date，其余可选；此处仅签固定两头保 KAT 稳定）。
             $headers['X-Project-Id'] = $this->projectId;
         }
 
@@ -131,8 +130,14 @@ class HuaweicloudRestClient
         $response = $this->http->request($method, $url, $options);
         $status = $response->getStatusCode();
         $raw = (string) $response->getBody();
-        $decoded = json_decode($raw, true);
-        $decoded = is_array($decoded) ? $decoded : [];
+        $decoded = self::decodeResponseObject($raw);
+        if ($decoded === null) {
+            if ($status < 200 || $status >= 300) {
+                throw new HuaweicloudApiException((string) $status, '华为云接口返回 HTTP '.$status);
+            }
+
+            throw new HuaweicloudApiException('HuaweicloudInvalidResponse', '华为云接口返回无效响应');
+        }
 
         // 华为云统一错误体：{error_code, error_msg}（部分服务用 {error:{code,message}} 或顶层 error_code）。
         $errorCode = self::extractErrorCode($decoded);
@@ -147,6 +152,22 @@ class HuaweicloudRestClient
         return $decoded;
     }
 
+    /** @return array<string,mixed>|null null 表示非空响应不是合法 JSON 对象 */
+    private static function decodeResponseObject(string $raw): ?array
+    {
+        if ($raw === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
+        }
+
+        return is_array($decoded) && str_starts_with(ltrim($raw), '{') ? $decoded : null;
+    }
+
     /**
      * 计算 SDK-HMAC-SHA256 Authorization 头。
      *
@@ -157,11 +178,14 @@ class HuaweicloudRestClient
     {
         $sdkDate = $headers['X-Sdk-Date'];
 
-        // 仅签 host + x-sdk-date（华为云强制此二者；最小确定集，保签名 KAT 稳定且满足校验）。
         $signed = [
             'host' => $this->host,
             'x-sdk-date' => $sdkDate,
         ];
+        if (isset($headers['X-Project-Id']) && $headers['X-Project-Id'] !== '') {
+            // 对齐华为云 Go SDK v0.1.208：项目隔离头存在时也进入 CanonicalHeaders / SignedHeaders。
+            $signed['x-project-id'] = $headers['X-Project-Id'];
+        }
         ksort($signed, SORT_STRING);
 
         $canonicalHeaders = '';

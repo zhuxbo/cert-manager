@@ -17,9 +17,7 @@ use Throwable;
  * RemoteCertStore 去重），bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader)
  * 完成（同 TencentSslDeployer / BaiduCertDeployer / DigitaloceanCertificateDeployer）。
  *
- * 对齐偏差：certimate wangsu-certificate 支持「填 certificateId 则走 UpdateCertificate 原地替换」。
- * 本插件证书服务型统一经 RemoteCertStore 上传新证书并按 fingerprint 去重（不引用既有 certId 原地替换），
- * 与现有 Baidu/DigitalOcean 证书端点一致；故不暴露 certificate_id 配置，恒走 create（去重）。
+ * 可选 certificate_id 对齐 certimate 的原位替换语义；未填写时仍由 RemoteCertStore 按指纹去重并新建。
  */
 class WangsuCertificateDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
@@ -40,7 +38,9 @@ class WangsuCertificateDeployer extends AbstractDeployer implements UploadOnlyDe
 
     public function configSchema(): array
     {
-        return [];
+        return [
+            ['key' => 'certificate_id', 'label' => '证书 ID（留空则新建）', 'type' => 'string', 'required' => false],
+        ];
     }
 
     public function usesRemoteCertStore(): bool
@@ -50,7 +50,10 @@ class WangsuCertificateDeployer extends AbstractDeployer implements UploadOnlyDe
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new WangsuCertUploader(fn (array $credentials): object => $this->makeClient('api', $credentials));
+        return new WangsuCertUploader(
+            fn (array $credentials): object => $this->makeClient('api', $credentials),
+            (string) ($config['certificate_id'] ?? ''),
+        );
     }
 
     /**

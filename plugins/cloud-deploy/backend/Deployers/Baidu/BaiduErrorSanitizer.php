@@ -32,10 +32,10 @@ class BaiduErrorSanitizer
     {
         if ($e instanceof BceServiceException) {
             // 结构化 API 错误：errorCode/statusCode 取自服务端响应，不含请求/凭证。
-            $code = $e->getErrorCode();
-            $code = is_string($code) && $code !== '' ? $code : 'BaiduError';
+            $errorCode = $e->getErrorCode();
+            $code = $errorCode !== 0 ? (string) $errorCode : 'BaiduError';
             $status = $e->getStatusCode();
-            $detail = ($status !== null && $status !== '') ? " (HTTP $status)" : '';
+            $detail = $status > 0 ? " (HTTP $status)" : '';
 
             return "[$code] 百度智能云接口返回错误$detail";
         }

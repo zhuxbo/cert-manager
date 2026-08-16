@@ -161,6 +161,23 @@ class PluginController extends BaseController
         $this->success(['operation' => $this->pluginOperations->toPublicArray($operation)]);
     }
 
+    public function cancelFailedUpdateOperation(string $uuid): void
+    {
+        $operation = $this->pluginOperations->findVisible($uuid);
+        $pluginName = $operation->plugin_name;
+
+        try {
+            $this->pluginOperations->cancelFailedUpdate($operation);
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+        }
+
+        $this->success([
+            'name' => $pluginName,
+            'message' => "插件 $pluginName 更新已取消，保留当前版本",
+        ]);
+    }
+
     public function uninstallFailedOperation(string $uuid): void
     {
         $operation = $this->pluginOperations->findVisible($uuid);

@@ -34,7 +34,7 @@ test('天翼云 CDN：证书服务型（usesRemoteCertStore + storeKind ctccclou
     expect($deployer->provider())->toBe('ctcccloud');
     expect($deployer->product())->toBe('cdn');
     expect($deployer->label())->toBe('天翼云 CDN');
-    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain']);
+    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain_match_pattern', 'domain']);
 });
 
 test('uploader.upload 创建证书到 CDN 证书空间，返回 CertName（不返回 id 则报错）', function () {

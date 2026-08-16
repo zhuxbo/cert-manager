@@ -22,7 +22,7 @@ function volcWafDeployerWith(callable $clientFactory): VolcWafDeployer
 
 function volcWafCreds(): array
 {
-    return ['access_key_id' => 'AK', 'secret_access_key' => 'SK'];
+    return ['access_key_id' => 'AK', 'secret_access_key' => 'SK', 'project_name' => 'project-a'];
 }
 
 test('火山 WAF：证书服务型（storeKind volc_certcenter）', function () {
@@ -38,6 +38,7 @@ test('bind：ListDomain 精确查 → UpdateDomain 设 VolcCertificateID + certi
     $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$update) {
         if ($action === 'ListDomain') {
             expect($body['AccurateQuery'])->toBe(1);
+            expect($body['ProjectName'])->toBe('project-a');
 
             return ['Data' => [[
                 'LBAlgorithm' => 'wrr',
@@ -46,6 +47,7 @@ test('bind：ListDomain 精确查 → UpdateDomain 设 VolcCertificateID + certi
             ]]];
         }
         if ($action === 'UpdateDomain') {
+            expect($body['ProjectName'])->toBe('project-a');
             $update = $body;
         }
 

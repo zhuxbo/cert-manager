@@ -25,6 +25,16 @@ function volcVodCreds(): array
     return ['access_key_id' => 'AK', 'secret_access_key' => 'SK'];
 }
 
+function volcVodCertificate(string $commonName): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => $commonName], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('火山 VOD：证书服务型（storeKind volc_certcenter）', function () {
     $deployer = new VolcVodDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -35,8 +45,10 @@ test('火山 VOD：证书服务型（storeKind volc_certcenter）', function () 
 test('bind：UpdateVodDomainConfig 设 HTTPS.CertInfo.CertId，domain_type 映射 vod_play', function () {
     $body = null;
     $client = Mockery::mock(VolcRestClient::class);
-    $client->shouldReceive('callJson')->once()->andReturnUsing(function (string $action, string $version, array $b) use (&$body) {
-        $body = compact('action', 'version', 'b');
+    $client->shouldReceive('callJson')->twice()->andReturnUsing(function (string $action, string $version, array $b) use (&$body) {
+        if ($action === 'UpdateVodDomainConfig') {
+            $body = compact('action', 'version', 'b');
+        }
 
         return [];
     });
@@ -53,11 +65,48 @@ test('bind：UpdateVodDomainConfig 设 HTTPS.CertInfo.CertId，domain_type 映�
     expect($body['b']['UpdateCdnConfigParam']['HTTPS']['CertInfo']['CertId'])->toBe('cert-9');
 });
 
+test('certsan 列举点播域名并跳过已绑定当前证书的匹配项', function () {
+    $updated = [];
+    $client = Mockery::mock(VolcRestClient::class);
+    $client->shouldReceive('callJson')->andReturnUsing(function (string $action, string $version, array $body) use (&$updated) {
+        if ($action === 'ListVodDomains') {
+            return ['VodInfo' => ['Domains' => [
+                ['Domain' => 'a.example.com'],
+                ['Domain' => 'b.example.com'],
+            ]]];
+        }
+        if ($action === 'DescribeVodDomainConfig') {
+            $domain = $body['DescribeCdnDomainParam']['Domain'];
+
+            return ['DomainInfo' => ['DomainConfig' => ['HTTPS' => [
+                'Switch' => true,
+                'CertInfo' => ['CertId' => $domain === 'a.example.com' ? 'cert-1' : 'old'],
+            ]]]];
+        }
+        if ($action === 'UpdateVodDomainConfig') {
+            $updated[] = $body['UpdateCdnConfigParam']['Domain'];
+        }
+
+        return [];
+    });
+
+    $deployer = volcVodDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1', 'cert' => volcVodCertificate('*.example.com'), 'chain' => ''], volcVodCreds(), [
+        'space_name' => 'sp-1',
+        'domain_type' => 'play',
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($updated)->toBe(['b.example.com']);
+});
+
 test('domain_type 映射：image→vod_image、third→third', function () {
     $captured = [];
     $client = Mockery::mock(VolcRestClient::class);
     $client->shouldReceive('callJson')->andReturnUsing(function (string $a, string $v, array $b) use (&$captured) {
-        $captured[] = $b['DomainType'];
+        if ($a === 'UpdateVodDomainConfig') {
+            $captured[] = $b['DomainType'];
+        }
 
         return [];
     });

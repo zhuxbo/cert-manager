@@ -41,11 +41,12 @@ test('uploader.upload 调 ImportCertificate 返回 InstanceId', function () {
     });
 
     $deployer = volcCertCenterDeployerWith(fn (string $kind) => $kind === 'certcenter' ? $client : new stdClass);
-    $id = $deployer->certUploader()->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', volcCertCenterCreds());
+    $id = $deployer->certUploader()->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', volcCertCenterCreds() + ['project_name' => 'project-a']);
 
     expect($id)->toBe('cert-inst-1');
     expect($args['action'])->toBe('ImportCertificate');
     expect($args['version'])->toBe('2024-10-01');
+    expect($args['body']['ProjectName'])->toBe('project-a');
     expect($args['body']['CertificateInfo']['CertificateChain'])->toContain('CERTPEM');
 });
 

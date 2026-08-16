@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Qiniu;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Qiniu\Auth;
 use Throwable;
 
@@ -18,8 +20,9 @@ use Throwable;
  * 遍历域名（DomainMatchPattern）。exact 模式去掉域名前导 "*"（"*.example.com" → ".example.com"，
  * 适配七牛 CDN 泛域名格式），与 certimate qiniu-cdn 一致。
  */
-class QiniuCdnDeployer extends AbstractDeployer
+class QiniuCdnDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
     use ParsesQiniuCertRef;
 
     public function provider(): string
@@ -40,7 +43,8 @@ class QiniuCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -56,36 +60,51 @@ class QiniuCdnDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  复合 remote_cert_id "{certID}|{certName}"（CDN 用 certID）
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  复合 remote_cert_id 与可选证书材料
      * @param  array{access_key:string,secret_key:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array{domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = $this->requireConfig($config, 'domain');
-        [$certId] = $this->parseCertRef((string) $certRef);
-        // exact：去掉前导 "*"，适配七牛 CDN 泛域名格式（"*.example.com" → ".example.com"）
-        $domain = ltrim((string) $domain) === '' ? (string) $domain : preg_replace('/^\*/', '', (string) $domain);
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $domain = (string) ($config['domain'] ?? '');
+        $remoteRef = is_array($certRef) ? $certRef['remote_cert_id'] : $certRef;
+        $certificate = is_array($certRef) ? $certRef['cert'] : '';
+        [$certId] = $this->parseCertRef($remoteRef);
+        if (in_array($pattern, ['', 'exact', 'wildcard'], true) && $domain === '') {
+            $this->fail('缺少配置 domain');
+        }
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId) {
+        $this->guardSdk(function () use ($credentials, $domain, $certId, $certificate, $pattern) {
             /** @var QiniuRestClient $client */
             $client = $this->makeClient('api', $credentials);
+            $candidates = in_array($pattern, ['wildcard', 'certsan'], true) ? $client->listCdnDomains() : [];
+            $domains = match ($pattern) {
+                '', 'exact' => [preg_replace('/^\*/', '', $domain) ?? $domain],
+                'wildcard' => array_values(array_filter($candidates, fn (string $candidate): bool => $this->certificateHostnamePatternMatches($domain, $candidate))),
+                'certsan' => $certificate === '' ? $this->fail('certsan 匹配缺少证书材料') : array_values(array_filter($candidates, fn (string $candidate): bool => $this->certificateMatchesHostname($certificate, $candidate))),
+                default => $this->fail("不支持的域名匹配模式 $pattern"),
+            };
+            if ($domains === []) {
+                $this->fail('未找到匹配的 CDN 域名');
+            }
+            foreach ($domains as $matchedDomain) {
+                $info = $client->getCdnDomainInfo($matchedDomain);
+                $https = $info['https'];
+                $boundCertId = is_array($https) && is_string($https['certId'] ?? null) ? $https['certId'] : '';
 
-            $info = $client->getCdnDomainInfo((string) $domain);
-            $https = $info['https'];
-            $boundCertId = is_array($https) && is_string($https['certId'] ?? null) ? $https['certId'] : '';
-
-            if ($https === null || $boundCertId === '') {
-                // 未启用 HTTPS → 启用并绑证书
-                $client->enableCdnDomainHttps((string) $domain, $certId, true, true);
-            } elseif ($boundCertId !== $certId) {
-                // 已启用但证书不同 → 改证书，沿用原 forceHttps/http2Enable
-                $client->modifyCdnDomainHttpsConf(
-                    (string) $domain,
-                    $certId,
-                    (bool) ($https['forceHttps'] ?? false),
-                    (bool) ($https['http2Enable'] ?? false),
-                );
+                if ($https === null || $boundCertId === '') {
+                    // 未启用 HTTPS → 启用并绑证书
+                    $client->enableCdnDomainHttps($matchedDomain, $certId, true, true);
+                } elseif ($boundCertId !== $certId) {
+                    // 已启用但证书不同 → 改证书，沿用原 forceHttps/http2Enable
+                    $client->modifyCdnDomainHttpsConf(
+                        $matchedDomain,
+                        $certId,
+                        (bool) ($https['forceHttps'] ?? false),
+                        (bool) ($https['http2Enable'] ?? false),
+                    );
+                }
             }
         });
     }
@@ -97,6 +116,7 @@ class QiniuCdnDeployer extends AbstractDeployer
                 $credentials['access_key'] ?? '',
                 $credentials['secret_key'] ?? '',
             )),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

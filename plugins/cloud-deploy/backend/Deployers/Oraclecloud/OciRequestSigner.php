@@ -35,17 +35,36 @@ class OciRequestSigner
      * @param  string  $privateKey  API 私钥 PEM
      * @param  string  $privateKeyPassphrase  私钥口令（选填）
      */
+    private OraclecloudAuthMaterial $authMaterial;
+
     public function __construct(
-        private readonly string $tenancyOcid,
-        private readonly string $userOcid,
-        private readonly string $fingerprint,
-        private readonly string $privateKey,
-        private readonly string $privateKeyPassphrase = '',
-    ) {}
+        string $tenancyOcid,
+        string $userOcid,
+        string $fingerprint,
+        string $privateKey,
+        string $privateKeyPassphrase = '',
+    ) {
+        $this->authMaterial = OraclecloudAuthMaterial::apiKey(
+            $tenancyOcid,
+            $userOcid,
+            $fingerprint,
+            $privateKey,
+            $privateKeyPassphrase,
+            '',
+        );
+    }
+
+    public static function fromAuthMaterial(OraclecloudAuthMaterial $authMaterial): self
+    {
+        $signer = new self('', '', '', '');
+        $signer->authMaterial = $authMaterial;
+
+        return $signer;
+    }
 
     public function keyId(): string
     {
-        return $this->tenancyOcid.'/'.$this->userOcid.'/'.$this->fingerprint;
+        return $this->authMaterial->keyId();
     }
 
     /**
@@ -88,7 +107,7 @@ class OciRequestSigner
         }
         $signingString = implode("\n", $lines);
 
-        $signature = $this->rsaSha256Sign($signingString);
+        $signature = $this->rsaSha256Sign($signingString, $this->authMaterial);
 
         $authorization = sprintf(
             'Signature version="1",keyId="%s",algorithm="rsa-sha256",headers="%s",signature="%s"',
@@ -105,11 +124,11 @@ class OciRequestSigner
     /**
      * RSA-SHA256 签名（支持带口令私钥），返回 base64。
      */
-    private function rsaSha256Sign(string $data): string
+    private function rsaSha256Sign(string $data, OraclecloudAuthMaterial $authMaterial): string
     {
-        $key = $this->privateKeyPassphrase !== ''
-            ? openssl_pkey_get_private($this->privateKey, $this->privateKeyPassphrase)
-            : openssl_pkey_get_private($this->privateKey);
+        $key = $authMaterial->privateKeyPassphrase() !== ''
+            ? openssl_pkey_get_private($authMaterial->privateKey(), $authMaterial->privateKeyPassphrase())
+            : openssl_pkey_get_private($authMaterial->privateKey());
 
         if ($key === false) {
             throw new OraclecloudApiException('InvalidCredential', 'OCI API 私钥解析失败（私钥或口令无效）');

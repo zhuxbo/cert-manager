@@ -2,6 +2,7 @@
 
 use App\Services\Binary\BinaryLocator;
 use App\Services\Upgrade\PackageExtractor;
+use App\Support\ApplicationBootstrapLock;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
@@ -380,6 +381,194 @@ test('applyBackendUpgrade 跳过 storage（保护运行时数据、升级状态�
         expect(File::get("$installDir/storage/framework/state.json"))->toBe('RUNNING'); // 已有运行时状态不被覆盖
         // 其他目录正常同步
         expect("$installDir/app/Marker.php")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 校验锁文件标记后整体替换包内 vendor', function () {
+    $sourceDir = "$this->testDir/pkg-vendor/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'NEW-LOCK')."\n");
+    File::put("$sourceDir/vendor/new-package.php", 'new');
+
+    $installDir = "$this->testDir/install-vendor";
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/vendor/stale-package.php", 'stale');
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($this->extractor, $sourceDir);
+
+        expect($this->extractor->appliedBundledVendor())->toBeTrue()
+            ->and("$installDir/vendor/new-package.php")->toBeFile()
+            ->and("$installDir/vendor/stale-package.php")->not->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 当前 vendor 已匹配目标 lock 时原地复用且不预暂存', function () {
+    $sourceDir = "$this->testDir/pkg-reuse-vendor/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/composer.lock", 'SAME-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'SAME-LOCK'));
+    File::put("$sourceDir/vendor/package-copy.php", 'must-not-copy');
+
+    $installDir = "$this->testDir/install-reuse-vendor";
+    File::makeDirectory("$installDir/vendor/composer", 0755, true);
+    File::put("$installDir/vendor/autoload.php", '<?php return true;');
+    File::put("$installDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'SAME-LOCK'));
+    File::put("$installDir/vendor/runtime-marker.php", 'keep');
+
+    $extractor = new class extends PackageExtractor
+    {
+        protected function stageBundledVendor(string $source, string $target, string $sourceBackend): string
+        {
+            throw new RuntimeException('相同 lock 不应预暂存 vendor');
+        }
+    };
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($extractor))->getMethod('applyBackendUpgrade');
+        $method->invoke($extractor, $sourceDir);
+
+        expect($extractor->appliedBundledVendor())->toBeTrue()
+            ->and(File::get("$installDir/vendor/runtime-marker.php"))->toBe('keep')
+            ->and("$installDir/vendor/package-copy.php")->not->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('vendor 整体切换持有启动独占锁且 HTTP 在 autoload 前获取共享锁', function () {
+    $installDir = "$this->testDir/install-vendor-lock";
+    $backendDir = "$installDir/backend";
+    File::makeDirectory($backendDir, 0755, true);
+
+    $originalBase = base_path();
+    app()->setBasePath($backendDir);
+    $exclusive = ApplicationBootstrapLock::acquireExclusive();
+    $shared = fopen("$installDir/backend/.upgrade-bootstrap.lock", 'c');
+
+    try {
+        expect(flock($shared, LOCK_SH | LOCK_NB))->toBeFalse();
+    } finally {
+        flock($exclusive, LOCK_UN);
+        fclose($exclusive);
+    }
+
+    try {
+        expect(flock($shared, LOCK_SH | LOCK_NB))->toBeTrue();
+    } finally {
+        flock($shared, LOCK_UN);
+        fclose($shared);
+        app()->setBasePath($originalBase);
+    }
+
+    $publicIndex = File::get(base_path('public/index.php'));
+    expect(strpos($publicIndex, 'LOCK_SH'))->toBeLessThan(strpos($publicIndex, 'vendor/autoload.php'));
+});
+
+test('applyBackendUpgrade 拒绝标记与 composer lock 不匹配的 vendor 且保留旧依赖', function () {
+    $sourceDir = "$this->testDir/pkg-invalid-vendor/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'OTHER-LOCK'));
+
+    $installDir = "$this->testDir/install-invalid-vendor";
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/vendor/old-package.php", 'old');
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+        expect(fn () => $method->invoke($this->extractor, $sourceDir))
+            ->toThrow(RuntimeException::class, '发布包 vendor 与 composer.lock 不匹配');
+        expect("$installDir/vendor/old-package.php")->toBeFile();
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 在 vendor 预暂存失败时不覆盖现有代码和依赖', function () {
+    $sourceDir = "$this->testDir/pkg-stage-failure/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/app/Marker.php", 'new-code');
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'NEW-LOCK'));
+
+    $installDir = "$this->testDir/install-stage-failure";
+    File::makeDirectory("$installDir/app", 0755, true);
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/app/Marker.php", 'old-code');
+    File::put("$installDir/vendor/old-package.php", 'old-vendor');
+
+    $extractor = new class extends PackageExtractor
+    {
+        protected function stageBundledVendor(string $source, string $target, string $sourceBackend): string
+        {
+            throw new RuntimeException('模拟 vendor 预暂存失败');
+        }
+    };
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($extractor))->getMethod('applyBackendUpgrade');
+
+        expect(fn () => $method->invoke($extractor, $sourceDir))
+            ->toThrow(RuntimeException::class, '模拟 vendor 预暂存失败');
+        expect(File::get("$installDir/app/Marker.php"))->toBe('old-code')
+            ->and(File::get("$installDir/vendor/old-package.php"))->toBe('old-vendor');
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+});
+
+test('applyBackendUpgrade 在启动锁准备失败时清理已预暂存 vendor', function () {
+    $sourceDir = "$this->testDir/pkg-bootstrap-failure/backend";
+    File::makeDirectory("$sourceDir/app", 0755, true);
+    File::makeDirectory("$sourceDir/public", 0755, true);
+    File::makeDirectory("$sourceDir/vendor/composer", 0755, true);
+    File::put("$sourceDir/composer.lock", 'NEW-LOCK');
+    File::put("$sourceDir/public/index.php", '<?php // 缺少启动锁片段');
+    File::put("$sourceDir/vendor/autoload.php", '<?php return true;');
+    File::put("$sourceDir/vendor/composer/.ssl-manager-lock.sha256", hash('sha256', 'NEW-LOCK'));
+
+    $installDir = "$this->testDir/install-bootstrap-failure";
+    File::makeDirectory("$installDir/app", 0755, true);
+    File::makeDirectory("$installDir/public", 0755, true);
+    File::makeDirectory("$installDir/vendor", 0755, true);
+    File::put("$installDir/app/Marker.php", 'old-code');
+    File::put("$installDir/public/index.php", "<?php\n// Register the Composer autoloader...\n");
+    File::put("$installDir/vendor/old-package.php", 'old-vendor');
+
+    $originalBase = base_path();
+    app()->setBasePath($installDir);
+
+    try {
+        $method = (new ReflectionClass($this->extractor))->getMethod('applyBackendUpgrade');
+
+        expect(fn () => $method->invoke($this->extractor, $sourceDir))
+            ->toThrow(RuntimeException::class, '升级包 HTTP 入口缺少启动锁片段');
+        expect(File::glob("$installDir/.vendor-next-*"))->toBe([])
+            ->and(File::get("$installDir/app/Marker.php"))->toBe('old-code')
+            ->and(File::get("$installDir/vendor/old-package.php"))->toBe('old-vendor');
     } finally {
         app()->setBasePath($originalBase);
     }

@@ -56,7 +56,7 @@ class JdcloudSslUploader implements CertUploaderInterface
             throw new RuntimeException(JdcloudErrorSanitizer::sanitize($e), 0);
         }
 
-        if (! is_string($certId) || $certId === '') {
+        if ($certId === '') {
             throw new RuntimeException('京东云 SSL 证书中心 UploadCert 未返回 certId');
         }
 

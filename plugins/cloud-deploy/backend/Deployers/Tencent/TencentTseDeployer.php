@@ -8,6 +8,7 @@ use TencentCloud\Common\Profile\ClientProfile;
 use TencentCloud\Common\Profile\HttpProfile;
 use TencentCloud\Ssl\V20191205\SslClient;
 use TencentCloud\Tse\V20201207\Models\CreateCloudNativeAPIGatewayCertificateRequest;
+use TencentCloud\Tse\V20201207\Models\DescribeCloudNativeAPIGatewayCertificatesRequest;
 use TencentCloud\Tse\V20201207\Models\ModifyCloudNativeAPIGatewayCertificateRequest;
 use TencentCloud\Tse\V20201207\TseClient;
 use Throwable;
@@ -29,6 +30,8 @@ use Throwable;
  */
 class TencentTseDeployer extends AbstractDeployer
 {
+    use UsesTencentEndpoint;
+
     public function provider(): string
     {
         return 'tencent';
@@ -47,7 +50,11 @@ class TencentTseDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
+            ['key' => 'service_type', 'label' => '服务类型', 'type' => 'string', 'required' => false, 'default' => 'cloudnative', 'options' => [
+                ['label' => '云原生 API 网关', 'value' => 'cloudnative'],
+            ]],
             ['key' => 'gateway_id', 'label' => '云原生网关 ID', 'type' => 'string', 'required' => true],
             ['key' => 'domains', 'label' => '绑定域名（选填，留空取证书 SAN）', 'type' => 'string', 'required' => false],
             ['key' => 'certificate_id', 'label' => '网关证书 ID（选填，填则更新已有证书）', 'type' => 'string', 'required' => false],
@@ -57,11 +64,16 @@ class TencentTseDeployer extends AbstractDeployer
     /**
      * @param  array{cert:string,key:string,chain:string}|string  $certRef  内联 PEM 三元组
      * @param  array{secret_id:string,secret_key:string}  $credentials
-     * @param  array{region:string,gateway_id:string,domains?:string|list<string>,certificate_id?:string}  $config
+     * @param  array{region:string,gateway_id:string,service_type?:string,domains?:string|list<string>,certificate_id?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
+        $credentials = $this->withTencentEndpoint($credentials, $config);
         $region = (string) $this->requireConfig($config, 'region');
+        $serviceType = (string) ($config['service_type'] ?? 'cloudnative');
+        if ($serviceType !== 'cloudnative') {
+            $this->fail("不支持的服务类型 $serviceType");
+        }
         $gatewayId = (string) $this->requireConfig($config, 'gateway_id');
         $certificateId = isset($config['certificate_id']) ? (string) $config['certificate_id'] : '';
         $fullChain = rtrim($certRef['cert'])."\n".trim($certRef['chain']);
@@ -71,6 +83,12 @@ class TencentTseDeployer extends AbstractDeployer
             // 新建：先上传到 SSL 拿 CertId
             $uploader = new TencentSslUploader(fn (array $cred): object => $this->makeClient('ssl', $cred));
             $certId = $uploader->upload($certRef['cert'], $key, $certRef['chain'], $credentials);
+
+            /** @var TseClient $tse */
+            $tse = $this->makeClient('tse', $credentials + ['region' => $region]);
+            if ($this->gatewayAlreadyHasCertificate($tse, $gatewayId, $certId, $certRef['cert'])) {
+                return;
+            }
 
             $domains = $this->normalizeList($config['domains'] ?? '');
             if ($domains === []) {
@@ -107,6 +125,39 @@ class TencentTseDeployer extends AbstractDeployer
                 return $client->ModifyCloudNativeAPIGatewayCertificate($req);
             });
         }
+    }
+
+    private function gatewayAlreadyHasCertificate(TseClient $client, string $gatewayId, string $certId, string $certPem): bool
+    {
+        $offset = 0;
+        $limit = 100;
+        do {
+            $response = $this->guardSdk(function () use ($client, $gatewayId, $offset, $limit) {
+                $request = new DescribeCloudNativeAPIGatewayCertificatesRequest;
+                $request->deserialize(['GatewayId' => $gatewayId, 'Offset' => $offset, 'Limit' => $limit]);
+
+                return $client->DescribeCloudNativeAPIGatewayCertificates($request);
+            });
+            $certificates = $response->getResult()->getCertificatesList();
+            foreach ($certificates as $certificate) {
+                if ((string) $certificate->getCertId() === $certId
+                    || $this->certificatesEqual($certPem, (string) $certificate->getCrt())) {
+                    return true;
+                }
+            }
+            $offset += $limit;
+        } while (count($certificates) === $limit);
+
+        return false;
+    }
+
+    private function certificatesEqual(string $left, string $right): bool
+    {
+        $leftParsed = @openssl_x509_parse($left);
+        $rightParsed = @openssl_x509_parse($right);
+
+        return is_array($leftParsed) && is_array($rightParsed)
+            && $leftParsed['serialNumberHex'] === $rightParsed['serialNumberHex'];
     }
 
     /**
@@ -155,12 +206,14 @@ class TencentTseDeployer extends AbstractDeployer
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
         $http->setReqTimeout(15);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
         return match ($kind) {
             'ssl' => new SslClient($cred, '', $profile),
             'tse' => new TseClient($cred, (string) ($credentials['region'] ?? ''), $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Huaweicloud;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -21,8 +23,9 @@ use Throwable;
  * 与 certimate 对齐的取舍：certimate 支持 exact/certsan。本端点**仅实现 exact**（domain 必填、单域名绑定），
  * 不做 certsan 的「列举全部域名再 SAN 匹配」——与插件其他端点「仅 exact」口径一致。
  */
-class LiveDeployer extends AbstractDeployer
+class LiveDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesCertificateHostnames;
     use ResolvesHuaweiProjectId;
 
     public function provider(): string
@@ -44,7 +47,8 @@ class LiveDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
-            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '直播流域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -69,22 +73,50 @@ class LiveDeployer extends AbstractDeployer
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         $region = (string) $this->requireConfig($config, 'region');
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $scmCertId = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        if (! in_array($pattern, ['', 'exact', 'certsan'], true)) {
+            $this->fail("Huawei Live 不支持的域名匹配模式: $pattern");
+        }
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $scmCertId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $region, $domain, $scmCertId) {
+        $this->guardSdk(function () use ($credentials, $region, $pattern, $domain, $certificate, $scmCertId) {
             $projectId = $this->resolveProjectId($credentials, $region);
 
             /** @var HuaweicloudRestClient $client */
             $client = $this->makeClient('live', $credentials, $region, $projectId);
 
-            // UpdateDomainHttpsCert：source=scm 表示使用 SCM 托管证书。
-            $client->put("/v1/$projectId/guard/https-cert", [
-                'tls_certificate' => [
-                    'source' => 'scm',
-                    'cert_id' => $scmCertId,
-                ],
-            ], ['domain' => $domain]);
+            $domains = [$domain];
+            if ($pattern === 'certsan') {
+                $response = $client->get("/v1/$projectId/domain", array_filter([
+                    'enterprise_project_id' => (string) ($credentials['enterprise_project_id'] ?? ''),
+                ], static fn (string $value): bool => $value !== ''));
+                $items = is_array($response['domain_info'] ?? null) ? $response['domain_info'] : [];
+                $domains = [];
+                foreach ($items as $item) {
+                    if (! is_array($item) || (string) ($item['status'] ?? '') === 'off') {
+                        continue;
+                    }
+                    $candidate = (string) ($item['domain'] ?? '');
+                    if ($this->certificateMatchesHostname($certificate, $candidate)) {
+                        $domains[] = $candidate;
+                    }
+                }
+                if ($domains === []) {
+                    $this->fail('未找到证书 SAN 匹配的直播域名');
+                }
+            }
+
+            foreach ($domains as $matchedDomain) {
+                // UpdateDomainHttpsCert：source=scm 表示使用 SCM 托管证书。
+                $client->put("/v1/$projectId/guard/https-cert", [
+                    'tls_certificate' => [
+                        'source' => 'scm',
+                        'cert_id' => $scmCertId,
+                    ],
+                ], ['domain' => $matchedDomain]);
+            }
         });
     }
 

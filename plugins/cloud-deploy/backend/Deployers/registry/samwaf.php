@@ -1,6 +1,7 @@
 <?php
 
 use Plugins\CloudDeploy\Deployers\Registry;
+use Plugins\CloudDeploy\Deployers\Samwaf\SamwafConsoleDeployer;
 use Plugins\CloudDeploy\Deployers\Samwaf\SamwafDeployer;
 use Plugins\CloudDeploy\Deployers\Samwaf\SamwafProvider;
 
@@ -12,4 +13,5 @@ use Plugins\CloudDeploy\Deployers\Samwaf\SamwafProvider;
 return function (Registry $registry): void {
     $registry->registerProvider(new SamwafProvider);
     $registry->registerDeployer('samwaf', 'samwaf', fn () => new SamwafDeployer);
+    $registry->registerDeployer('samwaf', 'console', fn () => new SamwafConsoleDeployer);
 };

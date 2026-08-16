@@ -4,6 +4,8 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
+use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Tests\TestCase;
@@ -235,6 +237,78 @@ test('config 缺 schema required 字段被拒（clb 缺 region）', function () 
     expect(CloudDeployTarget::withoutGlobalScopes()->count())->toBe(0);
 });
 
+test('条件 schema：默认分支必填，切换后仅要求当前可见配置字段', function () {
+    app(Registry::class)->registerDeployer('aliyun', 'conditional-target', fn () => new class extends AbstractDeployer
+    {
+        public function provider(): string
+        {
+            return 'aliyun';
+        }
+
+        public function product(): string
+        {
+            return 'conditional-target';
+        }
+
+        public function label(): string
+        {
+            return '条件测试目标';
+        }
+
+        public function configSchema(): array
+        {
+            return [
+                ['key' => 'service_type', 'label' => '服务类型', 'type' => 'select', 'default' => 'cloudnative', 'options' => [
+                    ['label' => '云原生', 'value' => 'cloudnative'],
+                    ['label' => '传统', 'value' => 'traditional'],
+                ]],
+                ['key' => 'gateway_id', 'label' => '网关实例', 'required_when' => ['key' => 'service_type', 'equals' => 'cloudnative'], 'visible_when' => ['key' => 'service_type', 'equals' => 'cloudnative']],
+                ['key' => 'group_id', 'label' => '分组', 'required_when' => ['key' => 'service_type', 'equals' => 'traditional'], 'visible_when' => ['key' => 'service_type', 'equals' => 'traditional']],
+            ];
+        }
+
+        public function bind(string|array $certRef, array $credentials, array $config): void {}
+
+        protected function makeClient(string $kind, array $credentials): object
+        {
+            return new stdClass;
+        }
+
+        protected function sanitize(Throwable $e): string
+        {
+            return 'x';
+        }
+    });
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $this->order->id,
+            'product' => 'conditional-target',
+            'config' => [],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $this->order->id,
+            'product' => 'conditional-target',
+            'config' => ['service_type' => 'traditional', 'group_id' => 'group-1'],
+        ])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    // 前端会裁掉 traditional 下隐藏的 gateway_id；绕过前端的保存请求也不能把旧字段持久化。
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/target', [
+            'access_id' => $this->access->id,
+            'order_id' => $this->order->id,
+            'product' => 'conditional-target',
+            'config' => ['service_type' => 'traditional', 'group_id' => 'group-2', 'gateway_id' => 'STALE'],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+});
+
 test('config 含 schema 外字段被拒（白名单校验，防额外字段静默落库）', function () {
     // 加固 2：config 的 key 集必须 ⊆ deployer configSchema 的 key 集。
     // aliyun cdn schema 仅 domain；多塞一个字段即拒绝，不静默落库。
@@ -456,6 +530,20 @@ test('更新重提 config 时按 schema 校验（缺 domain 被拒）', function
 
     // 原值未被覆盖
     expect(CloudDeployTarget::withoutGlobalScopes()->find($target->id)->config)->toBe(['domain' => 'a.example.com']);
+});
+
+test('certsan 匹配允许省略 domain', function () {
+    $target = CloudDeployTarget::create([
+        'user_id' => $this->user->id, 'access_id' => $this->access->id, 'order_id' => $this->order->id,
+        'product' => 'cdn', 'config' => ['domain' => 'a.example.com'],
+    ]);
+
+    $this->actingAsUser($this->user)
+        ->putJson("/api/cloud-deploy/target/{$target->id}", ['config' => ['domain_match_pattern' => 'certsan']])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    expect(CloudDeployTarget::withoutGlobalScopes()->find($target->id)->config)
+        ->toBe(['domain_match_pattern' => 'certsan']);
 });
 
 test('按 order_id 过滤目标列表', function () {

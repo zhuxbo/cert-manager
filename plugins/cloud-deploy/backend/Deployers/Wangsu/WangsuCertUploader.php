@@ -28,11 +28,16 @@ use Throwable;
 class WangsuCertUploader implements CertUploaderInterface
 {
     /** @param Closure(array<string,mixed>):object $clientFactory 返回 WangsuRestClient */
-    public function __construct(private readonly Closure $clientFactory) {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly string $certificateId = '',
+    ) {}
 
     public function storeKind(): string
     {
-        return 'wangsu_certificate';
+        return $this->certificateId === ''
+            ? 'wangsu_certificate'
+            : 'wangsu_certificate:'.$this->certificateId;
     }
 
     /**
@@ -49,13 +54,24 @@ class WangsuCertUploader implements CertUploaderInterface
         try {
             /** @var WangsuRestClient $client */
             $client = ($this->clientFactory)($credentials);
-            $certId = $client->createCertificate($certName, $fullChain, $keyPem, 'upload from CloudDeploy');
+            if ($this->certificateId !== '') {
+                $client->updateCertificate(
+                    $this->certificateId,
+                    $certName,
+                    $fullChain,
+                    $keyPem,
+                    'upload from CloudDeploy',
+                );
+                $certId = $this->certificateId;
+            } else {
+                $certId = $client->createCertificate($certName, $fullChain, $keyPem, 'upload from CloudDeploy');
+            }
         } catch (Throwable $e) {
             throw new RuntimeException(WangsuErrorSanitizer::sanitize($e), 0);
         }
 
         if ($certId === '') {
-            throw new RuntimeException('网宿云证书中心 CreateCertificate 未返回 certId');
+            throw new RuntimeException('网宿云证书中心证书上传未返回 certId');
         }
 
         return $certId;

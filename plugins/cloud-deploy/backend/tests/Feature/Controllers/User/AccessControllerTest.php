@@ -4,6 +4,8 @@ use App\Models\Order;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Plugins\CloudDeploy\Deployers\Contracts\ProviderInterface;
+use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Models\CloudDeployAccess;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Tests\TestCase;
@@ -32,6 +34,33 @@ test('创建凭证：落库密文、响应不回显 credentials', function () {
     $raw = DB::table('cloud_deploy_accesses')->where('id', $access->id)->value('credentials');
     expect($raw)->not->toContain('AK123')->not->toContain('SECRET456');
     expect(json_encode($res->json()))->not->toContain('SECRET456'); // 响应不回显明文（success() 无 data 键，对整体 JSON 断言）
+});
+
+test('EO Makers API Token 作为腾讯加密凭证保存且所有凭证接口不回显', function () {
+    $token = 'makers-token-never-leak';
+
+    $create = $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '腾讯 EdgeOne Makers',
+            'provider' => 'tencent',
+            'credentials' => [
+                'secret_id' => 'SID',
+                'secret_key' => 'SKEY',
+                'api_token' => $token,
+            ],
+        ])
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $access = CloudDeployAccess::withoutGlobalScopes()->firstOrFail();
+    $raw = (string) DB::table('cloud_deploy_accesses')->where('id', $access->id)->value('credentials');
+    $show = $this->actingAsUser($this->user)->getJson("/api/cloud-deploy/access/{$access->id}")->assertOk();
+    $list = $this->actingAsUser($this->user)->getJson('/api/cloud-deploy/access')->assertOk();
+
+    expect($access->credentials['api_token'])->toBe($token)
+        ->and($raw)->not->toContain($token)
+        ->and(json_encode([$create->json(), $show->json(), $list->json()]))->not->toContain($token)
+        ->not->toContain('credentials');
 });
 
 test('credentials 缺 schema required 字段被拒（aliyun 缺 access_key_secret）', function () {
@@ -70,6 +99,140 @@ test('credentials 含 schema 外字段被拒（白名单校验，防额外字段
         ->assertOk()->assertJson(['code' => 0]);
 
     expect(CloudDeployAccess::withoutGlobalScopes()->count())->toBe(0);
+});
+
+test('条件 schema：select 默认/合法/非法值与隐藏凭证字段均按同一语义校验', function () {
+    app(Registry::class)->registerProvider(new class implements ProviderInterface
+    {
+        public function key(): string
+        {
+            return 'conditional';
+        }
+
+        public function label(): string
+        {
+            return '条件测试';
+        }
+
+        public function credentialSchema(): array
+        {
+            return [
+                ['key' => 'auth_method', 'label' => '认证方式', 'type' => 'select', 'default' => 'accesskey', 'options' => [
+                    ['label' => '静态密钥', 'value' => 'accesskey'],
+                    ['label' => '实例角色', 'value' => 'imds'],
+                ]],
+                ['key' => 'access_key', 'label' => 'Access Key', 'required_when' => ['key' => 'auth_method', 'equals' => 'accesskey'], 'visible_when' => ['key' => 'auth_method', 'equals' => 'accesskey']],
+            ];
+        }
+    });
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '缺默认 Access Key', 'provider' => 'conditional', 'credentials' => [],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '默认静态密钥', 'provider' => 'conditional', 'credentials' => ['access_key' => 'AK'],
+        ])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '实例角色', 'provider' => 'conditional', 'credentials' => ['auth_method' => 'imds'],
+        ])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '非法认证方式', 'provider' => 'conditional', 'credentials' => ['auth_method' => 'unexpected'],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    // 前端切换为 imds 时会裁剪 access_key；直调保存入口带回旧值也必须被拒绝，不能落库。
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '隐藏旧值', 'provider' => 'conditional', 'credentials' => ['auth_method' => 'imds', 'access_key' => 'STALE'],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+});
+
+test('AWS 凭证兼容旧 accesskey 默认分支并允许纯 IMDS，拒绝分支外静态密钥', function () {
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => '旧 AWS 静态凭证',
+            'provider' => 'aws',
+            'credentials' => ['access_key_id' => 'AK', 'secret_access_key' => 'SK'],
+        ])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => 'AWS 实例角色',
+            'provider' => 'aws',
+            'credentials' => ['auth_method' => 'imds'],
+        ])
+        ->assertOk()->assertJson(['code' => 1]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => 'AWS IMDS 带旧密钥',
+            'provider' => 'aws',
+            'credentials' => [
+                'auth_method' => 'imds',
+                'access_key_id' => 'STALE-AK',
+                'secret_access_key' => 'STALE-SK',
+            ],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => 'AWS 静态凭证缺密钥',
+            'provider' => 'aws',
+            'credentials' => ['auth_method' => 'accesskey'],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    $this->actingAsUser($this->user)
+        ->postJson('/api/cloud-deploy/access', [
+            'name' => 'AWS 非法认证方式',
+            'provider' => 'aws',
+            'credentials' => ['auth_method' => 'default-chain'],
+        ])
+        ->assertOk()->assertJson(['code' => 0]);
+
+    expect(CloudDeployAccess::withoutGlobalScopes()->where('provider', 'aws')->count())->toBe(2);
+});
+
+test('Oracle 凭证兼容旧 API Key 默认分支并允许两种 principal，拒绝跨分支旧密钥', function () {
+    $apiKey = [
+        'tenancy_ocid' => 'ocid1.tenancy.oc1..t',
+        'user_ocid' => 'ocid1.user.oc1..u',
+        'fingerprint' => 'aa:bb',
+        'private_key' => 'PRIVATE-KEY',
+        'region' => 'ap-tokyo-1',
+    ];
+
+    foreach ([
+        ['name' => 'Oracle 旧 API Key', 'credentials' => $apiKey, 'code' => 1],
+        ['name' => 'Oracle Instance Principal', 'credentials' => ['auth_method' => 'instanceprincipal'], 'code' => 1],
+        ['name' => 'Oracle Resource Principal', 'credentials' => ['auth_method' => 'resourceprincipal'], 'code' => 1],
+        ['name' => 'Oracle principal 带旧密钥', 'credentials' => ['auth_method' => 'instanceprincipal'] + $apiKey, 'code' => 0],
+        ['name' => 'Oracle API Key 缺字段', 'credentials' => ['auth_method' => 'apikey'], 'code' => 0],
+        ['name' => 'Oracle 非法方式', 'credentials' => ['auth_method' => 'configfile'], 'code' => 0],
+    ] as $case) {
+        $this->actingAsUser($this->user)
+            ->postJson('/api/cloud-deploy/access', [
+                'name' => $case['name'],
+                'provider' => 'oraclecloud',
+                'credentials' => $case['credentials'],
+            ])
+            ->assertOk()->assertJson(['code' => $case['code']]);
+    }
+
+    expect(CloudDeployAccess::withoutGlobalScopes()->where('provider', 'oraclecloud')->count())->toBe(3);
 });
 
 test('创建凭证时拒绝指向回环地址的部署服务', function () {

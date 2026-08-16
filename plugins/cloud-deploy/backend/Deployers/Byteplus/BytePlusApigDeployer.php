@@ -4,6 +4,8 @@ namespace Plugins\CloudDeploy\Deployers\Byteplus;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use stdClass;
 use Throwable;
 
@@ -21,9 +23,10 @@ use Throwable;
  *
  * APIG 为 region 维度（统一网关 host，但签名 region 取 config.region）。
  */
-class BytePlusApigDeployer extends AbstractDeployer
+class BytePlusApigDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
-    use ResolvesBytePlusRegion;
+    use MatchesBytePlusDomains, ResolvesBytePlusRegion;
+    use MatchesCertificateHostnames;
 
     /** 证书中心上传固定 ap-singapore-1（对齐 certimate alb/apig 等的 certmgr region）。 */
     private const CERTCENTER_REGION = 'ap-singapore-1';
@@ -47,7 +50,8 @@ class BytePlusApigDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
-            ['key' => 'domain', 'label' => '自定义域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '自定义域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -66,20 +70,22 @@ class BytePlusApigDeployer extends AbstractDeployer
     /**
      * @param  string  $certRef  remote_cert_id（证书中心 CertId）
      * @param  array{access_key_id:string,secret_access_key:string,project_name?:string}  $credentials
-     * @param  array{region:string,domain:string}  $config
+     * @param  array{region:string,domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         $region = (string) $this->requireConfig($config, 'region');
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certId = (string) $certRef;
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $certId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
 
         // 查域名（SDK 调用）包 guardSdk；空结果的业务错误放 guardSdk 外，保留可读文案（不被重建成通用异常）。
-        $domainIds = $this->guardSdk(function () use ($credentials, $region, $domain): array {
+        $domainIds = $this->guardSdk(function () use ($credentials, $region, $domain, $pattern, $certificate): array {
             /** @var BytePlusRestClient $client */
             $client = $this->makeClient('apig', $credentials, $region);
 
-            return $this->findDomainIds($client, $domain);
+            return $this->findDomainIds($client, $domain, $pattern, $certificate);
         });
 
         if ($domainIds === []) {
@@ -100,8 +106,11 @@ class BytePlusApigDeployer extends AbstractDeployer
      *
      * @return list<string>
      */
-    private function findDomainIds(BytePlusRestClient $client, string $domain): array
+    private function findDomainIds(BytePlusRestClient $client, string $domain, string $pattern, string $certificate): array
     {
+        if (! in_array($pattern, ['exact', 'wildcard', 'certsan'], true)) {
+            $this->fail("BytePlus APIG 不支持的域名匹配模式: $pattern");
+        }
         $ignored = ['Creating', 'CreationFailed', 'Deleting', 'DeletionFailed'];
         $ids = [];
         $pageNumber = 1;
@@ -122,7 +131,15 @@ class BytePlusApigDeployer extends AbstractDeployer
                 if (in_array($status, $ignored, true)) {
                     continue;
                 }
-                if ((string) ($item->Domain ?? '') === $domain) {
+                $candidate = (string) ($item->Domain ?? '');
+                if ($pattern === 'certsan') {
+                    $matched = $this->certificateMatchesHostname($certificate, $candidate);
+                } elseif ($pattern === 'exact') {
+                    $matched = $candidate === $domain;
+                } else {
+                    $matched = $this->hostnameMatches($domain, $candidate);
+                }
+                if ($matched) {
                     $id = (string) ($item->Id ?? '');
                     if ($id !== '') {
                         $ids[] = $id;
@@ -182,6 +199,7 @@ class BytePlusApigDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

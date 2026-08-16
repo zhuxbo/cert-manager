@@ -1,6 +1,7 @@
 <?php
 
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OciRequestSigner;
+use Plugins\CloudDeploy\Deployers\Oraclecloud\OracleApiKeyCredentialProvider;
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OracleCertMgmtUploader;
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OraclecloudApiException;
 use Plugins\CloudDeploy\Deployers\Oraclecloud\OraclecloudCertificatesMgmtDeployer;
@@ -55,13 +56,30 @@ function oracleCreds(string $privatePem): array
 
 test('Oracle Cloud 证书管理为证书服务型 + 元信息', function () {
     $deployer = new OraclecloudCertificatesMgmtDeployer;
+    [$privateKey] = ociTestRsaKeypair();
+    $compartment = 'ocid1.compartment.oc1..cccc';
     expect($deployer->provider())->toBe('oraclecloud');
     expect($deployer->product())->toBe('certificatesmgmt');
     expect($deployer->usesRemoteCertStore())->toBeTrue();
     expect($deployer->certUploader(['compartment_ocid' => 'ocid1.compartment.oc1..cccc']))
         ->toBeInstanceOf(OracleCertMgmtUploader::class);
-    expect($deployer->certUploader(['compartment_ocid' => 'ocid1.compartment.oc1..cccc'])->storeKind())
-        ->toBe('oci_certmgmt:ocid1.compartment.oc1..cccc');
+    $metadataStoreKind = $deployer->certUploader(['compartment_ocid' => $compartment])->storeKind();
+    expect($metadataStoreKind)
+        ->toBe('oci:u:8a11bae8c33b56ab09049352')
+        ->not->toContain($compartment)
+        ->and(strlen($metadataStoreKind))->toBeLessThanOrEqual(32);
+    expect($deployer->certUploader([])->storeKind())
+        ->toBe('oci:u:e3b0c44298fc1c149afbf4c8');
+    expect($deployer->certUploaderForJob(['compartment_ocid' => $compartment], oracleCreds($privateKey))->storeKind())
+        ->toBe('oci:a:'.substr(hash('sha256', "ap-tokyo-1\0".$compartment), 0, 24));
+});
+
+test('未准备的 Oracle uploader 只能返回元信息 namespace 且实际上传失败关闭', function () {
+    $uploader = (new OraclecloudCertificatesMgmtDeployer)
+        ->certUploader(['compartment_ocid' => 'ocid1.compartment.oc1..cccc']);
+
+    expect(fn () => $uploader->upload('LEAF', 'KEY', 'CHAIN', []))
+        ->toThrow(RuntimeException::class, 'Oracle Cloud 调用失败: RuntimeException');
 });
 
 test('keyId = tenancy/user/fingerprint', function () {
@@ -138,7 +156,6 @@ test('私钥无效时签名抛 OraclecloudApiException', function () {
 
 test('uploader.upload 走签名器 + createImportedCertificate（拆 leaf/chain/key）返回 OCID', function () {
     [$priv] = ociTestRsaKeypair();
-    $signer = new OciRequestSigner('t', 'u', 'f', $priv);
 
     $captured = null;
     $regionSeen = null;
@@ -149,16 +166,16 @@ test('uploader.upload 走签名器 + createImportedCertificate（拆 leaf/chain/
         return 'ocid1.certificate.oc1..xxxx';
     });
 
-    $deployer = oracleDeployerWith(function (string $kind, array $cred, $sgn, string $region) use ($signer, $client, &$regionSeen) {
-        if ($kind === 'signer') {
-            return $signer;
+    $deployer = oracleDeployerWith(function (string $kind, array $cred, $sgn, string $region) use ($client, &$regionSeen) {
+        if ($kind === 'provider') {
+            return new OracleApiKeyCredentialProvider($cred);
         }
         $regionSeen = $region;
 
         return $client;
     });
 
-    $ocid = $deployer->certUploader(['compartment_ocid' => 'ocid1.compartment.oc1..cccc'])
+    $ocid = $deployer->certUploaderForJob(['compartment_ocid' => 'ocid1.compartment.oc1..cccc'], oracleCreds($priv))
         ->upload('LEAFPEM', 'KEYPEM', 'CHAINPEM', oracleCreds($priv));
 
     expect($ocid)->toBe('ocid1.certificate.oc1..xxxx');
@@ -172,12 +189,11 @@ test('uploader.upload 走签名器 + createImportedCertificate（拆 leaf/chain/
 
 test('缺 region 抛明确异常', function () {
     [$priv] = ociTestRsaKeypair();
-    $signer = new OciRequestSigner('t', 'u', 'f', $priv);
-    $deployer = oracleDeployerWith(fn (string $kind) => $kind === 'signer' ? $signer : new stdClass);
+    $deployer = oracleDeployerWith(fn (string $kind, array $cred) => $kind === 'provider' ? new OracleApiKeyCredentialProvider($cred) : new stdClass);
 
     $creds = oracleCreds($priv);
     unset($creds['region']);
-    expect(fn () => $deployer->certUploader(['compartment_ocid' => 'c'])->upload('C', 'K', 'CH', $creds))
+    expect(fn () => $deployer->certUploaderForJob(['compartment_ocid' => 'c'], $creds)->upload('C', 'K', 'CH', $creds))
         ->toThrow(RuntimeException::class, '缺少区域');
 });
 
@@ -189,13 +205,12 @@ test('bind 为 no-op：导入已由 RemoteCertStore 完成，不抛异常', func
 
 test('upload 遇 OraclecloudApiException 脱敏重抛（无私钥、不挂 previous）', function () {
     [$priv] = ociTestRsaKeypair();
-    $signer = new OciRequestSigner('t', 'u', 'f', $priv);
     $client = Mockery::mock(OraclecloudClient::class);
     $client->shouldReceive('createImportedCertificate')->andThrow(new OraclecloudApiException('NotAuthorizedOrNotFound', 'Authorization failed'));
 
-    $deployer = oracleDeployerWith(fn (string $kind) => $kind === 'signer' ? $signer : $client);
+    $deployer = oracleDeployerWith(fn (string $kind, array $cred) => $kind === 'provider' ? new OracleApiKeyCredentialProvider($cred) : $client);
     try {
-        $deployer->certUploader(['compartment_ocid' => 'c'])->upload('C', 'K', 'CH', oracleCreds($priv));
+        $deployer->certUploaderForJob(['compartment_ocid' => 'c'], oracleCreds($priv))->upload('C', 'K', 'CH', oracleCreds($priv));
         expect(false)->toBeTrue('应抛异常');
     } catch (RuntimeException $e) {
         expect($e->getMessage())->toContain('NotAuthorizedOrNotFound')->toContain('Authorization failed');

@@ -17,9 +17,7 @@ use Throwable;
  * WAF 为 region 服务（waf.{region}.myhuaweicloud.com，basic 凭证 + projectId）。region + domain 必填。
  * 企业项目 ID 作 enterprise_project_id 查询参数透传。WAF 字段名 certificateid/certificatename（严格对齐 certimate）。
  *
- * 与 certimate 对齐的取舍：certimate WAF 支持 cloudserver/premiumhost/certificate 三类 DeployTarget。本端点
- * **仅实现 cloudserver（云模式）+ exact**（domain 必填、精确匹配 hostname、单域名绑定），不做 premiumhost（独享模式）、
- * 不做 certificate（替换既有证书）——与插件其他端点「仅核心路径 + 仅 exact」口径一致。
+ * 支持 cloudserver（云模式）和 premiumhost（独享模式）。certificate 目标的原地替换由 uploader 配置语义承载。
  *
  * 与 certimate 的偏差（已知，刻意修正）：certimate 用上传时生成的 CertName 作 UpdateHost 的 certificatename；本实现的
  * 证书服务型 bind 只拿到证书 id（不携带 name），故 bind 内 ShowCertificate 反查证书名再传 —— 同样达成绑定且契约干净。
@@ -49,7 +47,9 @@ class WafDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
-            ['key' => 'domain', 'label' => '防护域名', 'type' => 'string', 'required' => true],
+            ['key' => 'deploy_target', 'label' => '部署目标', 'type' => 'string', 'required' => false, 'default' => 'cloudserver'],
+            ['key' => 'domain', 'label' => '防护域名', 'type' => 'string', 'required' => false],
+            ['key' => 'certificate_id', 'label' => '证书 ID', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -61,11 +61,15 @@ class WafDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         $region = isset($config['region']) ? (string) $config['region'] : '';
+        $replaceCertificateId = strtolower((string) ($config['deploy_target'] ?? 'cloudserver')) === 'certificate'
+            ? (string) ($config['certificate_id'] ?? '')
+            : '';
 
         return new HuaweiWafUploader(
             $region,
             fn (array $credentials): object => $this->makeClient('iam', $credentials),
             fn (array $credentials, string $projectId): object => $this->makeClient('waf', $credentials, $region, $projectId),
+            $replaceCertificateId,
         );
     }
 
@@ -77,11 +81,23 @@ class WafDeployer extends AbstractDeployer
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         $region = (string) $this->requireConfig($config, 'region');
-        $domain = (string) $this->requireConfig($config, 'domain');
+        $target = strtolower((string) ($config['deploy_target'] ?? 'cloudserver'));
+        $domain = (string) ($config['domain'] ?? '');
+        if (in_array($target, ['cloudserver', 'premiumhost'], true) && $domain === '') {
+            $this->requireConfig($config, 'domain');
+        }
+        if ($target === 'certificate') {
+            $this->requireConfig($config, 'certificate_id');
+
+            return;
+        }
+        if (! in_array($target, ['cloudserver', 'premiumhost'], true)) {
+            $this->fail("Huawei WAF 不支持的部署目标: $target");
+        }
         $certId = (string) $certRef;
         $enterpriseProjectId = isset($credentials['enterprise_project_id']) ? (string) $credentials['enterprise_project_id'] : '';
 
-        $this->guardSdk(function () use ($credentials, $region, $domain, $certId, $enterpriseProjectId) {
+        $this->guardSdk(function () use ($credentials, $region, $target, $domain, $certId, $enterpriseProjectId) {
             $projectId = $this->resolveProjectId($credentials, $region);
 
             /** @var HuaweicloudRestClient $client */
@@ -93,14 +109,16 @@ class WafDeployer extends AbstractDeployer
             $certResp = $client->get("/v1/$projectId/waf/certificate/$certId", $epQuery);
             $certName = is_string($certResp['name'] ?? null) ? $certResp['name'] : '';
 
-            // ListHost：exact 匹配 hostname（去 `*` 前缀，对齐 certimate strings.TrimPrefix("*")），分页找 host_id。
-            $hostId = $this->findHostId($client, $projectId, $domain, $epQuery);
+            $premium = $target === 'premiumhost';
+            $hostId = $this->findHostId($client, $projectId, $domain, $epQuery, $premium);
             if ($hostId === '') {
-                throw new HuaweicloudApiException('HostNotFound', "未找到云模式防护域名: $domain");
+                throw new HuaweicloudApiException('HostNotFound', "未找到防护域名: $domain");
             }
 
-            // UpdateHost：绑定证书（字段名 certificateid / certificatename）。
-            $client->put("/v1/$projectId/waf/instance/$hostId", [
+            $path = $premium
+                ? "/v1/$projectId/premium-waf/host/$hostId"
+                : "/v1/$projectId/waf/instance/$hostId";
+            $client->put($path, [
                 'certificateid' => $certId,
                 'certificatename' => $certName,
             ], $epQuery);
@@ -112,16 +130,22 @@ class WafDeployer extends AbstractDeployer
      *
      * @param  array<string,string>  $epQuery
      */
-    private function findHostId(HuaweicloudRestClient $client, string $projectId, string $domain, array $epQuery): string
-    {
+    private function findHostId(
+        HuaweicloudRestClient $client,
+        string $projectId,
+        string $domain,
+        array $epQuery,
+        bool $premium = false,
+    ): string {
         $target = ltrim($domain, '*');
         $page = 1;
 
         while (true) {
-            $resp = $client->get("/v1/$projectId/waf/instance", $epQuery + [
+            $path = $premium ? "/v1/$projectId/premium-waf/host" : "/v1/$projectId/waf/instance";
+            $resp = $client->get($path, $epQuery + [
                 'hostname' => $target,
-                'page' => $page,
-                'pagesize' => self::PAGE_SIZE,
+                'page' => $premium ? (string) $page : $page,
+                'pagesize' => $premium ? (string) self::PAGE_SIZE : self::PAGE_SIZE,
             ]);
 
             $items = is_array($resp['items'] ?? null) ? $resp['items'] : [];

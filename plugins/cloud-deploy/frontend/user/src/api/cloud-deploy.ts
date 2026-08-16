@@ -6,8 +6,11 @@ const base = "/cloud-deploy";
 export interface ConfigField {
   key: string;
   label: string;
-  type: "string" | "number" | "select";
+  type: "string" | "number" | "select" | "bool" | "boolean";
   required?: boolean;
+  default?: unknown;
+  required_when?: { key: string; equals: unknown };
+  visible_when?: { key: string; equals: unknown };
   options?: Array<{ label: string; value: string }>;
   description?: string;
   help?: string;
@@ -16,7 +19,12 @@ export interface ConfigField {
 export interface CredentialField {
   key: string;
   label: string;
+  type?: "string" | "number" | "select" | "bool" | "boolean";
   required?: boolean;
+  default?: unknown;
+  required_when?: { key: string; equals: unknown };
+  visible_when?: { key: string; equals: unknown };
+  options?: Array<{ label: string; value: string }>;
   secret?: boolean;
   description?: string;
   help?: string;

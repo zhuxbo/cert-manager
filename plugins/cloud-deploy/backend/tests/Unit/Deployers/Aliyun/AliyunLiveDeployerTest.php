@@ -1,6 +1,10 @@
 <?php
 
 use AlibabaCloud\SDK\Live\V20161101\Live;
+use AlibabaCloud\SDK\Live\V20161101\Models\DescribeLiveUserDomainsResponse;
+use AlibabaCloud\SDK\Live\V20161101\Models\DescribeLiveUserDomainsResponseBody;
+use AlibabaCloud\SDK\Live\V20161101\Models\DescribeLiveUserDomainsResponseBody\domains;
+use AlibabaCloud\SDK\Live\V20161101\Models\DescribeLiveUserDomainsResponseBody\domains\pageData;
 use AlibabaCloud\SDK\Live\V20161101\Models\SetLiveDomainCertificateRequest;
 use AlibabaCloud\SDK\Live\V20161101\Models\SetLiveDomainCertificateResponse;
 use AlibabaCloud\Tea\Exception\TeaError;
@@ -28,6 +32,33 @@ test('阿里云直播 直传，不走证书服务（CertType=upload）', functio
     expect($deployer->certUploader())->toBeNull();
     expect($deployer->provider())->toBe('aliyun');
     expect($deployer->product())->toBe('live');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('domain_match_pattern');
+});
+
+test('wildcard 列举 online 域名并只更新单层匹配项', function () {
+    $updated = [];
+    $live = Mockery::mock(Live::class);
+    $live->shouldReceive('describeLiveUserDomains')->once()->andReturn(new DescribeLiveUserDomainsResponse([
+        'body' => new DescribeLiveUserDomainsResponseBody([
+            'domains' => new domains(['pageData' => [
+                new pageData(['domainName' => 'a.example.com']),
+                new pageData(['domainName' => 'deep.a.example.com']),
+            ]]),
+        ]),
+    ]));
+    $live->shouldReceive('setLiveDomainCertificate')->once()->andReturnUsing(function ($request) use (&$updated) {
+        $updated[] = $request->domainName;
+
+        return new SetLiveDomainCertificateResponse;
+    });
+
+    aliyunLiveDeployerWith(fn () => $live)->bind(
+        ['cert' => 'CERTPEM', 'key' => 'KEY', 'chain' => 'CHAIN'],
+        ['access_key_id' => 'AK', 'access_key_secret' => 'SK', 'resource_group_id' => 'rg-1'],
+        ['region' => 'eu-central-1', 'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com'],
+    );
+
+    expect($updated)->toBe(['a.example.com']);
 });
 
 test('bind 调 setLiveDomainCertificate 带完整链 + key + 唯一 CertName（CertType=upload）', function () {

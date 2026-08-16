@@ -11,7 +11,7 @@ use Throwable;
  *
  * 泄露面：API Key 放 `X-API-Key` 头（非 URL、非 body），故响应体错误码/描述不含凭证，安全。
  * 但底层 Guzzle 网络异常 message 可能含请求 URL → 只暴露类名。
- *   - SamwafApiException（结构化 API 错误，HTTP 非 2xx / code≠0 归一）：取 code + 自带 msg 拼安全文案。
+ *   - SamwafApiException：只接收 SamwafClient 生成的固定本地错误码与文案。
  *   - GuzzleException / 其余未知 Throwable：只暴露类名，绝不回传 getMessage()。
  * 末尾过 CredentialScrubber 兜底再扫一遍（纵深防御）。
  */

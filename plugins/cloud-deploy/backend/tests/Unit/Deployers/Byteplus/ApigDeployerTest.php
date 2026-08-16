@@ -31,6 +31,30 @@ test('BytePlus APIG：证书服务型（storeKind=byteplus_certcenter）', funct
     expect($deployer->certUploader()->storeKind())->toBe('byteplus_certcenter');
     expect($deployer->provider())->toBe('byteplus');
     expect($deployer->product())->toBe('apig');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain_match_pattern');
+});
+
+test('bind wildcard 更新所有单层匹配域名', function () {
+    $updated = [];
+    $apig = Mockery::mock(BytePlusRestClient::class);
+    $apig->shouldReceive('openApi')->andReturnUsing(function ($method, $action, $version, $query, $body) use (&$updated) {
+        if ($action === 'ListCustomDomains') {
+            return (object) ['Items' => [
+                (object) ['Id' => 'd-1', 'Domain' => 'a.example.com', 'Status' => 'Running'],
+                (object) ['Id' => 'd-2', 'Domain' => 'deep.a.example.com', 'Status' => 'Running'],
+            ]];
+        }
+        if ($action === 'GetCustomDomain') {
+            return (object) ['CustomDomain' => (object) ['Protocol' => ['HTTPS']]];
+        }
+        $updated[] = $body['Id'];
+
+        return new stdClass;
+    });
+    byteplusApigDeployerWith(fn () => $apig)->bind('cert-1', byteplusApigCreds(), [
+        'region' => 'ap-singapore-1', 'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    expect($updated)->toBe(['d-1']);
 });
 
 test('bind exact：ListCustomDomains 过滤 Domain → GetCustomDomain 取 Protocol → UpdateCustomDomain 设 CertificateId(+HTTPS)', function () {

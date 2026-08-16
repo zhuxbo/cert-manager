@@ -1,5 +1,10 @@
 <?php
 
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeDomainExtensionsRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeLoadBalancerAttributeRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeLoadBalancerHTTPSListenerAttributeRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeLoadBalancerListenersRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\SetDomainExtensionAttributeRequest;
 use AlibabaCloud\SDK\Slb\V20140515\Models\SetLoadBalancerHTTPSListenerAttributeRequest;
 use AlibabaCloud\SDK\Slb\V20140515\Models\SetLoadBalancerHTTPSListenerAttributeResponse;
 use AlibabaCloud\SDK\Slb\V20140515\Models\UploadServerCertificateRequest;
@@ -53,7 +58,71 @@ test('阿里云 CLB 走证书服务（SLB 服务证书）+ 基本元信息', fun
     expect($deployer->label())->toBe('阿里云传统型负载均衡 CLB');
     // configSchema 覆盖 bind 实际读取的三项
     expect(array_column($deployer->configSchema(), 'key'))
-        ->toContain('load_balancer_id')->toContain('listener_port')->toContain('region');
+        ->toContain('deploy_target')->toContain('load_balancer_id')->toContain('listener_port')->toContain('domain')->toContain('region');
+});
+
+test('bind loadbalancer：列 HTTPS 监听端口并批量更新主证书', function () {
+    $listReq = null;
+    $updated = [];
+    $slb = Mockery::mock(Slb::class);
+    $slb->shouldReceive('describeLoadBalancerAttribute')->once()->with(Mockery::on(fn (DescribeLoadBalancerAttributeRequest $r) => $r->loadBalancerId === 'lb-1'))->andReturn(new stdClass);
+    $slb->shouldReceive('describeLoadBalancerListeners')->once()->andReturnUsing(function (DescribeLoadBalancerListenersRequest $req) use (&$listReq) {
+        $listReq = $req;
+
+        return (object) ['body' => (object) ['listeners' => [
+            (object) ['listenerPort' => 443],
+            (object) ['listenerPort' => 8443],
+        ]]];
+    });
+    $slb->shouldReceive('describeLoadBalancerHTTPSListenerAttribute')->twice()->with(Mockery::type(DescribeLoadBalancerHTTPSListenerAttributeRequest::class))->andReturn((object) ['body' => (object) ['serverCertificateId' => 'old']]);
+    $slb->shouldReceive('setLoadBalancerHTTPSListenerAttribute')->twice()->andReturnUsing(function (SetLoadBalancerHTTPSListenerAttributeRequest $req) use (&$updated) {
+        $updated[] = $req->listenerPort;
+
+        return new SetLoadBalancerHTTPSListenerAttributeResponse;
+    });
+
+    $deployer = aliyunClbDeployerWith(fn (string $kind) => $kind === 'slb' ? $slb : new stdClass);
+    $deployer->bind('cert-new', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'cn-hangzhou', 'deploy_target' => 'loadbalancer', 'load_balancer_id' => 'lb-1',
+    ]);
+
+    expect($listReq->listenerProtocol)->toBe('https');
+    expect($listReq->maxResults)->toBe(100);
+    expect($updated)->toBe([443, 8443]);
+});
+
+test('bind SNI：仅替换精确匹配扩展域名且证书不同的条目', function () {
+    $captured = null;
+    $slb = Mockery::mock(Slb::class);
+    $slb->shouldReceive('describeLoadBalancerHTTPSListenerAttribute')
+        ->once()
+        ->with(Mockery::type(DescribeLoadBalancerHTTPSListenerAttributeRequest::class))
+        ->andReturn((object) ['body' => (object) ['serverCertificateId' => 'listener-default']]);
+    $slb->shouldReceive('describeDomainExtensions')
+        ->once()
+        ->with(Mockery::on(fn (DescribeDomainExtensionsRequest $r) => $r->loadBalancerId === 'lb-1' && $r->listenerPort === 443))
+        ->andReturn((object) ['body' => (object) ['domainExtensions' => (object) ['domainExtension' => [
+            (object) ['domain' => 'api.example.com', 'serverCertificateId' => 'old-cert', 'domainExtensionId' => 'ext-1'],
+            (object) ['domain' => 'www.example.com', 'serverCertificateId' => 'old-cert', 'domainExtensionId' => 'ext-2'],
+            (object) ['domain' => 'api.example.com', 'serverCertificateId' => 'cert-new', 'domainExtensionId' => 'ext-3'],
+        ]]]]);
+    $slb->shouldReceive('setDomainExtensionAttribute')
+        ->once()
+        ->andReturnUsing(function (SetDomainExtensionAttributeRequest $req) use (&$captured) {
+            $captured = $req;
+
+            return new stdClass;
+        });
+
+    $deployer = aliyunClbDeployerWith(fn () => $slb);
+    $deployer->bind('cert-new', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'region' => 'cn-hangzhou', 'load_balancer_id' => 'lb-1', 'listener_port' => 443,
+        'domain' => 'api.example.com',
+    ]);
+
+    expect($captured->regionId)->toBe('cn-hangzhou');
+    expect($captured->domainExtensionId)->toBe('ext-1');
+    expect($captured->serverCertificateId)->toBe('cert-new');
 });
 
 test('certUploader 是 SLB 上传器，storeKind 含 region（隔离不同 region 标识空间）', function () {
@@ -107,6 +176,9 @@ test('upload 未返回 ServerCertificateId 时抛明确异常（非 TypeError）
 test('bind 调 slb.SetLoadBalancerHTTPSListenerAttribute（LoadBalancerId+ListenerPort(int)+ServerCertificateId+RegionId）', function () {
     $captured = null;
     $slb = Mockery::mock(Slb::class);
+    $slb->shouldReceive('describeLoadBalancerHTTPSListenerAttribute')
+        ->once()
+        ->andReturn((object) ['body' => (object) ['serverCertificateId' => 'old-cert']]);
     $slb->shouldReceive('setLoadBalancerHTTPSListenerAttribute')
         ->once()
         ->andReturnUsing(function (SetLoadBalancerHTTPSListenerAttributeRequest $req) use (&$captured) {
@@ -132,6 +204,9 @@ test('bind 调 slb.SetLoadBalancerHTTPSListenerAttribute（LoadBalancerId+Listen
 test('bind 把 region 透传进 slb client endpoint（按 region 实例化）', function () {
     $seenRegion = null;
     $slb = Mockery::mock(Slb::class);
+    $slb->shouldReceive('describeLoadBalancerHTTPSListenerAttribute')
+        ->once()
+        ->andReturn((object) ['body' => (object) ['serverCertificateId' => 'old-cert']]);
     $slb->shouldReceive('setLoadBalancerHTTPSListenerAttribute')->andReturn(new SetLoadBalancerHTTPSListenerAttributeResponse);
 
     $deployer = aliyunClbDeployerWith(function (string $kind, array $cred, string $region) use (&$seenRegion, $slb) {
@@ -175,6 +250,9 @@ test('缺 region 配置抛业务错误', function () {
 
 test('bind SDK 抛 TeaError（API 错误）时脱敏重抛（含错误码、无 AK/SK、不挂 previous）', function () {
     $slb = Mockery::mock(Slb::class);
+    $slb->shouldReceive('describeLoadBalancerHTTPSListenerAttribute')
+        ->once()
+        ->andReturn((object) ['body' => (object) ['serverCertificateId' => 'old-cert']]);
     $slb->shouldReceive('setLoadBalancerHTTPSListenerAttribute')->andThrow(new TeaError([
         'code' => 'ListenerNotFound',
         'message' => 'code: 404 request id: req-1',

@@ -27,6 +27,16 @@ if (! function_exists('jdCreds')) {
     }
 }
 
+function jdcloudCdnCertificate(string $commonName): string
+{
+    $key = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => $commonName], $key, ['digest_alg' => 'sha256']);
+    $x509 = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
+    openssl_x509_export($x509, $pem);
+
+    return $pem;
+}
+
 test('京东云 CDN：证书服务型（storeKind jdcloud_ssl）', function () {
     $deployer = new JdcloudCdnDeployer;
     expect($deployer->usesRemoteCertStore())->toBeTrue();
@@ -49,6 +59,23 @@ test('bind：QueryDomainConfig 取 jumpType → SetHttpType 绑 certId（沿用 
     $deployer->bind('jdcert-001', jdCreds(), ['domain' => 'cdn.example.com']);
 
     expect($captured)->toBe(['domain' => 'cdn.example.com', 'certId' => 'jdcert-001', 'jumpType' => 'redirect']);
+});
+
+test('certsan 分页列举非 offline CDN 域名并按证书主机名批量绑定', function () {
+    $bound = [];
+    $client = Mockery::mock(JdcloudRestClient::class);
+    $client->shouldReceive('listCdnDomains')->once()->andReturn(['a.example.com', 'b.example.com']);
+    $client->shouldReceive('queryCdnDomainHttpsJumpType')->once()->with('a.example.com')->andReturn('follow');
+    $client->shouldReceive('setCdnHttpType')->once()->andReturnUsing(function (string $domain) use (&$bound) {
+        $bound[] = $domain;
+    });
+
+    $deployer = jdcloudCdnDeployerWith(fn () => $client);
+    $deployer->bind(['remote_cert_id' => 'cert-1', 'cert' => jdcloudCdnCertificate('a.example.com'), 'chain' => ''], jdCreds(), [
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($bound)->toBe(['a.example.com']);
 });
 
 test('缺 domain 配置抛业务错误', function () {

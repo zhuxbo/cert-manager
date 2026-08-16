@@ -22,6 +22,8 @@ use Throwable;
  */
 class TencentSslDeployer extends AbstractDeployer implements UploadOnlyDeployerInterface
 {
+    use UsesTencentEndpoint;
+
     public function provider(): string
     {
         return 'tencent';
@@ -39,7 +41,9 @@ class TencentSslDeployer extends AbstractDeployer implements UploadOnlyDeployerI
 
     public function configSchema(): array
     {
-        return [];
+        return [
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
+        ];
     }
 
     public function usesRemoteCertStore(): bool
@@ -49,7 +53,7 @@ class TencentSslDeployer extends AbstractDeployer implements UploadOnlyDeployerI
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
@@ -69,11 +73,13 @@ class TencentSslDeployer extends AbstractDeployer implements UploadOnlyDeployerI
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
         $http->setReqTimeout(15);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
         return match ($kind) {
             'ssl' => new SslClient($cred, '', $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

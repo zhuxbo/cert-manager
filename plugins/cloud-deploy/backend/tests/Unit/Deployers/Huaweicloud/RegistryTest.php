@@ -10,10 +10,10 @@ uses(TestCase::class);
 /**
  * 华为云 registry 自检：把 registry/huaweicloud.php 的 Closure 应用到一个**全新** Registry（不依赖
  * CloudDeployServiceProvider 的装配数组——该数组是禁改的共享文件，本插件波次尚未把 'huaweicloud' 加入），
- * 断言 provider + 8 端点全部注册、元信息/configSchema/credentialSchema 合法、catalog 输出正确。
+ * 断言 provider + 9 端点全部注册、元信息/configSchema/credentialSchema 合法、catalog 输出正确。
  *
  * 与全局 RegistryCompletenessTest（遍历 app(Registry::class)、期望集写死、当前不含华为云）互补：
- * 待主系统把 'huaweicloud' 加入 ServiceProvider 装配数组并把期望集补上 8 端点后，本测试可与之合并。
+ * 待主系统把 'huaweicloud' 加入 ServiceProvider 装配数组并把期望集补上 9 端点后，本测试可与之合并。
  */
 function huaweicloudRegistry(): Registry
 {
@@ -23,10 +23,10 @@ function huaweicloudRegistry(): Registry
     return $registry;
 }
 
-/** 期望的 8 端点。 */
+/** 期望的 9 端点。 */
 function huaweicloudExpectedProducts(): array
 {
-    return ['scm', 'cdn', 'elb', 'waf', 'live', 'obs', 'apig', 'aad'];
+    return ['scm', 'cdn', 'elb', 'waf', 'live', 'obs', 'apig', 'aad', 'vod'];
 }
 
 test('provider huaweicloud 注册 + credentialSchema 合法（AK/SK + 选填企业项目）', function () {
@@ -45,7 +45,7 @@ test('provider huaweicloud 注册 + credentialSchema 合法（AK/SK + 选填企�
     }
 });
 
-test('8 端点全部注册且元信息 + configSchema 合法', function () {
+test('9 端点全部注册且元信息 + configSchema 合法', function () {
     $registry = huaweicloudRegistry();
 
     $actual = [];
@@ -91,7 +91,7 @@ test('8 端点全部注册且元信息 + configSchema 合法', function () {
     }
 });
 
-test('catalog 输出含华为云 provider + 8 products', function () {
+test('catalog 输出含华为云 provider + 9 products', function () {
     $registry = huaweicloudRegistry();
     $catalog = $registry->catalog();
 
@@ -115,11 +115,12 @@ test('catalog 输出含华为云 provider + 8 products', function () {
 test('证书服务型 storeKind 隔离：scm 全局、elb/waf region 维度', function () {
     $registry = huaweicloudRegistry();
 
-    // SCM 系（scm/cdn/live/obs）共用 huawei_scm
+    // SCM 系（scm/cdn/live/obs/vod）共用 huawei_scm
     expect($registry->resolveDeployer('huaweicloud', 'scm')->certUploader([])->storeKind())->toBe('huawei_scm');
     expect($registry->resolveDeployer('huaweicloud', 'cdn')->certUploader([])->storeKind())->toBe('huawei_scm');
     expect($registry->resolveDeployer('huaweicloud', 'live')->certUploader([])->storeKind())->toBe('huawei_scm');
     expect($registry->resolveDeployer('huaweicloud', 'obs')->certUploader([])->storeKind())->toBe('huawei_scm');
+    expect($registry->resolveDeployer('huaweicloud', 'vod')->certUploader([])->storeKind())->toBe('huawei_scm');
 
     // ELB / WAF region 维度
     expect($registry->resolveDeployer('huaweicloud', 'elb')->certUploader(['region' => 'cn-east-3'])->storeKind())->toBe('huawei_elb:cn-east-3');

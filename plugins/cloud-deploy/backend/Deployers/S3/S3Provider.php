@@ -30,6 +30,7 @@ class S3Provider implements ProviderInterface
             ['key' => 'secret_access_key', 'label' => 'SecretAccessKey', 'required' => true, 'secret' => true],
             ['key' => 'region', 'label' => '地域（如 us-east-1；MinIO/R2 任填）', 'required' => true],
             ['key' => 'endpoint', 'label' => '自定义 Endpoint（选填，S3 兼容服务必填）', 'required' => false, 'destination' => true],
+            ['key' => 'allow_insecure_connections', 'label' => '允许不安全连接（跳过 TLS 校验）', 'required' => false],
         ];
     }
 }

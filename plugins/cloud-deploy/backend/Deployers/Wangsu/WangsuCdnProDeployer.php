@@ -91,6 +91,8 @@ class WangsuCdnProDeployer extends AbstractDeployer implements HasPollBudget, Re
 
         $certPem = (string) ($certRef['cert'] ?? '');
         $keyPem = (string) ($certRef['key'] ?? '');
+        $chainPem = (string) ($certRef['chain'] ?? '');
+        $fullChain = trim($chainPem) === '' ? rtrim($certPem) : rtrim($certPem)."\n".trim($chainPem);
 
         /** @var WangsuRestClient $client */
         $client = $this->makeClient('api', $credentials);
@@ -102,7 +104,7 @@ class WangsuCdnProDeployer extends AbstractDeployer implements HasPollBudget, Re
         $timestamp = $this->now();
         $encryptedPrivateKey = $this->encryptPrivateKey($keyPem, $apiKey, $timestamp);
         $newVersion = [
-            'certificate' => $certPem,
+            'certificate' => $fullChain,
             'privateKey' => $encryptedPrivateKey,
         ];
 

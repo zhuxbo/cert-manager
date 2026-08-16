@@ -38,7 +38,45 @@ test('又拍云 CDN 走证书服务（storeKind=upyun_ssl）+ 元信息', functi
     expect($deployer->certUploader()->storeKind())->toBe('upyun_ssl');
     expect($deployer->provider())->toBe('upyun');
     expect($deployer->product())->toBe('cdn');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain')->toContain('domain_match_pattern');
+});
+
+test('bind wildcard 先枚举可见 NORMAL 域名再逐个绑定', function () {
+    $domains = [];
+    $client = Mockery::mock(UpyunRestClient::class);
+    $client->shouldReceive('getDomains')->once()->andReturn(['a.example.com', 'deep.a.example.com', '.example.com']);
+    $client->shouldReceive('getHttpsServiceManager')->twice()->andReturn([]);
+    $client->shouldReceive('updateHttpsCertificateManager')->twice()->andReturnUsing(function (string $id, string $domain) use (&$domains) {
+        $domains[] = $domain;
+    });
+    $client->shouldReceive('migrateHttpsDomain')->never();
+    upyunCdnDeployerWith(fn () => $client)->bind('cert-1', upyunCdnCreds(), [
+        'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    expect($domains)->toBe(['a.example.com', '.example.com']);
+});
+
+test('bind certsan 用 opt-in leaf 证书枚举匹配域名', function () {
+    $conf = tempnam(sys_get_temp_dir(), 'upyun_san_');
+    file_put_contents($conf, "[v3]\nsubjectAltName=DNS:a.example.com,DNS:*.wild.example.com\n");
+    $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $csr = openssl_csr_new(['commonName' => 'a.example.com'], $key, ['digest_alg' => 'sha256']);
+    $cert = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256', 'config' => $conf, 'x509_extensions' => 'v3']);
+    openssl_x509_export($cert, $pem);
+    @unlink($conf);
+
+    $domains = [];
+    $client = Mockery::mock(UpyunRestClient::class);
+    $client->shouldReceive('getDomains')->once()->andReturn(['a.example.com', 'x.wild.example.com', 'deep.x.wild.example.com', 'other.example.com']);
+    $client->shouldReceive('getHttpsServiceManager')->twice()->andReturn([]);
+    $client->shouldReceive('updateHttpsCertificateManager')->twice()->andReturnUsing(function (string $id, string $domain) use (&$domains) {
+        $domains[] = $domain;
+    });
+    $client->shouldReceive('migrateHttpsDomain')->never();
+    upyunCdnDeployerWith(fn () => $client)->bind([
+        'remote_cert_id' => 'cert-1', 'cert' => $pem, 'chain' => '',
+    ], upyunCdnCreds(), ['domain_match_pattern' => 'certsan']);
+    expect($domains)->toBe(['a.example.com', 'x.wild.example.com']);
 });
 
 test('uploader.upload 调 uploadHttpsCertificate（完整链 + key）返回 certificate_id', function () {

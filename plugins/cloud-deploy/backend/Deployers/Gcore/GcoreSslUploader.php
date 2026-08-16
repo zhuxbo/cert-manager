@@ -17,10 +17,9 @@ use Throwable;
  * 字段名严格对齐 gcorelabscdn-go v1.0.37 sslcerts.CreateRequest：
  *   Cert → `sslCertificate`、PrivateKey → `sslPrivateKey`（写错大小写会被静默丢成 null，绑定失败）。
  *
- * 与 certimate 对齐的取舍：
- * - sslCertificate 传**完整链**（cert+chain），与 certimate certmgr 把 certPEM（完整链）整体上传一致。
- * - certimate gcore-cdn 的 certificateId 配置（更新已有证书 PATCH /cdn/sslData/{id}）被插件的「上传+去重」模型取代：
- *   RemoteCertStore 已按 (access_id, store_kind, fingerprint) 去重，每张新证书上传一次拿新 id，bind 绑新 id。
+ * sslCertificate 传**完整链**（cert+chain），与 certimate certmgr 把 certPEM（完整链）整体上传一致。
+ * certificateId 非零时先 GET 保留名称，再 PATCH 原证书；storeKind 带入证书 ID，避免 RemoteCertStore
+ * 把不同替换目标错误合并。未指定 ID 时仍按插件统一架构上传并按指纹去重。
  *
  * SDK client（GcoreClient）经注入缝 $clientFactory（deployer 的 makeClient('api', …)）构造 ——
  * 测试 override deployer::makeClient 即自动作用于此处，无需单独 mock 上传器。
@@ -28,11 +27,14 @@ use Throwable;
 class GcoreSslUploader implements CertUploaderInterface
 {
     /** @param Closure(array<string,mixed>):object $clientFactory 返回 GcoreClient */
-    public function __construct(private readonly Closure $clientFactory) {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly int $certificateId = 0,
+    ) {}
 
     public function storeKind(): string
     {
-        return 'gcore';
+        return $this->certificateId > 0 ? 'gcore:'.$this->certificateId : 'gcore';
     }
 
     /**
@@ -47,13 +49,24 @@ class GcoreSslUploader implements CertUploaderInterface
         try {
             /** @var GcoreClient $client */
             $client = ($this->clientFactory)($credentials);
-            $id = $client->createSslData([
-                'name' => $name,
-                'sslCertificate' => $fullChain,
-                'sslPrivateKey' => trim($keyPem),
-                'automated' => false,
-                'validate_root_ca' => false,
-            ]);
+            if ($this->certificateId > 0) {
+                $existing = $client->getSslData($this->certificateId);
+                $client->updateSslData($this->certificateId, [
+                    'name' => (string) ($existing['name'] ?? ''),
+                    'sslCertificate' => $fullChain,
+                    'sslPrivateKey' => trim($keyPem),
+                    'validate_root_ca' => false,
+                ]);
+                $id = $this->certificateId;
+            } else {
+                $id = $client->createSslData([
+                    'name' => $name,
+                    'sslCertificate' => $fullChain,
+                    'sslPrivateKey' => trim($keyPem),
+                    'automated' => false,
+                    'validate_root_ca' => false,
+                ]);
+            }
         } catch (Throwable $e) {
             throw new RuntimeException(GcoreErrorSanitizer::sanitize($e), 0);
         }

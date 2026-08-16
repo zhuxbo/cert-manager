@@ -42,7 +42,7 @@ function hwClientWithMock(array $responses, ArrayObject $history, string $host =
  *
  * @param  array<string,string>  $query
  */
-function hwReferenceSignature(string $method, string $path, array $query, string $payload, string $host, string $sdkDate, string $secret): string
+function hwReferenceSignature(string $method, string $path, array $query, string $payload, string $host, string $sdkDate, string $secret, string $projectId = ''): string
 {
     // CanonicalURI：逐段 rawurlencode，保证以 / 结尾
     $segments = array_map('rawurlencode', explode('/', $path === '' ? '/' : $path));
@@ -59,8 +59,11 @@ function hwReferenceSignature(string $method, string $path, array $query, string
     }
     $canonicalQuery = implode('&', $qParts);
 
-    // 签名头：host + x-sdk-date（升序）
+    // 签名头：host + 可选 x-project-id + x-sdk-date（按官方 SDK 字典序）
     $signed = ['host' => $host, 'x-sdk-date' => $sdkDate];
+    if ($projectId !== '') {
+        $signed['x-project-id'] = $projectId;
+    }
     ksort($signed, SORT_STRING);
     $canonicalHeaders = '';
     foreach ($signed as $name => $value) {
@@ -168,7 +171,7 @@ test('PUT + query：CanonicalURI 以 / 结尾、query 进签名，参考实现�
     expect($auth['Signature'])->toBe($expected);
 });
 
-test('projectId 非空时带 X-Project-Id 头', function () {
+test('projectId 非空时 X-Project-Id 纳入 CanonicalHeaders 和 SignedHeaders', function () {
     $history = new ArrayObject;
     $client = hwClientWithMock([new Response(200, [], '{}')], $history, 'elb.cn-north-4.myhuaweicloud.com', 'proj-42');
 
@@ -176,7 +179,22 @@ test('projectId 非空时带 X-Project-Id 头', function () {
 
     /** @var RequestInterface $req */
     $req = $history[0]['request'];
-    expect($req->getHeaderLine('X-Project-Id'))->toBe('proj-42');
+    $sdkDate = $req->getHeaderLine('X-Sdk-Date');
+    $auth = hwParseAuthorization($req->getHeaderLine('Authorization'));
+    $expected = hwReferenceSignature(
+        'GET',
+        '/v3/proj-42/elb/listeners/l-1',
+        [],
+        '',
+        'elb.cn-north-4.myhuaweicloud.com',
+        $sdkDate,
+        'SK-SECRET-TEST',
+        'proj-42',
+    );
+
+    expect($req->getHeaderLine('X-Project-Id'))->toBe('proj-42')
+        ->and($auth['SignedHeaders'])->toBe('host;x-project-id;x-sdk-date')
+        ->and($auth['Signature'])->toBe($expected);
 });
 
 test('响应体含 error_code → 抛 HuaweicloudApiException（code + error_msg）', function () {
@@ -214,6 +232,23 @@ test('成功响应原样返回解析后的数组', function () {
 
     $resp = $client->post('/v3/p/elb/certificates', ['certificate' => []]);
     expect($resp['certificate']['id'])->toBe('e-1');
+});
+
+test('非空 2xx 响应必须是合法 JSON 对象', function (string $body) {
+    $client = hwClientWithMock([new Response(200, [], $body)], new ArrayObject);
+
+    expect(fn () => $client->get('/v3/projects'))
+        ->toThrow(HuaweicloudApiException::class, 'HuaweicloudInvalidResponse');
+})->with([
+    '畸形 JSON' => ['{"projects":'],
+    'JSON 数组' => ['[]'],
+    'JSON 标量' => ['true'],
+]);
+
+test('空 2xx 响应与华为云 SDK 空 body 语义一致', function () {
+    $client = hwClientWithMock([new Response(204)], new ArrayObject);
+
+    expect($client->put('/v1/project/https-cert', []))->toBe([]);
 });
 
 test('CanonicalURI 对 path 段做 RFC3986 编码（空格 %20，参考实现一致）', function () {

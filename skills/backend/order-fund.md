@@ -1,5 +1,7 @@
 # 订单与资金安全
 
+退款入口、状态、金额口径、退款期和 task 清理的总览见 [退款矩阵](refund-matrix.md)。本文件保留订单资金实现、并发与审计细节。
+
 ## 产品价格批量初始化
 
 - **启用范围**：只处理 `products.status=1` 的启用产品；禁用产品不进入预览统计、成本告警、状态指纹或价格查询，默认模式不为其补价，强制模式也不得删除或重建其历史价格。正式执行锁住完整产品集合后再筛选启用产品，避免状态在指纹校验与写入之间切换。
@@ -76,8 +78,14 @@ withMutex(string $key, Closure $cb, int $ttl = 60): mixed
 **死锁防护分两组**：运行时防护层负责实际降频和自愈（schema 删除孪生索引、`Task::lockForMutation` 强制复合索引、`runTaskMutationTransaction` 重试）；finish-check 守卫层负责防回归（代码入口收口、schema 最终态、scope 接线）。
 
 1. **schema 删除孪生单列索引 `tasks_order_id_index`（根治退回目标）**：该单列索引与复合索引 `tasks(order_id, action, status)` 同首列、体积更小，是 MySQL 优化器退回、把 next-key lock 扩大到"整个 order_id 区间" → 1213 的现实目标；复合索引左前缀完全覆盖它，删除后全部按 order_id 的查询（Order/Acme Action、ReconcilePendingCommand、PurgeCommand、UserDataPurger 等）走复合索引。这是**唯一能覆盖 `deleteTask` 的 DELETE 路径**的手段——MySQL 单表 DELETE 不支持 `FORCE INDEX`，只能靠 schema 消灭退回目标。迁移 `2026_07_08_000001_drop_tasks_order_id_index`（幂等 `SHOW INDEX` 守卫、复合索引就位后才删，兼容 5.7/8.x/MariaDB）+ `create_tasks_table` 去掉 order_id 列的单列 `->index()`（保留复合索引）。**陷阱：删索引必须同步重导 `backend/database/structure.json`**——升级流程 migrate 后跑结构自修复（`DatabaseStructureService`）**只对 missing_indexes 生成 ADD、不删 extra**，structure.json 不同步会在升级时把孪生索引原样加回、白删。
-2. **`Task::lockForMutation` scope 强制复合索引（确定性兜底）+ `runTaskMutationTransaction` 统一重试**：锁查询下沉为 Task 模型 scope `scopeLockForMutation`（`forceIndex('tasks_order_action_status_index')` + where order_id + whereIn action + whereIn status(executing,stopped) + `select('id')` + `lockForUpdate`，常量 `Task::TASK_LOCK_INDEX`），Order/ACME 共用，调用形如 `Task::lockForMutation($orderId, ['commit','sync'])->get()`；即便某库残留孪生索引，`forceIndex` 仍确定性收窄间隙锁。重试助手抽为共享 trait `App\Traits\RunsTaskMutationTransaction`（`DB::transaction(..., 3)`，常量 `TASK_MUTATION_TRANSACTION_ATTEMPTS=3`），`Order\Action` 与 `Acme\Action` 都 use。**覆盖面（不含上游副作用的纯本地 task→order/acme 变更，全部走 attempts=3 重试）**：Order `sync` / `commitCancel(active)` / `batchCommitCancel(active)` / `revokeCancel` / `refundForSyncedCancel` / `cancelPending` + ACME `revokeCancel` / `sync` / `commitCancel` / `batchCommitCancel`。controller 直调时本事务为最外层，重试只重跑锁+本地写回，安全。**`commit` 绝不加重试**——其上游下单 `$this->api->$action()` 在事务内（`Action.php`），重试 = 重复下单/重复扣费；且 commit 只锁 order 行、不执行 `tasks FOR UPDATE`，本就不是死锁受害者。**ACME `commitCancel`/`batchCommitCancel` 已纳入覆盖面**：commitCancel 纯本地（延时任务才调上游 cancel），改为先锁 cancel_acme task 再锁 acme 行，与 sync T7 取消退款分支（先锁 cancel_acme task 间隙锁、再锁 acme 行）统一为 task→acme 锁序；其自身虽不执行 `tasks FOR UPDATE`，但 `Task::create(cancel_acme)` 的插入意向锁会撞 sync 持有的间隙锁而卷入 1213 死锁环，故必须对齐（batchCommitCancel 逐条调 commitCancel 自动继承）。
+2. **`Task::lockForMutation` scope 强制复合索引（确定性兜底）+ `runTaskMutationTransaction` 统一重试**：锁查询下沉为 Task 模型 scope `scopeLockForMutation`（`forceIndex('tasks_order_action_status_index')` + where order_id + whereIn action + whereIn status(executing,stopped) + `select('id')` + `lockForUpdate`，常量 `Task::TASK_LOCK_INDEX`），Order/ACME 共用，调用形如 `Task::lockForMutation($orderId, ['commit','sync'])->get()`；即便某库残留孪生索引，`forceIndex` 仍确定性收窄间隙锁。重试助手抽为共享 trait `App\Traits\RunsTaskMutationTransaction`（`DB::transaction(..., 3)`，常量 `TASK_MUTATION_TRANSACTION_ATTEMPTS=3`），`Order\Action` 与 `Acme\Action` 都 use。**覆盖面（不含上游副作用的纯本地 task→order/acme 变更，全部走 attempts=3 重试）**：Order `sync` / `commitCancel(active)` / `batchCommitCancel(active)` / `revokeCancel` / `refundForSyncedCancel` / `cancelPending` / `prepareImmediateCancel` + ACME `revokeCancel` / `sync` / `commitCancel` / `batchCommitCancel`。controller 直调时本事务为最外层，重试只重跑锁+本地写回，安全。**`commit` 绝不加重试**——其上游下单 `$this->api->$action()` 在事务内（`Action.php`），重试 = 重复下单/重复扣费；且 commit 只锁 order 行、不执行 `tasks FOR UPDATE`，本就不是死锁受害者。**ACME `commitCancel`/`batchCommitCancel` 已纳入覆盖面**：commitCancel 纯本地（延时任务才调上游 cancel），改为先锁 cancel_acme task 再锁 acme 行，与 sync T7 取消退款分支（先锁 cancel_acme task 间隙锁、再锁 acme 行）统一为 task→acme 锁序；其自身虽不执行 `tasks FOR UPDATE`，但 `Task::create(cancel_acme)` 的插入意向锁会撞 sync 持有的间隙锁而卷入 1213 死锁环，故必须对齐（batchCommitCancel 逐条调 commitCancel 自动继承）。
 3. **CI 硬零守卫（`finish-check-greps.sh` Z12/Z13/Z14 + DB 最终态测试）**：Z12 要求 `backend/app` 内对 Task 模型的 `lockForUpdate` 只允许出现在 `app/Models/Task.php` 的 scope 定义与 `app/Jobs/TaskJob.php` 的主键锁两处，其余一律走 `Task::lockForMutation` scope；检查以 `Task::` 起头的语句聚合到分号，链中出现 `lockForUpdate` 即 FAIL（其他模型 Order/User/Acme 的 lockForUpdate 不以 `Task::` 起头 → 零误报；`Task::lockForMutation(...)` 调用点不含 `lockForUpdate` 字面量 → 不误命中）。Z13 用 `structure.json` 断言 tasks 表只允许 `tasks_order_action_status_index(order_id, action, status)` 这一条 `order_id` 首列索引，真实 DB 测试用 `SHOW INDEX FROM tasks` 覆盖迁移后最终态；Z14 校验 `scopeLockForMutation` 的 `TASK_LOCK_INDEX`、`forceIndex`、where/action/status、`select('id')`、`lockForUpdate` 接线完整。脚本已在 `ci.yml` 强制执行（fail-closed）。
+
+### V1/V2 立即取消防重复与锁序
+
+- **60 秒同订单防重复**：V1/V2 `cancel` 对已取消订单先按幂等成功返回；其余已找到的订单先调用 `guardCancelDuplicate`，以 `Cache::add('cancel_'.md5(json_encode([$orderId])))` 原子占位 60 秒。首次请求后无论成功或异常都不提前释放；窗口内重复请求返回 `code=0`、`errors.retry_after` 和 `Duplicate cancel request...`。若首次请求已成功落成 `cancelled`，后续请求仍优先返回幂等成功。
+- **Controller 不再裸删 task**：`unpaid` 委派 `delete`，`pending` 直接委派自带 `commit task→order` 事务的 `cancelPending`；`processing/approving/active/cancelling` 先调用 `prepareImmediateCancel`。该本地事务固定先锁 `sync/revalidate` task、再锁 order，锁内复检状态/退款期、置 `cancelling` 并只删除 `sync/revalidate`；已有 `cancel` task 保留为立即取消异常后的异步兜底。
+- **订单互斥锁不变**：准备事务提交后才调用原 `Action::cancel()`；`order_mutate_{id}` 的键、非阻塞获取、60 秒 TTL 和释放语义均不改变。不得把准备事务包进该 Cache 锁：TaskJob 的既有顺序是先持 task 行锁再进入 `cancel()` 抢 Cache 锁，反向采用 `Cache→task` 会制造新循环等待；且把 task 等待叠进 60 秒 TTL 会缩短上游取消可用锁时长。
 
 **`forceIndex` 保留理由（孪生索引已 schema 删除后为何仍保留 hint）**：孪生 `tasks_order_id_index` 既已 schema 级删除、优化器不再有更小的退回目标，`forceIndex` 的唯一不可替代价值是 **MySQL 版本矩阵（5.7 / 8.x / MariaDB）下的执行计划稳定性**——DB 大版本升级时优化器代价模型会变（同一 SQL 可能改选索引 / 改扫描方式）。这条轴不能只靠代码形态守卫（Z12）或 schema 形态守卫（Z13）覆盖，必须由查询 hint 本身提供确定性，Z14 负责防 hint 接线断开。保留成本极低：hint 收口在 `Task::lockForMutation` 单处一行，索引名被迁移（`create_tasks_table` 复合索引）+ `structure.json` 双处钉死，一旦索引被改名 / 删除 `forceIndex` 立即 `1176 Key ... doesn't exist` 响亮失败（相关测试断言先红），绝不静默退化。辅助事实：孪生索引若漂移回来（旧备份恢复 / 人工加回），升级结构校验会以 `extra_indexes` 点名（`manual_actions`「删除多余索引」，只报告不自动删），且全路径 `attempts=3` 重试使漂移窗口内的死锁危害有限——即 `forceIndex` 是一层**廉价的确定性保险**而非必要层，删它须先接受"版本升级执行计划漂移"这一确定性风险。
 
@@ -159,13 +167,13 @@ active 续费分支**完整移植** V2 范式（非「只包事务」）：
 - **O3-C**：`getData('commit')` 段 SDK `code=0` 超时/失败**不冒泡**（`return []`）——订单停 pending、已扣费保留，返 200+pending 展示态（下游轮询容忍，见 deploy.yaml），权威自愈 = ReconcilePendingCommand 主扫描（无 channel 过滤）+ 下游 pull `get` 条件式加速。
 - **M-2 知情不对称**：unpaid resume 分支走 `pay(autoCommit=true)`，其 `MutationBusyException` 经 `method='pay'≠'commit'` 仍上抛 503——与 active 分支 commit 段吞不对称；既有行为、有意不改（O3 范围仅 active 分支 + getData commit 段），下游重试即收敛。
 
-### O4 schedule:sweep-orphan-orders 孤儿清理（金丝雀双开关）
+### O4 schedule:sweep-orphan-orders 孤儿清理
 
-`SweepOrphanOrdersCommand`（每小时）清理 `channel=auto` 卡死的孤儿续费/重签单，两分支各带独立金丝雀开关（分级：unpaid 无资金面默认开、pending 退款默认关待武装）：
+`SweepOrphanOrdersCommand`（每小时）清理 `channel=auto` 卡死的孤儿续费/重签单：
 
 - **unpaid 分支**（`RECONCILE_ORPHAN_UNPAID_ENABLED` 默认 **true**）：stale > `orphan.unpaid_stale_minutes`（默认 60）→ `Action::delete`（恢复旧证书 active、删新单，无退款无流水；锁内只放行 unpaid，并发变更报错跳过无害）。
-- **pending 分支**（`RECONCILE_ORPHAN_PENDING_ENABLED` 默认 **false**，arm-switch）：消费 `PendingReconcileQuery::maxedAndNotProductMissing`（到顶 ∩ 非产品缺失）+ 镜像 reconcile 排除 executing commit task → `Action::cancelPending`（退款 + 恢复旧证书，四道网齐；锁内二次校验 status=pending，late-commit 推 processing 即早退不误退款）。
-- **hourly 时序**：保证每 5min 的 T5 转人工先于 pending 收尾接手，防两自动化拆台。运维武装节奏见 `skills/ops/deploy-ops.md` arm-switch 节。
+- **pending 分支无开关**：消费 `PendingReconcileQuery::maxedAndNotProductMissing`（到顶 ∩ 非产品缺失）+ 镜像 reconcile 排除 executing commit task。此时订单已扣费、`api_id=null`、无执行中 commit，确认未提交上游，必须调用 `Action::cancelPending` 退款并恢复旧证书；锁内二次校验 status=pending，late-commit 推 processing 即早退不误退款。
+- **hourly 时序**：保证每 5min 的 T5 转人工先于 pending 收尾接手，防两自动化拆台；每日快照继续作为事后核对。
 - 每单独立事务 + 一单失败不断整批。
 
 ### T1 schedule:sweep-stale-tasks 僵尸任务重派（`SweepStaleTasksCommand`）
@@ -249,6 +257,8 @@ destroy/batchDestroy/Order::delete 等"删除已入账 fund"路径无法被 CAS 
 
 - `app/Http/Controllers/Admin/FundController.php::destroy / batchDestroy`
 - `app/Services/Order/Traits/ActionTrait.php::delete`
+
+管理端手工充值没有上游订单号，无法依赖 `funds(pay_method,pay_sn)` 做永久幂等；`Admin\FundController::store` 对 `type=addfunds` 固定在事务内先锁 user 行，再按 `user_id + amount + type=addfunds + created_at>=now-30s` 检查 Fund。命中即返回 `code=0`，不创建 Fund/Transaction、不改余额；支付方式、状态和备注不进入防重键，同用户不同金额、不同用户同金额及窗口结束后的合法充值照常放行。锁 user 行是并发正确性的必要部分：仅做无锁 `exists→create` 会被双请求同时读空后击穿。`deduct` 不属于本规则。
 
 #### 4. Transaction 防重豁免
 
@@ -393,16 +403,16 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 - **索引路径（EXPLAIN 实测，8.4 造 10 万行 95% 终态）**：`status IN(...) AND created_at<cutoff LIMIT 1000` 走 `status` 索引 `type=range`（**非全表扫**）+ LIMIT 收敛每批锁定上界；**不加 `ORDER BY id`**——会在 DELETE 路径引入 filesort（`type=range; Using filesort`）反而更差。零迁移不加 `created_at`/复合索引，量级证明需要时列后续批次观察项。
 - failed_jobs 不在此：走 Laravel 原生 `queue:prune-failed`（14d，M 包 E5 已落地）。
 
-### cancelLocked reissue 分支（共享原语，两条正交语义）
+### cancelLocked reissue 分支（订单终结与全额退款）
 
-`Action::cancelLocked`（Purge / 手动 `commitCancel` / `batchCommitCancel` 三入口经 cancel task 汇入的唯一原语）按 `cert.action==='reissue'` 分流，与 `cancelPending` 共享退款 helper（`prepareReissueRefund` 只读预检 + `applyReissueIncrementRefund` 写），**对所有 reissue 取消入口生效**；`restoreReissuedCert` 恢复旧证书是 `cancelPending` 专属（恢复窗口仅 unpaid/pending），cancelLocked 处理已提交上游的 reissue、不再恢复：
+`Action::cancelLocked` 是 Purge、手动 `commitCancel`、`batchCommitCancel` 经 cancel task 汇入的唯一原语。reissue 是否恢复前驱以是否已提交上游为边界：`cancelPending` 恢复前驱并只退当次增量；`cancelLocked` 处理 processing/approving/active 等已提交上游状态，终结整个订单并按订单口径退款。
 
-1. **退款口径修复（对所有入口）**：reissue 只更 `cert.amount` 不更 `order.amount`、交易含「原始 new + reissue 增量」两笔，若走 `getCancelTransaction`（求和）会**超退原始全额**（latent over-refund，手动 `commitCancel`/`batchCommitCancel` 无 action 守卫、现行可达）。改 **last_transaction 增量口径**：只退当次 reissue 增量、cancel 流水 counts 取 `-last_transaction.*_count`（增量非累计）、`order.purchased_*` 同步递减。new/renew 仍走 `getCancelTransaction` 单笔口径（触点唯一 `Action.php`，零影响）。
-2. **订单终结（收窄后一律 cancelled，不再按 `issued_at` 分恢复分支）**：`cancelLocked` 处理的 reissue 恒已提交上游（processing/approving，含已签发 active）——上游各家取消政策不一，恢复前驱 `active` 存在「被上游 supersede 后本地状态与实际不符」风险（旧证书可能已被上游作废、cloud-deploy 已推送 reissue cert），故**不区分是否签发、一律**置 `cert.status='cancelled'` + 增量退款 + `order.cancelled_at`，前驱**不恢复/不回切/不删**（保持 `reissued` 终态）。
+1. **退款口径**：已提交上游的 new/renew/reissue 统一调用 `OrderUtil::getCancelTransaction()`。以 `order.amount` 为基准，汇总该订单全部 `order/cancel` 流水净额核对；不一致时记录错误并以流水净额为准。cancel 流水 counts 使用订单累计 `purchased_*`，不再按 reissue 最后一笔增量递减订单累计值。只有 `cancelPending` 的 reissue 继续通过 `preparePendingReissueRefund` + `applyPendingReissueIncrementRefund` 只退当次增量，因为该路径会回切 `latest_cert_id`、恢复前驱并删除当前 cert。
+2. **订单终结（不按 `issued_at` 分恢复）**：`cancelLocked` 处理的 reissue 恒已提交上游（processing/approving，含已签发 active）——上游各家取消政策不一，恢复前驱 `active` 存在「被上游 supersede 后本地状态与实际不符」风险（旧证书可能已被上游作废、cloud-deploy 已推送 reissue cert），故**不区分是否签发、一律**置 `cert.status='cancelled'` + 全额退款 + `order.cancelled_at`，前驱**不恢复/不回切/不删**（保持 `reissued` 终态）。
    - **`last_cert_id` 保留占槽 inert**：不置 null——订单经 `latestCert=cancelled` 终结后（重签/续费/取消三门前置校验齐闭、无任何路径能再指向前驱），该 UNIQUE 槽位对前驱惰性无害，保留以维持「cancelled 接替 → reissued 前驱」取证链。
    - **恢复窗口仅剩 unpaid / pending**：`delete`（unpaid，恒未签发）手写恢复分支 + `cancelPending`（pending，恒未签发、经 `restoreReissuedCert`）恢复旧证书 `active`——二者都恒在上游签发前，恢复安全；cancelLocked（processing+，已提交上游）不属恢复窗口。
 
-**F1 fail-safe（前置于 `api->cancel`）**：`prepareReissueRefund` 先 `Transaction::where(type='cancel', transaction_id)->exists()`，命中即 error 转人工。唯一索引 `(type,transaction_id) WHERE type!='order'` 决定每单仅一条 cancel 流水，恢复旧证书打开的「二次 reissue → 二次取消」若不预检会在上游取消成功**之后**撞唯一冲突 → 卡 cancelling 无退款；预检挡在上游调用前杜绝该形态（每订单 reissue 取消退款仅一次，二次转人工，书面接受）。`cancelPending` reissue 块重构为共用同组 helper，**已覆盖路径行为不变** + 对称获得 F1 fail-safe——二次 reissue-cancel 一律转人工（**含 amount=0**：exists() 预检先于 amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧而非静默成功）。
+**F1 fail-safe（前置于 `api->cancel`）**：reissue 主动取消在调用上游前先检查同订单是否已有 cancel 流水，命中即转人工；否则可能在上游取消成功后才撞唯一索引并回滚本地状态。`cancelPending` 的 `preparePendingReissueRefund` 同样先做该预检，再校验最后一笔增量交易金额。唯一索引 `(type,transaction_id) WHERE type!='order'` 仍是防双退物理底线。
 
 ---
 
@@ -420,7 +430,7 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 1. 上游返回 `data.status === 'cancelled'`
 2. `cert.status ∈ {processing, approving, cancelling}`（过渡态；排除 active 已签发 / 终态）
-3. `cert.action ∈ {new, renew, reissue}`（reissue 走**增量退款口径**，helper 内按 action 分流，见资金路径）
+3. `cert.action ∈ {new, renew, reissue}`（三者均按订单口径退款）
 4. 开关 `site.autoRefundOnSync === true`
 
 ### 资金路径
@@ -430,11 +440,9 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 1. `DB::transaction` 闭包
 2. `Order::with('latestCert')->whereHas('latestCert')->lock()->find($order->id)` 加 order 行锁
 3. 锁内二次校验触发条件 2/3/4（data.status 已外层校验）
-4. **退款按 action 分流**：
-   - `reissue`：`prepareReissueRefund`（含 F1 exists 预检 + 金额校验）→ `applyReissueIncrementRefund`（**只退当次增量、前驱不恢复保持 reissued**，与 cancelLocked reissue 分支共享 helper、口径一致，防 `getCancelTransaction` 求和超退原始全额）；amount=0 零增量返回 null → 跳过退款、不建流水
-   - `new/renew`：防重 `exists` 预检 + `OrderUtil::getCancelTransaction` 单笔求和 + `Transaction::create`（`Transaction::creating` 钩子内自带 user.lockForUpdate + balance 增加）
+4. new/renew/reissue 统一做防重 `exists` 预检，再调用 `OrderUtil::getCancelTransaction` 按订单金额与全部交易净额核对，最后 `Transaction::create`（`Transaction::creating` 钩子内自带 user.lockForUpdate + balance 增加）
 5. `$cert->update($certData + [status='cancelled', cancelled_at=now()])`
-6. `$order->cancelled_at = now(); $order->save();`（reissue 的 purchased\_\* 增量递减随此持久化）
+6. `$order->cancelled_at = now(); $order->save();`
 7. 有前驱（`last_cert_id`）时 `dispatchRenewCancelledNotification` 派发 `cert_renew_cancelled`（前驱脱监控止血）
 8. callback task / deleteTask（createTask 内部已 `->afterCommit()`）
 
@@ -445,24 +453,25 @@ DB 部分唯一索引 `WHERE type != 'order'` 与此一致，覆盖应用层漏�
 
 ### 设计决策
 
-- **不检查 refund_period**：以上游状态为权威，与主动 `cancel()` 路径行为不同。上游已取消意味着资金已从上游退回，本系统应该传递给末端用户，不受退款期限制。
-- **cancelling 状态进入 helper**：若已有 `commitCancel` / `PurgeCommand` 创建的 cancel task 存在，helper 完成后 cert.status='cancelled'，残留 cancel task 被 TaskJob 调度时 `Action::cancel` 锁内首先检查 status === 'cancelled' 立即报错回滚，不会重复调上游 api、不会重复退款。helper 内**不主动删 cancel task**，避免 order→task 与项目惯例 task→order 锁顺序倒置引发死锁。
+- **processing/approving/cancelling 同步退款不检查 refund_period**：以上游已取消为权威，与主动 `cancel()` 路径不同；上游已退回的资金继续传递给末端用户。
+- **active 同步终态不自动退款**：不同 CA 对同一类终态可能返回 `cancelled` 或 `revoked`，无法可靠区分可退款取消与吊销；active 极少出现此情形，统一只写终态，异常由人工处理。
+- **cancelling 状态进入 helper**：先按 task→order 锁序锁定 `cancel/commit/sync/revalidate` task，再锁 order；退款、置 cancelled 与删除这四类 task 在同一事务完成，不遗留延时 cancel task。
 - **资金确定性体系契合**：事务+锁、应用层防重 + DB 唯一索引 `transactions_type_transaction_id_unique` 兜底、afterEach FundInvariants 守门（测试登记在 `tests/Support/FundAuditGuard.php::fundAuditGuardedTestPaths()`）。
 
 ### 测试覆盖
 
-- `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：18 个用例覆盖开关开/关 / status / action（含 **reissue 增量退款 + 通知**）/ 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发 / **通用写回通知收口**（开关关 renew·reissue 有前驱发通知不退款 + 防重）
+- `tests/Feature/Services/Order/SyncedCancelRefundTest.php`：20 个用例覆盖开关开/关 / status / action（含 **reissue 订单全额退款 + 通知**）/ 0 元订单 / 并发幂等 / 已退款防重 / revoked 不触发 / **通用写回通知收口**（开关关 renew·reissue 有前驱发通知不退款 + 防重）
 - `tests/Feature/Commands/PurgeCommandTest.php`：编排断言 reissue 取消（置 cancelling + cancel task）/ new 仍取消（不跑资金）
-- `tests/Unit/Services/Order/ActionTest.php`：cancelLocked reissue 分支资金断言（增量退款 20 非 120 / amount=0 无流水 / 订单终结门（取消后再 reissue、commitCancel 均报错）/ last_cert_id 保留占槽 inert / processing 语义仍退增量 / F1 二次预检 / 上游失败回滚 / new-renew 回归 / cancelPending F1），落 `fundAuditGuardedTestPaths()` 守门
+- `tests/Unit/Services/Order/ActionTest.php`：cancelLocked reissue 分支资金断言（订单/证书/交易总额 120 时退 120 / reissue 增量为 0 仍退订单全额 / 订单终结门 / last_cert_id 保留 / F1 二次预检 / 上游失败回滚）以及 cancelPending reissue 增量退款恢复路径，落 `fundAuditGuardedTestPaths()` 守门
 
 ### TaskJob 取消告警幂等判据（②，与 sync 收口互补）
 
 cancel/cancel_acme task 业务失败（code=0）时，`TaskJob::cancellationTargetTerminal` 判「退款已发生的幂等 no-op」vs「真·CA 失败」决定是否发 `task_failed` admin 告警。order 侧判据收窄（同根因「终态⇒退款已发生」假设为假）：
 
 - **豁免集剔除 `failed`**：failed 全系统无任何退款路径（commitCancel/V2 cancel 均拒 failed），「failed 但退款已发生」不存在合法形态；force sync 可把上游 failed 写过 cancelling → cancel task 撞「订单状态不是取消中」读到 failed = 真失败必须告警。**与 sync 终态守卫的差异**：那里 failed 属【防复活】集（防上游旧 active 覆盖终态），语义不同于此处【退款幂等】判定，两集合不可混用。
-- **cancelled 辅以流水判定**：不无条件豁免（③ 揭示 sync 开关关/reissue 穿透可直写 cancelled 而未退款）——有 cancel 流水（已退款）或应退金额=0（0 元/reissue 零增量、本就不建流水）才豁免；应退>0 却无 cancel 流水 = 退款未发生的真失败、告警。应退口径按 action：reissue=`cert.amount`、new/renew=`order.amount`。
+- **cancelled 辅以流水判定**：不无条件豁免（sync 开关关可直写 cancelled 而未退款）——有 cancel 流水（已退款）或 `order.amount=0` 才豁免；订单应退金额>0 却无 cancel 流水 = 退款未发生的真失败、告警。已提交上游的 reissue 即使 `cert.amount=0` 也不能豁免，因为该路径应退整个订单。
 - revoked/renewed/reissued（吊销/被接替）保留豁免；acme 侧（cancelled/revoked/expired，无 failed）不在收窄范围、保持原样。
-- 判据必须在 `handle()` 事务内、持 task+order 行锁时调用（Transaction 查询同事务快照）。测试 `tests/Unit/Jobs/TaskJobTest.php` Imp-1 节（failed 告警 / cancelled 未退款告警 / 0 元·reissue 零增量豁免）。
+- 判据必须在 `handle()` 事务内、持 task+order 行锁时调用（Transaction 查询同事务快照）。测试 `tests/Unit/Jobs/TaskJobTest.php` Imp-1 节（failed 告警 / cancelled 未退款告警 / 0 元订单豁免 / reissue 零增量但订单非零仍告警）。
 
 ### 部署注意
 

@@ -15,7 +15,7 @@
 #### freeze 接入生产升级路径（危险窗挡 HTTP 写）
 
 - **核心机理**：本仓已删 Laravel `PreventRequestsDuringMaintenance` 全局中间件，`artisan down` **对 HTTP 零拦截**（只暂停 worker/scheduler）；`freeze`（`MaintenanceMode` 中间件）才是唯一真正挡外部写请求（下单/支付回调/文档上传）的 HTTP 闸。
-- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 在危险动作前点火（web 于 `apply` 前全程有效；shell 于 down 后立即点火，但锁存 `storage/`、随 `mv storage → preserve` 离开规范路径——**切代码窗 [mv, 恢复] 内 `isFrozen()=false`，由 storage 缺失致 app 无法 bootstrap（500）兜底，HTTP-503 有效覆盖自 storage 恢复起的 migrate/seed 窗**，upgrade.sh 注释已按此校准），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
+- **两条活路径都接 freeze**：web `UpgradeService::performUpgradeWithStatus`（进程内直调 `UpgradeFreezeLock`）+ shell `deploy/upgrade.sh`（调既有 `upgrade:freeze`/`upgrade:unfreeze` 命令）。freeze 在危险动作前点火（web 于 `apply` 前全程有效；shell 于 down 后立即点火，锁存 `storage/` 并会随 `mv storage → preserve` 暂时离开规范路径；该切代码窗由稳定放在 `backend/.upgrade-bootstrap.lock` 的独占锁阻塞新 HTTP 请求，不再依赖 bootstrap 500 兜底；storage 恢复后 HTTP-503 继续覆盖 migrate/seed 窗），unfreeze 于 `clear_cache` 后。**死 HTTP 端点** `/upgrade/{freeze,unfreeze,smoke}` 无编排器、不接不删（观察项）。
 - **顺序契约（两侧对称）**：`unfreeze` 必须**严格先于** `artisan up`——up 唤醒被 down 暂停的 worker 去 pop job，若 freeze 仍在则 `SkipWhenUpgradeFrozen` 的 `release(60)` 开始烧 job attempts（tries=5 的 job ~5min 全落 failed_jobs）。**全子系统 6 处 up 全部与 unfreeze 配对且序正确**：web 成功路径 / web catch(\Throwable) / web rollback 成功+catch 两入口 / shell perform / shell rollback / fatal shutdown handler。测试断言：`UpgradePerformUpgradeFreezeTest` H2-A 用 Artisan facade mock 捕获 'up' 调用时刻 `!isFrozen`（CommandStarting 事件在测试态被框架不桥接，只能走 facade mock）；`UpgradeRunCommandTest` 对 fatal 路径同款序断言；`upgrade.sh` 靠行序 + 注释固化。
 - **rollback 两入口补 unfreeze**（`UpgradeService::rollback` + `upgrade.sh rollback()`）：防失败升级滞留 freeze，先于 up；rollback 自身不 freeze。
 - **失败/中断兜底**：`performUpgradeWithStatus` catch 扩到 `\Throwable`（`\Error`/TypeError 也就地 unfreeze + up），且 unfreeze 无条件（与 maintenance_mode 解耦——freeze 点火无条件，若 unfreeze 挂在 `if($inMaintenanceMode)` 内，配置关维护时失败会滞留 freeze 到 TTL）；**真 fatal（OOM/E_PARSE/E_COMPILE_ERROR，catch 接不住）走 `UpgradeRunCommand::handleFatalShutdown`：`unfreeze` → `up` → `fail`**（曾漏 unfreeze：up 后 worker 醒来烧 attempts + 2h 503——shutdown 自愈必须自己配对 unfreeze；**fail 置终态放最后**：up 在 shutdown 阶段二次 fatal 时 catch 接不住、fail 未执行 → status 保持 running 交 watchdog 接管重试，若先 fail 则 watchdog 只救 running 永不兜、down 永久残留）；SIGKILL 由 watchdog 兜底；shell 失败/中断的**数据侧已由 `deploy/upgrade.sh` 的 `cleanup` 守卫 + 入口残留检测兜底**（切代码窗 storage/databak 自动还原到原位；PRESERVE 目录在安装目录同 fs 持久盘，SIGKILL/断电 trap 不跑时数据仍存活、重跑入口 `_check_stranded_preserve` 拦截防新建空 storage 埋数据；见 P0-2 包U），**服务侧仍不自动 up**（freeze-TTL 只解 503，worker/scheduler 停摆待人工——失败时终端自动打印 runbook，与 watchdog「误 up 半迁移库比卡死更坏」同哲学，恢复指引见 `skills/ops/deploy-ops.md`）。
@@ -57,21 +57,23 @@
 | `BackupManager`        | 备份和恢复                                                             |
 | `VersionManager`       | 版本比较，环境检测                                                     |
 
-**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：**遍历 source backend 顶层目录**逐个 `syncDirectory`（**只覆盖不删除**），`skipDirs` 排除 `storage`（运行时数据 + 升级自身状态 `upgrade.lock`/status；且 `removeEmptyDirectories` 会误删其空目录）和 `vendor`（单独同步）；根文件按清单 `artisan`+`composer.json/lock`+`php-requirements.json` 复制，`version.json` 由 `updateVersionJsonWithPreservedFields` 单独处理（保留 `release_url`/`network`）。早期用硬编码白名单，曾漏 `resources` 导致 `resources/docs/api/*.yaml`（对外 API 文档 `MetaController::apiDoc` 读取）等代码资源不随升级更新，症状是「代码更新了（app/routes → 路由注册，POST 405）但资源 404」；**改动态发现后新增顶层目录永不再漏**（upgrade 包打包已 exclude `storage/*`/`vendor/`/`tests/`，source 有什么同步什么天然安全）。
+**`PackageExtractor::applyBackendUpgrade` 同步策略（动态发现，非白名单）**：普通顶层目录动态同步，`storage` 始终排除；包内 `vendor` 先通过 lock SHA-256 标记校验。当前 `vendor` 已与目标 lock 对齐时直接原地复用，避免无意义的大目录复制和目录切换窗口；不一致或缺失时，才在覆盖任何代码前复制到安装盘同级临时目录并二次校验，磁盘满或权限失败时旧代码与旧 vendor 都保持不变，随后用同文件系统目录切换整体替换且不与旧 vendor 合并。HTTP 入口在加载 Composer 前持有 `backend/.upgrade-bootstrap.lock` 共享锁，后台升级、`upgrade.sh` 及插件安装/更新在发布文件时持独占锁；已进入请求执行完后才切换，新请求等待完整发布或失败回退结束。首次从无锁入口采用该机制时，升级器先把自包含锁片段原子注入旧 `public/index.php`，再按 `UPGRADE_LEGACY_REQUEST_DRAIN_TIMEOUT`（默认 300 秒，应不小于 FPM 请求硬上限）排空注入前已进入的旧请求；准备状态暂存于 `backend/.upgrade-bootstrap-prepared.json`，进程中断后重试继续剩余时间，独占锁取得后即删除。正常发布包直接使用已校验依赖；不带 vendor 的历史包仍走原 Composer 兼容路径，并在 autoload 重建成功后原子刷新 lock marker。
 
 **两条升级路径删除语义不同、且都正确**：后台升级（PHP，在被升级代码内运行、不能全量删自身）→ 只覆盖不删除，旧版删除的文件会残留（本项目路由是显式白名单不扫目录，残留基本无害）；需彻底清理残留时走 `upgrade.sh`（外部 shell，`rm -rf` 各目录 + 整体 `cp` 全量替换、天然无残留）。一致性目标是「都不漏应更新的目录」，删除策略因运行环境不同而必须不同。
 
-**升级器自更新有一次时序滞后**：本次升级跑的是服务器上的旧 `PackageExtractor`，逻辑修复要下一次升级才生效（或本次升级后手动补缺失资源）。回归测试见 `PackageExtractorTest`（动态发现新目录 / storage 跳过 / resources 同步）。
+**升级器自更新有一次时序滞后**：本次后台升级跑的是服务器上的旧 `PackageExtractor`，逻辑修复要下一次升级才生效（或本次升级后手动补缺失资源）。因此从不带 `SSL_MANAGER_BOOTSTRAP_LOCK_V1` 的历史版本首次进入启动锁机制时，不能依赖目标包里的新 PHP 升级器自救，必须使用本次发布的 `upgrade.sh` 完成首次握手。入口已具备标记后，后台升级才受上述共享/独占锁保护。另一种可行设计是先发布桥接版本，但当前尚未实现；桥接版本除注入入口 marker 外，还必须持久化 draining 状态并等待旧请求排空。回归测试见 `PackageExtractorTest`（动态发现新目录 / storage 跳过 / resources 同步）与 `ApplicationBootstrapLockTest`（首次注入 / 中断续等 / 原生新装快路径 / 失败关闭）。
 
 ### 升级模式
 
-| 特性             | PHP API 升级                      | Shell 脚本升级                                        |
-| ---------------- | --------------------------------- | ----------------------------------------------------- |
-| 触发方式         | 管理后台 API                      | `deploy/upgrade.sh`                                   |
-| 升级包           | `upgrade` 包                      | `full` 包                                             |
-| 维护模式         | 自动进入/退出                     | 自动进入/退出                                         |
-| PHP 环境不达标   | 仅检测；前端弹窗指引用 upgrade.sh | 询问 BT API key 自动装扩展/启用函数；否则手工指引     |
-| composer install | `--no-scripts` + 单独 discover    | `--no-dev --optimize-autoloader` + 兜底 dump-autoload |
+| 特性           | PHP API 升级                                    | Shell 脚本升级                                           |
+| -------------- | ----------------------------------------------- | -------------------------------------------------------- |
+| 触发方式       | 管理后台 API                                    | `deploy/upgrade.sh`                                      |
+| 升级包         | `upgrade` 包                                    | `full` 包                                                |
+| 维护模式       | 自动进入/退出                                   | 自动进入/退出                                            |
+| PHP 环境不达标 | 仅检测；前端弹窗指引用 upgrade.sh               | 询问 BT API key 自动装扩展/启用函数；否则手工指引        |
+| Composer       | 包内 vendor 校验复用；历史包兼容 `--no-scripts` | 包内 vendor 校验复用；历史包兼容 install + dump-autoload |
+
+发布包变大后，各入口都按单次下载设置完整超时：`install.sh` 的入口脚本包为 120 秒，安装完整包、`upgrade.sh` 完整包和后台 `ReleaseClient` 升级包均为 300 秒；后台 curl 失败后，HTTP 客户端仍拥有完整的 300 秒回退尝试。`deploy/test/test-package-download-timeouts.sh` 固化这些下限，并同时守卫插件包的单次 120 秒配置。
 
 ### PHP 环境检测
 
@@ -99,7 +101,7 @@
   - 等待期间每 2 秒输出旧 worker 剩余数、当前 worker 数、master 与健康入口状态，30 秒仅作故障上限。原本无 worker 的 ondemand `0/0` 空闲态无法直接比较代际：upgrade.sh 按安装目录反查本站 vhost/普通域名，`bt_reload_php_fpm` **在发送 reload 前**通过 `curl --resolve <domain>:443|80:127.0.0.1` 请求维护态放行的 `/api/health`（HTTP 200/503 均可）生成并记录旧 worker 身份，再发送 reload。既建不起代际基线、master 也未换代时不宣告成功：等满 `BT_PHP_FPM_WAIT_TIMEOUT` 后如实告警交人工（非阻断，upgrade.sh 只 `log_warning`）。非宝塔 PHP 路径跳过
 - **OPcache 清理统一走 `App\Support\Opcache::reset()`**：换代码后必须清，否则 `opcache.validate_timestamps=0` 的机器继续跑旧字节码。三种"没清成"语义不同，不能一律当失败：①扩展未加载 → skipped；②当前 SAPI 未启用（CLI 下 `opcache.enable_cli` 默认 0，这是命令行常态）→ 含义是"本来就没缓存可清"；裸调时它与真失败一样表现为 `opcache_reset()` 返回 false，故 `Opcache` 先用 `opcache_get_status()` 探测再决定是否 reset，把它归为 skipped 而非 failed；③配了 `opcache.restrict_api` 且调用脚本路径不匹配 → PHP 发 `E_WARNING`，Laravel 引导后 `error_reporting = -1`，`HandleExceptions` 会转成 `ErrorException`——**裸调会中断升级**（实测容器内带完整 bootstrap 复现），故由 `Opcache::reset()` 就地接住并返回结构化结果，`UpgradeService` 只记账不阻断。**命令行进程只能清自己的 OPcache，够不到 PHP-FPM 常驻进程**：`cache:clear-all` 在 CLI 下即使 reset 成功也必须提示"FPM 不受影响"，否则是假成功信号；线上真正换掉字节码只能靠后台「清除缓存」按钮（`Artisan::call` 与 FPM worker 同进程）或重载 PHP-FPM。
 - **fatal 兜底**：`UpgradeRunCommand::handle()` 注册 `register_shutdown_function` → `handleFatalShutdown`（静态、注入 `error_get_last()`，便于直测），捕获 `E_ERROR / E_PARSE` 等 fatal：双守卫（非 fatal / 非 running 早退）后 `unfreeze` → `artisan up` → `fail`（序契约见「freeze 接入」节；fail 放最后让 up 二次 fatal 时 status 留 running 交 watchdog 接管），避免卡 running 死锁 + freeze 滞留
-- **classmap 自愈**：upgrade.sh composer 块后**无条件**跑 `dump-autoload --optimize --no-scripts`，修复跨小版本升级时 vendor 路径变更（如 `Pdo\Mysql` polyfill / `ReflectsClosures` 跨目录）导致的 classmap 漂移
+- **classmap 自愈**：新包的 autoload 在构建时优化生成；仅历史不带 vendor 的兼容路径会跑 `dump-autoload --optimize --no-scripts`。
 - **composer 触发收口 `_need_composer_install`**：依赖变化判定统一走此函数，判据「`vendor/autoload.php` 缺失 ∨ `NEED_COMPOSER_FORCE=1`（入口回迁旧 vendor）∨ composer.json/lock hash 变化」任一即装。**vendor 缺失必装是砖机兜底**——中断丢 vendor 后重跑时 `backend/composer.json` 已是新版本、新旧 hash 相等会误跳过 composer → artisan fatal 自循环，runbook 的「重跑」指引失效；从新 lock 重建始终正确幂等，宁可多装一次
 
 ### 数据库结构校验

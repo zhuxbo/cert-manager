@@ -225,7 +225,10 @@ class UserDataImporter
         }
 
         // 读取头部注释验证 user_id
-        $handle = fopen($filePath, 'r');
+        $handle = @fopen($filePath, 'r');
+        if ($handle === false) {
+            throw new \RuntimeException("无法打开导入文件：$filePath");
+        }
         $foundUserId = false;
 
         for ($i = 0; $i < 10; $i++) {

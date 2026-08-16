@@ -128,6 +128,30 @@ class JdcloudRestClient
         ]);
     }
 
+    /** @return list<string> */
+    public function listCdnDomains(): array
+    {
+        $domains = [];
+        $page = 1;
+        $pageSize = 50;
+        do {
+            $result = $this->send('GET', '/domains', query: ['pageNumber' => $page, 'pageSize' => $pageSize]);
+            $items = is_array($result['result']['domains'] ?? null) ? $result['result']['domains'] : [];
+            foreach ($items as $item) {
+                if (! is_array($item) || ($item['status'] ?? null) === 'offline') {
+                    continue;
+                }
+                $domain = $item['domain'] ?? null;
+                if (is_string($domain) && $domain !== '') {
+                    $domains[] = $domain;
+                }
+            }
+            $page++;
+        } while (count($items) === $pageSize);
+
+        return array_values(array_unique($domains));
+    }
+
     // ===================== 直播 Live（内联 PEM） =====================
 
     /**
@@ -143,6 +167,32 @@ class JdcloudRestClient
             'cert' => $certPem,
             'key' => $keyPem,
         ]);
+    }
+
+    /** @return list<string> */
+    public function listLiveDomains(): array
+    {
+        $domains = [];
+        $page = 1;
+        $pageSize = 100;
+        do {
+            $result = $this->send('GET', '/liveDomains', query: ['pageNum' => $page, 'pageSize' => $pageSize]);
+            $details = $result['result']['domainDetails'] ?? [];
+            $details = is_array($details) ? $details : [];
+            foreach ($details as $detail) {
+                foreach (is_array($detail['playDomains'] ?? null) ? $detail['playDomains'] : [] as $play) {
+                    if (! is_array($play) || in_array($play['domainStatus'] ?? '', ['offline', 'checking', 'check_failed'], true)) {
+                        continue;
+                    }
+                    if (is_string($play['playDomain'] ?? null) && $play['playDomain'] !== '') {
+                        $domains[] = $play['playDomain'];
+                    }
+                }
+            }
+            $page++;
+        } while (count($details) === $pageSize);
+
+        return array_values(array_unique($domains));
     }
 
     // ===================== 点播 VOD（内联 PEM） =====================
@@ -178,6 +228,31 @@ class JdcloudRestClient
         }
 
         return null;
+    }
+
+    /** @return list<array{id:int,name:string}> */
+    public function listVodDomains(): array
+    {
+        $domains = [];
+        $page = 1;
+        $pageSize = 100;
+        do {
+            $result = $this->send('GET', '/domains', query: ['pageNumber' => $page, 'pageSize' => $pageSize]);
+            $content = $result['result']['content'] ?? [];
+            $content = is_array($content) ? $content : [];
+            foreach ($content as $item) {
+                if (! is_array($item) || in_array($item['status'] ?? '', ['init', 'stopped'], true)) {
+                    continue;
+                }
+                $name = $item['name'] ?? null;
+                if (is_string($name) && $name !== '') {
+                    $domains[] = ['id' => (int) ($item['id'] ?? 0), 'name' => $name];
+                }
+            }
+            $page++;
+        } while (count($content) === $pageSize);
+
+        return $domains;
     }
 
     /**
@@ -314,7 +389,7 @@ class JdcloudRestClient
     public function updateAlbListenerCertificates(string $regionId, string $listenerId, array $certificates): void
     {
         $path = '/regions/'.$regionId.'/listeners/'.$listenerId.':updateListenerCertificates';
-        $this->send('POST', $path, body: ['certificates' => array_values($certificates)]);
+        $this->send('POST', $path, body: ['certificates' => $certificates]);
     }
 
     // ===================== 内部：发送 + 签名 + 错误归一 =====================

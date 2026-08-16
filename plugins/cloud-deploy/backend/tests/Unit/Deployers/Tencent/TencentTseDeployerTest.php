@@ -7,6 +7,8 @@ use TencentCloud\Ssl\V20191205\Models\UploadCertificateResponse;
 use TencentCloud\Ssl\V20191205\SslClient;
 use TencentCloud\Tse\V20201207\Models\CreateCloudNativeAPIGatewayCertificateRequest;
 use TencentCloud\Tse\V20201207\Models\CreateCloudNativeAPIGatewayCertificateResponse;
+use TencentCloud\Tse\V20201207\Models\DescribeCloudNativeAPIGatewayCertificatesRequest;
+use TencentCloud\Tse\V20201207\Models\DescribeCloudNativeAPIGatewayCertificatesResponse;
 use TencentCloud\Tse\V20201207\Models\ModifyCloudNativeAPIGatewayCertificateRequest;
 use TencentCloud\Tse\V20201207\Models\ModifyCloudNativeAPIGatewayCertificateResponse;
 use TencentCloud\Tse\V20201207\TseClient;
@@ -47,7 +49,14 @@ function tencentTseDeployerWith(callable $clientFactory): TencentTseDeployer
 
         protected function makeClient(string $kind, array $credentials): object
         {
-            return ($this->factory)($kind, $credentials);
+            $client = ($this->factory)($kind, $credentials);
+            if ($kind === 'tse' && $client instanceof TseClient) {
+                $response = new DescribeCloudNativeAPIGatewayCertificatesResponse;
+                $response->deserialize(['Result' => ['CertificatesList' => []], 'RequestId' => 'r']);
+                $client->shouldReceive('DescribeCloudNativeAPIGatewayCertificates')->byDefault()->andReturn($response);
+            }
+
+            return $client;
         }
     };
 }
@@ -72,7 +81,7 @@ test('腾讯云 TSE 为内联型（usesRemoteCertStore=false）+ 元信息', fun
     expect($deployer->usesRemoteCertStore())->toBeFalse();
     expect($deployer->certUploader())->toBeNull();
     expect(array_column($deployer->configSchema(), 'key'))
-        ->toContain('region')->toContain('gateway_id')->toContain('domains')->toContain('certificate_id');
+        ->toContain('region')->toContain('service_type')->toContain('gateway_id')->toContain('domains')->toContain('certificate_id');
 });
 
 test('新建路径：上传 SSL 拿 CertId → CreateCloudNativeAPIGatewayCertificate（GatewayId/CertId/BindDomains=config domains）', function () {
@@ -121,6 +130,30 @@ test('新建路径 domains 留空时取证书 SAN 作 BindDomains', function () 
     ]);
 
     expect($createReq->BindDomains)->toBe(['tse.example.com', 'www.tse.example.com']);
+});
+
+test('新建路径查到网关已存在同 CertId 证书时不重复创建', function () {
+    $ssl = Mockery::mock(SslClient::class);
+    $ssl->shouldReceive('UploadCertificate')->once()->andReturn(tseUploadResponse('gw-cert-1'));
+    $tse = Mockery::mock(TseClient::class);
+    $response = new DescribeCloudNativeAPIGatewayCertificatesResponse;
+    $response->deserialize(['Result' => ['CertificatesList' => [[
+        'Id' => 'gateway-cert-id', 'Name' => 'old-name', 'CertId' => 'gw-cert-1', 'Crt' => 'OLD',
+    ]]], 'RequestId' => 'r']);
+    $tse->shouldReceive('DescribeCloudNativeAPIGatewayCertificates')->once()
+        ->andReturnUsing(function (DescribeCloudNativeAPIGatewayCertificatesRequest $request) use ($response) {
+            expect($request->GatewayId)->toBe('gw-1');
+            expect($request->Offset)->toBe(0);
+            expect($request->Limit)->toBe(100);
+
+            return $response;
+        });
+    $tse->shouldNotReceive('CreateCloudNativeAPIGatewayCertificate');
+
+    tencentTseDeployerWith(fn (string $kind) => $kind === 'ssl' ? $ssl : $tse)->bind(
+        tseCertRef(), ['secret_id' => 'AK', 'secret_key' => 'SK'],
+        ['region' => 'ap-guangzhou', 'gateway_id' => 'gw-1'],
+    );
 });
 
 test('更新路径（填 certificate_id）：ModifyCloudNativeAPIGatewayCertificate 直灌 Crt/Key + CertSource=native，不上传 SSL', function () {

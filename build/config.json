@@ -34,6 +34,8 @@
       ".env.production",
       ".env.prod",
       ".env.testing",
+      ".upgrade-bootstrap.lock",
+      ".upgrade-bootstrap-prepared.json",
       ".phpunit.cache/",
       ".phpunit.result.cache",
       ".phpstorm.meta.php",
@@ -61,7 +63,9 @@
       "storage/*.pem",
       "storage/*.pfx",
       "tests/",
-      "scripts/",
+      "+ /scripts/",
+      "+ /scripts/write-composer-lock-marker.php",
+      "- /scripts/***",
       "phpunit.xml",
       "phpstan.neon",
       "*.log",
@@ -74,7 +78,6 @@
   "package": {
     "full": {
       "exclude": [
-        "backend/vendor/",
         "frontend/easy/",
         "manifest.json",
         "/config.json"
@@ -86,7 +89,6 @@
         "backend/.env.*",
         "backend/storage/*",
         "backend/bootstrap/cache/*",
-        "backend/vendor/",
         "backend/public/install.php",
         "backend/public/install-assets/",
         "frontend/easy/",

@@ -55,7 +55,7 @@ class QiniuSslUploader implements CertUploaderInterface
             throw new RuntimeException(QiniuErrorSanitizer::sanitize($e), 0);
         }
 
-        if (! is_string($certId) || $certId === '') {
+        if ($certId === '') {
             throw new RuntimeException('七牛云 UploadSslCert 未返回 certID');
         }
 

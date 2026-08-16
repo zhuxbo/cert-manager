@@ -31,6 +31,27 @@ test('BytePlus 视频直播：证书服务型（storeKind=byteplus_medialive）'
     expect($deployer->certUploader()->storeKind())->toBe('byteplus_medialive');
     expect($deployer->provider())->toBe('byteplus');
     expect($deployer->product())->toBe('medialive');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain_match_pattern');
+});
+
+test('bind wildcard 列举 online 域名并批量绑定单层匹配项', function () {
+    $bound = [];
+    $client = Mockery::mock(BytePlusRestClient::class);
+    $client->shouldReceive('openApi')->andReturnUsing(function ($method, $action, $version, $query, $body) use (&$bound) {
+        if ($action === 'ListDomainDetail') {
+            return (object) ['DomainList' => [
+                (object) ['Domain' => 'a.example.com'],
+                (object) ['Domain' => 'deep.a.example.com'],
+            ]];
+        }
+        $bound[] = $body['Domain'];
+
+        return new stdClass;
+    });
+    byteplusMediaLiveDeployerWith(fn () => $client)->bind('chain-1', byteplusMlCreds(), [
+        'domain_match_pattern' => 'wildcard', 'domain' => '*.example.com',
+    ]);
+    expect($bound)->toBe(['a.example.com']);
 });
 
 test('uploader.upload 调直播 CreateCert（Rsa:{Prikey,Pubkey}, UseWay=https）返回 ChainID', function () {

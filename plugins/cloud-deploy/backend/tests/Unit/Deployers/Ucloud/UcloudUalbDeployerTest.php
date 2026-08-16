@@ -94,6 +94,36 @@ test('bind listener 目标带 SNI domain：AddSSLBinding 增扩展证书', funct
     expect($captured)->toBe(['lb' => 'lb-1', 'ls' => 'ls-1', 'sslIds' => ['ssl-1']]);
 });
 
+test('bind listener 目标带 SNI domain：新增后解绑同域名旧扩展证书和过期证书', function () {
+    $client = Mockery::mock(UcloudRestClient::class);
+    $client->shouldReceive('describeListeners')->once()->andReturn([
+        'Listeners' => [[
+            'ListenerId' => 'ls-1',
+            'Certificates' => [
+                ['SSLId' => 'ssl-old-same-domain', 'IsDefault' => false],
+                ['SSLId' => 'ssl-old-expired', 'IsDefault' => false],
+                ['SSLId' => 'ssl-default', 'IsDefault' => true],
+            ],
+        ]],
+    ]);
+    $client->shouldReceive('addSSLBinding')->once()->with('lb-1', 'ls-1', ['ssl-new']);
+    $client->shouldReceive('describeSSLV2')->once()->with('ssl-old-same-domain')->andReturn([
+        'DataSet' => [['SSLId' => 'ssl-old-same-domain', 'Domains' => 'sni.example.com', 'NotAfter' => time() + 3600]],
+    ]);
+    $client->shouldReceive('describeSSLV2')->once()->with('ssl-old-expired')->andReturn([
+        'DataSet' => [['SSLId' => 'ssl-old-expired', 'Domains' => 'other.example.com', 'NotAfter' => time() - 3600]],
+    ]);
+    $client->shouldReceive('deleteSSLBinding')->once()->with('lb-1', 'ls-1', [
+        'ssl-old-same-domain',
+        'ssl-old-expired',
+    ]);
+
+    $deployer = ucloudUalbDeployerWith(fn () => $client);
+    $deployer->bind('ssl-new', UALB_CREDS, [
+        'region' => 'cn-bj2', 'deploy_target' => 'listener', 'loadbalancer_id' => 'lb-1', 'listener_id' => 'ls-1', 'domain' => 'sni.example.com',
+    ]);
+});
+
 test('bind listener 已绑同默认证书则跳过（不调 update）', function () {
     $client = Mockery::mock(UcloudRestClient::class);
     $client->shouldReceive('describeListeners')->once()->andReturn([

@@ -31,7 +31,39 @@ test('华为云 CDN：证书服务型 + storeKind huawei_scm + 元信息 + schem
     expect($deployer->certUploader()->storeKind())->toBe('huawei_scm');
     expect($deployer->provider())->toBe('huaweicloud');
     expect($deployer->product())->toBe('cdn');
-    expect(array_column($deployer->configSchema(), 'key'))->toContain('domain');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('region')->toContain('domain_match_pattern')->toContain('domain');
+});
+
+test('bind wildcard：ListDomains 过滤不可用状态后批量绑定单层子域', function () {
+    $getCaptured = null;
+    $putCaptured = null;
+    $client = Mockery::mock(HuaweicloudRestClient::class);
+    $client->shouldReceive('get')->once()->andReturnUsing(function (string $path, array $query = []) use (&$getCaptured) {
+        $getCaptured = compact('path', 'query');
+
+        return ['domains' => [
+            ['domain_name' => 'a.example.com', 'domain_status' => 'online'],
+            ['domain_name' => 'b.example.com', 'domain_status' => 'online'],
+            ['domain_name' => 'deep.a.example.com', 'domain_status' => 'online'],
+            ['domain_name' => 'off.example.com', 'domain_status' => 'offline'],
+        ]];
+    });
+    $client->shouldReceive('put')->once()->andReturnUsing(function (string $path, array $body, array $query = []) use (&$putCaptured) {
+        $putCaptured = compact('path', 'body', 'query');
+
+        return [];
+    });
+
+    $deployer = hwCdnDeployerWith(fn (string $kind) => $kind === 'cdn' ? $client : new stdClass);
+    $deployer->bind('scm-1', ['access_key_id' => 'AK', 'secret_access_key' => 'SK', 'enterprise_project_id' => 'ep-1'], [
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($getCaptured['path'])->toBe('/v1.0/cdn/domains');
+    expect($getCaptured['query'])->toMatchArray(['enterprise_project_id' => 'ep-1', 'page_number' => 1, 'page_size' => 100]);
+    expect($putCaptured['body']['https']['domain_name'])->toBe('a.example.com,b.example.com');
+    expect($putCaptured['query'])->toBe(['enterprise_project_id' => 'ep-1']);
 });
 
 test('uploader 走 SCM import（与 SCM 端点同上传器）', function () {

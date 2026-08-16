@@ -351,6 +351,54 @@ test('清理失败安装记录时拒绝更新任务并保留更新失败记录',
         ->and(PluginOperation::whereKey($operation->id)->exists())->toBeTrue();
 });
 
+test('管理员可以取消失败的更新任务并保留当前插件版本', function () {
+    $operation = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_UPDATE,
+        'plugin_name' => 'cloud-deploy',
+        'version' => '0.0.6',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 更新失败',
+        'error' => '插件 cloud-deploy 更新失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $mock = Mockery::mock(PluginManager::class);
+    $mock->shouldNotReceive('uninstall');
+    $this->app->instance(PluginManager::class, $mock);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/plugin/operations/$operation->uuid/cancel");
+
+    $response->assertOk()->assertJson(['code' => 1]);
+    expect($response->json('data.name'))->toBe('cloud-deploy')
+        ->and($response->json('data.message'))->toContain('保留当前版本')
+        ->and(PluginOperation::whereKey($operation->id)->exists())->toBeFalse();
+});
+
+test('取消失败更新任务时拒绝安装任务并保留记录', function () {
+    $operation = PluginOperation::create([
+        'uuid' => (string) Str::uuid(),
+        'type' => PluginOperation::TYPE_INSTALL_REMOTE,
+        'plugin_name' => 'cloud-deploy',
+        'status' => PluginOperation::STATUS_FAILED,
+        'stage' => PluginOperation::STAGE_ERROR,
+        'message' => '插件 cloud-deploy 安装失败',
+        'error' => '插件 cloud-deploy 安装失败',
+        'admin_id' => $this->admin->id,
+        'finished_at' => now(),
+    ]);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->postJson("/api/admin/plugin/operations/$operation->uuid/cancel");
+
+    $response->assertOk()->assertJson(['code' => 0]);
+    expect($response->json('msg'))->toContain('只能取消失败的更新任务')
+        ->and(PluginOperation::whereKey($operation->id)->exists())->toBeTrue();
+});
+
 test('清理失败安装记录不会删除同插件更新失败记录', function () {
     $install = PluginOperation::create([
         'uuid' => (string) Str::uuid(),

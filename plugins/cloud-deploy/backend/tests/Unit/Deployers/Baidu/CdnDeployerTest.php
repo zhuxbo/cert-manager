@@ -2,6 +2,7 @@
 
 use BaiduBce\Exception\BceServiceException;
 use Plugins\CloudDeploy\Deployers\Baidu\BaiduCdnDeployer;
+use Plugins\CloudDeploy\Deployers\Baidu\BaiduRestClient;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -35,7 +36,7 @@ test('百度 CDN：内联型（usesRemoteCertStore=false、certUploader=null）'
 
 test('bind 调 PUT /v2/{domain}/certificates 直灌 PEM（certificate 子对象 + httpsEnable=ON）', function () {
     $captured = null;
-    $cdn = Mockery::mock();
+    $cdn = Mockery::mock(BaiduRestClient::class);
     $cdn->shouldReceive('request')
         ->once()
         ->andReturnUsing(function (string $method, string $path, ?array $body, array $params) use (&$captured) {
@@ -58,6 +59,31 @@ test('bind 调 PUT /v2/{domain}/certificates 直灌 PEM（certificate 子对象 
     expect($captured['body']['certificate']['certPrivateData'])->toBe('KEYPEM');
     expect($captured['body']['certificate']['certLinkData'])->toBe('CHAINPEM');
     expect($captured['body']['certificate']['certName'])->toStartWith('clouddeploy_');
+});
+
+test('wildcard 通过 GET /v2/domain marker 分页后仅批量更新单层匹配域名', function () {
+    $writes = [];
+    $cdn = Mockery::mock(BaiduRestClient::class);
+    $cdn->shouldReceive('request')->andReturnUsing(function (string $method, string $path, ?array $body, array $params) use (&$writes) {
+        if ($method === 'GET') {
+            expect($path)->toBe('/v2/domain');
+            if ($params === ['marker' => 'next']) {
+                return (object) ['domains' => [(object) ['name' => 'b.example.com']]];
+            }
+            expect($params)->toBe([]);
+
+            return (object) ['domains' => [(object) ['name' => 'a.example.com'], (object) ['name' => 'a.b.example.com']], 'nextMarker' => 'next'];
+        }
+        $writes[] = $path;
+
+        return new stdClass;
+    });
+    baiduCdnDeployerWith(fn () => $cdn)->bind(
+        ['cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'], baiduCdnCreds(),
+        ['domain_match_pattern' => 'wildcard', 'domain' => '*.example.com'],
+    );
+
+    expect($writes)->toBe(['/v2/a.example.com/certificates', '/v2/b.example.com/certificates']);
 });
 
 test('缺 domain 配置抛业务错误', function () {

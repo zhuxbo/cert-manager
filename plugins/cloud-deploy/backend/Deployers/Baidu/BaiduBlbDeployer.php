@@ -85,6 +85,7 @@ class BaiduBlbDeployer extends AbstractDeployer
             'cert' => new BaiduRestClient('certificate.baidubce.com', $credentials),
             // BLB：region 维度，host 含 region；region 可经 :port/ 注入突破 DNS 后缀（反模式 18）
             'blb' => new BaiduRestClient($this->authorizedRegionHost("blb.$region.baidubce.com"), $credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

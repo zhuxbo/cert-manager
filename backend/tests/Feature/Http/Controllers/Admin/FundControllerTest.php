@@ -105,6 +105,90 @@ test('管理员可以手工充值（type=addfunds）', function () {
     expect(Fund::where('user_id', $this->user->id)->where('type', 'addfunds')->exists())->toBeTrue();
 });
 
+test('手工充值同一用户同一金额 30 秒内拒绝重复入账', function () {
+    $payload = [
+        'user_id' => $this->user->id,
+        'amount' => '100.00',
+        'type' => 'addfunds',
+        'pay_method' => 'manual',
+        'status' => 1,
+        'remark' => '后台补单',
+    ];
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/fund', $payload)
+        ->assertOk()
+        ->assertJson(['code' => 1]);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/fund', $payload)
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => '同一用户相同金额 30 秒内请勿重复充值',
+        ]);
+
+    expect(Fund::where('user_id', $this->user->id)->where('type', 'addfunds')->count())->toBe(1)
+        ->and(Transaction::where('user_id', $this->user->id)->where('type', 'addfunds')->count())->toBe(1)
+        ->and((string) $this->user->fresh()->balance)->toBe('100.00');
+});
+
+test('手工充值相同防重窗口结束后允许再次入账', function () {
+    $payload = [
+        'user_id' => $this->user->id,
+        'amount' => '100.00',
+        'type' => 'addfunds',
+        'pay_method' => 'manual',
+        'status' => 1,
+    ];
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $payload)->assertJson(['code' => 1]);
+    $this->travel(31)->seconds();
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $payload)->assertJson(['code' => 1]);
+
+    expect(Fund::where('user_id', $this->user->id)->where('type', 'addfunds')->count())->toBe(2)
+        ->and(Transaction::where('user_id', $this->user->id)->where('type', 'addfunds')->count())->toBe(2)
+        ->and((string) $this->user->fresh()->balance)->toBe('200.00');
+});
+
+test('手工充值防重键只使用用户和金额且在检查前锁定用户行', function () {
+    $queries = [];
+    DB::listen(function ($query) use (&$queries) {
+        $queries[] = $query->sql;
+    });
+
+    $base = [
+        'user_id' => $this->user->id,
+        'amount' => '100.00',
+        'type' => 'addfunds',
+        'pay_method' => 'gift',
+        'status' => 1,
+    ];
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/fund', $base)->assertJson(['code' => 1]);
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/fund', array_merge($base, ['pay_method' => 'other']))
+        ->assertJson(['code' => 0]);
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/fund', array_merge($base, ['amount' => '101.00']))
+        ->assertJson(['code' => 1]);
+
+    $otherUser = User::factory()->create();
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/fund', array_merge($base, ['user_id' => $otherUser->id]))
+        ->assertJson(['code' => 1]);
+
+    $userLockIndex = collect($queries)->search(fn (string $sql) => str_contains($sql, 'from `users`')
+        && str_contains($sql, 'for update'));
+    $duplicateCheckIndex = collect($queries)->search(fn (string $sql) => str_contains($sql, 'from `funds`')
+        && str_contains($sql, '`created_at`'));
+
+    expect(Fund::where('user_id', $this->user->id)->where('type', 'addfunds')->count())->toBe(2)
+        ->and(Fund::where('user_id', $otherUser->id)->where('type', 'addfunds')->count())->toBe(1)
+        ->and($userLockIndex)->toBeInt()
+        ->and($duplicateCheckIndex)->toBeInt()->toBeGreaterThan($userLockIndex);
+});
+
 test('管理员可以手工扣款（type=deduct）', function () {
     $payload = [
         'user_id' => $this->user->id,

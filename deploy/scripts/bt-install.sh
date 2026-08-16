@@ -667,7 +667,43 @@ check_composer() {
     # 镜像源配置由 run_composer_install 跑（与 install 共用临时 COMPOSER_HOME）
 }
 
-# 安装 PHP 依赖（full 包不含 vendor/，运行时拉取）
+# 验证完整包内的 Composer 依赖快照。
+bundled_vendor_matches_lock() {
+    local backend_dir="$1"
+    local expected actual
+    [ -f "$backend_dir/composer.lock" ] &&
+        [ -f "$backend_dir/vendor/autoload.php" ] &&
+        [ -f "$backend_dir/vendor/composer/.ssl-manager-lock.sha256" ] || return 1
+    expected=$(file_sha256 "$backend_dir/composer.lock" | tr 'A-F' 'a-f') || return 1
+    actual=$(tr -d '[:space:]' <"$backend_dir/vendor/composer/.ssl-manager-lock.sha256" | tr 'A-F' 'a-f')
+    [[ "$actual" =~ ^[a-f0-9]{64}$ ]] && [ "$actual" = "$expected" ]
+}
+
+write_composer_lock_marker() {
+    local backend_dir="$1"
+    local lock_file="$backend_dir/composer.lock"
+    local autoload_file="$backend_dir/vendor/autoload.php"
+    local composer_dir="$backend_dir/vendor/composer"
+    local marker="$composer_dir/.ssl-manager-lock.sha256"
+    local temporary="$composer_dir/.ssl-manager-lock.sha256.tmp.$$"
+    local expected
+
+    if [ ! -f "$lock_file" ] || [ ! -f "$autoload_file" ]; then
+        log_error "无法写入 vendor 标记：composer.lock 或 vendor/autoload.php 不存在"
+        return 1
+    fi
+    expected=$(file_sha256 "$lock_file" | tr 'A-F' 'a-f') || return 1
+    if ! mkdir -p "$composer_dir" || ! printf '%s\n' "$expected" >"$temporary" || ! mv -f "$temporary" "$marker"; then
+        rm -f "$temporary"
+        log_error "无法原子更新 vendor 完整性标记"
+        return 1
+    fi
+    if [ -n "${WWW_USER:-}" ]; then
+        chown "$WWW_USER:$WWW_USER" "$marker" 2>/dev/null || true
+    fi
+}
+
+# 安装 PHP 依赖（新 full 包自带 vendor；仍兼容不带 vendor 的老包）
 run_composer_install() {
     log_step "安装 PHP 依赖（composer install）"
 
@@ -676,8 +712,8 @@ run_composer_install() {
         exit 1
     }
 
-    if [ -f "vendor/autoload.php" ] && [ -d "vendor" ]; then
-        log_info "vendor/ 已存在，跳过 composer install"
+    if bundled_vendor_matches_lock "$INSTALL_DIR/backend"; then
+        log_info "包内 vendor 已与 composer.lock 对齐"
         return 0
     fi
 
@@ -719,6 +755,9 @@ run_composer_install() {
 
     if [ ! -f "vendor/autoload.php" ]; then
         log_error "composer install 完成但 vendor/autoload.php 仍不存在"
+        exit 1
+    fi
+    if ! write_composer_lock_marker "$INSTALL_DIR/backend"; then
         exit 1
     fi
     log_success "PHP 依赖已安装"
@@ -1376,12 +1415,14 @@ main() {
     check_dependencies
     select_install_dir
     download_application
-    check_composer
+    if ! bundled_vendor_matches_lock "$INSTALL_DIR/backend"; then
+        check_composer
+    fi
 
     # 8. 权限
     set_permissions
 
-    # 8.5 安装 PHP 依赖（full 包不含 vendor/，运行时装）
+    # 8.5 验证包内依赖，或为老包运行 Composer
     run_composer_install
 
     # 9. 数据库连接信息收集（依赖 INSTALL_DIR / WWW_USER）

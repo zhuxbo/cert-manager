@@ -12,7 +12,7 @@ use Throwable;
 /**
  * O4：清理 channel=auto 卡死的孤儿续费/重签单（P0-1 路径 3/4）。
  *
- * 两分支各带独立金丝雀开关（分级：unpaid 无资金面默认开、pending 退款默认关待武装）：
+ * unpaid 清理保留独立开关；pending 已确认未提交上游且重试到顶，必须退款收尾：
  *  - unpaid（stale 超时）→ Action::delete：恢复旧证书 active、删新单，无退款无流水（安全）。
  *  - pending（reconcile 已到顶转人工、非产品缺失）→ Action::cancelPending：退款 + 恢复旧证书（四道网齐）。
  *
@@ -73,14 +73,10 @@ class SweepOrphanOrdersCommand extends Command
 
     /**
      * 分支2：pending 到顶（reconcile 已转人工、非产品缺失）→ cancelPending（退款 + 恢复旧证书）。
-     * 独立开关，默认关（arm-switch，首轮生产观察后手动开启）。
+     * 该集合已经同时满足未提交上游、重试到顶、非产品缺失、无执行中 commit，不设退款开关。
      */
     private function sweepPending(Action $action, int $batch, int $maxAttempts): void
     {
-        if (! config('reconcile.orphan.pending_enabled', false)) {
-            return;
-        }
-
         // 三条件全部消费 PendingReconcileQuery 共享物 / 镜像 reconcile：
         //  ① 到顶 AND ② 非产品缺失 = maxedAndNotProductMissing（= T5(b) 转人工集 ∩ 非产品缺失，正反同源无漂移）
         //  ③ 无 executing commit task（镜像 reconcile C3，等最后一次 commit 落定）

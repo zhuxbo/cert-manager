@@ -23,7 +23,7 @@ function volcAlbDeployerWith(callable $clientFactory): VolcAlbDeployer
 
 function volcAlbCreds(): array
 {
-    return ['access_key_id' => 'AK', 'secret_access_key' => 'SK'];
+    return ['access_key_id' => 'AK', 'secret_access_key' => 'SK', 'project_name' => 'project-a'];
 }
 
 test('火山 ALB：证书服务型（storeKind volc_certcenter）', function () {
@@ -105,7 +105,14 @@ test('loadbalancer 目标：DescribeListeners(HTTPS) 枚举 → 各监听更新'
     $modifies = [];
     $client = Mockery::mock(VolcRestClient::class);
     $client->shouldReceive('callQuery')->andReturnUsing(function (string $action, string $version, array $params) use (&$modifies) {
+        if ($action === 'DescribeLoadBalancerAttributes') {
+            expect($params['LoadBalancerId'])->toBe('lb-1');
+
+            return [];
+        }
         if ($action === 'DescribeListeners') {
+            expect($params['ProjectName'])->toBe('project-a');
+
             return ['Listeners' => [['ListenerId' => 'lsn-1'], ['ListenerId' => 'lsn-2']]];
         }
         if ($action === 'ModifyListenerAttributes') {

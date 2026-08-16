@@ -38,6 +38,19 @@ test('Zenlayer ZGA：证书服务型（usesRemoteCertStore + storeKind zenlayer_
     expect($deployer->provider())->toBe('zenlayer');
     expect($deployer->product())->toBe('ga');
     expect($deployer->label())->toBe('Zenlayer 全球加速 ZGA');
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('deploy_target')->toContain('certificate_id');
+});
+
+test('certificate 目标经 uploader 调 ModifyCertificate 原位替换', function () {
+    $client = Mockery::mock(ZenlayerRestClient::class);
+    $client->shouldReceive('call')->once()->with('ModifyCertificate', [
+        'certificateId' => 'cert-old', 'certificateContent' => "CERTPEM\nCHAINPEM", 'certificateKey' => 'KEYPEM',
+    ])->andReturn([]);
+    $deployer = zenlayerGaDeployerWith(fn () => $client);
+    $uploader = $deployer->certUploader(['deploy_target' => 'certificate', 'certificate_id' => 'cert-old']);
+    expect($uploader->storeKind())->toBe('zenlayer_zga:cert-old');
+    expect($uploader->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', zenlayerGaCreds()))->toBe('cert-old');
+    $deployer->bind('cert-old', zenlayerGaCreds(), ['deploy_target' => 'certificate', 'certificate_id' => 'cert-old']);
 });
 
 test('pollBudget bind 最坏耗时 ≤50s（G2 计算断言）', function () {

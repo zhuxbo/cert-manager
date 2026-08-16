@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import AccessFormDialog from "./AccessFormDialog.vue";
 import SchemaFieldLabel from "./SchemaFieldLabel.vue";
+import { isBooleanConfigField } from "./schemaConfig";
+import {
+  configForVisibleSchema,
+  isSchemaFieldRequired,
+  isSchemaFieldVisible
+} from "./schemaConditions";
 
 export interface ConfigField {
   key: string;
   label: string;
-  type: "string" | "number" | "select";
+  type: "string" | "number" | "select" | "bool" | "boolean";
   required?: boolean;
+  default?: unknown;
+  required_when?: { key: string; equals: unknown };
+  visible_when?: { key: string; equals: unknown };
   options?: Array<{ label: string; value: string }>;
   description?: string;
   help?: string;
@@ -23,6 +33,20 @@ export interface ProviderProduct {
 export interface ProviderCatalogItem {
   key: string;
   label: string;
+  credentialSchema: Array<{
+    key: string;
+    label: string;
+    type?: "string" | "number" | "select" | "bool" | "boolean";
+    required?: boolean;
+    default?: unknown;
+    required_when?: { key: string; equals: unknown };
+    visible_when?: { key: string; equals: unknown };
+    options?: Array<{ label: string; value: string }>;
+    secret?: boolean;
+    description?: string;
+    help?: string;
+    tip?: string;
+  }>;
   products: ProviderProduct[];
 }
 
@@ -30,6 +54,8 @@ export interface TargetFormApi {
   accessList: (params: Record<string, any>) => Promise<any>;
   getProviders: (force?: boolean) => Promise<ProviderCatalogItem[]>;
   targetShow?: (id: number) => Promise<any>;
+  accessStore: (data: Record<string, any>) => Promise<any>;
+  accessUpdate: (id: number, data: Record<string, any>) => Promise<any>;
   targetStore: (data: Record<string, any>) => Promise<any>;
   targetUpdate: (id: number, data: Record<string, any>) => Promise<any>;
 }
@@ -62,6 +88,9 @@ const catalog = ref<ProviderCatalogItem[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const suppressReset = ref(false);
+const accessDialog = ref(false);
+const editingAccess = ref<any | null>(null);
+const accessIdsBeforeCreate = ref<Set<string>>(new Set());
 const form = ref<any>({
   user_id: undefined,
   access_id: undefined,
@@ -102,6 +131,11 @@ const configFields = computed<ConfigField[]>(() => {
   const prod = products.value.find(p => p.product === form.value.product);
   return prod?.configSchema ?? [];
 });
+const visibleConfigFields = computed<ConfigField[]>(() =>
+  configFields.value.filter(field =>
+    isSchemaFieldVisible(field, form.value.config ?? {}, configFields.value)
+  )
+);
 
 watch(
   () => form.value.user_id,
@@ -129,12 +163,20 @@ watch(
   () => form.value.product,
   () => {
     if (suppressReset.value) return;
-    const next: Record<string, any> = {};
-    for (const f of configFields.value) {
-      next[f.key] = form.value.config?.[f.key] ?? "";
-    }
-    form.value.config = next;
+    form.value.config = configForVisibleSchema(
+      configFields.value,
+      form.value.config ?? {}
+    );
   }
+);
+
+watch(
+  () => form.value.config,
+  current => {
+    const next = configForVisibleSchema(configFields.value, current ?? {});
+    if (!sameConfig(current ?? {}, next)) form.value.config = next;
+  },
+  { deep: true }
 );
 
 watch(
@@ -149,6 +191,43 @@ async function loadAccesses(userId?: number | string) {
   if (isAdmin.value && userId) params.user_id = userId;
   const res = await props.api.accessList(params);
   accesses.value = res.data.items;
+}
+
+function openAccessCreate() {
+  editingAccess.value = null;
+  accessIdsBeforeCreate.value = new Set(
+    accesses.value.map(access => String(access.id))
+  );
+  accessDialog.value = true;
+}
+
+function openAccessEdit() {
+  if (!selectedAccess.value) return;
+  editingAccess.value = selectedAccess.value;
+  accessDialog.value = true;
+}
+
+async function onAccessSaved(result: {
+  id?: number;
+  name: string;
+  provider: string;
+  created: boolean;
+}) {
+  const selectedId = form.value.access_id;
+  await loadAccesses(form.value.user_id);
+
+  if (result.created) {
+    const createdAccess = accesses.value.find(
+      access =>
+        !accessIdsBeforeCreate.value.has(String(access.id)) &&
+        access.name === result.name &&
+        access.provider === result.provider
+    );
+    if (createdAccess) form.value.access_id = createdAccess.id;
+    return;
+  }
+
+  form.value.access_id = result.id ?? selectedId;
 }
 
 async function open() {
@@ -188,6 +267,10 @@ async function open() {
           config: {},
           enabled: true
         };
+    form.value.config = configForVisibleSchema(
+      configFields.value,
+      form.value.config ?? {}
+    );
     setTimeout(() => (suppressReset.value = false), 0);
   } finally {
     loading.value = false;
@@ -216,9 +299,12 @@ function validate(): boolean {
     ElMessage.warning("请选择产品");
     return false;
   }
-  for (const f of configFields.value) {
+  for (const f of visibleConfigFields.value) {
     const v = form.value.config?.[f.key];
-    if (f.required && (v === undefined || v === null || v === "")) {
+    if (
+      isSchemaFieldRequired(f, form.value.config ?? {}, configFields.value) &&
+      (v === undefined || v === null || v === "")
+    ) {
       ElMessage.warning(`请填写：${f.label}`);
       return false;
     }
@@ -229,6 +315,11 @@ function validate(): boolean {
 
 async function submit() {
   if (!validate()) return;
+
+  form.value.config = configForVisibleSchema(
+    configFields.value,
+    form.value.config ?? {}
+  );
 
   const payload: Record<string, any> = {
     access_id: form.value.access_id,
@@ -264,6 +355,18 @@ function accessLabel(access: any): string {
   const label = `${access.name}(${providerLabel(access.provider)})`;
   return isAdmin.value ? `${label} · ${access.username ?? ""}` : label;
 }
+
+function sameConfig(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(key => Object.is(left[key], right[key]))
+  );
+}
 </script>
 
 <template>
@@ -289,19 +392,37 @@ function accessLabel(access: any): string {
       </el-form-item>
 
       <el-form-item label="云凭证">
-        <el-select
-          v-model="form.access_id"
-          :placeholder="accessPlaceholder"
-          :disabled="accessDisabled"
-          style="width: 100%"
+        <div
+          style="display: flex; width: 100%; align-items: center; gap: 8px"
         >
-          <el-option
-            v-for="a in accesses"
-            :key="a.id"
-            :label="accessLabel(a)"
-            :value="a.id"
-          />
-        </el-select>
+          <el-select
+            v-model="form.access_id"
+            :placeholder="accessPlaceholder"
+            :disabled="accessDisabled"
+            clearable
+            style="flex: 1; min-width: 0"
+          >
+            <el-option
+              v-for="a in accesses"
+              :key="a.id"
+              :label="accessLabel(a)"
+              :value="a.id"
+            />
+          </el-select>
+          <template v-if="hideOrder">
+            <el-button
+              v-if="!selectedAccess"
+              type="primary"
+              :disabled="accessDisabled"
+              @click="openAccessCreate"
+            >
+              新增
+            </el-button>
+            <el-button v-else type="primary" @click="openAccessEdit">
+              编辑
+            </el-button>
+          </template>
+        </div>
       </el-form-item>
 
       <el-form-item v-if="!hideOrder" label="订单">
@@ -338,7 +459,7 @@ function accessLabel(access: any): string {
       </el-form-item>
 
       <el-form-item
-        v-for="f in configFields"
+        v-for="f in visibleConfigFields"
         :key="f.key"
         :required="false"
       >
@@ -346,7 +467,15 @@ function accessLabel(access: any): string {
           <SchemaFieldLabel :field="f" />
         </template>
         <el-select
-          v-if="f.type === 'select'"
+          v-if="isBooleanConfigField(f)"
+          v-model="form.config[f.key]"
+          style="width: 100%"
+        >
+          <el-option label="是" :value="true" />
+          <el-option label="否" :value="false" />
+        </el-select>
+        <el-select
+          v-else-if="f.type === 'select'"
           v-model="form.config[f.key]"
           :placeholder="f.label"
           style="width: 100%"
@@ -379,4 +508,13 @@ function accessLabel(access: any): string {
       </el-button>
     </template>
   </el-dialog>
+
+  <AccessFormDialog
+    v-model="accessDialog"
+    :api="api"
+    :catalog="catalog"
+    :access="editingAccess"
+    :user-id="isAdmin ? form.user_id : null"
+    @saved="onAccessSaved"
+  />
 </template>

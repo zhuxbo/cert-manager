@@ -64,6 +64,24 @@ trait ActionTrait
     }
 
     /**
+     * 限制同一订单在指定时间内重复发起取消。
+     *
+     * 首次请求无论后续成功或失败都保留占位至 TTL 到期，避免下游在异常后立即并发重试；
+     * 已取消订单由 API Controller 在调用本方法前直接按幂等成功返回。
+     */
+    public function guardCancelDuplicate(int $orderId, int $expire = 60): void
+    {
+        $later = $this->checkDuplicate('cancel', [$orderId], $expire);
+
+        if ($later > 0) {
+            $this->error(
+                "Duplicate cancel request, retry after {$later} seconds",
+                ['retry_after' => $later],
+            );
+        }
+    }
+
+    /**
      * 初始化参数
      */
     protected function initParams(array $params): array
@@ -1119,25 +1137,24 @@ trait ActionTrait
     }
 
     /**
-     * reissue 取消退款预检（只读，必须在上游 api->cancel 之前调用）。
+     * pending reissue 增量退款预检。
      *
-     * 两道前置校验，失败点全部前移到上游调用之前（收窄"上游已取消但本地回滚"窗口）：
+     * 两道前置校验：
      *   - F1 fail-safe：唯一索引 (type,transaction_id) WHERE type!='order' 每订单仅一条 cancel 流水。
-     *     恢复旧证书 active 打开了"二次 reissue → 二次取消"路径，若不预检会在 api->cancel 成功【之后】
-     *     撞唯一冲突 → 回滚 → 上游已取消、本地无退款、卡 cancelling。命中即报错转人工，杜绝该形态。
-     *   - F4 金额校验：amount>0 时预取 last_transaction 并断言金额，失败前移到上游调用前。
+     *     恢复旧证书 active 会打开"二次 reissue → 二次取消"路径，命中已有退款时转人工。
+     *   - F4 金额校验：amount>0 时预取 last_transaction 并断言金额，失败时整笔 pending 恢复事务回滚。
      *
      * @return Transaction|null amount==0 返回 null（不建 cancel 流水，天然不触发 F1 唯一索引）
      */
-    protected function prepareReissueRefund(Order $order, Cert $cert): ?Transaction
+    protected function preparePendingReissueRefund(Order $order, Cert $cert): ?Transaction
     {
-        // F1：已存在 cancel 流水即拒绝（挡在 api->cancel 之前，转人工）
+        // F1：已存在 cancel 流水即拒绝（挡在恢复前驱和写退款之前，转人工）
         $alreadyRefunded = Transaction::where('type', 'cancel')
             ->where('transaction_id', $order->id)
             ->exists();
         $alreadyRefunded && $this->error('该订单已存在取消退款流水，请人工处理');
 
-        // amount>0：预取并校验上次交易（增量退款依据），失败前移到上游调用前
+        // amount>0：预取并校验上次交易（增量退款依据）
         if ($cert->amount > 0) {
             $lastTransaction = Transaction::where('transaction_id', $order->id)->orderBy('id', 'desc')->first();
             $lastTransaction || $this->error('未找到上次交易记录');
@@ -1151,12 +1168,12 @@ trait ActionTrait
     }
 
     /**
-     * reissue 取消增量退款（写）：只退当次 reissue 增量金额、counts 取 -last_transaction（增量非累计）。
+     * pending reissue 取消增量退款（写）：只退当次 reissue 增量金额、counts 取 -last_transaction（增量非累计）。
      *
      * $lastTransaction=null（amount==0）整体跳过、不建 cancel 流水（外层守卫 `$cert->amount>0` 决定，
      * Transaction::creating 的 amount=0 短路为次层）；purchased_* 内存递减由调用方随分支 save 持久化。
      */
-    protected function applyReissueIncrementRefund(Order $order, Cert $cert, ?Transaction $lastTransaction): void
+    protected function applyPendingReissueIncrementRefund(Order $order, Cert $cert, ?Transaction $lastTransaction): void
     {
         if (! $lastTransaction) {
             return;
@@ -1179,7 +1196,7 @@ trait ActionTrait
      * 未签发 reissue 取消的恢复：回切 latest_cert_id + 恢复旧证书 active + 删除 reissue cert。
      *
      * certs.last_cert_id 与 orders.latest_cert_id 均 UNIQUE，删除 reissue cert 释放槽位（标 cancelled
-     * 会占死槽位锁死后续 reissue）。$order->save() 一并持久化 applyReissueIncrementRefund 的 purchased_* 内存递减。
+     * 会占死槽位锁死后续 reissue）。$order->save() 一并持久化增量退款后的 purchased_* 内存递减。
      */
     protected function restoreReissuedCert(Order $order, Cert $cert): void
     {
@@ -1230,14 +1247,12 @@ trait ActionTrait
             }
 
             if ($cert->action === 'reissue') {
-                // 与 cancelLocked reissue 分支共享退款 helper（prepareReissueRefund/applyReissueIncrementRefund，
-                // 反模式 4/6 消对称副本）：增量退款口径统一。restoreReissuedCert 恢复旧证书为本路径专属——
-                // 恢复窗口仅 unpaid/pending，pending 恒未签发（未提交上游、api_id=null）故恢复前驱；
-                // cancelLocked（已提交上游）不恢复、置 cancelled 并终结订单。
+                // pending 恒未提交上游（api_id=null），取消后恢复前驱，只退当次 reissue 增量；
+                // cancelLocked / 同步取消处理已提交上游的订单，终结整单并按订单口径退款。
                 // 对称获得 F1 fail-safe：二次 reissue-cancel 一律转人工（含 amount=0 —— exists() 预检先于
                 // amount 守卫，无退款流水的二次取消同样报错，fail-safe 收紧）。
-                $lastTransaction = $this->prepareReissueRefund($order, $cert);
-                $this->applyReissueIncrementRefund($order, $cert, $lastTransaction);
+                $lastTransaction = $this->preparePendingReissueRefund($order, $cert);
+                $this->applyPendingReissueIncrementRefund($order, $cert, $lastTransaction);
                 $this->restoreReissuedCert($order, $cert);
             } elseif ($cert->action === 'renew') {
                 // renew 取消时恢复上个订单的证书状态

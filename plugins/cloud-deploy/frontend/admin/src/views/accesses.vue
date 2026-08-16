@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   accessDestroy,
@@ -12,6 +12,12 @@ import {
 } from "@/api/cloud-deploy";
 import { formatDateTime } from "@/utils/time";
 import SchemaFieldLabel from "@cloud-deploy/shared/SchemaFieldLabel.vue";
+import {
+  configForVisibleSchema,
+  isSchemaFieldRequired,
+  isSchemaFieldVisible,
+  valuesForVisibleSchema
+} from "@cloud-deploy/shared/schemaConditions";
 
 const rows = ref<any[]>([]);
 const loading = ref(false);
@@ -27,6 +33,8 @@ const form = ref<any>({
   provider: "",
   credentials: {}
 });
+const credentialsDirty = ref(false);
+let initializingCredentials = false;
 
 const q = ref<any>({
   username: "",
@@ -38,6 +46,25 @@ const credFields = computed<CredentialField[]>(() => {
   const provider = catalog.value.find(c => c.key === form.value.provider);
   return provider?.credentialSchema ?? [];
 });
+const visibleCredFields = computed<CredentialField[]>(() =>
+  credFields.value.filter(field =>
+    isSchemaFieldVisible(field, form.value.credentials ?? {}, credFields.value)
+  )
+);
+
+watch(
+  () => form.value.credentials,
+  () => {
+    if (!initializingCredentials) credentialsDirty.value = true;
+  },
+  { deep: true, flush: "sync" }
+);
+
+function setCredentials(credentials: Record<string, unknown>) {
+  initializingCredentials = true;
+  form.value.credentials = credentials;
+  initializingCredentials = false;
+}
 
 function buildParams(): Record<string, any> {
   const p: Record<string, any> = {
@@ -85,7 +112,7 @@ function providerLabel(key: string): string {
 }
 
 function onProviderChange() {
-  form.value.credentials = {};
+  setCredentials(configForVisibleSchema(credFields.value, {}));
 }
 
 function openCreate() {
@@ -94,19 +121,28 @@ function openCreate() {
     user_id: undefined,
     name: "",
     provider: catalog.value[0]?.key ?? "",
-    credentials: {}
+    credentials: configForVisibleSchema(
+      catalog.value[0]?.credentialSchema ?? [],
+      {}
+    )
   };
+  credentialsDirty.value = false;
   dialog.value = true;
 }
 
 function openEdit(row: any) {
   editing.value = row;
+  const provider = catalog.value.find(item => item.key === row.provider);
+  initializingCredentials = true;
   form.value = {
     user_id: row.user_id,
     name: row.name,
     provider: row.provider,
-    credentials: {}
+    // 旧凭证缺少新选择字段时采用 schema 默认值；未编辑时不回写。
+    credentials: configForVisibleSchema(provider?.credentialSchema ?? [], {})
   };
+  initializingCredentials = false;
+  credentialsDirty.value = false;
   dialog.value = true;
 }
 
@@ -124,9 +160,12 @@ function validate(): boolean {
     return false;
   }
   if (!editing.value) {
-    for (const f of credFields.value) {
+    for (const f of visibleCredFields.value) {
       const v = form.value.credentials?.[f.key];
-      if (f.required && (v === undefined || v === null || v === "")) {
+      if (
+        isSchemaFieldRequired(f, form.value.credentials ?? {}, credFields.value) &&
+        (v === undefined || v === null || v === "")
+      ) {
         ElMessage.warning(`请填写：${f.label}`);
         return false;
       }
@@ -139,17 +178,21 @@ function validate(): boolean {
 async function submit() {
   if (!validate()) return;
 
-  const filled = Object.values(form.value.credentials ?? {}).some(v => v);
+  const credentials = valuesForVisibleSchema(
+    credFields.value,
+    form.value.credentials ?? {}
+  );
+  const filled = Object.values(credentials).some(v => v);
   if (editing.value) {
     const payload: Record<string, any> = { name: form.value.name };
-    if (filled) payload.credentials = form.value.credentials;
+    if (credentialsDirty.value && filled) payload.credentials = credentials;
     await accessUpdate(editing.value.id, payload);
   } else {
     await accessStore({
       user_id: form.value.user_id,
       name: form.value.name,
       provider: form.value.provider,
-      credentials: form.value.credentials
+      credentials
     });
   }
   ElMessage.success("已保存");
@@ -277,14 +320,27 @@ defineExpose({ openCreate });
           </el-select>
         </el-form-item>
         <el-form-item
-          v-for="f in credFields"
+          v-for="f in visibleCredFields"
           :key="f.key"
           :required="false"
         >
           <template #label>
             <SchemaFieldLabel :field="f" />
           </template>
+          <el-select
+            v-if="f.type === 'select'"
+            v-model="form.credentials[f.key]"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="option in f.options ?? []"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
           <el-input
+            v-else
             v-model="form.credentials[f.key]"
             :placeholder="editing ? '留空不修改' : ''"
             :show-password="f.secret"

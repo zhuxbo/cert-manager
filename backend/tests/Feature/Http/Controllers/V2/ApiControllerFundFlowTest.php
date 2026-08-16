@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Models\ApiToken;
 use App\Models\Cert;
 use App\Models\Order;
@@ -272,6 +273,31 @@ test('cancel active 订单经真实路由退费：退费金额正确、cert 置 
     expect($cancelTx)->toHaveCount(1);
     expect((float) $cancelTx->first()->amount)->toBe(100.0);
     expect($user->refresh()->balance)->toBe('200.00');
+});
+
+test('cancel 首次异常后 60 秒内重复请求被拒且不再次触达上游', function () {
+    $stub = Mockery::mock(Api::class);
+    $stub->shouldReceive('cancel')
+        ->once()
+        ->andThrow(new ApiResponseException('上游取消失败', null, null, 0));
+    app()->instance(Api::class, $stub);
+
+    $user = $this->createTestUser(['balance' => '200.00']);
+    $product = Product::factory()->create(['refund_period' => 30]);
+    [$order] = v2ActivePaidOrder($user, $product, '100.00');
+
+    v2Post($user, '/api/v2/cancel', ['order_id' => $order->id])
+        ->assertOk()
+        ->assertJson(['code' => 0, 'msg' => '上游取消失败']);
+
+    $duplicate = v2Post($user, '/api/v2/cancel', ['order_id' => $order->id]);
+    $duplicate->assertOk()->assertJson(['code' => 0]);
+
+    $retryAfter = $duplicate->json('errors.retry_after');
+    expect($retryAfter)->toBeInt()->toBeGreaterThan(0)->toBeLessThanOrEqual(60)
+        ->and($duplicate->json('msg'))->toBe("Duplicate cancel request, retry after {$retryAfter} seconds")
+        ->and($order->latestCert()->withoutGlobalScopes()->first()->status)->toBe('cancelling')
+        ->and(Transaction::withoutGlobalScopes()->where('type', 'cancel')->where('transaction_id', $order->id)->exists())->toBeFalse();
 });
 
 test('cancel 已取消订单经真实路由幂等：返回成功、不重复退费、不触达上游', function () {

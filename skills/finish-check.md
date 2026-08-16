@@ -379,7 +379,7 @@ pnpm test:shared
 - [ ] 插件迁移幂等（同主系统约束）；**插件后端代码与主系统同等约束**——安全/并发/资金类反模式按内容触发（见 §1 范围表 plugins/ 行），机器检查：`git grep -nE "query\(['\"](token|api_key|secret)" -- ':(glob)plugins/*/backend/**'` 应 0 命中（凭据不进 URL query）
 - [ ] Widget 插槽注册正确（如 `user-dashboard-top`）
 - [ ] 插件动态加载不影响主应用启动
-- [ ] `build.json` 的 `include` 数组包含所有需要打包的子目录（`backend/` / `frontend/web/` / `nginx/` 等）；发布 zip 不变量由 `plugins/release-plugin.sh` 的 `verify_zip_invariants` 硬校验（vendor 不进包 / composer.json 与 lock 配对），build 与 --publish-only 两路径都过
+- [ ] `build.json` 的 `include` 数组包含所有需要打包的子目录（`backend/` / `frontend/web/` / `nginx/` 等）；发布 zip 不变量由 `plugins/release-plugin.sh` 的 `verify_zip_invariants` 硬校验（composer.json / lock / 已锁定 vendor 配对），build 与 --publish-only 两路径都过
 
 ---
 

@@ -7,6 +7,30 @@ use Tests\TestCase;
 
 uses(TestCase::class);
 
+/** SAN = tse.example.com, www.tse.example.com。 */
+const KSYUN_SAN_CERT = <<<'PEM'
+-----BEGIN CERTIFICATE-----
+MIIDSDCCAjCgAwIBAgIUUBjemBHBqHCbVNdOC9tLQIdvdRowDQYJKoZIhvcNAQEL
+BQAwGjEYMBYGA1UEAwwPdHNlLmV4YW1wbGUuY29tMB4XDTI2MDYyNzE4MjkyNFoX
+DTI2MDYyOTE4MjkyNFowGjEYMBYGA1UEAwwPdHNlLmV4YW1wbGUuY29tMIIBIjAN
+BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt6XhkbT1an1z2BPB+Xa0mq/jmc8E
+p2ihYk2/xRABLG35iUj5mCu2kavuj+nMSJiT62JF1pGHTsdR0DtmjmCu3zKQfewr
+8DjTb1/ZzvXO1WtBQm4LXd6NsgHaAOAnhmk0Ddh02N4T5GbD6+KoHy/Ktp2P4E5c
+ZeAjsF6/ook9tRJyZUObwNM8E46pZsYSbbbRrmH3QKXu2Yu6BR1CHv0P2ux8Yweb
+1QOc1SIE6Go931j8q3QKDRQ6Rb+2qr55Q2GhmnALGADf2NV3O5x2RZD4txDWBnWE
+6kXj4+gUjLQy2i2sFzWB8yxPQjFZ6TcVqaPj8gyLiKoK9hMy1Pe77pKmiQIDAQAB
+o4GFMIGCMB0GA1UdDgQWBBTgWU811d3lpBD7IRbSGu/X/zyC0TAfBgNVHSMEGDAW
+gBTgWU811d3lpBD7IRbSGu/X/zyC0TAPBgNVHRMBAf8EBTADAQH/MC8GA1UdEQQo
+MCaCD3RzZS5leGFtcGxlLmNvbYITd3d3LnRzZS5leGFtcGxlLmNvbTANBgkqhkiG
+9w0BAQsFAAOCAQEAMewYdmvAULhHXIEV6e8gaKvA0BLt4woSuWLH85T279mOaqya
+h5ZZcYu1kEidqudz9jOLP5Dq5JjjncEAN4u7GsgqMi9sZjB9xj670O1djf1BQL1j
+HsTiNdMbnoAJwGIaF4krMW1qpm27n6L+Mlmio9OD6+7oBFtPC4Oe3T8TdMj45NWo
+v86T+J2Q4tjAzSI9lwzkDAVSDYpCJnCHBgjrBgJINi9dbWZaF507I22St818ReYf
+4477YlJZCuKUIwPYYD8qp7dUAUYugqGE4xyeC+ZQAydaior6besc8+nHl7llh3N3
+B07nvkFS/GxizoRVwpxaNC6TtdEY6TeKBIG9+Q==
+-----END CERTIFICATE-----
+PEM;
+
 /**
  * 测试子类：override makeClient 注入缝，按 $kind 返回 mock。
  */
@@ -81,6 +105,76 @@ test('bind：exact 匹配域名后逐个 ConfigCertificate（DomainIds + Enable=
     // 证书本体 + 中间证书拼完整链
     expect($p['ServerCertificate'])->toContain('CERTPEM')->toContain('CHAINPEM');
     expect($p['PrivateKey'])->toBe('KEYPEM');
+});
+
+test('bind：wildcard 按单级泛域名匹配多个 CDN 域名', function () {
+    $configured = [];
+    $client = Mockery::mock(KsyunRestClient::class);
+    $client->shouldReceive('get')->once()->andReturn(['Domains' => [
+        ['DomainId' => 'd-1', 'DomainName' => 'a.example.com', 'DomainStatus' => 'online'],
+        ['DomainId' => 'd-2', 'DomainName' => 'b.example.com', 'DomainStatus' => 'online'],
+        ['DomainId' => 'd-3', 'DomainName' => 'deep.a.example.com', 'DomainStatus' => 'online'],
+    ]]);
+    $client->shouldReceive('post')->twice()->andReturnUsing(function (string $path, array $params) use (&$configured) {
+        $configured[] = $params['DomainIds'];
+
+        return [];
+    });
+
+    $deployer = ksyunCdnDeployerWith(fn () => $client);
+    $deployer->bind(ksyunCertRef(), ksyunCreds(), [
+        'deploy_target' => 'domain',
+        'domain_match_pattern' => 'wildcard',
+        'domain' => '*.example.com',
+    ]);
+
+    expect($configured)->toBe(['d-1', 'd-2']);
+});
+
+test('bind：certsan 按叶子证书 SAN 匹配 CDN 域名', function () {
+    $configured = [];
+    $client = Mockery::mock(KsyunRestClient::class);
+    $client->shouldReceive('get')->once()->andReturn(['Domains' => [
+        ['DomainId' => 'd-1', 'DomainName' => 'tse.example.com', 'DomainStatus' => 'online'],
+        ['DomainId' => 'd-2', 'DomainName' => 'www.tse.example.com', 'DomainStatus' => 'online'],
+        ['DomainId' => 'd-3', 'DomainName' => 'other.example.com', 'DomainStatus' => 'online'],
+    ]]);
+    $client->shouldReceive('post')->twice()->andReturnUsing(function (string $path, array $params) use (&$configured) {
+        $configured[] = $params['DomainIds'];
+
+        return [];
+    });
+
+    $deployer = ksyunCdnDeployerWith(fn () => $client);
+    $deployer->bind(['cert' => KSYUN_SAN_CERT, 'key' => 'KEY', 'chain' => 'CHAIN'], ksyunCreds(), [
+        'deploy_target' => 'domain',
+        'domain_match_pattern' => 'certsan',
+    ]);
+
+    expect($configured)->toBe(['d-1', 'd-2']);
+});
+
+test('bind：certificate target 调 SetCertificate 原位替换证书', function () {
+    $captured = null;
+    $client = Mockery::mock(KsyunRestClient::class);
+    $client->shouldReceive('get')->never();
+    $client->shouldReceive('post')->once()->andReturnUsing(function (string $path, array $params) use (&$captured) {
+        $captured = compact('path', 'params');
+
+        return [];
+    });
+
+    $deployer = ksyunCdnDeployerWith(fn () => $client);
+    $deployer->bind(ksyunCertRef(), ksyunCreds(), [
+        'deploy_target' => 'certificate',
+        'certificate_id' => 'cert-old-1',
+    ]);
+
+    expect($captured['path'])->toBe('/2016-09-01/cert/SetCertificate');
+    expect($captured['params']['Action'])->toBe('SetCertificate');
+    expect($captured['params']['CertificateId'])->toBe('cert-old-1');
+    expect($captured['params']['ServerCertificate'])->toContain('CERTPEM')->toContain('CHAINPEM');
+    expect($captured['params']['PrivateKey'])->toBe('KEYPEM');
 });
 
 test('bind：多个匹配域名各 ConfigCertificate 一次', function () {

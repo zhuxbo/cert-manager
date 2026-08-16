@@ -504,6 +504,12 @@ class ApiController extends Controller
             $this->error('Order not found');
         }
 
+        if ($order->latestCert->status === 'cancelled') {
+            $this->success();
+        }
+
+        $this->action->guardCancelDuplicate($order_id);
+
         // 待支付订单删除
         if ($order->latestCert->status === 'unpaid') {
             try {
@@ -518,8 +524,6 @@ class ApiController extends Controller
 
         // 待提交的订单取消
         if ($order->latestCert->status === 'pending') {
-            // 取消前删除提交任务
-            $this->action->deleteTask($order_id, 'commit');
             try {
                 $this->action->cancelPending($order_id);
             } catch (ApiResponseException $e) {
@@ -564,11 +568,12 @@ class ApiController extends Controller
         }
 
         if (in_array($status, ['processing', 'approving', 'active', 'cancelling'])) {
-            // 取消前删除相关任务
-            $this->action->deleteTask($order_id, 'sync,revalidate,cancel');
+            $alreadyCancelled = $this->action->prepareImmediateCancel($order_id);
+            if ($alreadyCancelled) {
+                $this->success();
+            }
 
             // 立即取消
-            $order->latestCert->update(['status' => 'cancelling']);
             $this->action->cancel($order_id);
         } else {
             $this->error('Order cannot be cancelled');

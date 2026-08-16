@@ -4,10 +4,13 @@ namespace Plugins\CloudDeploy\Deployers\Aliyun;
 
 use AlibabaCloud\SDK\Cas\V20200407\Cas;
 use AlibabaCloud\SDK\Cas\V20200407\Models\GetUserCertificateDetailRequest;
+use AlibabaCloud\SDK\Vod\V20170321\Models\DescribeVodUserDomainsRequest;
 use AlibabaCloud\SDK\Vod\V20170321\Models\SetVodDomainSSLCertificateRequest;
 use AlibabaCloud\SDK\Vod\V20170321\Vod;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\MatchesCertificateHostnames;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -18,11 +21,12 @@ use Throwable;
  * remote_cert_id），上传时的 CertName 不可得，故 bind 内**按 CertId 反查 CAS GetUserCertificateDetail
  * 拿 name**（与上传命中/未命中无关，始终能取到），避免把 CertName 塞进 remote_cert_id 污染 dcdn 共用的去重值。
  *
- * 仅实现 exact domain 核心路径；不做 certimate 的 DomainMatchPattern（wildcard/certsan）/遍历域名（留后续）。
+ * exact 直接部署；wildcard 经 DescribeVodUserDomains 分页匹配在线域名后逐域名绑定。
  */
-class AliyunVodDeployer extends AbstractDeployer
+class AliyunVodDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
-    use BuildsAliyunConfig;
+    use BuildsAliyunConfig, MatchesAliyunDomains;
+    use MatchesCertificateHostnames;
     use ParsesCasCertIdentifier;
 
     public function provider(): string
@@ -43,7 +47,9 @@ class AliyunVodDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => false],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -54,20 +60,28 @@ class AliyunVodDeployer extends AbstractDeployer
 
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
-        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials));
+        return new AliyunCasUploader(fn (array $credentials): object => $this->makeClient('cas', $credentials), $this->casRegion($config));
     }
 
     /**
      * @param  string  $certRef  remote_cert_id（CertIdentifier "{certId}-{region}"）
      * @param  array{access_key_id:string,access_key_secret:string}  $credentials
-     * @param  array{domain:string}  $config
+     * @param  array<string, mixed>  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = $this->requireConfig($config, 'domain');
-        [$certId, $certRegion] = $this->parseCertIdentifier((string) $certRef);
+        $pattern = strtolower((string) ($config['domain_match_pattern'] ?? 'exact'));
+        $domain = $pattern === 'certsan' ? (string) ($config['domain'] ?? '') : (string) $this->requireConfig($config, 'domain');
+        if (! in_array($pattern, ['', 'exact', 'wildcard', 'certsan'], true)) {
+            $this->fail("Aliyun VOD 不支持的域名匹配模式: $pattern");
+        }
+        $region = (string) ($config['region'] ?? '');
+        $credentials = array_replace($credentials, ['region' => $region]);
+        $certificate = is_array($certRef) ? (string) ($certRef['cert'] ?? '') : '';
+        $remoteCertId = is_array($certRef) ? (string) ($certRef['remote_cert_id'] ?? '') : (string) $certRef;
+        [$certId, $certRegion] = $this->parseCertIdentifier($remoteCertId);
 
-        $this->guardSdk(function () use ($credentials, $domain, $certId, $certRegion) {
+        $this->guardSdk(function () use ($credentials, $pattern, $domain, $certificate, $certId, $certRegion) {
             // 反查 CertName（vod 绑定必填；RemoteCertStore 命中时上传被跳过，只能按 certId 取）
             /** @var Cas $cas */
             $cas = $this->makeClient('cas', $credentials);
@@ -79,22 +93,60 @@ class AliyunVodDeployer extends AbstractDeployer
 
             /** @var Vod $client */
             $client = $this->makeClient('vod', $credentials);
-            $client->setVodDomainSSLCertificate(new SetVodDomainSSLCertificateRequest([
-                'domainName' => $domain,
-                'certType' => 'cas',
-                'certId' => $certId,
-                'certName' => $certName,
-                'certRegion' => $certRegion,
-                'SSLProtocol' => 'on',
-            ]));
+            $domains = match ($pattern) {
+                '', 'exact' => [$domain],
+                'wildcard' => str_starts_with($domain, '*.') ? $this->findMatchingDomains($client, $domain, $pattern, $certificate) : [$domain],
+                default => $this->findMatchingDomains($client, $domain, $pattern, $certificate),
+            };
+            foreach ($domains as $matchedDomain) {
+                $client->setVodDomainSSLCertificate(new SetVodDomainSSLCertificateRequest([
+                    'domainName' => $matchedDomain,
+                    'certType' => 'cas',
+                    'certId' => $certId,
+                    'certName' => $certName,
+                    'certRegion' => $certRegion,
+                    'SSLProtocol' => 'on',
+                ]));
+            }
         });
+    }
+
+    /** @return list<string> */
+    private function findMatchingDomains(Vod $client, string $domain, string $pattern, string $certificate): array
+    {
+        $domains = [];
+        for ($page = 1; ; $page++) {
+            $response = $client->describeVodUserDomains(new DescribeVodUserDomainsRequest([
+                'domainStatus' => 'online',
+                'pageNumber' => $page,
+                'pageSize' => 50,
+            ]));
+            $items = is_array($response->body?->domains?->pageData ?? null) ? $response->body->domains->pageData : [];
+            foreach ($items as $item) {
+                $candidate = (string) ($item->domainName ?? '');
+                if (($pattern === 'wildcard' && $this->hostnameMatches($domain, $candidate))
+                    || ($pattern === 'certsan' && $this->certificateMatchesHostname($certificate, $candidate))) {
+                    $domains[] = $candidate;
+                }
+            }
+            if (count($items) < 50) {
+                break;
+            }
+        }
+
+        return $domains;
     }
 
     protected function makeClient(string $kind, array $credentials): object
     {
         return match ($kind) {
-            'cas' => new Cas($this->aliyunConfig($credentials, 'cas.aliyuncs.com')),
-            'vod' => new Vod($this->aliyunConfig($credentials, 'vod.cn-hangzhou.aliyuncs.com')),
+            'cas' => new Cas($this->aliyunConfig($credentials, $this->casEndpoint($credentials))),
+            'vod' => new Vod($this->aliyunConfig(
+                $credentials,
+                ($credentials['region'] ?? '') !== ''
+                    ? 'vod.'.(string) $credentials['region'].'.aliyuncs.com'
+                    : 'vod.cn-hangzhou.aliyuncs.com',
+            )),
         };
     }
 

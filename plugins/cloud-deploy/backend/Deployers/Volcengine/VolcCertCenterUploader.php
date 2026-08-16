@@ -55,8 +55,11 @@ class VolcCertCenterUploader implements CertUploaderInterface
             ],
             'Repeatable' => false,
         ];
-        if ($this->projectName !== '') {
-            $body['ProjectName'] = $this->projectName;
+        $projectName = is_string($credentials['project_name'] ?? null)
+            ? $credentials['project_name']
+            : $this->projectName;
+        if ($projectName !== '') {
+            $body['ProjectName'] = $projectName;
         }
 
         try {

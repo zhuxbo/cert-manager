@@ -141,7 +141,7 @@ test('#2 开关开 + 上游 cancelled + action=new + cert.status=processing：�
         $sql = strtolower($query->sql);
         if (str_contains($sql, 'from `tasks`') && str_contains($sql, 'for update')) {
             $lockedTaskTypes = array_values(array_intersect(
-                ['commit', 'sync', 'revalidate'],
+                ['cancel', 'commit', 'sync', 'revalidate'],
                 array_map('strval', $query->bindings),
             ));
         }
@@ -152,7 +152,7 @@ test('#2 开关开 + 上游 cancelled + action=new + cert.status=processing：�
     expect($order->latestCert()->first()->status)->toBe('cancelled');
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
     expect($user->refresh()->balance)->toBe('100.00');
-    expect($lockedTaskTypes)->toBe(['commit', 'sync', 'revalidate']);
+    expect($lockedTaskTypes)->toBe(['cancel', 'commit', 'sync', 'revalidate']);
 });
 
 test('#3 开关开 + 上游 cancelled + action=new + cert.status=approving：触发退款', function () {
@@ -200,8 +200,7 @@ test('#4 开关开 + 上游 cancelled + action=new + cert.status=cancelling：�
     expect($order->latestCert()->first()->status)->toBe('cancelled');
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
     expect($user->refresh()->balance)->toBe('100.00');
-    // cancelling 状态下可能存在 cancel task，refundForSyncedCancel 不主动删除（避免锁序倒置死锁）。
-    // 残留 task 被 TaskJob 调用时 Action::cancel() 内 status===cancelled 检查会抛错回滚，资金安全。
+    // cancelling 状态下可能存在 cancel task；refundForSyncedCancel 会先锁 task、再锁 order，退款后原子删除。
 });
 
 test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：触发退款', function () {
@@ -258,13 +257,12 @@ test('#5 开关开 + 上游 cancelled + action=renew + cert.status=processing：
         ]);
 });
 
-test('#6 开关开 + 上游 cancelled + action=reissue：触发增量退款 + cert_renew_cancelled 通知（前驱保持 reissued 不恢复）', function () {
-    // ③ 修复：reissue 原被四条件 gate 排除、恒穿透通用写回 → 增量费用不退、无通知（旧错误行为，本用例即修此）。
-    // 现纳入 refundForSyncedCancel 按 action 分流走增量退款口径（对齐 cancelLocked reissue：只退当次增量，
-    // 前驱不恢复保持 reissued）+ 发 cert_renew_cancelled 一次性通知。
+test('#6 开关开 + 上游 cancelled + action=reissue：按订单总额退款 + cert_renew_cancelled 通知（前驱保持 reissued 不恢复）', function () {
+    // 已提交上游的 reissue 同步为 cancelled 后终结整个订单，退款恢复为订单全额口径；
+    // 前驱不恢复保持 reissued，并发 cert_renew_cancelled 一次性通知。
     Setting::setValue('site', 'autoRefundOnSync', true);
 
-    // 充值 120，原始扣 -100 + reissue 增量扣 -20 → balance=0；取消退【增量 20】→ balance=20
+    // 充值 120，原始扣 -100 + reissue 增量扣 -20 → balance=0；取消退订单总额 120 → balance=120
     $user = $this->createTestUser(['balance' => '120.00']);
     $product = $this->createTestProduct(['refund_period' => 30]);
     $order = $this->createTestOrder($user, $product, [
@@ -276,6 +274,7 @@ test('#6 开关开 + 上游 cancelled + action=reissue：触发增量退款 + ce
     $oldCert = $this->createTestCert($order, [
         'status' => 'reissued',
         'action' => 'new',
+        'amount' => '100.00',
         'common_name' => 'sync-reissue-source.example.com',
         'expires_at' => now()->addDays(60),
     ]);
@@ -289,7 +288,7 @@ test('#6 开关开 + 上游 cancelled + action=reissue：触发增量退款 + ce
         'common_name' => 'sync-reissue-source.example.com',
     ]);
 
-    // 原始扣费 -100 + reissue 增量扣费 -20（最后一笔，供增量口径；误用 getCancelTransaction 求和会退 120）
+    // 原始扣费 -100 + reissue 增量扣费 -20，与订单金额及证书总金额 120 一致。
     createOrderTransaction($user->id, $order->id, '-100.00');
     Transaction::create([
         'user_id' => $user->id,
@@ -312,10 +311,10 @@ test('#6 开关开 + 上游 cancelled + action=reissue：触发增量退款 + ce
     syncOrder(app(Action::class), $order->id);
 
     expect($reissueCert->fresh()->status)->toBe('cancelled');
-    // 只退增量 20（非全额 120）
+    // 恢复原口径：同步取消也退订单全额 120。
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
-    expect((float) Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->value('amount'))->toBe(20.0);
-    expect($user->refresh()->balance)->toBe('20.00');
+    expect((float) Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->value('amount'))->toBe(120.0);
+    expect($user->refresh()->balance)->toBe('120.00');
     // 前驱不恢复（保持 reissued 终态、脱离监控）
     expect($oldCert->fresh()->status)->toBe('reissued');
 
@@ -479,12 +478,73 @@ test('#11 开关开 + 已有 cancel Transaction + cert.status=cancelling：sync 
     expect($user->refresh()->balance)->toBe('100.00');
 });
 
-test('#13 残留 cancel task 防双退：sync 自动退款置 cancelled 后再执行 cancel() 不二次退款', function () {
-    // 还原审核 #59 杀手场景：
-    //   refundForSyncedCancel 在锁内退款并置 cancelled，但刻意不删残留 cancel task（锁序原因）。
-    //   该残留 task 随后被 TaskJob 唤醒，调用 Action::cancel()。
-    // 断言：cancel() 在锁内撞上 status===cancelled 校验抛错回滚，
-    //   不产生第二条 cancel Transaction、余额只退一次。
+test('#11b reissue 历史增量退款不能冒充整单已退：sync cancelled 回滚并允许立即重试继续报错', function () {
+    Setting::setValue('site', 'autoRefundOnSync', true);
+
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $product = $this->createTestProduct(['refund_period' => 30]);
+    $order = $this->createTestOrder($user, $product, [
+        'amount' => '100.00',
+        'purchased_standard_count' => 1,
+        'purchased_wildcard_count' => 0,
+    ]);
+    $sourceCert = $this->createTestCert($order, ['status' => 'reissued', 'action' => 'new']);
+    $reissueCert = $this->createTestCert($order, [
+        'status' => 'processing',
+        'action' => 'reissue',
+        'api_id' => 'test-api-id-11b',
+        'last_cert_id' => $sourceCert->id,
+        'amount' => '20.00',
+    ]);
+
+    createOrderTransaction($user->id, $order->id, '-100.00');
+    // 模拟上一次 pending reissue 仅退增量 20 元；本次 reissue 已重新提交上游。
+    Transaction::create([
+        'user_id' => $user->id,
+        'type' => 'cancel',
+        'transaction_id' => $order->id,
+        'amount' => '20.00',
+        'standard_count' => 0,
+        'wildcard_count' => 0,
+    ]);
+    $task = Task::create([
+        'order_id' => $order->id,
+        'action' => 'sync',
+        'status' => 'executing',
+        'attempts' => 0,
+    ]);
+
+    expect($user->refresh()->balance)->toBe('20.00');
+    $api = mockOrderApiGet('cancelled');
+
+    try {
+        syncOrder(app(Action::class), $order->id);
+        test()->fail('历史增量退款必须阻止同步整单收尾');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse()['msg'])->toContain('已存在取消退款流水');
+    }
+
+    expect($reissueCert->fresh()->status)->toBe('processing');
+    expect($order->fresh()->cancelled_at)->toBeNull();
+    expect($sourceCert->fresh()->status)->toBe('reissued');
+    expect($task->fresh())->not->toBeNull();
+    expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
+    expect($user->refresh()->balance)->toBe('20.00');
+
+    // 失败必须释放 10 秒防重复占位；否则立即重试会被 checkDuplicate 伪装成成功。
+    try {
+        syncOrder(app(Action::class), $order->id);
+        test()->fail('历史增量退款同步失败后，立即重试仍必须真实执行并明确报错');
+    } catch (ApiResponseException $e) {
+        expect($e->getApiResponse()['msg'])->toContain('已存在取消退款流水');
+    }
+
+    $api->shouldHaveReceived('get')->twice();
+    expect($reissueCert->fresh()->status)->toBe('processing');
+    expect($task->fresh())->not->toBeNull();
+});
+
+test('#13 sync 自动退款原子删除残留 cancel task，退款只发生一次', function () {
     Setting::setValue('site', 'autoRefundOnSync', true);
 
     // 充值 100 → 下单扣 100（balance=0）→ sync 退款 +100（balance=100）
@@ -511,30 +571,13 @@ test('#13 残留 cancel task 防双退：sync 自动退款置 cancelled 后再�
 
     mockOrderApiGet('cancelled');
 
-    // 第一步：sync 走 refundForSyncedCancel —— 退款 + 置 cancelled，残留 cancel task 不被删
+    // sync 走 refundForSyncedCancel：退款、置 cancelled，并在同一事务内删除残留 cancel task。
     syncOrder(app(Action::class), $order->id, true);
 
     expect($order->latestCert()->first()->status)->toBe('cancelled');
     expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
     expect($user->refresh()->balance)->toBe('100.00');
-    // 残留 cancel task 仍在（refundForSyncedCancel 只删 commit/sync/revalidate）
-    expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(1);
-
-    // 第二步：模拟 TaskJob 唤醒残留 cancel task → 调 Action::cancel()
-    // 锁内 L926 status===cancelled 校验抛 '订单已取消' 回滚，不走到上游/退款
-    $threw = false;
-    try {
-        app(Action::class)->cancel($order->id);
-    } catch (ApiResponseException $e) {
-        $threw = true;
-        expect($e->getApiResponse()['code'])->toBe(0);
-        expect($e->getApiResponse()['msg'])->toBe('订单已取消');
-    }
-    expect($threw)->toBeTrue();
-
-    // 核心断言：无第二条 cancel Transaction，余额只退一次
-    expect(Transaction::where('type', 'cancel')->where('transaction_id', $order->id)->count())->toBe(1);
-    expect($user->refresh()->balance)->toBe('100.00');
+    expect(Task::where('order_id', $order->id)->where('action', 'cancel')->count())->toBe(0);
 });
 
 test('#14 唯一索引物理底线：cancelled 订单强行 create 第二条 cancel Transaction 被 DB 拒绝', function () {

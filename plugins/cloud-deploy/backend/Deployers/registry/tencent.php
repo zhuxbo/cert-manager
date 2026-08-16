@@ -7,6 +7,7 @@ use Plugins\CloudDeploy\Deployers\Tencent\TencentCosDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentCssDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentEcdnDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentEoDeployer;
+use Plugins\CloudDeploy\Deployers\Tencent\TencentEoMakersDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentGa2Deployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentGaapDeployer;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentProvider;
@@ -28,6 +29,7 @@ return function (Registry $registry): void {
     $registry->registerDeployer('tencent', 'cdn', fn () => new TencentCdnDeployer);
     $registry->registerDeployer('tencent', 'ecdn', fn () => new TencentEcdnDeployer);
     $registry->registerDeployer('tencent', 'eo', fn () => new TencentEoDeployer);
+    $registry->registerDeployer('tencent', 'eo-makers', fn () => new TencentEoMakersDeployer);
     $registry->registerDeployer('tencent', 'css', fn () => new TencentCssDeployer);
     $registry->registerDeployer('tencent', 'vod', fn () => new TencentVodDeployer);
     $registry->registerDeployer('tencent', 'clb', fn () => new TencentClbDeployer);

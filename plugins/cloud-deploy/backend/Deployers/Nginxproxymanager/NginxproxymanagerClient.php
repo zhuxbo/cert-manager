@@ -50,6 +50,64 @@ class NginxproxymanagerClient
         ]);
     }
 
+    public function createCertificate(string $niceName, string $certificate, string $certificateKey, string $intermediateCertificate): int
+    {
+        $json = $this->call('POST', 'nginx/certificates', ['json' => ['nice_name' => $niceName, 'provider' => 'other']]);
+        $id = (int) ($json['id'] ?? 0);
+        if ($id <= 0) {
+            throw new NginxproxymanagerApiException('InvalidResponse', 'Nginx Proxy Manager 创建证书未返回 id');
+        }
+        $this->uploadCertificate($id, $certificate, $certificateKey, $intermediateCertificate);
+
+        return $id;
+    }
+
+    public function ensureCertificate(string $niceName, string $certificate, string $certificateKey, string $intermediateCertificate): int
+    {
+        $items = $this->call('GET', 'nginx/certificates', []);
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $meta = is_array($item['meta'] ?? null) ? $item['meta'] : [];
+            if (($meta['certificate'] ?? null) === $certificate
+                && ($meta['certificate_key'] ?? null) === $certificateKey
+                && ($meta['intermediate_certificate'] ?? null) === $intermediateCertificate) {
+                $id = (int) ($item['id'] ?? 0);
+                if ($id > 0) {
+                    return $id;
+                }
+            }
+        }
+
+        return $this->createCertificate($niceName, $certificate, $certificateKey, $intermediateCertificate);
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function listHosts(string $hostType): array
+    {
+        $path = $this->hostCollectionPath($hostType);
+        $json = $this->call('GET', $path, []);
+
+        return array_values(array_filter($json, 'is_array'));
+    }
+
+    public function updateHostCertificate(string $hostType, int $hostId, int $certificateId): void
+    {
+        $this->call('PUT', $this->hostCollectionPath($hostType)."/$hostId", ['json' => ['certificate_id' => $certificateId]]);
+    }
+
+    private function hostCollectionPath(string $hostType): string
+    {
+        return match ($hostType) {
+            'proxy' => 'nginx/proxy-hosts',
+            'redirection' => 'nginx/redirection-hosts',
+            'stream' => 'nginx/streams',
+            'dead' => 'nginx/dead-hosts',
+            default => throw new NginxproxymanagerApiException('InvalidHostType', "不支持的 NPM 主机类型: $hostType"),
+        };
+    }
+
     /**
      * 获取默认站点配置（含 value）。
      * REF: certimate SettingsGetDefaultSite —— GET /settings/default-site → {value, ...}

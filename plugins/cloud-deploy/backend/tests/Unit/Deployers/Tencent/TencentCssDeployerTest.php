@@ -3,8 +3,10 @@
 use Plugins\CloudDeploy\Deployers\Tencent\TencentCssDeployer;
 use TencentCloud\Common\Exception\TencentCloudSDKException;
 use TencentCloud\Live\V20180801\LiveClient;
+use TencentCloud\Live\V20180801\Models\DescribeLiveDomainsResponse;
 use TencentCloud\Live\V20180801\Models\ModifyLiveDomainCertBindingsRequest;
 use TencentCloud\Live\V20180801\Models\ModifyLiveDomainCertBindingsResponse;
+use TencentCloud\Ssl\V20191205\Models\DescribeCertificateResponse;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateRequest;
 use TencentCloud\Ssl\V20191205\Models\UploadCertificateResponse;
 use TencentCloud\Ssl\V20191205\SslClient;
@@ -73,6 +75,22 @@ test('CSS bind 用 certId 调 live.ModifyLiveDomainCertBindings 设 CloudCertId 
     expect($captured->DomainInfos)->toHaveCount(1);
     expect($captured->DomainInfos[0]->DomainName)->toBe('live.example.com');
     expect($captured->DomainInfos[0]->Status)->toBe(1);
+});
+
+test('CSS certsan 列举有效播放域名并按云证书 SAN 批量绑定', function () {
+    $live = Mockery::mock(LiveClient::class);
+    $listed = new DescribeLiveDomainsResponse;
+    $listed->deserialize(['DomainList' => [['Name' => 'a.example.com'], ['Name' => 'x.example.net']], 'RequestId' => 'r']);
+    $live->shouldReceive('DescribeLiveDomains')->once()->andReturn($listed);
+    $live->shouldReceive('ModifyLiveDomainCertBindings')->once()->withArgs(fn ($request) => count($request->DomainInfos) === 1 && $request->DomainInfos[0]->DomainName === 'a.example.com')->andReturn(new ModifyLiveDomainCertBindingsResponse);
+    $ssl = Mockery::mock(SslClient::class);
+    $certificate = new DescribeCertificateResponse;
+    $certificate->deserialize(['SubjectAltName' => ['a.example.com'], 'RequestId' => 'r']);
+    $ssl->shouldReceive('DescribeCertificate')->once()->andReturn($certificate);
+
+    tencentCssDeployerWith(fn (string $kind) => $kind === 'live' ? $live : $ssl)->bind(
+        'cert-css', ['secret_id' => 'AK', 'secret_key' => 'SK'], ['domain_match_pattern' => 'certsan'],
+    );
 });
 
 test('CSS 缺 domain 配置抛业务错误', function () {

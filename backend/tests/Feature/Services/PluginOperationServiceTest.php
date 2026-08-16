@@ -98,19 +98,19 @@ test('listVisible 始终返回失败任务以便用户重试或卸载', function
     expect(collect($visible)->pluck('uuid')->all())->toContain($operation->uuid);
 });
 
-test('assertConfigSafe 将 migrate seed rollback 三段 artisan 预算计入 operation timeout', function () {
+test('assertConfigSafe 将两次下载和 migrate seed rollback 预算计入 operation timeout', function () {
     config()->set('queue.default', 'database');
-    config()->set('queue.connections.database.retry_after', 600);
-    config()->set('plugin.download.timeout', 30);
+    config()->set('queue.connections.database.retry_after', 1000);
+    config()->set('plugin.download.timeout', 120);
     config()->set('plugin.composer.timeout', 210);
     config()->set('plugin.operations.overhead_margin', 30);
     config()->set('plugin.operations.artisan_timeout', 15);
-    config()->set('plugin.operations.timeout', 270);
+    config()->set('plugin.operations.timeout', 524);
 
     expect(fn () => app(PluginOperationService::class)->assertConfigSafe())
         ->toThrow(RuntimeException::class, 'timeout 预算不足');
 
-    config()->set('plugin.operations.timeout', 315);
+    config()->set('plugin.operations.timeout', 525);
 
     app(PluginOperationService::class)->assertConfigSafe();
     expect(true)->toBeTrue();

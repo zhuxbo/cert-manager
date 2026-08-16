@@ -2,6 +2,11 @@
 
 namespace Plugins\CloudDeploy\Deployers\Aliyun;
 
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeDomainExtensionsRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeLoadBalancerAttributeRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeLoadBalancerHTTPSListenerAttributeRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\DescribeLoadBalancerListenersRequest;
+use AlibabaCloud\SDK\Slb\V20140515\Models\SetDomainExtensionAttributeRequest;
 use AlibabaCloud\SDK\Slb\V20140515\Models\SetLoadBalancerHTTPSListenerAttributeRequest;
 use AlibabaCloud\SDK\Slb\V20140515\Slb;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
@@ -18,10 +23,8 @@ use Throwable;
  * ServerCertificateId 只在上传 region 有效，故上传与绑定必须用**同一** region —— certUploader($config) 与
  * bind 都从 config.region 取，保证一致；store_kind 含 region，跨 region 部署各自上传不误复用。
  *
- * 简化：仅实现「指定 listener_port 关联证书」核心路径（对应 certimate aliyun-clb DEPLOY_TARGET_LISTENER
- * 且无 SNI）；不遍历负载均衡所有 HTTPS 监听、不做 SNI 扩展域名（DescribeDomainExtensions/
- * SetDomainExtensionAttribute）。对齐 certimate updateListenerCertificate 无 SNI 分支：Set 调用只传
- * LoadBalancerId+ListenerPort+ServerCertificateId+RegionId（其余监听属性不传即保留，区别于 WAF ModifyDomain）。
+ * 对齐 Certimate：既可更新指定 HTTPS 监听端口，也可遍历负载均衡全部 HTTPS 监听；配置 domain 时
+ * 更新精确匹配的 SNI 扩展域名，否则更新监听器默认证书。
  */
 class AliyunClbDeployer extends AbstractDeployer
 {
@@ -45,8 +48,10 @@ class AliyunClbDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
+            ['key' => 'deploy_target', 'label' => '部署目标', 'type' => 'string', 'required' => false, 'default' => 'listener'],
             ['key' => 'load_balancer_id', 'label' => '负载均衡实例 ID', 'type' => 'string', 'required' => true],
-            ['key' => 'listener_port', 'label' => '监听端口', 'type' => 'number', 'required' => true],
+            ['key' => 'listener_port', 'label' => '监听端口', 'type' => 'number', 'required' => false],
+            ['key' => 'domain', 'label' => 'SNI 域名', 'type' => 'string', 'required' => false],
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
         ];
     }
@@ -76,25 +81,118 @@ class AliyunClbDeployer extends AbstractDeployer
     /**
      * @param  string  $certRef  remote_cert_id（裸 ServerCertificateId，region 已编进 store_kind 无需拆）
      * @param  array{access_key_id:string,access_key_secret:string}  $credentials
-     * @param  array{load_balancer_id:string,listener_port:int|string,region:string}  $config
+     * @param  array{load_balancer_id:string,listener_port?:int|string,region:string,deploy_target?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         $loadBalancerId = (string) $this->requireConfig($config, 'load_balancer_id');
-        $listenerPort = (int) $this->requireConfig($config, 'listener_port');
         $region = (string) $this->requireConfig($config, 'region');
+        $target = strtolower((string) ($config['deploy_target'] ?? 'listener'));
+        $listenerPort = (int) ($config['listener_port'] ?? 0);
+        $domain = (string) ($config['domain'] ?? '');
+        if ($target === 'listener' && $listenerPort === 0) {
+            $this->requireConfig($config, 'listener_port');
+        }
+        if (! in_array($target, ['listener', 'loadbalancer'], true)) {
+            $this->fail("Aliyun CLB 不支持的部署目标: $target");
+        }
         $serverCertificateId = (string) $certRef;
 
-        $this->guardSdk(function () use ($credentials, $region, $loadBalancerId, $listenerPort, $serverCertificateId) {
+        $this->guardSdk(function () use ($credentials, $region, $target, $loadBalancerId, $listenerPort, $domain, $serverCertificateId) {
             /** @var Slb $client */
             $client = $this->makeClient('slb', $credentials, $region);
+            $listenerPorts = $target === 'loadbalancer'
+                ? $this->findLoadBalancerListeners($client, $region, $loadBalancerId)
+                : [$listenerPort];
+            foreach ($listenerPorts as $matchedListenerPort) {
+                $this->updateListenerCertificate(
+                    $client,
+                    $region,
+                    $loadBalancerId,
+                    $matchedListenerPort,
+                    $domain,
+                    $serverCertificateId,
+                );
+            }
+        });
+    }
+
+    /** @return list<int> */
+    private function findLoadBalancerListeners(Slb $client, string $region, string $loadBalancerId): array
+    {
+        $client->describeLoadBalancerAttribute(new DescribeLoadBalancerAttributeRequest([
+            'regionId' => $region,
+            'loadBalancerId' => $loadBalancerId,
+        ]));
+
+        $listenerPorts = [];
+        $nextToken = null;
+        do {
+            $response = $client->describeLoadBalancerListeners(new DescribeLoadBalancerListenersRequest([
+                'regionId' => $region,
+                'nextToken' => $nextToken,
+                'maxResults' => 100,
+                'loadBalancerId' => [$loadBalancerId],
+                'listenerProtocol' => 'https',
+            ]));
+            $listeners = is_array($response->body?->listeners ?? null) ? $response->body->listeners : [];
+            foreach ($listeners as $listener) {
+                $port = (int) ($listener->listenerPort ?? 0);
+                if ($port > 0) {
+                    $listenerPorts[] = $port;
+                }
+            }
+            $nextToken = $response->body->nextToken ?? null;
+        } while ($listeners !== [] && is_string($nextToken) && $nextToken !== '');
+
+        return $listenerPorts;
+    }
+
+    private function updateListenerCertificate(
+        Slb $client,
+        string $region,
+        string $loadBalancerId,
+        int $listenerPort,
+        string $domain,
+        string $serverCertificateId,
+    ): void {
+        $response = $client->describeLoadBalancerHTTPSListenerAttribute(new DescribeLoadBalancerHTTPSListenerAttributeRequest([
+            'regionId' => $region,
+            'loadBalancerId' => $loadBalancerId,
+            'listenerPort' => $listenerPort,
+        ]));
+
+        if ($domain === '') {
+            if ((string) ($response->body?->serverCertificateId ?? '') === $serverCertificateId) {
+                return;
+            }
             $client->setLoadBalancerHTTPSListenerAttribute(new SetLoadBalancerHTTPSListenerAttributeRequest([
                 'regionId' => $region,
                 'loadBalancerId' => $loadBalancerId,
                 'listenerPort' => $listenerPort,
                 'serverCertificateId' => $serverCertificateId,
             ]));
-        });
+
+            return;
+        }
+
+        $extensionsResponse = $client->describeDomainExtensions(new DescribeDomainExtensionsRequest([
+            'regionId' => $region,
+            'loadBalancerId' => $loadBalancerId,
+            'listenerPort' => $listenerPort,
+        ]));
+        $extensions = $extensionsResponse->body?->domainExtensions?->domainExtension ?? [];
+        foreach (is_array($extensions) ? $extensions : [] as $extension) {
+            if ((string) ($extension->domain ?? '') !== $domain
+                || (string) ($extension->serverCertificateId ?? '') === $serverCertificateId) {
+                continue;
+            }
+            $client->setDomainExtensionAttribute(new SetDomainExtensionAttributeRequest([
+                'regionId' => $region,
+                'domainExtensionId' => (string) ($extension->domainExtensionId ?? ''),
+                'serverCertificateId' => $serverCertificateId,
+            ]));
+        }
     }
 
     protected function makeClient(string $kind, array $credentials, string $region = ''): object

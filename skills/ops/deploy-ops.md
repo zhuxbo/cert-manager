@@ -146,16 +146,13 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 **无宝塔 API key 时**，升级脚本跳过 cron/supervisor PHP 路径检查；`schedule:run` 缺失时按上方步骤 3 手工添加。
 
-### 卡单孤儿清理与 pending 退款 arm-switch（RECONCILE_ORPHAN_PENDING_ENABLED）
+### 卡单孤儿清理
 
-`schedule:sweep-orphan-orders`（每小时）清理 channel=auto 卡死的孤儿续费/重签单，两分支各带独立金丝雀开关：
+`schedule:sweep-orphan-orders`（每小时）清理 channel=auto 卡死的孤儿续费/重签单：
 
-- **unpaid 分支**（默认**开**）：超时未支付孤儿 → 删除新单、恢复旧证书 active，无退款无流水（安全，无需武装）。
-- **pending 分支**（默认**关**，env `RECONCILE_ORPHAN_PENDING_ENABLED=true` 武装）：到顶转人工（非产品缺失）孤儿 → `cancelPending` 退款 + 恢复旧证书。涉及资金动作，须观察期后再开。
-
-**开启前的人工处理节奏（观察期必读）**：pending 分支关闭期间，卡单到顶转人工由 `schedule:reconcile-pending` 承载 —— 每日发一封 `reconcile_maxed` admin 快照告警（`SystemAlert`，指纹含当天日期，列出当天全部到顶/产品缺失转人工单的 id 与计数）。运维据此**人工兑现退款**（后台对相应订单执行取消退款）；同时 reconcile 已给用户发中性通知「正在处理；若长时间未完成将自动取消并退款」——关闭期该「自动退款」承诺由人工兑现，勿漏。
-
-**武装节奏**：先连续观察若干个每日快照周期，核对转人工单的数量/形态符合预期（无异常膨胀、无本应瞬态自愈的卡单被误列），确认自动 `cancelPending` 的退款金额与恢复旧证书行为符合预期后，再置 `RECONCILE_ORPHAN_PENDING_ENABLED=true` 交由 sweep 自动兑现；开启后每日快照告警仍在，转为事后核对。
+- **unpaid 分支**（默认开，可用 `RECONCILE_ORPHAN_UNPAID_ENABLED=false` 关闭）：超时未支付孤儿 → 删除新单、恢复旧证书 active，无退款无流水。
+- **pending 分支无开关**：只有同时满足 `channel=auto`、pending、`api_id=null`、提交重试到顶、非产品缺失、无执行中 commit 的已扣费订单才进入；随后调用 `cancelPending` 退款并恢复旧证书。锁内若发现 late-commit 已推至 processing，会拒绝退款并留待后续流程。
+- `schedule:reconcile-pending` 的每日 `reconcile_maxed` 管理员快照仍保留，用于事后核对自动退款集合和异常订单。
 
 ---
 
@@ -218,7 +215,19 @@ bash nginx/render.sh /www/wwwroot/ssl-manager --reload
 
 ## Composer 依赖安装
 
-发行包不包含 `backend/vendor`。`bt-install.sh::run_composer_install` 在宿主机执行 `composer install --no-dev --optimize-autoloader`。
+发行包包含与 `composer.lock` 锁定的 `backend/vendor`，并以
+`vendor/composer/.ssl-manager-lock.sha256` 校验完整性。安装脚本优先使用包内依赖；
+仅为兼容不带 vendor 的历史安装包才运行 `composer install`。
+
+这是长期部署契约：生产服务器不负责解析新版本依赖。国内镜像同步延迟或官方源/GitHub
+不可达时，安装与升级仍应只依赖已下载并通过 SHA-256 校验的发布包。vendor 必须在构建环境由
+对应 lock 生成，随完整包、升级包和含 Composer 依赖的插件包一起交付；后台与 Shell 消费端都
+必须先验 lock marker，再替换现有 vendor。
+
+历史包触发受控 `composer install` 时，安装脚本、Shell 升级、后台升级和插件安装器都必须在
+autoload 成功生成后原子刷新该 marker；标记写入失败按依赖安装失败处理，不得留下“依赖成功但
+后续无法复用”的半完成状态。Composer 的 `post-autoload-dump` 钩子同时覆盖手工执行的
+`composer install`、`composer update` 与 `composer dump-autoload`；生产环境仍不建议自行改变发布依赖集合。
 
 ### PHP / Composer 路径约定
 
@@ -359,7 +368,7 @@ gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
 
 二维码占位图不进入升级包：升级时原样保留安装目录已有的 `qrcode.png`，用户端在后台未上传二维码时直接使用该 PNG；完整安装包携带默认的 400×400 PNG。
 
-- **vendor 砖机兜底**：vendor 以 `mv` 进 preserve（备份 zip 不含 vendor）。若中断丢了 vendor 唯一副本，重跑时入口 `_check_stranded_preserve` 优先把 vendor-only 残留**回迁**到原位；即便回迁不上（preserve 已被 rm），composer 触发判定 `_need_composer_install` 见 `vendor/autoload.php` 缺失即**强制重装**（不因新旧 hash 相等误跳过），把原先「artisan fatal + 每次重跑必失败」的砖机自循环化为「重跑即自愈」。
+- **vendor 砖机兜底**：当前 vendor 以 `mv` 进 preserve，同时新升级包也携带可校验的 vendor。若切换窄窗中断导致在线 vendor 缺失，重跑时入口 `_check_stranded_preserve` 优先把 vendor-only 残留**回迁**到原位；即便历史升级包或异常环境没有可用的包内 vendor，composer 触发判定 `_need_composer_install` 见 `vendor/autoload.php` 缺失仍会**强制重装**（不因新旧 hash 相等误跳过），避免「artisan fatal + 每次重跑必失败」的砖机自循环。
 - **搁浅数据入口拦截**：SIGKILL/断电后 storage 滞留 `.upgrade-preserve-*/storage` 而 `backend/storage` 缺失时，**重跑 `upgrade.sh` 会在入口被拦截并中止**（否则会新建空 storage 把真数据连同 databak 静默埋掉）。按终端指引先手工把 storage 移回、删除残留目录，再重跑：
 
   ```bash

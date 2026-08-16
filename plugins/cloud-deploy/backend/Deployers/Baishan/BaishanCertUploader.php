@@ -25,7 +25,10 @@ use Throwable;
 class BaishanCertUploader implements CertUploaderInterface
 {
     /** @param Closure(array<string,mixed>):object $clientFactory 返回 BaishanRestClient（或测试 mock，需有 post() 方法） */
-    public function __construct(private readonly Closure $clientFactory) {}
+    public function __construct(
+        private readonly Closure $clientFactory,
+        private readonly string $replaceCertificateId = '',
+    ) {}
 
     public function storeKind(): string
     {
@@ -45,11 +48,15 @@ class BaishanCertUploader implements CertUploaderInterface
         try {
             /** @var BaishanRestClient $client */
             $client = ($this->clientFactory)($credentials);
-            $result = $client->post('/v2/domain/certificate', [
+            $body = [
                 'name' => $certName,
                 'certificate' => $fullChain,
                 'key' => trim($keyPem),
-            ]);
+            ];
+            if ($this->replaceCertificateId !== '') {
+                $body['certificate_id'] = $this->replaceCertificateId;
+            }
+            $result = $client->post('/v2/domain/certificate', $body);
         } catch (Throwable $e) {
             // 「证书已存在」幂等：白山云 code=400699 + "this certificate is exists" → 从 message 提取已有 cert_id 复用。
             if ($e instanceof BaishanApiException && $e->getErrorCode() === '400699'
@@ -63,6 +70,10 @@ class BaishanCertUploader implements CertUploaderInterface
         }
 
         // 白山云 UploadDomainCertificate 响应：{code, message, data:{cert_id}}。cert_id 为数字（json.Number）。
+        if ($this->replaceCertificateId !== '') {
+            return $this->replaceCertificateId;
+        }
+
         $data = is_array($result['data'] ?? null) ? $result['data'] : [];
         $certId = $data['cert_id'] ?? null;
         if ((! is_int($certId) && ! is_string($certId)) || (string) $certId === '') {

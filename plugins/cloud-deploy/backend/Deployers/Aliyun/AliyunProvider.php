@@ -21,6 +21,7 @@ class AliyunProvider implements ProviderInterface
         return [
             ['key' => 'access_key_id', 'label' => 'AccessKey ID', 'required' => true],
             ['key' => 'access_key_secret', 'label' => 'AccessKey Secret', 'required' => true, 'secret' => true],
+            ['key' => 'resource_group_id', 'label' => '资源组 ID（选填）', 'required' => false],
         ];
     }
 }

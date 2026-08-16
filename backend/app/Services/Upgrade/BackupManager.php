@@ -231,7 +231,7 @@ class BackupManager
         }
 
         // 要备份的目录
-        $dirs = ['app', 'config', 'database', 'routes', 'bootstrap'];
+        $dirs = ['app', 'config', 'database', 'routes', 'bootstrap', 'vendor'];
 
         foreach ($dirs as $dir) {
             $fullPath = "$backendPath/$dir";
@@ -559,7 +559,7 @@ class BackupManager
      */
     protected function addDirectoryToZip(ZipArchive $zip, string $path, string $relativePath): void
     {
-        $files = File::allFiles($path);
+        $files = File::allFiles($path, true);
 
         foreach ($files as $file) {
             $filePath = $file->getRealPath();
@@ -574,7 +574,7 @@ class BackupManager
     protected function getDirectorySize(string $path): int
     {
         $size = 0;
-        foreach (File::allFiles($path) as $file) {
+        foreach (File::allFiles($path, true) as $file) {
             $size += $file->getSize();
         }
 

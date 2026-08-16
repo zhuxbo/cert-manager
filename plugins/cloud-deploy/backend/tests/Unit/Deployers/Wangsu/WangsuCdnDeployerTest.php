@@ -95,6 +95,22 @@ test('bind exact 模式去掉域名前导 *（*.example.com → .example.com）'
     expect($captured)->toBe(['.example.com']);
 });
 
+test('bind 支持 Certimate domains 多域名列表并一次批量绑定', function () {
+    $captured = null;
+    $client = Mockery::mock(WangsuRestClient::class);
+    $client->shouldReceive('batchUpdateCertificateConfig')->once()->andReturnUsing(function (int $certId, array $domains) use (&$captured) {
+        $captured = $domains;
+    });
+
+    $deployer = wangsuCdnDeployerWith(fn () => $client);
+    $deployer->bind('100001', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], [
+        'domains' => "a.example.com\n*.example.com",
+    ]);
+
+    expect($captured)->toBe(['a.example.com', '.example.com']);
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('domains');
+});
+
 test('缺 domain 配置抛业务错误', function () {
     $deployer = wangsuCdnDeployerWith(fn () => new stdClass);
     expect(fn () => $deployer->bind('100001', ['access_key_id' => 'AK', 'access_key_secret' => 'SK'], []))

@@ -29,6 +29,12 @@ build/
    - 正式版先按 `skills/remote-release.md` 在当前 main fingerprint 完成全部 6 个精确 mutation 分片的加权汇总；可复用有效分片缓存，但 `release.sh` 只接受当前 fingerprint 的汇总 gate 证据，验证后才创建/更新 tag 并 push
    - 测试版无需 tag
 
+### 首次启用请求排空锁的兼容边界
+
+- 首个包含 `SSL_MANAGER_BOOTSTRAP_LOCK_V1` 的版本，其用户可见升级说明必须明确：从不含该入口锁标记的历史版本升级，只支持使用该版本随附的新版 `upgrade.sh` 完成首次跨越；旧版本后台 Web UI 不支持这一首跳。
+- 首次跨越完成后，后续版本可继续使用后台 Web UI 或 `upgrade.sh` 升级。
+- “桥接版本”目前只是备选设计，不得在发布说明中描述为现成功能；若未来实现，除入口 marker 外还必须建立持久化 draining 状态并完成旧请求排空。
+
 ---
 
 ## 构建命令
@@ -60,19 +66,42 @@ bash build/build.sh --clear-cache
 
 > **注意**：`release.sh` 内部会自动调用 `build.sh` 构建打包，无需手动先执行 `build.sh`。
 
+前端增量构建指纹同时覆盖 admin/user 源码、shared 共享源码，以及根
+`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`.npmrc`。任一依赖清单、
+锁文件或 pnpm workspace 配置变化都必须重新构建前端 `dist`，不能只重新安装依赖后复用旧产物。
+
 ---
 
 ## 打包
 
 ### 输出文件
 
-| 文件                                | 说明                                                         |
-| ----------------------------------- | ------------------------------------------------------------ |
-| `ssl-manager-full-{version}.zip`    | 完整安装包（不含 vendor；宝塔脚本会运行 `composer install`） |
-| `ssl-manager-upgrade-{version}.zip` | 升级包（不含 vendor，升级时保留现有 `backend/vendor`）       |
-| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）             |
+| 文件                                | 说明                                                             |
+| ----------------------------------- | ---------------------------------------------------------------- |
+| `ssl-manager-full-{version}.zip`    | 完整安装包（含已锁定的生产 vendor，目标机无需联网安装 PHP 依赖） |
+| `ssl-manager-upgrade-{version}.zip` | 升级包（含已锁定的生产 vendor，兼容历史无 vendor 包）            |
+| `ssl-manager-script-{version}.zip`  | 部署脚本包（install.sh / upgrade.sh / scripts/）                 |
 
 > 包内 `manifest.json` 已弃用。包清单与 sha256 由 `release.sh` 上传时写入 release 站根目录的 `releases.json`（GitHub Release API 风格 + `assets[].sha256` 字段），install/upgrade 链路统一从该文件强校验。
+
+### Vendor 长期发布策略
+
+完整安装包和升级包长期携带由同一份 `composer.lock` 生成的生产
+`backend/vendor`；插件存在 `backend/composer.json` 时，其发布包同样必须携带配套的
+`composer.lock` 与 `backend/vendor`。这不是临时兼容措施，后续版本不得恢复为在目标服务器
+在线解析生产依赖。
+
+原因：国内 Composer 镜像同步存在不可控延迟，目标服务器访问官方 Packagist 或 GitHub 也可能
+失败；若安装或升级阶段再解析依赖，同一版本会因时间、镜像和网络环境得到不同结果，甚至在代码
+已覆盖后留下半成品 vendor。构建阶段统一解析并打包 vendor，可让发布包成为可重复、可审计的完整
+运行快照，也使目标服务器在无外网时仍能完成安装、升级与回滚。
+
+构建和消费端必须共同遵守以下不变量：
+
+- `composer.json`、`composer.lock`、`vendor` 三者配套出现，不允许只打包其中一部分；
+- `vendor/composer/.ssl-manager-lock.sha256` 必须等于对应 `composer.lock` 的 SHA-256；
+- 安装、Shell 升级、后台升级和插件安装/更新必须在覆盖现有代码前校验该标记；
+- Composer 联网安装仅用于兼容历史上不含 vendor 的旧发布包，不是新包的正常路径。
 
 ### releases.json 字段（唯一真相源）
 

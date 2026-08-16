@@ -163,6 +163,7 @@ class JdcloudAlbDeployer extends AbstractDeployer
         return match ($kind) {
             'ssl' => JdcloudClientFactory::ssl($credentials),
             'lb' => JdcloudClientFactory::lb($credentials),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

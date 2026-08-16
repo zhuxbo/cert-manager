@@ -60,6 +60,27 @@ test('uploader.upload 调 POST /v2/domain/certificate 返回 cert_id（certifica
     expect($captured['body']['key'])->toBe('KEYPEM');
 });
 
+test('certificate target：上传阶段按 certificate_id 原位替换，bind 不再改域名', function () {
+    $captured = null;
+    $client = Mockery::mock(BaishanRestClient::class);
+    $client->shouldReceive('post')->once()->andReturnUsing(function (string $path, array $body) use (&$captured) {
+        $captured = compact('path', 'body');
+
+        return ['code' => 0, 'data' => []];
+    });
+    $client->shouldReceive('get')->never();
+
+    $deployer = baishanCdnDeployerWith(fn () => $client);
+    $config = ['deploy_target' => 'certificate', 'certificate_id' => '70001'];
+    $id = $deployer->certUploader($config)->upload('CERTPEM', 'KEYPEM', 'CHAINPEM', baishanCreds());
+    $deployer->bind($id, baishanCreds(), $config);
+
+    expect($id)->toBe('70001');
+    expect($captured['path'])->toBe('/v2/domain/certificate');
+    expect($captured['body']['certificate_id'])->toBe('70001');
+    expect($captured['body']['certificate'])->toContain('CERTPEM')->toContain('CHAINPEM');
+});
+
 test('uploader：证书已存在（code 400699）→ 从 message 提取已有 cert_id 复用（幂等）', function () {
     $client = Mockery::mock(BaishanRestClient::class);
     $client->shouldReceive('post')->andThrow(new BaishanApiException('400699', 'this certificate is exists, id: 54321'));

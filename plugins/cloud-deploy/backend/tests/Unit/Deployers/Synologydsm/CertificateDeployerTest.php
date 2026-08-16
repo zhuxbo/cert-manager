@@ -70,10 +70,16 @@ test('bind：certificate_id_or_desc 为空 → 新建证书（id 空、desc 自�
     $args = null;
     $client = Mockery::mock(SynologydsmClient::class);
     $client->shouldReceive('login')->once();
-    $client->shouldReceive('listCertificates')->never();
+    $client->shouldReceive('listCertificates')->once()->andReturn([
+        ['id' => 'new-default', 'desc' => 'New', 'is_default' => true, 'services' => []],
+        ['id' => 'old', 'desc' => 'Old', 'is_default' => false, 'services' => [['service' => 'DSM', 'display_name' => 'DSM']]],
+    ]);
     $client->shouldReceive('importCertificate')->once()->andReturnUsing(function (...$a) use (&$args) {
         $args = $a;
     });
+    $client->shouldReceive('setServiceCertificates')->once()->with([
+        ['service' => ['service' => 'DSM', 'display_name' => 'DSM'], 'old_id' => 'old', 'id' => 'new-default'],
+    ]);
     $client->shouldReceive('logout')->once();
 
     $deployer = synologyDeployerWith(fn () => $client);
@@ -229,6 +235,26 @@ test('client：listCertificates 解析 data.certificates 列表', function () {
     parse_str($req->getUri()->getQuery(), $q);
     expect($q['api'])->toBe('SYNO.Core.Certificate.CRT');
     expect($q['method'])->toBe('list');
+});
+
+test('client：setServiceCertificates POST form settings 到 Certificate.Service:set', function () {
+    $history = new ArrayObject;
+    $client = synologyClientWithMock([
+        ...synologyLoginResponses(),
+        new Response(200, [], json_encode(['success' => true, 'data' => []])),
+    ], $history);
+    $client->login();
+    $settings = [['service' => ['service' => 'DSM'], 'old_id' => 'old', 'id' => 'new']];
+    $client->setServiceCertificates($settings);
+
+    /** @var RequestInterface $req */
+    $req = $history[2]['request'];
+    expect($req->getMethod())->toBe('POST');
+    parse_str($req->getUri()->getQuery(), $query);
+    parse_str((string) $req->getBody(), $form);
+    expect($query['api'])->toBe('SYNO.Core.Certificate.Service');
+    expect($query['method'])->toBe('set');
+    expect(json_decode($form['settings'], true))->toBe($settings);
 });
 
 test('client：success=false → SynologydsmApiException（error.code 映射可读描述，无 OTP 密钥）', function () {

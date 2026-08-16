@@ -11,11 +11,8 @@ use Throwable;
 /**
  * AWS Certificate Manager（ACM，仅上传）。
  *
- * 对齐 certimate aws-acm 的「新建证书」分支：Deploy 把证书导入 ACM（拿 CertificateArn），**不绑定任何资源**。
+ * 对齐 certimate aws-acm：certificate_arn 留空时导入新证书，指定时原地替换同一 ARN；**不绑定任何资源**。
  * 适用「先托管证书到 ACM，后续在控制台/其他端点引用」场景。
- * （certimate 的 CertificateArn 非空时走「替换」——本插件靠 RemoteCertStore 按指纹去重 + 续期上传新证书，
- *  不实现原地替换，故省略 certificateArn 配置。）
- *
  * 插件模型：usesRemoteCertStore=true + AwsAcmUploader（store_kind="acm:{region}"，region 隔离），
  * bind 为 no-op —— 上传由 CloudDeployJob 经 RemoteCertStore::ensure(certUploader($config)) 完成。
  */
@@ -42,6 +39,7 @@ class AwsAcmDeployer extends AbstractDeployer implements UploadOnlyDeployerInter
     {
         return [
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
+            ['key' => 'certificate_arn', 'label' => '证书 ARN（选填，指定时原地替换）', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -53,10 +51,12 @@ class AwsAcmDeployer extends AbstractDeployer implements UploadOnlyDeployerInter
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         $region = (string) ($config['region'] ?? '');
+        $certificateArn = (string) ($config['certificate_arn'] ?? '');
 
         return new AwsAcmUploader(
             fn (array $credentials): object => $this->makeClient('acm', $credentials, $region),
             $region,
+            $certificateArn,
         );
     }
 

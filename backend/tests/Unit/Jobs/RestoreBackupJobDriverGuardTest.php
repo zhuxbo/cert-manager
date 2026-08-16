@@ -80,3 +80,11 @@ test('mariadb driver 不被守门拦截（保留路径，进入后续 BinaryLoca
     expect($progress['status'])->toBe('failed')
         ->and($progress['message'])->not->toContain('暂不支持在线恢复');
 });
+
+test('增量 SQL 文件无法打开时抛出稳定的领域错误', function () {
+    $path = $this->testDir.'/missing.sql';
+    $method = new ReflectionMethod(RestoreBackupJob::class, 'runMysqlFromFile');
+
+    expect(fn () => $method->invoke(new RestoreBackupJob('token', 'backup', 'incremental', 1), $path))
+        ->toThrow(RuntimeException::class, "无法打开 sql: $path");
+});

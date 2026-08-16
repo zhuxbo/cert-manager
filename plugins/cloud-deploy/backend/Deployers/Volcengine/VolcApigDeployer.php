@@ -4,6 +4,7 @@ namespace Plugins\CloudDeploy\Deployers\Volcengine;
 
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
+use Plugins\CloudDeploy\Deployers\Contracts\ReceivesRemoteCertificateMaterial;
 use Throwable;
 
 /**
@@ -16,8 +17,10 @@ use Throwable;
  * 仅 exact 域名匹配（不做 certimate 的 wildcard/certsan 遍历）。region 必填；证书中心上传与 APIG 用同一 region。
  * 过滤掉 Creating/CreationFailed/Deleting/DeletionFailed 状态的域名（对齐 certimate getAllDomains）。
  */
-class VolcApigDeployer extends AbstractDeployer
+class VolcApigDeployer extends AbstractDeployer implements ReceivesRemoteCertificateMaterial
 {
+    use MatchesVolcDomains;
+
     private const IGNORED_STATUSES = ['Creating', 'CreationFailed', 'Deleting', 'DeletionFailed'];
 
     public function provider(): string
@@ -39,7 +42,8 @@ class VolcApigDeployer extends AbstractDeployer
     {
         return [
             ['key' => 'region', 'label' => '地域', 'type' => 'string', 'required' => true],
-            ['key' => 'domain', 'label' => '自定义域名', 'type' => 'string', 'required' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '自定义域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -59,23 +63,31 @@ class VolcApigDeployer extends AbstractDeployer
     }
 
     /**
-     * @param  string  $certRef  证书中心 InstanceId
-     * @param  array{access_key_id?:string,secret_access_key?:string}  $credentials
-     * @param  array{region:string,domain:string}  $config
+     * @param  string|array{remote_cert_id:string,cert:string,chain:string}  $certRef  证书中心 InstanceId 与可选证书材料
+     * @param  array{access_key_id?:string,secret_access_key?:string,project_name?:string}  $credentials
+     * @param  array{region:string,domain_match_pattern?:string,domain?:string}  $config
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
         // 业务校验在 guardSdk 之外
         $region = (string) $this->requireConfig($config, 'region');
-        $domain = (string) $this->requireConfig($config, 'domain');
-        $certId = (string) $certRef;
+        $pattern = (string) ($config['domain_match_pattern'] ?? 'exact');
+        $domain = (string) ($config['domain'] ?? '');
+        [$certId, $certificate] = $this->volcCertificateReference($certRef);
+        if (in_array($pattern, ['', 'exact', 'wildcard'], true) && $domain === '') {
+            $this->fail('缺少配置 domain');
+        }
 
-        // 定位域名 id（SDK 读，guardSdk 包裹后返回）
-        $domainIds = $this->guardSdk(fn (): array => $this->findDomainIds($this->makeClient('apig', $credentials, $region), $domain));
+        $domainIds = $this->guardSdk(fn (): array => $this->findDomainIds(
+            $this->makeClient('apig', $credentials, $region),
+            $pattern,
+            $domain,
+            $certificate,
+        ));
 
         // 业务错误：未找到自定义域名（在 guardSdk 之外）
         if ($domainIds === []) {
-            $this->fail("未找到自定义域名 $domain");
+            $this->fail($domain !== '' ? "未找到自定义域名 $domain" : '未找到匹配证书的自定义域名');
         }
 
         $this->guardSdk(function () use ($credentials, $domainIds, $certId, $region) {
@@ -92,7 +104,7 @@ class VolcApigDeployer extends AbstractDeployer
      *
      * @return list<string>
      */
-    private function findDomainIds(VolcRestClient $client, string $domain): array
+    private function findDomainIds(VolcRestClient $client, string $pattern, string $domain, string $certificate): array
     {
         $ids = [];
         $page = 1;
@@ -112,7 +124,14 @@ class VolcApigDeployer extends AbstractDeployer
                 if (in_array($status, self::IGNORED_STATUSES, true)) {
                     continue;
                 }
-                if (($item['Domain'] ?? null) === $domain) {
+                $candidate = (string) ($item['Domain'] ?? '');
+                $matches = match ($pattern) {
+                    '', 'exact' => $domain === '' ? $this->fail('缺少配置 domain') : $candidate === $domain,
+                    'wildcard' => $domain === '' ? $this->fail('缺少配置 domain') : $this->certificateHostnamePatternMatches($domain, $candidate),
+                    'certsan' => $certificate === '' ? $this->fail('certsan 匹配缺少证书材料') : $this->certificateMatchesHostname($certificate, $candidate),
+                    default => $this->fail("不支持的域名匹配模式 $pattern"),
+                };
+                if ($matches) {
                     $id = $item['Id'] ?? null;
                     if (is_string($id) && $id !== '') {
                         $ids[] = $id;
@@ -162,6 +181,7 @@ class VolcApigDeployer extends AbstractDeployer
                 $credentials['access_key_id'] ?? '',
                 $credentials['secret_access_key'] ?? '',
             ),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

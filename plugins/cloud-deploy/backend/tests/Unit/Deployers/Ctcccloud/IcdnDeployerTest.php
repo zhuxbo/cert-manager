@@ -32,7 +32,7 @@ test('天翼云 ICDN：证书服务型（storeKind ctcccloud_icdn + 元信息 + 
     expect($deployer->provider())->toBe('ctcccloud');
     expect($deployer->product())->toBe('icdn');
     expect($deployer->label())->toBe('天翼云国际 CDN');
-    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain']);
+    expect(array_column($deployer->configSchema(), 'key'))->toBe(['domain_match_pattern', 'domain']);
 });
 
 test('uploader.upload 走 ICDN endpoint 创建证书 /v1/cert/creat-cert 返回 CertName', function () {

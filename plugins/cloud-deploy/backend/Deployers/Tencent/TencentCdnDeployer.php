@@ -5,7 +5,6 @@ namespace Plugins\CloudDeploy\Deployers\Tencent;
 use Plugins\CloudDeploy\Deployers\Contracts\AbstractDeployer;
 use Plugins\CloudDeploy\Deployers\Contracts\CertUploaderInterface;
 use TencentCloud\Cdn\V20180606\CdnClient;
-use TencentCloud\Cdn\V20180606\Models\UpdateDomainConfigRequest;
 use TencentCloud\Common\Credential;
 use TencentCloud\Common\Profile\ClientProfile;
 use TencentCloud\Common\Profile\HttpProfile;
@@ -18,6 +17,9 @@ use Throwable;
  */
 class TencentCdnDeployer extends AbstractDeployer
 {
+    use DeploysTencentCdnDomains;
+    use UsesTencentEndpoint;
+
     public function provider(): string
     {
         return 'tencent';
@@ -36,7 +38,9 @@ class TencentCdnDeployer extends AbstractDeployer
     public function configSchema(): array
     {
         return [
-            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => true],
+            ['key' => 'endpoint', 'label' => '接口端点（选填）', 'type' => 'string', 'required' => false, 'destination' => true],
+            ['key' => 'domain_match_pattern', 'label' => '域名匹配模式', 'type' => 'string', 'required' => false, 'default' => 'exact'],
+            ['key' => 'domain', 'label' => '加速域名', 'type' => 'string', 'required' => false],
         ];
     }
 
@@ -48,7 +52,7 @@ class TencentCdnDeployer extends AbstractDeployer
     public function certUploader(array $config = []): ?CertUploaderInterface
     {
         // 上传器复用 deployer 的注入缝：测试 override makeClient('ssl') 即作用于上传
-        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $credentials));
+        return new TencentSslUploader(fn (array $credentials): object => $this->makeClient('ssl', $this->withTencentEndpoint($credentials, $config)));
     }
 
     /**
@@ -58,21 +62,8 @@ class TencentCdnDeployer extends AbstractDeployer
      */
     public function bind(string|array $certRef, array $credentials, array $config): void
     {
-        $domain = $this->requireConfig($config, 'domain');
-
-        $this->guardSdk(function () use ($credentials, $domain, $certRef) {
-            /** @var CdnClient $client */
-            $client = $this->makeClient('cdn', $credentials);
-            $req = new UpdateDomainConfigRequest;
-            $req->deserialize([
-                'Domain' => $domain,
-                'Https' => [
-                    'Switch' => 'on',
-                    'CertInfo' => ['CertId' => $certRef],
-                ],
-            ]);
-            $client->UpdateDomainConfig($req);
-        });
+        $credentials = $this->withTencentEndpoint($credentials, $config);
+        $this->deployTencentCdnDomains((string) $certRef, $credentials, $config, 'cdn');
     }
 
     protected function makeClient(string $kind, array $credentials): object
@@ -80,6 +71,7 @@ class TencentCdnDeployer extends AbstractDeployer
         $cred = new Credential($credentials['secret_id'] ?? '', $credentials['secret_key'] ?? '');
         $http = new HttpProfile;
         $http->setReqTimeout(15);
+        $this->configureTencentEndpoint($http, $credentials, $kind);
         $profile = new ClientProfile;
         $profile->setHttpProfile($http);
 
@@ -87,6 +79,7 @@ class TencentCdnDeployer extends AbstractDeployer
         return match ($kind) {
             'ssl' => new SslClient($cred, '', $profile),
             'cdn' => new CdnClient($cred, '', $profile),
+            default => throw new \InvalidArgumentException("不支持的客户端类型: $kind"),
         };
     }
 

@@ -36,7 +36,7 @@ test('金山云 KCM：纯上传端点（usesRemoteCertStore + storeKind ksyun_kc
     expect($deployer->certUploader()->storeKind())->toBe('ksyun_kcm');
     expect($deployer->provider())->toBe('ksyun');
     expect($deployer->product())->toBe('kcm');
-    expect($deployer->configSchema())->toBe([]);
+    expect(array_column($deployer->configSchema(), 'key'))->toContain('project_id');
 
     // bind 是 no-op：不调用任何 SDK（注入会抛异常的 client，bind 仍不触碰它），不抛异常。
     $neverCalled = ksyunKcmDeployerWith(fn () => Mockery::mock()->shouldReceive('post')->never()->getMock());
@@ -66,6 +66,22 @@ test('uploader.upload 调 POST / UploadCertificate 返回 CertID（CertFile=完�
     expect($p['CertName'])->toStartWith('clouddeploy_');
     expect($p['CertFile'])->toContain('CERTPEM')->toContain('CHAINPEM');
     expect($p['CertKey'])->toBe('KEYPEM');
+});
+
+test('KCM project_id 进入上传请求并隔离 RemoteCertStore 命名空间', function () {
+    $captured = null;
+    $client = Mockery::mock(KsyunRestClient::class);
+    $client->shouldReceive('post')->once()->andReturnUsing(function (string $path, array $params) use (&$captured) {
+        $captured = $params;
+
+        return ['Success' => true, 'Ret' => ['CertID' => 'kcm-project-1']];
+    });
+
+    $deployer = ksyunKcmDeployerWith(fn () => $client);
+    $uploader = $deployer->certUploader(['project_id' => '12345']);
+    expect($uploader->storeKind())->toBe('ksyun_kcm:12345');
+    expect($uploader->upload('C', 'K', 'CH', ksyunKcmCreds()))->toBe('kcm-project-1');
+    expect($captured['ProjectId'])->toBe('12345');
 });
 
 test('upload 未返回 CertID 时抛明确异常（非 TypeError）', function () {

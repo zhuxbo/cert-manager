@@ -4,6 +4,8 @@ description: ACME 模块 - 封装下单 + 交付 EAB 模式、订阅计费、取
 
 # ACME 模块
 
+普通证书与 ACME 的退款行为对照见 [退款矩阵](refund-matrix.md)。本文件保留 ACME 状态机和上游交互细节。
+
 Manager 作为 ACME 订阅管理平台，通过 REST API 连接 上游系统，向用户交付 EAB 凭据（eab_kid + eab_hmac）。
 
 ## 架构
@@ -69,16 +71,17 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 ## 取消流程
 
 1. **`commitCancel`**（Web 入口，延时流程，保留撤回窗口）：
-   - 无 `api_id` 的 pending 订单 → 直接退费 + 标记 cancelled（此时已真实取消，设置 `cancelled_at`）
-   - 有 `api_id` 的订单 → 仅标记 cancelling + 创建 Task（action=`cancel_acme`，延迟 120s）+ dispatch `TaskJob`（延迟 123s）——**不写 `cancelled_at`**，实际取消由 `cancel()` 完成
+   - 无 `api_id` 的 pending 订单尚未提交上游，不受退款期限制 → 直接退费 + 标记 cancelled（此时已真实取消，设置 `cancelled_at`）
+   - 有 `api_id` 的订单先按 `acme.created_at + product.refund_period` 检查退款期；期限内才标记 cancelling + 创建 Task（action=`cancel_acme`，延迟 120s）+ dispatch `TaskJob`（延迟 123s）——**不写 `cancelled_at`**，实际取消由 `cancel()` 完成
 2. **`cancelNow`**（下游 API 入口 `/api/v2/acme/cancel`，立即取消）：
-   - 不创建 Task、不 dispatch Job；悲观锁后标记 cancelling（不写 `cancelled_at`）并同步调 `cancel()` 完成上游通信与退费
+   - 不创建 Task、不 dispatch Job；悲观锁后同步执行上游通信与退费
    - 未提交上游的 pending 订单仍走直接退费分支（同 commitCancel）
-   - 上游失败时订单保持 cancelling（不退费）——与延时流程一致，等待人工或重试
+   - 已提交上游的订单先检查退款期；越界不调用上游、不退款、状态保持原值
 3. **`revokeCancel`**（撤回取消）：
    - 仅在 acme.status=cancelling 时允许；悲观锁 acme 行 + 删除 executing/stopped 的 `cancel_acme` Task（已 dispatch 的 TaskJob 唤醒后因任务被删会直接跳过）+ 状态回 active
    - 并发安全：若 TaskJob 已抢先获得任务锁并开始执行 `cancel()`，本调用的 DELETE 会等其提交后匹配不到行，随后 acme 状态已非 cancelling，撤回失败
 4. **`cancel`**（由 TaskJob / cancelNow 调用）：
+   - 有 `api_id` 时在调用上游前重新检查退款期，覆盖两分钟延时期间跨过边界的情况
    - 调 `Api->cancel()` → 上游返回 revoked → 状态 revoked + 退费 + 写入 `cancelled_at`
    - 调 `Api->cancel()` → 上游返回其他成功 → 状态 cancelled + 退费 + 写入 `cancelled_at`
    - 上游失败 → 保持 cancelling，不退费（等待下次重试）
@@ -104,6 +107,8 @@ unpaid ──[pay]──→ pending ──[commit]──→ active ──[到期
 
 - **锁序 task→acme（防 acme→task 反序死锁）**：上游响应终态判据用**事务外 HTTP 响应快照**（`$upstreamTerminal`，非本地行状态）决定是否先 `Task::lockForMutation($acmeId, ['cancel_acme'])`，再锁 acme 行。高频 `get` 常态 active 零 task 锁开销（仅上游终态才锁 cancel_acme，与执行条件对齐、无冗余锁）。
 - **终态判据前置 + 读写同行**：锁内重取 acme 行自身判 `status===cancelling && $upstreamTerminal`（ACME 无 latestCert 切换，天然满足「读=写同一行」红线）→ 预检 `acme_cancel` 未存在则 `refund` + 清孤儿 cancel_acme 任务（executing/stopped 二态）+ 写终态（`cancelled_at ??= now()`；有意不合并 vendor_id/period 等非状态字段，终态元数据以取消时刻为准）。
+- **退款期**：尚无 `acme_cancel` 流水时，退款前重新检查 `acme.created_at + product.refund_period`；越界则整笔事务回滚，保持 cancelling 和 cancel_acme task 转人工。已有退款流水的边缘态只补终态，不重复受限。
+- **active 同步终态不退款**：不同 CA 可能用 cancelled 或 revoked 表达吊销/取消，无法可靠区分是否应退款；仅本地已有明确取消意图的 cancelling 进入 T7，active 极少数异常由人工处理。
 - **退款失败治理与传统订单对齐**：`refund` 异常直接从事务逸出，退款流水、余额和 ACME 状态整体回滚；并发错误由 `runTaskMutationTransaction`（attempts=3）按框架规则静默重试。退款失败不发送 ACME 专属 `SystemAlert`；异步取消/同步最终失败统一走 `TaskJob::failed` 的 `task_failed` 管理员通知，并由每天 03:00 的 `finance:audit` 全量账本对账兜底。
 
 **测试**：`ReconcileAcmeCommandTest`（T6 两段式 + maxed 不占 limit 仍告警）、`Unit/Services/Acme/ActionTest`（T7 退款成功闭合、终态异常与 SQLSTATE 1213 均整体回滚）。

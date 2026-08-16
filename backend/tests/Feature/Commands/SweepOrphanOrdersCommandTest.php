@@ -25,7 +25,6 @@ beforeEach(function () {
     config([
         'reconcile.max_attempts' => 3,
         'reconcile.orphan.unpaid_enabled' => true,
-        'reconcile.orphan.pending_enabled' => true, // 多数用例需 pending 分支；⑳ 金丝雀用例自行覆盖
         'reconcile.orphan.unpaid_stale_minutes' => 60,
         'reconcile.orphan.batch' => 50,
     ]);
@@ -222,8 +221,8 @@ test('⑲ executing 保护：pending 到顶 + executing commit task → 不接�
         ->and($user->fresh()->balance)->toBe('900.00');
 });
 
-test('⑳ 分级金丝雀：pending_enabled=false 只清 unpaid；unpaid_enabled=false 只清 pending；双关全零', function () {
-    // 场景 A：pending_enabled=false（默认）→ pending 到顶零动作、unpaid 照常 delete
+test('⑳ pending 到顶退款不可被旧 pending_enabled 配置关闭，unpaid 开关仍独立生效', function () {
+    // 即使升级前残留 pending_enabled=false，已扣费且确认未提交上游的 pending 到顶单仍必须退款。
     config(['reconcile.orphan.pending_enabled' => false, 'reconcile.orphan.unpaid_enabled' => true]);
     [$userP, $orderP, $certP] = makeOrphanPending('auto', '100.00');
     orphanFailedCommits($orderP->id, 3);
@@ -231,12 +230,13 @@ test('⑳ 分级金丝雀：pending_enabled=false 只清 unpaid；unpaid_enabled
 
     $this->artisan('schedule:sweep-orphan-orders')->assertSuccessful();
 
-    expect($certP->fresh()->status)->toBe('pending')       // pending 分支关：不动
-        ->and($userP->fresh()->balance)->toBe('900.00')
-        ->and(Order::find($orderU->id))->toBeNull()          // unpaid 分支开：照常删
+    expect($certP->fresh()->status)->toBe('cancelled')
+        ->and($userP->fresh()->balance)->toBe('1000.00')
+        ->and(Transaction::where('transaction_id', $orderP->id)->where('type', 'cancel')->count())->toBe(1)
+        ->and(Order::find($orderU->id))->toBeNull()
         ->and($oldCertU->fresh()->status)->toBe('active');
 
-    // 场景 B：双关 → 全零动作
+    // unpaid 开关仍只控制无资金的 stale unpaid 清理，不影响 pending 退款。
     config(['reconcile.orphan.pending_enabled' => false, 'reconcile.orphan.unpaid_enabled' => false]);
     [, $orderU2, $certU2] = makeOrphanUnpaid('auto', ['created_at' => now()->subMinutes(90)]);
     [$userP2, $orderP2, $certP2] = makeOrphanPending('auto', '100.00');
@@ -245,8 +245,9 @@ test('⑳ 分级金丝雀：pending_enabled=false 只清 unpaid；unpaid_enabled
     $this->artisan('schedule:sweep-orphan-orders')->assertSuccessful();
 
     expect($certU2->fresh()->status)->toBe('unpaid')
-        ->and($certP2->fresh()->status)->toBe('pending')
-        ->and($userP2->fresh()->balance)->toBe('900.00');
+        ->and($certP2->fresh()->status)->toBe('cancelled')
+        ->and($userP2->fresh()->balance)->toBe('1000.00')
+        ->and(Transaction::where('transaction_id', $orderP2->id)->where('type', 'cancel')->count())->toBe(1);
 });
 
 test('㉑ 并发：cancelPending 与并发 late-commit（推 processing）→ 锁内 guard 早退、不误退款', function () {

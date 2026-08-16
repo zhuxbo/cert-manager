@@ -50,6 +50,7 @@ class UcloudRestClient
         private readonly string $projectId = '',
         private readonly string $region = '',
         ?ClientInterface $http = null,
+        private readonly string $endpoint = self::API_ENDPOINT,
     ) {
         // 设 socket 超时上限（默认无限），避免上游慢/挂时 worker 长期阻塞。
         $this->http = $http ?? new Client([
@@ -153,6 +154,38 @@ class UcloudRestClient
     public function addSSLBinding(string $loadBalancerId, string $listenerId, array $sslIds): void
     {
         $this->invoke('AddSSLBinding', [
+            'LoadBalancerId' => $loadBalancerId,
+            'ListenerId' => $listenerId,
+            'SSLIds' => array_values($sslIds),
+        ]);
+    }
+
+    /**
+     * 查询 ULB SSL 证书详情，用于 UALB SNI 替换时识别同域名或已过期的旧扩展证书。
+     * REF: certimate ucloud-ualb —— Action=DescribeSSLV2
+     *
+     * @return array{DataSet:list<array<string,mixed>>}
+     */
+    public function describeSSLV2(string $sslId): array
+    {
+        $json = $this->invoke('DescribeSSLV2', [
+            'SSLId' => $sslId,
+            'Limit' => 1,
+        ]);
+        $dataSet = $json['DataSet'] ?? null;
+
+        return ['DataSet' => is_array($dataSet) ? array_values(array_filter($dataSet, 'is_array')) : []];
+    }
+
+    /**
+     * 解绑 UALB 监听器的扩展 SSL 证书。
+     * REF: certimate ucloud-ualb —— Action=DeleteSSLBinding
+     *
+     * @param  list<string>  $sslIds
+     */
+    public function deleteSSLBinding(string $loadBalancerId, string $listenerId, array $sslIds): void
+    {
+        $this->invoke('DeleteSSLBinding', [
             'LoadBalancerId' => $loadBalancerId,
             'ListenerId' => $listenerId,
             'SSLIds' => array_values($sslIds),
@@ -325,7 +358,7 @@ class UcloudRestClient
     {
         $payload = $this->buildSignedPayload($action, $params);
 
-        $response = $this->http->request('POST', self::API_ENDPOINT, [
+        $response = $this->http->request('POST', $this->endpoint, [
             RequestOptions::FORM_PARAMS => $payload,
             RequestOptions::HTTP_ERRORS => false,
         ]);
