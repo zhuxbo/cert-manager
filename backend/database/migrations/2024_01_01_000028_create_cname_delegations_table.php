@@ -17,6 +17,7 @@ return new class extends Migration
                 $table->string('prefix', 50)->index()->comment('委托前缀');
 
                 $table->string('label', 64)->comment('SHA256哈希标签(64位hex)');
+                $table->string('proxy_domain', 255)->nullable()->index()->comment('最近检测命中的委托代理域');
 
                 $table->boolean('valid')->default(false)->index()->comment('委托是否有效(健康检查结果)');
                 $table->timestamp('last_checked_at')->nullable()->comment('上次健康检查时间');

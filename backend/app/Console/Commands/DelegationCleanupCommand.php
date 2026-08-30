@@ -4,182 +4,238 @@ namespace App\Console\Commands;
 
 use App\Models\CnameDelegation;
 use App\Models\Order;
+use App\Services\Delegation\CnameDelegationService;
+use App\Services\Delegation\DelegationConfigService;
 use App\Services\Delegation\DelegationDnsService;
-use App\Services\Delegation\ProxyDNS;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Throwable;
+use UnexpectedValueException;
 
 class DelegationCleanupCommand extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
+    /** @var string */
     protected $signature = 'delegation:cleanup';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
-    protected $description = '清理不是processing状态订单的委托DNS记录';
-
-    protected DelegationDnsService $dnsService;
-
-    protected ProxyDNS $proxyDNS;
+    /** @var string */
+    protected $description = '清理处理中或待批准订单未使用的委托 DNS 记录';
 
     /**
      * Execute the console command.
      */
-    public function handle(): void
+    public function handle(): int
     {
-        $this->dnsService = app(DelegationDnsService::class);
-        $this->proxyDNS = app(ProxyDNS::class);
+        $dnsService = app(DelegationDnsService::class);
+        $configService = app(DelegationConfigService::class);
 
         $this->info('开始清理委托DNS记录...');
 
+        $failed = false;
         try {
-            // 1. 获取委托域名配置
-            $delegation = get_system_setting('site', 'delegation');
-            $proxyZone = $delegation['proxyZone'] ?? null;
-
-            if (empty($proxyZone)) {
-                $this->error('代理域名未设置，无法执行清理');
-
-                return;
+            $configs = $configService->all();
+            $invalidSettings = $configService->invalidSettings();
+            foreach ($invalidSettings as $settingKey => $reason) {
+                $failed = true;
+                $this->error("[$settingKey] 委托域配置无效: $reason");
+                Log::error('委托域配置无效', [
+                    'setting_key' => $settingKey,
+                    'reason' => $reason,
+                ]);
             }
 
-            $this->info("委托域名: $proxyZone");
+            if ($configs === []) {
+                if ($invalidSettings !== []) {
+                    return self::FAILURE;
+                }
 
-            // 2. 调用腾讯云 API 查询委托域名的所有 TXT 记录
-            $this->info('正在查询腾讯云 TXT 记录...');
-            $allTxtRecords = $this->proxyDNS->getAllTxtRecords($proxyZone);
-            $this->info('腾讯云 TXT 记录总数: '.count($allTxtRecords));
+                $this->error('代理域名未设置，无法执行清理');
+                $cleanedMarkCount = $this->cleanDatabaseMarks([]);
+                $this->info("清理了 $cleanedMarkCount 个数据库标记");
 
-            // 3. 查询所有 processing/approving 订单的委托记录（F2-3 缺陷二：approving 单已过 DCV、
-            //    等 CA 审批，其委托 TXT 不可删，否则 CA 复查 DCV 即失败）
-            $this->info('正在查询处理中/待批准订单的委托记录...');
-            $processingOrders = Order::with(['latestCert'])
-                ->whereHas('latestCert', function ($query) {
-                    $query->whereIn('status', ['processing', 'approving']);
-                })
-                ->get();
+                return self::SUCCESS;
+            }
 
-            // 4. 收集所有应该保留的 label（记录名）
-            $keepLabels = collect();
-            foreach ($processingOrders as $order) {
-                $cert = $order->latestCert;
-                $validations = $cert->validation;
+            $keepLabelsByDomain = $this->loadKeepLabelsByDomain();
+        } catch (Throwable $e) {
+            $this->error('清理准备失败: '.$e->getMessage());
+            Log::error('委托DNS记录清理准备失败', [
+                'exception' => $e::class,
+            ]);
 
-                if (empty($validations)) {
+            return self::FAILURE;
+        }
+
+        $deletedLabelsByDomain = [];
+
+        foreach (array_keys($configs) as $proxyDomain) {
+            $deletedLabels = [];
+            $deletedRecordCount = 0;
+            try {
+                $this->info("委托域名: $proxyDomain");
+                $allTxtRecords = $dnsService->getAllTxtRecords($proxyDomain);
+                $keepLabels = $keepLabelsByDomain[$proxyDomain] ?? [];
+
+                $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels) {
+                    $name = $this->normalizeLabel($record['name'] ?? '');
+                    if (preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', $name) !== 1) {
+                        return false;
+                    }
+
+                    return ! isset($keepLabels[$name]);
+                });
+
+                $this->info('需要删除的记录数: '.$recordsToDelete->count());
+                if ($recordsToDelete->isEmpty()) {
+                    $this->info("[$proxyDomain] 没有需要清理的记录");
+
                     continue;
                 }
 
-                foreach ($validations as $validation) {
-                    if (isset($validation['delegation_id'])) {
-                        $delegation = CnameDelegation::find($validation['delegation_id']);
-                        if ($delegation) {
-                            $keepLabels->push($delegation->label);
-                        }
-                    }
-                }
-            }
-
-            $keepLabels = $keepLabels->unique()->values();
-            $this->info('应该保留的记录数: '.$keepLabels->count());
-
-            // 5. 比对差值，找出需要删除的记录
-            //    删除判据在 keepLabels 白名单之上，前置「委托格式收敛」：仅删 label 形如 32 或
-            //    64 位 hex 的记录，护住 proxyZone 下用户自放的 SPF/DKIM/_dmarc/站点验证等非委托 TXT
-            //    （apex `@`、含点/下划线的名字均不匹配 → 永不进删除集）。委托 label 由
-            //    substr(hash('sha256', ...), 0, 32) 生成（当代恒 32-hex）；迁移列注释与前身仓历史
-            //    可能存在 64-hex 形态，故判据兼容两者（大小写不敏感防漂移）。孤儿委托（表内已删、
-            //    DNS 残留）label 仍为 hex 格式、不在 keepLabels → 仍被清理，格式过滤两全不漏清。
-            $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels) {
-                if (preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', (string) $record['name']) !== 1) {
-                    return false;
+                $recordCountsByLabel = [];
+                foreach ($recordsToDelete as $record) {
+                    $label = $this->normalizeLabel($record['name'] ?? '');
+                    $recordCountsByLabel[$label] = ($recordCountsByLabel[$label] ?? 0) + 1;
                 }
 
-                return ! $keepLabels->contains($record['name']);
-            });
-
-            $this->info('需要删除的记录数: '.$recordsToDelete->count());
-
-            if ($recordsToDelete->isEmpty()) {
-                $this->info('没有需要清理的记录');
-
-                return;
+                foreach ($recordCountsByLabel as $label => $recordCount) {
+                    $dnsService->deleteTxtByLabel($proxyDomain, $label);
+                    // 每个 label 完整删除后立即记录；后续 label 失败不能抹掉已确认结果。
+                    $deletedLabelsByDomain[$proxyDomain][$label] = true;
+                    $deletedLabels[] = $label;
+                    $deletedRecordCount += $recordCount;
+                }
+            } catch (Throwable $e) {
+                $failed = true;
+                $this->error("[$proxyDomain] 清理失败: ".$e->getMessage());
+                Log::error('委托DNS记录清理失败', [
+                    'proxy_domain' => $proxyDomain,
+                    'exception' => $e::class,
+                ]);
+            } finally {
+                if ($deletedLabels !== []) {
+                    Log::info('批量清理委托DNS记录成功', [
+                        'proxy_domain' => $proxyDomain,
+                        'deleted_count' => $deletedRecordCount,
+                        'deleted_labels' => $deletedLabels,
+                    ]);
+                }
             }
+        }
 
-            // 6. 批量删除记录（一次最多 2000 条）
-            $recordIds = $recordsToDelete->pluck('id')->toArray();
-            $this->info('正在批量删除记录...');
-            $this->proxyDNS->batchDeleteRecords($recordIds);
-
-            Log::info('批量清理委托DNS记录成功', [
-                'proxy_zone' => $proxyZone,
-                'deleted_count' => count($recordIds),
-                'deleted_labels' => $recordsToDelete->pluck('name')->toArray(),
-            ]);
-
-            // 7. 清理数据库中的 auto_txt_written 标记
+        $cleanedMarkCount = 0;
+        try {
             $this->info('正在清理数据库中的标记...');
-            $cleanedMarkCount = $this->cleanDatabaseMarks($recordsToDelete->pluck('name')->toArray());
-
-            $this->info('清理完成！');
-            $this->info('- 删除了 '.count($recordIds).' 条 DNS 记录');
-            $this->info("- 清理了 $cleanedMarkCount 个数据库标记");
+            $cleanedMarkCount = $this->cleanDatabaseMarks($deletedLabelsByDomain);
         } catch (Throwable $e) {
-            $this->error('清理失败: '.$e->getMessage());
-            Log::error('委托DNS记录清理失败', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+            $failed = true;
+            $this->error('数据库标记清理失败: '.$e->getMessage());
+            Log::error('委托DNS数据库标记清理失败', [
+                'exception' => $e::class,
             ]);
         }
+
+        $this->info("清理了 $cleanedMarkCount 个数据库标记");
+
+        return $failed ? self::FAILURE : self::SUCCESS;
     }
 
     /**
-     * 清理数据库中的 auto_txt_written 标记
+     * 在途引用只加载一次，并按订单冻结的委托目标建立保留集。
      *
-     * @param  array  $deletedLabels  已删除的 label 数组
-     * @return int 清理的标记数量
+     * @return array<string, array<string, true>>
      */
-    protected function cleanDatabaseMarks(array $deletedLabels): int
+    protected function loadKeepLabelsByDomain(): array
+    {
+        $orders = Order::with('latestCert')
+            ->whereHas('latestCert', fn ($query) => $query->whereIn('status', ['processing', 'approving']))
+            ->get();
+
+        $delegationIds = [];
+        $references = [];
+        foreach ($orders as $order) {
+            foreach ($order->latestCert->validation ?? [] as $validation) {
+                if (! array_key_exists('delegation_id', $validation)
+                    || $validation['delegation_id'] === null) {
+                    continue;
+                }
+
+                $delegationId = $this->positiveDelegationId($validation['delegation_id']);
+                if ($delegationId === null) {
+                    throw new UnexpectedValueException('在途订单委托 ID 无效');
+                }
+
+                $delegationIds[$delegationId] = true;
+                $references[] = [
+                    'delegation_id' => $delegationId,
+                    'validation' => $validation,
+                ];
+            }
+        }
+
+        if ($delegationIds === []) {
+            return [];
+        }
+
+        $delegationsById = CnameDelegation::query()
+            ->whereIn('id', array_keys($delegationIds))
+            ->get(['id', 'label', 'proxy_domain'])
+            ->keyBy('id');
+        $keepLabelsByDomain = [];
+
+        foreach ($references as $reference) {
+            $delegation = $delegationsById->get($reference['delegation_id']);
+            if (! $delegation) {
+                continue;
+            }
+
+            $proxyDomain = $this->proxyDomainForValidation($delegation, $reference['validation']);
+            if ($proxyDomain === null) {
+                throw new UnexpectedValueException('在途订单委托目标无效');
+            }
+
+            $keepLabelsByDomain[$proxyDomain][$this->normalizeLabel($delegation->label)] = true;
+        }
+
+        return $keepLabelsByDomain;
+    }
+
+    /**
+     * 有委托行时仅清理“精确 ID + 绑定代理域 + 已删除 label”命中的标记；
+     * 正整数 ID 对应行已不存在时只清本地标记，不据此猜域或触碰远端 DNS。
+     *
+     * @param  array<string, array<string, true>>  $deletedLabelsByDomain
+     */
+    protected function cleanDatabaseMarks(array $deletedLabelsByDomain): int
     {
         $cleanedCount = 0;
-        $deletedLabelSet = array_flip($deletedLabels); // O(1) 命中判定，替代逐条 in_array
 
-        // F2-3 缺陷一：去掉 30 天窗口，分块扫所有带 auto_txt_written 标记的证书。
-        // 原只扫 30 天内订单 → >30 天订单 label 被删后标记不清、TXT 永不重写。
-        // 全扫性能收敛（每日 06:00 冷路径，chunkById 控内存）：
-        //  - SQL 侧 validation LIKE '%auto_txt_written%' 粗筛（json_encode 不转义该 ASCII 键，是
-        //    带标记记录的严格超集、无漏；误匹配由 PHP 侧 isset && === true 复核吸收），避免
-        //    whereNotNull 近乎全表（validation 除 unpaid 外几乎非空、无选择性）；
-        //  - latestCert 只 select id/validation，不水合 csr/private_key/enc_* 宽列（mediumtext）；
-        //  - 每 chunk 先收集 delegation_id 再 whereIn 批量取 label 映射，消除逐条 find 的 N+1。
         Order::with(['latestCert' => fn ($query) => $query->select('id', 'validation')])
             ->whereHas('latestCert', fn ($query) => $query->where('validation', 'like', '%auto_txt_written%'))
-            ->chunkById(200, function ($orders) use ($deletedLabelSet, &$cleanedCount) {
-                // 先收集本 chunk 全部带标记的 delegation_id，一次 whereIn 批量取 label（消除 N+1）
+            ->chunkById(200, function ($orders) use ($deletedLabelsByDomain, &$cleanedCount) {
                 $delegationIds = [];
                 foreach ($orders as $order) {
                     foreach ($order->latestCert->validation ?? [] as $validation) {
-                        if (($validation['auto_txt_written'] ?? false) === true && ! empty($validation['delegation_id'])) {
-                            $delegationIds[$validation['delegation_id']] = true;
+                        if (($validation['auto_txt_written'] ?? false) !== true) {
+                            continue;
+                        }
+
+                        $delegationId = $this->positiveDelegationId($validation['delegation_id'] ?? null);
+                        if ($delegationId !== null) {
+                            $delegationIds[$delegationId] = true;
                         }
                     }
                 }
 
-                $labelById = empty($delegationIds)
+                $delegationsById = $delegationIds === []
                     ? collect()
-                    : CnameDelegation::whereIn('id', array_keys($delegationIds))->pluck('label', 'id');
+                    : CnameDelegation::query()
+                        ->whereIn('id', array_keys($delegationIds))
+                        ->get(['id', 'label', 'proxy_domain'])
+                        ->keyBy('id');
 
                 foreach ($orders as $order) {
                     $cert = $order->latestCert;
                     $validations = $cert->validation;
-
                     if (empty($validations)) {
                         continue;
                     }
@@ -188,35 +244,41 @@ class DelegationCleanupCommand extends Command
                     $updatedValidations = [];
 
                     foreach ($validations as $index => $validation) {
-                        // 检查是否有 auto_txt_written 标记
-                        if (! isset($validation['auto_txt_written']) || $validation['auto_txt_written'] !== true) {
+                        $delegationId = $this->positiveDelegationId($validation['delegation_id'] ?? null);
+                        if (($validation['auto_txt_written'] ?? false) !== true || $delegationId === null) {
                             $updatedValidations[$index] = $validation;
 
                             continue;
                         }
 
-                        $delegationId = $validation['delegation_id'] ?? null;
+                        $delegation = $delegationsById->get($delegationId);
+                        $proxyDomain = $delegation !== null
+                            ? $this->proxyDomainForValidation($delegation, $validation)
+                            : null;
+                        $label = $delegation !== null
+                            ? $this->normalizeLabel($delegation->label)
+                            : null;
+                        $deletedLabels = $proxyDomain !== null
+                            ? ($deletedLabelsByDomain[$proxyDomain] ?? null)
+                            : null;
 
-                        if (! $delegationId) {
+                        if ($delegation !== null
+                            && ($deletedLabels === null || ! isset($deletedLabels[$label]))) {
                             $updatedValidations[$index] = $validation;
 
                             continue;
                         }
 
-                        $label = $labelById->get($delegationId);
-
-                        // 委托记录不存在（孤儿标记），或 label 已被删除 → 清理标记
-                        if ($label === null || isset($deletedLabelSet[$label])) {
-                            unset($validation['auto_txt_written'], $validation['auto_txt_written_at'], $validation['delegation_id']);
-                            $updatedValidations[$index] = $validation;
-                            $hasChanges = true;
-                            $cleanedCount++;
-                        } else {
-                            $updatedValidations[$index] = $validation;
-                        }
+                        unset(
+                            $validation['auto_txt_written'],
+                            $validation['auto_txt_written_at'],
+                            $validation['delegation_id'],
+                        );
+                        $updatedValidations[$index] = $validation;
+                        $hasChanges = true;
+                        $cleanedCount++;
                     }
 
-                    // 保存更新后的 validation
                     if ($hasChanges) {
                         $cert->validation = $updatedValidations;
                         $cert->save();
@@ -225,5 +287,32 @@ class DelegationCleanupCommand extends Command
             });
 
         return $cleanedCount;
+    }
+
+    private function positiveDelegationId(mixed $delegationId): ?int
+    {
+        return is_int($delegationId) && $delegationId > 0 ? $delegationId : null;
+    }
+
+    private function normalizeLabel(mixed $label): string
+    {
+        return strtolower((string) $label);
+    }
+
+    /**
+     * 新数据以 validation 快照为准；旧数据没有快照时回落共享委托记录。
+     * 快照存在但无法解析时返回 null，由在途保留集失败关闭，历史标记则保持不动。
+     */
+    private function proxyDomainForValidation(CnameDelegation $delegation, array $validation): ?string
+    {
+        $target = $validation['delegation_target'] ?? null;
+        if ($target === null || $target === '') {
+            return $delegation->proxy_domain ?: null;
+        }
+        if (! is_string($target)) {
+            return null;
+        }
+
+        return app(CnameDelegationService::class)->proxyDomainFromTarget($delegation, $target);
     }
 }

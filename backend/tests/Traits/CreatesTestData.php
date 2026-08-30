@@ -7,7 +7,10 @@ use App\Models\CnameDelegation;
 use App\Models\Fund;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\User;
+use App\Services\Delegation\DelegationConfigService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -121,10 +124,53 @@ trait CreatesTestData
             'zone' => $zone,
             'prefix' => $prefix,
             'label' => substr(hash('sha256', "$user->id:$prefix.$zone"), 0, 32),
+            'proxy_domain' => 'proxy.example.com',
             'valid' => true,
             'fail_count' => 0,
             'last_error' => '',
         ], $overrides));
+    }
+
+    /**
+     * 建立可供真实委托创建链路读取的默认代理域配置。
+     */
+    protected function configureTestDelegationProxyDomain(string $domain = 'proxy.example.com'): void
+    {
+        $configService = app(DelegationConfigService::class);
+        $domain = $configService->normalizeDomain($domain);
+        $group = SettingGroup::firstOrCreate(
+            ['name' => 'delegation'],
+            ['title' => '委托设置', 'description' => null, 'weight' => 1],
+        );
+
+        Setting::updateOrCreate(
+            ['group_id' => $group->id, 'key' => 'defaultDomain'],
+            [
+                'type' => 'string',
+                'options' => null,
+                'is_multiple' => false,
+                'value' => $domain,
+                'description' => '默认代理域',
+                'weight' => 1,
+            ],
+        );
+        Setting::updateOrCreate(
+            ['group_id' => $group->id, 'key' => $configService->keyForDomain($domain)],
+            [
+                'type' => 'array',
+                'options' => null,
+                'is_multiple' => false,
+                'value' => [
+                    'domain' => $domain,
+                    'provider' => 'cloudflare',
+                    'apiToken' => 'test-token',
+                    'zoneId' => 'test-zone',
+                ],
+                'description' => '测试委托代理域',
+                'weight' => 2,
+            ],
+        );
+        Setting::clearGroupCache($group->id);
     }
 
     /**

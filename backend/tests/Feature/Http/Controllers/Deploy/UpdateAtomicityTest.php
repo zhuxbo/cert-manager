@@ -2,16 +2,19 @@
 
 use App\Exceptions\MutationBusyException;
 use App\Models\Cert;
+use App\Models\CnameDelegation;
 use App\Models\DeployToken;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Delegation\DnsResolver;
 use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
+use Tests\Traits\CreatesTestData;
 
 /**
  * O3（Deploy update 续费入口移植 V2 一条龙）守门测试 —— 真实 charge。
@@ -20,7 +23,21 @@ use Illuminate\Testing\TestResponse;
  * fundAuditGuardedTestPaths() → afterEach 跑资金 invariant。契约/行为回归用例留 OrderControllerTest.php。
  * 助手函数用 deployAtomic* 前缀避免与 OrderControllerTest 全局函数冲突。
  */
-uses(RefreshDatabase::class);
+uses(RefreshDatabase::class, CreatesTestData::class);
+
+beforeEach(function () {
+    $this->configureTestDelegationProxyDomain();
+
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('cnameRecords')->andReturnUsing(function (string $host): array {
+        $delegation = CnameDelegation::all()->first(
+            fn (CnameDelegation $item) => strtolower("$item->prefix.$item->zone") === strtolower($host),
+        );
+
+        return $delegation ? [$delegation->target_fqdn] : [];
+    });
+    app()->instance(DnsResolver::class, $resolver);
+});
 
 afterEach(function () {
     Mockery::close();

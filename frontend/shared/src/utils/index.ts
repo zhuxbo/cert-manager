@@ -61,3 +61,4 @@ export * from "./siteLogo";
 export * from "./favicon";
 export * from "./copyright";
 export * from "./brandOptions";
+export * from "./delegation";

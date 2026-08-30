@@ -1,0 +1,38 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DelegationControllerTest::__pest_evaluable_管理员手工创建已有委托时保留已检测域并保持_ID",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/delegation",
+            "request_keys": [
+                "ca",
+                "user_id",
+                "zone"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "user_id": "integer",
+                    "zone": "string",
+                    "prefix": "string",
+                    "label": "string",
+                    "proxy_domain": "string",
+                    "valid": "boolean",
+                    "last_checked_at": "null",
+                    "fail_count": "integer",
+                    "last_error": "string",
+                    "created_at": "string",
+                    "updated_at": "string",
+                    "target_fqdn": "string",
+                    "cname_to": {
+                        "host": "string",
+                        "value": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

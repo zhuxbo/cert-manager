@@ -82,6 +82,11 @@ class ApiController extends Controller
                 }
             }
             $item = $item->toArray();
+            if (isset($item['validation_methods'])) {
+                $item['validation_methods'] = array_values(
+                    array_diff($item['validation_methods'], ['delegation'])
+                );
+            }
             $item['periods'] = array_map('intval', $item['periods']);
             $item['cost'] = $cost;
             $data[] = $item;
@@ -100,6 +105,10 @@ class ApiController extends Controller
     public function new(): void
     {
         $params = $this->request->all();
+
+        if (($params['validation_method'] ?? '') === 'delegation') {
+            $this->error('API 不支持委托验证方法');
+        }
 
         $this->resolveReferId($params['refer_id'] ?? '');
 
@@ -153,6 +162,10 @@ class ApiController extends Controller
     {
         $params = $this->request->all();
 
+        if (($params['validation_method'] ?? '') === 'delegation') {
+            $this->error('API 不支持委托验证方法');
+        }
+
         $this->resolveReferId($params['refer_id'] ?? '');
 
         // 处理OID参数转换
@@ -198,6 +211,10 @@ class ApiController extends Controller
     public function reissue(): void
     {
         $params = $this->request->all();
+
+        if (($params['validation_method'] ?? '') === 'delegation') {
+            $this->error('API 不支持委托验证方法');
+        }
 
         $this->resolveReferId($params['refer_id'] ?? '');
 
@@ -499,8 +516,12 @@ class ApiController extends Controller
      */
     public function updateDCV(): void
     {
-        $order_id = $this->orderIdFromOid();
         $method = (string) $this->request->input('method');
+        if ($method === 'delegation') {
+            $this->error('API 不支持委托验证方法');
+        }
+
+        $order_id = $this->orderIdFromOid();
 
         $this->action->updateDCV($order_id, $method);
     }

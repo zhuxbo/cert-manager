@@ -1,7 +1,7 @@
 import { ref, h } from "vue";
 import dayjs from "dayjs";
 import { ElTag } from "element-plus";
-import { message } from "@shared/utils";
+import { formatDelegationCopyText, message } from "@shared/utils";
 import { DocumentCopy } from "@element-plus/icons-vue";
 import { parse, type ParsedDomain } from "psl";
 
@@ -31,9 +31,7 @@ export const useDelegationTable = () => {
       minWidth: 150,
       cellRenderer: ({ row }) => {
         const zone = row.zone;
-        const subdomain =
-          row.cname_to?.host?.replace(`.${row.zone}`, "") || row.prefix;
-        const copyText = `域名: ${zone}\n主机记录: ${subdomain}\n记录类型: CNAME\n记录值: ${row.target_fqdn || row.cname_to?.value || ""}`;
+        const copyText = formatDelegationCopyText(row);
         return (
           <div className="flex items-center gap-1">
             <span>{zone || "-"}</span>
@@ -84,6 +82,12 @@ export const useDelegationTable = () => {
           </div>
         );
       }
+    },
+    {
+      label: "代理域",
+      prop: "proxy_domain",
+      minWidth: 180,
+      cellRenderer: ({ row }) => <span>{row.proxy_domain || "-"}</span>
     },
     {
       label: "CNAME目标",

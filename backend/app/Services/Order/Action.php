@@ -211,19 +211,16 @@ class Action
         $later && $this->error('参数重复，请在 '.$later.' 秒后再提交申请');
 
         $params = $this->initParams($params);
-
         $orderData = $this->getOrder($params);
         $latestCert = $this->getCert($params);
-        $orderData['amount'] = $latestCert['amount'] = OrderUtil::getLatestCertAmount($orderData, $latestCert, $params['product']);
+        $orderData['amount'] = $latestCert['amount'] = OrderUtil::getLatestCertAmount(
+            $orderData,
+            $latestCert,
+            $params['product'],
+        );
 
-        // 内层事务 attempts 固定 1：本闭包经 AutoRenew O1 / V1V2 一条龙外层事务嵌套为 savepoint，
-        // 嵌套死锁不可事务级重试（同 commitLocked 先例——非 checkDuplicate，它在事务外）。
-        // 有意不套 order_mutate 互斥：事务内零上游调用（上游 commit 由事务外承载）、与 commit/cancel
-        // 状态互斥（renew 要求源证书 active，commit 要求 pending、cancel 要求 cancelling，同订单不可能同时满足），
-        // 源订单行锁 + affected-rows 守卫即保证正确性（极窄竞态下至多一方拿到 active，另一方被拒）。
         $orderId = null;
         DB::transaction(function () use ($params, $orderData, $latestCert, &$orderId) {
-            // renew：先锁源订单行，串行化毫秒级并发双开；plain new（无源订单）不锁、行为不变。
             if (($latestCert['action'] ?? '') === 'renew') {
                 $sourceOrder = Order::whereHas('latestCert')->lock()->find($params['order_id']);
                 $sourceOrder || $this->error('订单或相关数据不存在');
@@ -233,8 +230,6 @@ class Action
             $latestCert['order_id'] = $order->id;
 
             if (($latestCert['action'] ?? '') === 'renew') {
-                // 前驱翻转 CAS：保留 WHERE status='active' 取影响行数。命中 0 行 = 源证书已被并发
-                // 续费/重签/取消抢先翻走 → 重读源证书权威状态分三态 error 后回滚（此时 pay 尚未执行、扣费从未发生）。
                 $affected = Cert::where(['status' => 'active', 'order_id' => $params['order_id']])
                     ->update(['status' => 'renewed']);
 
@@ -251,7 +246,6 @@ class Action
 
             $cert = Cert::create($latestCert);
             $order->update(['latest_cert_id' => $cert->id]);
-
             $orderId = $order->id;
         }, 1);
 
@@ -275,32 +269,37 @@ class Action
         // （BinaryLocator singleton，与 initParams 内探测共享缓存、零重复 fork）
         $this->guardSm2Capable($params['encryption']['alg'] ?? null);
 
-        $orderIds = [];
-        DB::beginTransaction();
-        try {
-            foreach ($domains as $item) {
-                $params['domains'] = $item;
+        $preparedParams = [];
+        foreach ($domains as $item) {
+            $itemParams = $params;
+            $itemParams['domains'] = $item;
+            $preparedParams[] = $this->initParams($itemParams);
+        }
 
-                $params = $this->initParams($params);
+        $rows = [];
+        foreach ($preparedParams as $itemParams) {
+            $orderData = $this->getOrder($itemParams);
+            $latestCert = $this->getCert($itemParams);
+            $orderData['amount'] = $latestCert['amount'] = OrderUtil::getLatestCertAmount(
+                $orderData,
+                $latestCert,
+                $itemParams['product'],
+            );
+            $rows[] = [$orderData, $latestCert];
+        }
 
-                $orderData = $this->getOrder($params);
-                $latestCert = $this->getCert($params);
-
-                $orderData['amount'] = $latestCert['amount'] = OrderUtil::getLatestCertAmount($orderData, $latestCert, $params['product']);
-
+        $orderIds = DB::transaction(function () use ($rows): array {
+            $orderIds = [];
+            foreach ($rows as [$orderData, $latestCert]) {
                 $order = Order::create($orderData);
                 $latestCert['order_id'] = $order->id;
-
                 $cert = Cert::create($latestCert);
                 $order->update(['latest_cert_id' => $cert->id]);
-
                 $orderIds[] = $order->id;
             }
-            DB::commit();
-        } catch (Throwable $e) {
-            DB::rollback();
-            throw $e;
-        }
+
+            return $orderIds;
+        }, 1);
 
         $this->success(['order_ids' => $orderIds]);
     }
@@ -330,16 +329,12 @@ class Action
 
         $params = $this->initParams($params);
 
-        // 锁前只读：amount 预检 + 产品禁用校验（位置不变）。organization 覆盖捕获后带入锁内持久化，
-        // 不写回本无锁 $order（避免 stale 写）。
         $order = Order::find($params['order_id']);
         $order->organization = $params['organization'] ?? $order->organization;
         $organization = $order->organization;
         $latestCert = $this->getCert($params);
-
         $amount = OrderUtil::getLatestCertAmount($order->toArray(), $latestCert, $params['product']);
 
-        // 产品禁用后 重签不能增加域名个数
         if (bccomp($amount, '0', 2) === 1) {
             $product = FindUtil::Product((int) $order->product_id);
             if ($product->status == 0) {
@@ -347,23 +342,15 @@ class Action
             }
         }
 
-        // 内层事务 attempts 固定 1：本闭包经 AutoRenew O1 / V1V2 一条龙外层事务嵌套为 savepoint，
-        // 嵌套死锁不可事务级重试（同 commitLocked 先例——非 checkDuplicate，它在事务外）。
-        // 有意不套 order_mutate 互斥：事务内零上游调用、与 commit/cancel 状态互斥（reissue 要求源证书
-        // active/expired），本订单行锁 + affected-rows 守卫即够；reissue 源=本订单，与取消路径先锁同一 order 行天然串行。
         $orderId = null;
         DB::transaction(function () use ($params, $latestCert, $amount, $organization, &$orderId) {
-            // 锁本订单行
             $order = Order::whereHas('latestCert')->lock()->find($params['order_id']);
             $order || $this->error('订单或相关数据不存在');
 
-            // 锁内重读 latest_cert_id，与 initParams 捕获的基线 last_cert_id 比对：不等 = 并发 reissue 已推进接替，拒绝
             if ((int) $order->latest_cert_id !== (int) ($params['last_cert_id'] ?? 0)) {
                 $this->error('订单已重签');
             }
 
-            // 前驱翻转 CAS：WHERE id=前驱 AND status IN('active','expired') 取影响行数。命中 0 行 = 被并发抢先 →
-            // 重读前驱权威状态分三态 error 后回滚（此时 pay 尚未执行、扣费从未发生）。
             $affected = Cert::where('id', $params['last_cert_id'] ?? 0)
                 ->whereIn('status', ['active', 'expired'])
                 ->update(['status' => 'reissued']);
@@ -382,19 +369,10 @@ class Action
             $latestCert['order_id'] = $order->id;
             $latestCert['amount'] = $amount;
             $latestCert['status'] = 'unpaid';
-
-            // certs.last_cert_id UNIQUE 是物理底线：双开第二个 INSERT（last_cert_id 撞已占槽位）触 1062 回滚
             $cert = Cert::create($latestCert);
             $order->latest_cert_id = $cert->id;
             $order->save();
-
-            // 删除旧的域名验证记录：reissue 复用同一 order_id，旧记录 created_at 为原签发时间，
-            // 会让 ValidateCommand 的验证节奏（以 created_at 为锚）直接落 12 小时档。删除后
-            // ValidateCommand 在新 cert 进 processing 时重建 created_at=now 的记录，恢复快档。
-            // 落服务层单点覆盖 HTTP/API/Deploy/auto-reissue 全入口，与 OrderController::revalidate/updateDCV
-            // 的重置语义对称；事务内删除，reissue 失败 rollback 一并回滚，无孤儿。
             DomainValidationRecord::where('order_id', $order->id)->delete();
-
             $orderId = $order->id;
         }, 1);
 
@@ -1012,19 +990,36 @@ class Action
         // 验证域名和验证方法的兼容性
         $this->validateDomainValidationCompatibility($cert->alternative_names, $method);
 
+        $result = null;
         if (in_array($cert->status, ['unpaid', 'pending'])) {
-            $cert->dcv = $this->generateDcv($order->product->ca, $method, $cert->csr, $cert->unique_value ?? '');
-            $cert->validation = $this->generateValidation($cert->dcv, $cert->alternative_names, $order->user_id);
+            $cert->dcv = $this->generateDcv(
+                $order->product->ca,
+                $method,
+                $cert->csr,
+                $cert->unique_value ?? '',
+            );
+            $cert->validation = $this->generateValidation(
+                $cert->dcv,
+                $cert->alternative_names,
+                $order->user_id,
+                true,
+            );
         } elseif ($cert->status === 'processing') {
-            // 如果从 delegation 切换到其他方法，需要重新生成本地 dcv（会更新 is_delegate）
-            $newDcv = $this->generateDcv($order->product->ca, $method, $cert->csr, $cert->unique_value ?? '');
-            // 传递给上游 API 的方法应该是 txt 而不是 delegation（上游不认识 delegation）
+            $newDcv = $this->generateDcv(
+                $order->product->ca,
+                $method,
+                $cert->csr,
+                $cert->unique_value ?? '',
+            );
             $apiMethod = $method === 'delegation' ? 'txt' : $method;
             $result = $this->api->updateDCV($orderId, $apiMethod);
-            // 使用新生成的 dcv（包含正确的 is_delegate 标记），然后合并 API 返回的 dns/file 信息
             $cert->dcv = $this->mergeDcv($result['data']['dcv'] ?? null, $newDcv);
-            // 优先使用 API 返回的 validation（多域名场景每个域名有独立 token），合并本地委托字段
-            $localValidation = $this->generateValidation($cert->dcv, $cert->alternative_names, $order->user_id) ?? [];
+            $localValidation = $this->generateValidation(
+                $cert->dcv,
+                $cert->alternative_names,
+                $order->user_id,
+                true,
+            ) ?? [];
             $cert->validation = isset($result['data']['validation'])
                 ? $this->mergeValidation($result['data']['validation'], $localValidation)
                 : $localValidation;

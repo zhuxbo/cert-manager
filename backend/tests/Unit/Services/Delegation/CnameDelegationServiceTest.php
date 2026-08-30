@@ -1,7 +1,10 @@
 <?php
 
 use App\Models\CnameDelegation;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Services\Delegation\CnameDelegationService;
+use App\Services\Delegation\DelegationConfigService;
 use App\Services\Delegation\DnsResolver;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -12,10 +15,51 @@ use Tests\Traits\CreatesTestData;
 
 uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
+function configureCnameDelegationProxyDomain(string $domain): void
+{
+    $configService = app(DelegationConfigService::class);
+    $domain = $configService->normalizeDomain($domain);
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'delegation'],
+        ['title' => '委托设置', 'description' => null, 'weight' => 1],
+    );
+
+    Setting::firstOrCreate(
+        ['group_id' => $group->id, 'key' => 'defaultDomain'],
+        [
+            'type' => 'string',
+            'options' => null,
+            'is_multiple' => false,
+            'value' => '',
+            'description' => '默认代理域',
+            'weight' => 1,
+        ],
+    );
+
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => $configService->keyForDomain($domain)],
+        [
+            'type' => 'array',
+            'options' => null,
+            'is_multiple' => false,
+            'value' => [
+                'domain' => $domain,
+                'provider' => 'cloudflare',
+                'apiToken' => 'test-token',
+                'zoneId' => 'test-zone',
+            ],
+            'description' => '测试委托代理域',
+            'weight' => 2,
+        ],
+    );
+    Setting::setValue('delegation', 'defaultDomain', $domain);
+}
+
 beforeEach(function () {
     $this->seed = true;
     $this->seeder = DatabaseSeeder::class;
     $this->service = new CnameDelegationService;
+    configureCnameDelegationProxyDomain('proxy.example.com');
 });
 
 /**
@@ -41,9 +85,38 @@ test('create or get creates new delegation', function () {
     expect($delegation->user_id)->toBe($user->id);
     expect($delegation->zone)->toBe('example.com');
     expect($delegation->prefix)->toBe('_dnsauth');
+    expect($delegation->proxy_domain)->toBe('proxy.example.com');
     expect($delegation->label)->not->toBeEmpty();
     expect(strlen($delegation->label))->toBe(32);
     expect($delegation->valid)->toBeFalse();
+});
+
+test('automatic create or get keeps the existing proxy domain after default switches', function () {
+    $user = $this->createTestUser();
+    $existing = $this->service->createOrGet($user->id, 'example.com', '_dnsauth');
+
+    configureCnameDelegationProxyDomain('new.example.net');
+
+    $current = $this->service->createOrGet($user->id, 'example.com', '_dnsauth');
+
+    expect($current->id)->toBe($existing->id)
+        ->and($current->proxy_domain)->toBe('proxy.example.com');
+});
+
+test('create or get rejects a missing default proxy domain', function () {
+    $user = $this->createTestUser();
+    Setting::setValue('delegation', 'defaultDomain', '');
+
+    expect(fn () => $this->service->createOrGet($user->id, 'example.com', '_dnsauth'))
+        ->toThrow(RuntimeException::class, '默认委托代理域未配置或配置无效');
+});
+
+test('create or get rejects an unconfigured default proxy domain', function () {
+    $user = $this->createTestUser();
+    Setting::setValue('delegation', 'defaultDomain', 'missing.example.com');
+
+    expect(fn () => $this->service->createOrGet($user->id, 'example.com', '_dnsauth'))
+        ->toThrow(RuntimeException::class, '默认委托代理域未配置或配置无效');
 });
 
 test('create or get returns existing delegation', function () {
@@ -343,6 +416,59 @@ test('check and update validity unreachable 冻结 fail_count（不误计数）'
         ->and($delegation->last_checked_at)->not->toBeNull(); // 仅留痕
 });
 
+test('check and update validity falls back from default to another complete delegation domain', function () {
+    configureCnameDelegationProxyDomain('old.example.net');
+    Setting::setValue('delegation', 'defaultDomain', 'proxy.example.com');
+
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_dnsauth',
+        'proxy_domain' => 'proxy.example.com',
+        'valid' => false,
+    ]);
+
+    Cache::put('setting:group_name:site', [], 3600);
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('cnameRecords')
+        ->andReturn([$delegation->label.'.old.example.net']);
+    app()->instance(DnsResolver::class, $resolver);
+
+    expect($this->service->checkAndUpdateValidity($delegation))->toBeTrue();
+
+    $delegation->refresh();
+    expect($delegation->proxy_domain)->toBe('old.example.net')
+        ->and($delegation->valid)->toBeTrue();
+});
+
+test('check and update validity prefers the complete default domain when multiple targets resolve', function () {
+    configureCnameDelegationProxyDomain('old.example.net');
+    Setting::setValue('delegation', 'defaultDomain', 'proxy.example.com');
+
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_dnsauth',
+        'proxy_domain' => 'old.example.net',
+        'valid' => true,
+    ]);
+
+    Cache::put('setting:group_name:site', [], 3600);
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('cnameRecords')
+        ->andReturn([
+            $delegation->label.'.old.example.net',
+            $delegation->label.'.proxy.example.com',
+        ]);
+    app()->instance(DnsResolver::class, $resolver);
+
+    expect($this->service->checkAndUpdateValidity($delegation))->toBeTrue();
+
+    $delegation->refresh();
+    expect($delegation->proxy_domain)->toBe('proxy.example.com')
+        ->and($delegation->valid)->toBeTrue();
+});
+
 // ==================== applyProbeOutcome（三态落库直测）====================
 
 test('apply probe outcome valid → valid=true + 归零 + 清 last_error', function () {
@@ -424,14 +550,14 @@ test('with cname guide', function () {
     $delegation = $this->createTestDelegation($user, [
         'zone' => 'example.com',
         'prefix' => '_dnsauth',
+        'proxy_domain' => 'proxy.example.com',
     ]);
 
     $result = $this->service->withCnameGuide($delegation);
 
     expect($result)->toHaveKey('cname_to');
     expect($result['cname_to']['host'])->toBe('_dnsauth.example.com');
-    // value 依赖系统设置 delegation.proxyZone，可能为空
-    expect($result['cname_to'])->toHaveKey('value');
+    expect($result['cname_to']['value'])->toBe("{$delegation->label}.proxy.example.com");
 });
 
 // ==================== update ====================

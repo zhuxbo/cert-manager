@@ -9,6 +9,7 @@ use App\Http\Requests\Setting\UpdateRequest;
 use App\Http\Requests\Setting\UploadSiteImageRequest;
 use App\Models\Setting;
 use App\Models\SettingGroup;
+use App\Services\Delegation\DelegationDomainRetirementService;
 use App\Services\Payment\PayConfigCache;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
@@ -17,8 +18,9 @@ use Throwable;
 
 class SettingController extends BaseController
 {
-    public function __construct()
-    {
+    public function __construct(
+        private readonly DelegationDomainRetirementService $domainRetirement,
+    ) {
         parent::__construct();
     }
 
@@ -111,6 +113,7 @@ class SettingController extends BaseController
             $this->error('设置数据不能为空');
         }
 
+        $updates = [];
         foreach ($settings as $settingData) {
             if (! isset($settingData['id']) || ! isset($settingData['value'])) {
                 continue;
@@ -121,8 +124,15 @@ class SettingController extends BaseController
                 continue;
             }
 
+            $this->domainRetirement->assertUpdatePreservesIdentity($setting, [
+                'value' => $settingData['value'],
+            ]);
+            $updates[] = [$setting, $settingData['value']];
+        }
+
+        foreach ($updates as [$setting, $value]) {
             // 只更新值字段
-            $setting->value = $settingData['value'];
+            $setting->value = $value;
             $setting->save();
         }
 
@@ -139,7 +149,9 @@ class SettingController extends BaseController
             $this->error('设置不存在');
         }
 
-        $setting->fill($request->validated());
+        $attributes = $request->validated();
+        $this->domainRetirement->assertUpdatePreservesIdentity($setting, $attributes);
+        $setting->fill($attributes);
         $setting->save();
 
         $this->success();
@@ -155,7 +167,7 @@ class SettingController extends BaseController
             $this->error('设置不存在');
         }
 
-        $setting->delete();
+        $this->domainRetirement->retire($setting);
         $this->success();
     }
 
@@ -171,7 +183,7 @@ class SettingController extends BaseController
             $this->error('设置不存在');
         }
 
-        Setting::destroy($ids);
+        $this->domainRetirement->retireMany($settings);
         $this->success();
     }
 

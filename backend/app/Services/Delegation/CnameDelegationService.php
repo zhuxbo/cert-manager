@@ -11,6 +11,7 @@ use App\Traits\ApiResponse;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -21,6 +22,13 @@ class CnameDelegationService
 {
     use ApiResponse;
 
+    private DelegationConfigService $configService;
+
+    public function __construct(?DelegationConfigService $configService = null)
+    {
+        $this->configService = $configService ?? app(DelegationConfigService::class);
+    }
+
     /**
      * 创建或获取委托记录
      *
@@ -28,8 +36,11 @@ class CnameDelegationService
      * @param  string  $zone  委托域（可能是根域或子域）
      * @param  string  $prefix  委托前缀
      */
-    public function createOrGet(int $userId, string $zone, string $prefix): CnameDelegation
-    {
+    public function createOrGet(
+        int $userId,
+        string $zone,
+        string $prefix,
+    ): CnameDelegation {
         // 规范化域名：转换为小写Unicode
         $zone = strtolower(DomainUtil::convertToUnicode($zone));
 
@@ -44,24 +55,58 @@ class CnameDelegationService
             return $delegation;
         }
 
-        // 生成 label（包含用户ID以确保唯一性）
+        $proxyDomain = $this->defaultProxyDomain();
+
         $delegatedFqdn = "$prefix.$zone";
         $label = $this->generateLabel($userId, $delegatedFqdn);
-
-        // 创建新记录
         $delegation = new CnameDelegation([
             'user_id' => $userId,
             'zone' => $zone,
             'prefix' => $prefix,
             'label' => $label,
+            'proxy_domain' => $proxyDomain,
             'valid' => false,
             'fail_count' => 0,
             'last_error' => '',
         ]);
-
         $delegation->save();
 
         return $delegation;
+    }
+
+    public function defaultProxyDomain(): string
+    {
+        $proxyDomain = $this->configService->defaultDomain();
+        if ($proxyDomain === '' || $this->configService->get($proxyDomain) === []) {
+            throw new RuntimeException('默认委托代理域未配置或配置无效');
+        }
+
+        return $proxyDomain;
+    }
+
+    public function targetForProxyDomain(CnameDelegation $delegation, string $proxyDomain): string
+    {
+        return $delegation->label.'.'.$this->configService->normalizeDomain($proxyDomain);
+    }
+
+    public function proxyDomainFromTarget(CnameDelegation $delegation, string $target): ?string
+    {
+        try {
+            $target = $this->configService->normalizeDomain($target);
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
+
+        $prefix = strtolower($delegation->label).'.';
+        if (! str_starts_with($target, $prefix)) {
+            return null;
+        }
+
+        $proxyDomain = substr($target, strlen($prefix));
+
+        return $proxyDomain !== '' && $this->configService->get($proxyDomain) !== []
+            ? $proxyDomain
+            : null;
     }
 
     /**
@@ -191,11 +236,7 @@ class CnameDelegationService
     /** 无效委托的固定失败原因（用户友好、不含原始异常/SQL 回显）。 */
     public const INVALID_LAST_ERROR = 'CNAME记录不匹配或未配置';
 
-    /**
-     * fail_count 硬截断上限：超过没有累加意义，且避免 TINYINT UNSIGNED 溢出。
-     * 单一来源供三处 +1 自增共用（applyProbeOutcome PHP 侧 / applyProbeOutcomeIfUnchanged DB 侧
-     * LEAST / DelegationCheckCommand post-apply gate），消除上限魔数多处裸写漂移。
-     */
+    /** fail_count 硬截断上限，避免 TINYINT UNSIGNED 溢出。 */
     public const FAIL_COUNT_MAX = 100;
 
     /**
@@ -206,16 +247,15 @@ class CnameDelegationService
      * - `invalid`：拿到权威答案但无记录/不匹配（确认无效）；
      * - `unreachable`：全渠道失败/解析器不可达（无任何权威答案），或探测本身抛异常。
      *
-     * 探测异常一律归 `unreachable`（冻结计数、计入熔断分母），绝不再当作 invalid 误累加
-     * fail_count——dnsTools 停摆时这是防误报/误删的第一道分档。
+     * 探测异常一律归 `unreachable`，不当作 invalid 累加 fail_count。
      *
      * @return string valid|invalid|unreachable
      */
-    public function probeValidity(CnameDelegation $delegation): string
+    private function probeProxyDomain(CnameDelegation $delegation, string $proxyDomain): string
     {
         // DNS 查询需要 Punycode 格式
         $host = DomainUtil::convertToAscii("$delegation->prefix.$delegation->zone");
-        $expectedTarget = $delegation->target_fqdn;
+        $expectedTarget = $this->targetForProxyDomain($delegation, $proxyDomain);
 
         try {
             $result = VerifyUtil::verifyCnameDelegationDetailed($host, $expectedTarget);
@@ -238,6 +278,48 @@ class CnameDelegationService
     }
 
     /**
+     * 按“完整默认域优先，其余完整配置随后”的顺序检测实际 CNAME 目标。
+     *
+     * @return array{outcome: string, proxy_domain: string|null}
+     */
+    public function probeConfiguredDomains(CnameDelegation $delegation): array
+    {
+        $configs = $this->configService->all();
+        $defaultDomain = $this->configService->defaultDomain();
+        $domains = [];
+
+        if ($defaultDomain !== '' && isset($configs[$defaultDomain])) {
+            $domains[] = $defaultDomain;
+        }
+        foreach (array_keys($configs) as $domain) {
+            if ($domain !== $defaultDomain) {
+                $domains[] = $domain;
+            }
+        }
+
+        $authoritative = false;
+        foreach ($domains as $domain) {
+            $outcome = $this->probeProxyDomain($delegation, $domain);
+            if ($outcome === 'valid') {
+                return ['outcome' => 'valid', 'proxy_domain' => $domain];
+            }
+            if ($outcome === 'invalid') {
+                $authoritative = true;
+            }
+        }
+
+        return [
+            'outcome' => $authoritative ? 'invalid' : 'unreachable',
+            'proxy_domain' => null,
+        ];
+    }
+
+    public function probeValidity(CnameDelegation $delegation): string
+    {
+        return $this->probeConfiguredDomains($delegation)['outcome'];
+    }
+
+    /**
      * 按三态探测结论落库。
      *
      * - `valid`：valid=true + 归零 fail_count + 清 last_error；
@@ -247,12 +329,18 @@ class CnameDelegationService
      * @param  string  $outcome  probeValidity 的返回值
      * @return bool 是否有效（valid=true 时返回 true，其余 false，与历史 fail-safe 一致）
      */
-    public function applyProbeOutcome(CnameDelegation $delegation, string $outcome): bool
-    {
+    public function applyProbeOutcome(
+        CnameDelegation $delegation,
+        string $outcome,
+        ?string $proxyDomain = null,
+    ): bool {
         $delegation->last_checked_at = now();
 
         switch ($outcome) {
             case 'valid':
+                if ($proxyDomain !== null) {
+                    $delegation->proxy_domain = $proxyDomain;
+                }
                 $delegation->valid = true;
                 $delegation->fail_count = 0;
                 $delegation->last_error = '';
@@ -289,27 +377,23 @@ class CnameDelegationService
     }
 
     /**
-     * 周巡检专用：带 TOCTOU CAS 守卫的探测结论落库（阶段①快照 → 阶段②条件写）。
+     * 周巡检按探测前的 last_checked_at 做单字段 CAS；期间已有更新或记录已删时丢弃陈旧结果。
      *
-     * 巡检两阶段间隔可达数十分钟（invalid 每条打满全部节点），窗口内 ValidateCommand（每分钟）/
-     * 双端手动检查/AutoRenew 可能已写入更新鲜结论。落库为单条原子条件 UPDATE：
-     * `WHERE id = ? AND last_checked_at <=> ?`（NULL-safe 等值，MySQL 5.7/8.x 均支持）——
-     * 行被并发更新（时间戳前移）或已删除时 affected=0、本条陈旧结论作废；invalid 的
-     * fail_count 用 DB 侧 `LEAST(fail_count + 1, 100)` 自增，同时消除多写者 lost update。
-     * 方法内绝不读行现值做判断（读-写窗口正是要消除的对象）。
-     *
-     * CAS 基准可靠性：last_checked_at 前移的全局唯一写点是 applyProbeOutcome（三态均写
-     * now()、每次真实探测后），故「时间戳变化 ⟺ 有过一次新探测落库」成立，跳过恒安全。
-     *
-     * @param  int  $delegationId  委托 ID
-     * @param  string  $outcome  probeValidity 的返回值（valid|invalid|unreachable）
-     * @param  CarbonInterface|null  $expectedLastCheckedAt  阶段①探测前加载的 last_checked_at 快照（勿传落库前重读的现值，否则 CAS 恒命中、守卫虚设）
-     * @return bool 是否实际落库；false=行已被并发更新/删除，调用方应跳过该条的清理 gate
+     * @return bool 是否实际落库
      */
-    public function applyProbeOutcomeIfUnchanged(int $delegationId, string $outcome, ?CarbonInterface $expectedLastCheckedAt): bool
-    {
+    public function applyProbeOutcomeIfUnchanged(
+        int $delegationId,
+        string $outcome,
+        ?CarbonInterface $expectedLastCheckedAt,
+        ?string $proxyDomain = null,
+    ): bool {
         $attributes = match ($outcome) {
-            'valid' => ['valid' => true, 'fail_count' => 0, 'last_error' => ''],
+            'valid' => array_filter([
+                'proxy_domain' => $proxyDomain,
+                'valid' => true,
+                'fail_count' => 0,
+                'last_error' => '',
+            ], fn (mixed $value) => $value !== null),
             'invalid' => [
                 'valid' => false,
                 // 硬截断（见 FAIL_COUNT_MAX）：与 applyProbeOutcome 同语义，DB 侧原子自增免 lost update
@@ -353,7 +437,13 @@ class CnameDelegationService
      */
     public function checkAndUpdateValidity(CnameDelegation $delegation): bool
     {
-        return $this->applyProbeOutcome($delegation, $this->probeValidity($delegation));
+        $result = $this->probeConfiguredDomains($delegation);
+
+        return $this->applyProbeOutcome(
+            $delegation,
+            $result['outcome'],
+            $result['proxy_domain'],
+        );
     }
 
     /**

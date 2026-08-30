@@ -68,16 +68,25 @@ test('last_checked_at 为日期时间 cast', function () {
     expect($delegation->last_checked_at)->toBeInstanceOf(Carbon::class);
 });
 
-test('target_fqdn 由 label 和 proxy_zone 组合', function () {
+test('target_fqdn 由 label 和冻结的 proxy_domain 组合', function () {
     $user = User::factory()->create();
     $delegation = CnameDelegation::factory()->create([
         'user_id' => $user->id,
         'label' => 'test_label_12345678',
+        'proxy_domain' => 'proxy.example.com',
     ]);
 
-    // target_fqdn 依赖系统设置中的 proxyZone
-    // 如果没设置则为空字符串
-    expect($delegation->target_fqdn)->toBeString();
+    expect($delegation->proxy_domain)->toBe('proxy.example.com')
+        ->and($delegation->target_fqdn)->toBe('test_label_12345678.proxy.example.com');
+});
+
+test('委托数组只暴露 proxy_domain', function () {
+    $delegation = CnameDelegation::factory()->create([
+        'proxy_domain' => 'proxy.example.com',
+    ]);
+
+    expect($delegation->toArray())->toHaveKey('proxy_domain')
+        ->and($delegation->toArray())->not->toHaveKey('proxy_zone');
 });
 
 test('fillable 字段可批量赋值', function () {

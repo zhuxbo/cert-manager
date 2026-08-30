@@ -31,6 +31,8 @@ afterEach(function () {
 });
 
 beforeEach(function () {
+    $this->configureTestDelegationProxyDomain();
+
     // 延时 commit task 不真正执行（否则同步驱动会触发上游 commit）；同时便于断言其入队
     Queue::fake();
 

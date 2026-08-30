@@ -80,7 +80,12 @@ class SettingGroupController extends BaseController
             $this->error('设置组不存在');
         }
 
-        $group->fill($request->validated());
+        $validated = $request->validated();
+        if ($group->name === 'delegation' && $validated['name'] !== 'delegation') {
+            $this->error('核心 delegation 设置组不能改名');
+        }
+
+        $group->fill($validated);
         $group->save();
 
         $this->success();
@@ -94,6 +99,10 @@ class SettingGroupController extends BaseController
         $group = SettingGroup::find($id);
         if (! $group) {
             $this->error('设置组不存在');
+        }
+
+        if ($group->name === 'delegation') {
+            $this->error('核心 delegation 设置组不能删除');
         }
 
         // 删除设置组时将级联删除关联的设置项
@@ -111,6 +120,10 @@ class SettingGroupController extends BaseController
         $groups = SettingGroup::whereIn('id', $ids)->get();
         if ($groups->isEmpty()) {
             $this->error('设置组不存在');
+        }
+
+        if ($groups->contains(fn (SettingGroup $group) => $group->name === 'delegation')) {
+            $this->error('核心 delegation 设置组不能删除');
         }
 
         // 删除设置组时将级联删除关联的设置项

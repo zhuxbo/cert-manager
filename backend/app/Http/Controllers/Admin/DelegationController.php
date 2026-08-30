@@ -99,7 +99,7 @@ class DelegationController extends BaseController
             $delegation = $this->delegationService->createOrGet(
                 $validated['user_id'],
                 $zone,
-                $prefix
+                $prefix,
             );
 
             $data = $this->delegationService->withCnameGuide($delegation);
@@ -240,7 +240,7 @@ class DelegationController extends BaseController
                 $delegation = $this->delegationService->createOrGet(
                     $validated['user_id'],
                     $resolvedZone,
-                    $prefix
+                    $prefix,
                 );
                 $created[] = $this->delegationService->withCnameGuide($delegation);
             } catch (Throwable $e) {

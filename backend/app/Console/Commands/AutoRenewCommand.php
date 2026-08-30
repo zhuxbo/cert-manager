@@ -217,7 +217,12 @@ class AutoRenewCommand extends Command
 
         // 检查委托有效性，无有效委托则跳过（同样发失败通知，纳入节点 gate）
         $ca = strtolower($product->ca ?? '');
-        if (! $this->checkDelegationValidity($user->id, $cert->alternative_names, $ca)) {
+        if (! $this->checkDelegationValidity(
+            $user->id,
+            $cert->alternative_names,
+            $ca,
+            is_array($cert->validation) ? $cert->validation : [],
+        )) {
             $this->warn("订单 #{$order->id} 跳过：无有效委托记录");
             $this->sendFailureNotification($order, $action, '部分域名 CNAME 委托未配置或验证未通过，已跳过');
 
@@ -459,8 +464,17 @@ class AutoRenewCommand extends Command
     /**
      * 检查所有域名是否都有有效委托记录（即时验证）
      */
-    private function checkDelegationValidity(int $userId, string $domains, string $ca): bool
-    {
-        return app(AutoRenewService::class)->checkDelegationValidity($userId, $domains, $ca);
+    private function checkDelegationValidity(
+        int $userId,
+        string $domains,
+        string $ca,
+        array $sourceValidation,
+    ): bool {
+        return app(AutoRenewService::class)->checkDelegationValidity(
+            $userId,
+            $domains,
+            $ca,
+            $sourceValidation,
+        );
     }
 }

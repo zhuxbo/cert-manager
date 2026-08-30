@@ -2,17 +2,60 @@
 
 use App\Models\Admin;
 use App\Models\CnameDelegation;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\User;
 use App\Services\Delegation\CnameDelegationService;
+use App\Services\Delegation\DelegationConfigService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Traits\ActsAsAdmin;
 
 uses(ActsAsAdmin::class);
 uses(RefreshDatabase::class);
 
+function configureAdminDelegationProxyDomain(): void
+{
+    $configService = app(DelegationConfigService::class);
+    $domain = 'proxy.example.com';
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'delegation'],
+        ['title' => '委托设置', 'description' => null, 'weight' => 1],
+    );
+
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => 'defaultDomain'],
+        [
+            'type' => 'string',
+            'options' => null,
+            'is_multiple' => false,
+            'value' => $domain,
+            'description' => '默认代理域',
+            'weight' => 1,
+        ],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => $configService->keyForDomain($domain)],
+        [
+            'type' => 'array',
+            'options' => null,
+            'is_multiple' => false,
+            'value' => [
+                'domain' => $domain,
+                'provider' => 'cloudflare',
+                'apiToken' => 'test-token',
+                'zoneId' => 'test-zone',
+            ],
+            'description' => '测试委托代理域',
+            'weight' => 2,
+        ],
+    );
+    Setting::setValue('delegation', 'defaultDomain', $domain);
+}
+
 beforeEach(function () {
     $this->admin = Admin::factory()->create();
     $this->user = User::factory()->create();
+    configureAdminDelegationProxyDomain();
 });
 
 test('管理员可以获取委托列表', function () {
@@ -63,6 +106,21 @@ test('管理员可以查看委托详情', function () {
     $response->assertOk()->assertJson(['code' => 1]);
 });
 
+test('管理员委托响应只暴露 proxy_domain', function () {
+    $delegation = CnameDelegation::factory()->create([
+        'user_id' => $this->user->id,
+        'proxy_domain' => 'proxy.example.com',
+    ]);
+
+    $data = $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/delegation/$delegation->id")
+        ->assertOk()
+        ->json('data');
+
+    expect($data)->toHaveKey('proxy_domain', 'proxy.example.com')
+        ->not->toHaveKey('proxy_zone');
+});
+
 test('查看不存在的委托返回错误', function () {
     $response = $this->actingAsAdmin($this->admin)->getJson('/api/admin/delegation/99999');
 
@@ -84,6 +142,28 @@ test('管理员可以创建委托', function () {
         'zone' => 'test.com',
         'prefix' => '_dnsauth',
     ])->exists())->toBeTrue();
+});
+
+test('管理员手工创建已有委托时保留已检测域并保持 ID', function () {
+    $existing = CnameDelegation::factory()->create([
+        'user_id' => $this->user->id,
+        'zone' => 'test.com',
+        'prefix' => '_dnsauth',
+        'proxy_domain' => 'old-proxy.example.com',
+    ]);
+
+    $this->actingAsAdmin($this->admin)->postJson('/api/admin/delegation', [
+        'user_id' => $this->user->id,
+        'zone' => 'test.com',
+        'ca' => 'digicert',
+    ])->assertOk()->assertJson(['code' => 1]);
+
+    expect($existing->fresh()->proxy_domain)->toBe('old-proxy.example.com')
+        ->and(CnameDelegation::withoutGlobalScopes()->where([
+            'user_id' => $this->user->id,
+            'zone' => 'test.com',
+            'prefix' => '_dnsauth',
+        ])->count())->toBe(1);
 });
 
 test('管理员创建委托按 ca 派生 prefix 与 zone', function () {

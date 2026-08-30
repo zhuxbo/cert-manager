@@ -39,7 +39,10 @@ test('创建委托', function () {
     $delegation = CnameDelegation::factory()->create(['user_id' => $user->id]);
     // 控制器按 ca 选择：resolveZone 派生 zone、createOrGet 收 prefix
     $mockService->shouldReceive('resolveZone')->once()->andReturn('example.com');
-    $mockService->shouldReceive('createOrGet')->once()->andReturn($delegation);
+    $mockService->shouldReceive('createOrGet')
+        ->once()
+        ->with($user->id, 'example.com', '_dnsauth')
+        ->andReturn($delegation);
     $mockService->shouldReceive('withCnameGuide')->once()->andReturn($delegation->toArray());
     app()->instance(CnameDelegationService::class, $mockService);
 
@@ -60,6 +63,22 @@ test('获取委托详情', function () {
         ->getJson("/api/delegation/$delegation->id")
         ->assertOk()
         ->assertJson(['code' => 1]);
+});
+
+test('用户委托响应只暴露 proxy_domain', function () {
+    $user = User::factory()->create();
+    $delegation = CnameDelegation::factory()->create([
+        'user_id' => $user->id,
+        'proxy_domain' => 'proxy.example.com',
+    ]);
+
+    $data = $this->actingAsUser($user)
+        ->getJson("/api/delegation/$delegation->id")
+        ->assertOk()
+        ->json('data');
+
+    expect($data)->toHaveKey('proxy_domain', 'proxy.example.com')
+        ->not->toHaveKey('proxy_zone');
 });
 
 test('获取委托详情-不存在', function () {
@@ -90,8 +109,11 @@ test('批量创建委托', function () {
     $delegation = CnameDelegation::factory()->create(['user_id' => $user->id]);
     // 控制器按 ca 选择：resolveZone 派生每个 zone、createOrGet 收 prefix
     $mockService->shouldReceive('resolveZone')->andReturn('example.com');
-    $mockService->shouldReceive('createOrGet')->andReturn($delegation);
-    $mockService->shouldReceive('withCnameGuide')->andReturn($delegation->toArray());
+    $mockService->shouldReceive('createOrGet')
+        ->twice()
+        ->with($user->id, 'example.com', '_dnsauth')
+        ->andReturn($delegation);
+    $mockService->shouldReceive('withCnameGuide')->twice()->andReturn($delegation->toArray());
     app()->instance(CnameDelegationService::class, $mockService);
 
     $this->actingAsUser($user)
@@ -101,6 +123,8 @@ test('批量创建委托', function () {
         ])
         ->assertOk()
         ->assertJson(['code' => 1])
+        ->assertJsonPath('data.success_count', 2)
+        ->assertJsonPath('data.fail_count', 0)
         ->assertJsonStructure(['data' => ['created', 'failed', 'total', 'success_count', 'fail_count']]);
 });
 

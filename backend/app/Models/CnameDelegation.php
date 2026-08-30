@@ -16,7 +16,7 @@ use Illuminate\Support\Carbon;
  * @property string $zone
  * @property string $prefix
  * @property string $label
- * @property string $proxy_zone (动态属性)
+ * @property string|null $proxy_domain
  * @property string $target_fqdn (动态属性)
  * @property bool $valid
  * @property Carbon|null $last_checked_at
@@ -33,6 +33,7 @@ class CnameDelegation extends BaseModel
         'zone',
         'prefix',
         'label',
+        'proxy_domain',
         'valid',
         'last_checked_at',
         'fail_count',
@@ -48,7 +49,7 @@ class CnameDelegation extends BaseModel
 
     protected $hidden = [];
 
-    protected $appends = ['proxy_zone', 'target_fqdn'];
+    protected $appends = ['target_fqdn'];
 
     /**
      * 获取所属用户
@@ -56,22 +57,6 @@ class CnameDelegation extends BaseModel
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class)->withoutGlobalScopes();
-    }
-
-    /**
-     * 动态获取代理域名（从系统设置）
-     *
-     * @noinspection PhpUnused
-     */
-    protected function proxyZone(): Attribute
-    {
-        return Attribute::make(
-            get: function () {
-                $config = get_system_setting('site', 'delegation');
-
-                return $config['proxyZone'] ?? '';
-            }
-        );
     }
 
     /**
@@ -83,12 +68,12 @@ class CnameDelegation extends BaseModel
     {
         return Attribute::make(
             get: function () {
-                $proxyZone = $this->proxy_zone;
-                if (empty($proxyZone)) {
+                $proxyDomain = $this->proxy_domain;
+                if (empty($proxyDomain)) {
                     return '';
                 }
 
-                return "$this->label.$proxyZone";
+                return "$this->label.$proxyDomain";
             }
         );
     }

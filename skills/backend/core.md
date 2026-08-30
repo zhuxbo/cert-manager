@@ -205,18 +205,18 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ### 调度配置
 
-| 命令                           | 调度       | 说明                                                          |
-| ------------------------------ | ---------- | ------------------------------------------------------------- |
-| `schedule:validate`            | 每分钟     | 证书验证任务                                                  |
-| `schedule:heartbeat`           | 每分钟     | 调度心跳（写 Cache 供 /api/health 判活；freeze 存活者，见下） |
-| `schedule:auto-renew`          | 每天 00:00 | 自动续费/重签（延时 commit 0~8h）                             |
-| `schedule:reconcile-pending`   | 每 5 分钟  | pending 卡单对账重发 commit（见 order-fund.md）               |
-| `schedule:sweep-stale-tasks`   | 每 5 分钟  | 重派僵尸 executing 任务（T1，见 order-fund.md）               |
-| `schedule:reconcile-acme`      | 每 5 分钟  | ACME 卡单对账（T6，见 acme-module.md）                        |
-| `schedule:sweep-orphan-orders` | 每小时     | 清理 channel=auto 孤儿续费单（O4，见 order-fund.md）          |
-| `schedule:ca-healthcheck`      | 每 15 分钟 | 上游 CA 凭证 + 连通性告警（M7，见 notification.md）           |
-| `delegation:check`             | 每天 05:30 | CNAME 委托健康检查                                            |
-| `delegation:cleanup`           | 每天 06:00 | 委托 DNS 清理                                                 |
+| 命令                           | 调度         | 说明                                                          |
+| ------------------------------ | ------------ | ------------------------------------------------------------- |
+| `schedule:validate`            | 每分钟       | 证书验证任务                                                  |
+| `schedule:heartbeat`           | 每分钟       | 调度心跳（写 Cache 供 /api/health 判活；freeze 存活者，见下） |
+| `schedule:auto-renew`          | 每天 00:00   | 自动续费/重签（延时 commit 0~8h）                             |
+| `schedule:reconcile-pending`   | 每 5 分钟    | pending 卡单对账重发 commit（见 order-fund.md）               |
+| `schedule:sweep-stale-tasks`   | 每 5 分钟    | 重派僵尸 executing 任务（T1，见 order-fund.md）               |
+| `schedule:reconcile-acme`      | 每 5 分钟    | ACME 卡单对账（T6，见 acme-module.md）                        |
+| `schedule:sweep-orphan-orders` | 每小时       | 清理 channel=auto 孤儿续费单（O4，见 order-fund.md）          |
+| `schedule:ca-healthcheck`      | 每 15 分钟   | 上游 CA 凭证 + 连通性告警（M7，见 notification.md）           |
+| `delegation:check`             | 每周一 07:00 | CNAME 委托健康检查                                            |
+| `delegation:cleanup`           | 每天 06:00   | 委托 DNS 清理                                                 |
 
 ---
 

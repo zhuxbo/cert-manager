@@ -4,13 +4,17 @@ use App\Exceptions\ApiResponseException;
 use App\Models\Admin;
 use App\Models\Callback;
 use App\Models\Cert;
+use App\Models\CnameDelegation;
 use App\Models\DomainValidationRecord;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Delegation\DelegationDnsService;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
@@ -1925,6 +1929,89 @@ function bLockParams(Order $order, Cert $cert, string $action): array
     ];
 }
 
+function prepareSwitchedDelegationForAction(Order $sourceOrder, Cert $sourceCert): CnameDelegation
+{
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'delegation'],
+        ['title' => 'CNAME委托', 'weight' => 11],
+    );
+    Setting::create([
+        'group_id' => $group->id,
+        'key' => 'defaultDomain',
+        'type' => 'string',
+        'value' => 'proxy.example.com',
+    ]);
+    Setting::create([
+        'group_id' => $group->id,
+        'key' => 'proxyExampleCom',
+        'type' => 'array',
+        'value' => [
+            'domain' => 'proxy.example.com',
+            'provider' => 'cloudflare',
+            'zoneId' => 'zone-id',
+            'apiToken' => 'api-token',
+        ],
+    ]);
+    $delegation = CnameDelegation::factory()->create([
+        'user_id' => $sourceOrder->user_id,
+        'zone' => 'example.com',
+        'prefix' => '_dnsauth',
+        'proxy_domain' => 'proxy.example.com',
+    ]);
+    $sourceCert->update([
+        'validation' => [[
+            'domain' => $sourceCert->common_name,
+            'delegation_id' => $delegation->id,
+        ]],
+    ]);
+    Setting::create([
+        'group_id' => $group->id,
+        'key' => 'newExampleNet',
+        'type' => 'array',
+        'value' => [
+            'domain' => 'new.example.net',
+            'provider' => 'cloudflare',
+            'zoneId' => 'new-zone-id',
+            'apiToken' => 'new-api-token',
+        ],
+    ]);
+    Setting::setValue('delegation', 'defaultDomain', 'new.example.net');
+
+    return $delegation;
+}
+
+test('订单即时写入按同一委托的冻结目标分别写 TXT', function () {
+    [$order, $cert] = makeBLockSourceOrder();
+    $delegation = prepareSwitchedDelegationForAction($order, $cert);
+
+    $dns = Mockery::mock(DelegationDnsService::class);
+    $dns->shouldReceive('setTxtByLabel')
+        ->once()
+        ->with('proxy.example.com', $delegation->label, ['OLD-TOKEN'])
+        ->andReturnTrue();
+    $dns->shouldReceive('setTxtByLabel')
+        ->once()
+        ->with('new.example.net', $delegation->label, ['NEW-TOKEN'])
+        ->andReturnTrue();
+    app()->instance(DelegationDnsService::class, $dns);
+
+    $method = new ReflectionMethod($this->service, 'writeDelegationTxtRecords');
+    $validation = $method->invoke($this->service, [
+        [
+            'delegation_id' => $delegation->id,
+            'delegation_target' => $delegation->label.'.proxy.example.com',
+            'value' => 'OLD-TOKEN',
+        ],
+        [
+            'delegation_id' => $delegation->id,
+            'delegation_target' => $delegation->label.'.new.example.net',
+            'value' => 'NEW-TOKEN',
+        ],
+    ]);
+
+    expect($validation)->each->toHaveKey('auto_txt_written', true);
+});
+
 test('new(renew) affected-rows 守卫：源证书被并发翻走 → 订单已续费 + 回滚', function () {
     Queue::fake();
     [$sourceOrder, $sourceCert] = makeBLockSourceOrder();
@@ -2034,6 +2121,152 @@ test('reissue 成功精确迁移前驱、订单组织、新证书和验证节奏
         ])
         ->and((string) $current->amount)->toBe('0.00')
         ->and(DomainValidationRecord::where('order_id', $order->id)->exists())->toBeFalse();
+});
+
+test('切换默认委托域后手工新订单冻结新目标且取消不影响原委托', function () {
+    Queue::fake();
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    $product->update(['validation_methods' => ['txt', 'delegation']]);
+    $delegation = prepareSwitchedDelegationForAction($sourceOrder, $sourceCert);
+
+    $response = expectOrderApiSuccess(fn () => $this->service->new([
+        'product_id' => $product->id,
+        'product_code' => $product->code,
+        'period' => 12,
+        'domains' => $sourceCert->alternative_names,
+        'validation_method' => 'delegation',
+        'csr_generate' => 1,
+        'user_id' => $sourceOrder->user_id,
+        'action' => 'new',
+        'channel' => 'web',
+    ]));
+
+    $newCert = Cert::where('order_id', $response['data']['order_id'])->firstOrFail();
+    expect($newCert->validation[0]['delegation_id'])->toBe($delegation->id)
+        ->and($newCert->validation[0]['delegation_target'])->toBe($delegation->label.'.new.example.net')
+        ->and($newCert->validation[0])->not->toHaveKey('delegation_pending_proxy_domain')
+        ->and($delegation->fresh()->proxy_domain)->toBe('proxy.example.com');
+
+    expectOrderApiSuccess(fn () => $this->service->commitCancel($response['data']['order_id']));
+
+    expect($delegation->fresh()->proxy_domain)->toBe('proxy.example.com');
+});
+
+test('切换默认委托域后手工续费冻结新目标且保持绑定 ID', function () {
+    Queue::fake();
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    $product->update(['validation_methods' => ['txt', 'delegation']]);
+    $delegation = prepareSwitchedDelegationForAction($sourceOrder, $sourceCert);
+    $params = bLockParams($sourceOrder, $sourceCert, 'renew');
+    $params['validation_method'] = 'delegation';
+
+    expectOrderApiSuccess(fn () => $this->service->new($params));
+
+    $newCert = Cert::where('order_id', '!=', $sourceOrder->id)
+        ->where('last_cert_id', $sourceCert->id)
+        ->firstOrFail();
+    $currentDelegation = CnameDelegation::findOrFail($newCert->validation[0]['delegation_id']);
+    expect($currentDelegation->id)->toBe($delegation->id)
+        ->and($currentDelegation->proxy_domain)->toBe('proxy.example.com')
+        ->and($newCert->validation[0]['delegation_target'])->toBe($delegation->label.'.new.example.net')
+        ->and($newCert->validation[0])->not->toHaveKey('delegation_pending_proxy_domain')
+        ->and(CnameDelegation::where([
+            'user_id' => $sourceOrder->user_id,
+            'zone' => 'example.com',
+            'prefix' => '_dnsauth',
+        ])->count())->toBe(1);
+});
+
+test('自动续费沿用原委托域', function (string $channel) {
+    Queue::fake();
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    $product->update(['validation_methods' => ['txt', 'delegation']]);
+    $delegation = prepareSwitchedDelegationForAction($sourceOrder, $sourceCert);
+    $params = bLockParams($sourceOrder, $sourceCert, 'renew');
+    $params['channel'] = $channel;
+    $params['validation_method'] = 'delegation';
+
+    expectOrderApiSuccess(fn () => $this->service->new($params));
+
+    $newCert = Cert::where('order_id', '!=', $sourceOrder->id)
+        ->where('last_cert_id', $sourceCert->id)
+        ->firstOrFail();
+    expect($newCert->validation[0]['delegation_id'])->toBe($delegation->id)
+        ->and($newCert->validation[0]['delegation_target'])->toBe($delegation->label.'.proxy.example.com')
+        ->and($delegation->fresh()->proxy_domain)->toBe('proxy.example.com');
+})->with(['auto', 'deploy']);
+
+test('切换默认委托域后手工重签冻结新目标且保持绑定 ID', function () {
+    Queue::fake();
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    $product->update(['validation_methods' => ['txt', 'delegation']]);
+    $delegation = prepareSwitchedDelegationForAction($sourceOrder, $sourceCert);
+    $params = bLockParams($sourceOrder, $sourceCert, 'reissue');
+    $params['validation_method'] = 'delegation';
+
+    expectOrderApiSuccess(fn () => $this->service->reissue($params));
+
+    $newCert = Cert::where('last_cert_id', $sourceCert->id)->firstOrFail();
+    expect($newCert->validation[0]['delegation_id'])->toBe($delegation->id)
+        ->and($newCert->validation[0]['delegation_target'])->toBe($delegation->label.'.new.example.net')
+        ->and($newCert->validation[0])->not->toHaveKey('delegation_pending_proxy_domain')
+        ->and($delegation->fresh()->proxy_domain)->toBe('proxy.example.com');
+});
+
+test('updateDCV 切换委托时冻结当前默认域但不改变共享委托', function () {
+    Queue::fake();
+    [$order, $cert, $product] = makeBLockSourceOrder();
+    $product->update(['validation_methods' => ['txt', 'delegation']]);
+    $delegation = prepareSwitchedDelegationForAction($order, $cert);
+    $cert->update(['status' => 'pending', 'csr' => 'test-csr']);
+
+    expectOrderApiSuccess(fn () => $this->service->updateDCV($order->id, 'delegation'));
+
+    $validation = $cert->fresh()->validation;
+    expect($validation[0]['delegation_id'])->toBe($delegation->id)
+        ->and($validation[0]['delegation_target'])->toBe($delegation->label.'.new.example.net')
+        ->and($validation[0])->not->toHaveKey('delegation_pending_proxy_domain')
+        ->and($delegation->fresh()->proxy_domain)->toBe('proxy.example.com');
+});
+
+test('自动重签沿用原委托域', function (string $channel) {
+    Queue::fake();
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    $product->update(['validation_methods' => ['txt', 'delegation']]);
+    $delegation = prepareSwitchedDelegationForAction($sourceOrder, $sourceCert);
+    $params = bLockParams($sourceOrder, $sourceCert, 'reissue');
+    $params['channel'] = $channel;
+    $params['validation_method'] = 'delegation';
+
+    expectOrderApiSuccess(fn () => $this->service->reissue($params));
+
+    $newCert = Cert::where('last_cert_id', $sourceCert->id)->firstOrFail();
+    expect($newCert->validation[0]['delegation_id'])->toBe($delegation->id)
+        ->and($newCert->validation[0]['delegation_target'])->toBe($delegation->label.'.proxy.example.com')
+        ->and($delegation->fresh()->proxy_domain)->toBe('proxy.example.com');
+})->with(['auto', 'deploy']);
+
+test('新订单签发不会激活尚未检测生效的委托域', function () {
+    Queue::fake();
+    [$order, $cert] = createOrderWithCertForRevoke('processing');
+    $delegation = prepareSwitchedDelegationForAction($order, $cert);
+    $cert->update([
+        'validation' => [[
+            'domain' => 'example.com',
+            'method' => 'txt',
+            'delegation_id' => $delegation->id,
+            'delegation_target' => $delegation->label.'.new.example.net',
+            'delegation_valid' => false,
+        ]],
+    ]);
+    mockSyncReturnsActive();
+
+    $this->service->sync($order->id, true);
+
+    $validation = $cert->fresh()->validation;
+    expect($delegation->fresh()->proxy_domain)->toBe('proxy.example.com')
+        ->and($validation[0]['delegation_target'])->toBe($delegation->label.'.new.example.net')
+        ->and($validation[0]['delegation_valid'])->toBeFalse();
 });
 
 test('reissue 禁用产品在一分钱增购边界精确拒绝且不改变前驱', function () {

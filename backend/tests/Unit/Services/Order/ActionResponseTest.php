@@ -19,12 +19,14 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
+use Tests\Traits\CreatesTestData;
 
-uses(TestCase::class, RefreshDatabase::class)->group('database');
+uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
 beforeEach(function () {
     Cache::flush();
     Queue::fake();
+    $this->configureTestDelegationProxyDomain();
     $this->orderMutationAction = app(Action::class);
 });
 
@@ -576,7 +578,7 @@ test('updateDCV 防抖键按订单隔离而不会阻塞其他订单', function (
         ->and($secondCert->fresh()->dcv)->toBe(['method' => 'txt']);
 });
 
-test('updateDCV processing 精确发送方法并分别返回上游数据和保存合并数据', function () {
+test('updateDCV processing 非委托 TXT 精确发送方法且不创建可匹配的委托任务', function () {
     [$order, $cert, , $user] = orderMutationFixture('processing', [], [
         'alternative_names' => 'example.test',
         'csr' => 'unused-csr',
@@ -586,16 +588,16 @@ test('updateDCV processing 精确发送方法并分别返回上游数据和保�
     CnameDelegation::factory()->create([
         'user_id' => $user->id,
         'zone' => 'example.test',
-        'prefix' => '_dnsauth',
+        'prefix' => '_pki-validation',
         'valid' => true,
     ]);
     $apiDcv = [
         'method' => 'txt',
-        'dns' => ['host' => '_dnsauth.example.test', 'value' => 'new-token'],
+        'dns' => ['host' => '_pki-validation.example.test', 'value' => 'new-token'],
     ];
     $apiValidation = [[
         'domain' => 'example.test',
-        'host' => '_dnsauth.example.test',
+        'host' => '_pki-validation.example.test',
         'value' => 'new-token',
     ]];
     $api = Mockery::mock(Api::class);
@@ -613,7 +615,7 @@ test('updateDCV processing 精确发送方法并分别返回上游数据和保�
     ])->and($cert->fresh()->dcv)->toBe($apiDcv)
         ->and($cert->fresh()->validation)->toBe([[
             'domain' => 'example.test',
-            'host' => '_dnsauth.example.test',
+            'host' => '_pki-validation.example.test',
             'value' => 'new-token',
             'method' => 'txt',
         ]])

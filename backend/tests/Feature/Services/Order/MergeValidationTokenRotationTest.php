@@ -46,6 +46,65 @@ test('token 轮换（value 不等）→ 剔除 auto_txt_written、保留 delegat
         ->and($merged[0]['delegation_valid'])->toBeTrue();
 });
 
+test('上游不能覆盖本地委托字段', function () {
+    $api = [[
+        'domain' => 'example.com',
+        'method' => 'txt',
+        'value' => 'SAME-TOKEN',
+        'delegation_id' => 999,
+        'delegation_target' => 'attacker.other.example',
+        'delegation_zone' => 'other.example',
+        'delegation_valid' => false,
+        'auto_txt_written' => false,
+        'auto_txt_written_at' => '2099-01-01 00:00:00',
+    ]];
+    $cert = [[
+        'domain' => 'example.com',
+        'method' => 'txt',
+        'value' => 'SAME-TOKEN',
+        'delegation_id' => 42,
+        'delegation_target' => 'label.proxy.example',
+        'delegation_zone' => 'example.com',
+        'delegation_valid' => true,
+        'auto_txt_written' => true,
+        'auto_txt_written_at' => '2020-01-01 00:00:00',
+    ]];
+
+    $merged = callMergeValidation($api, $cert);
+
+    expect($merged[0]['delegation_id'])->toBe(42)
+        ->and($merged[0]['delegation_target'])->toBe('label.proxy.example')
+        ->and($merged[0]['delegation_zone'])->toBe('example.com')
+        ->and($merged[0]['delegation_valid'])->toBeTrue()
+        ->and($merged[0]['auto_txt_written'])->toBeTrue()
+        ->and($merged[0]['auto_txt_written_at'])->toBe('2020-01-01 00:00:00');
+});
+
+test('本地无委托信息时忽略上游注入的委托字段', function () {
+    $api = [[
+        'domain' => 'example.com',
+        'method' => 'txt',
+        'value' => 'TOKEN',
+        'delegation_id' => 999,
+        'delegation_target' => 'attacker.other.example',
+        'delegation_zone' => 'other.example',
+        'delegation_valid' => true,
+        'auto_txt_written' => true,
+        'auto_txt_written_at' => '2099-01-01 00:00:00',
+    ]];
+
+    $merged = callMergeValidation($api, []);
+
+    expect($merged[0])->not->toHaveKeys([
+        'delegation_id',
+        'delegation_target',
+        'delegation_zone',
+        'delegation_valid',
+        'auto_txt_written',
+        'auto_txt_written_at',
+    ]);
+});
+
 // 2. 护栏：value 相同 → 标记保留、无剔除
 test('value 相同 → 保留 auto_txt_written 标记（no-op 护栏，防 append 风暴）', function () {
     $api = [
@@ -109,7 +168,7 @@ test('token 轮换后 writeDelegationTxtRecords 重写新 token（setTxtByLabel 
     $dns = Mockery::mock(DelegationDnsService::class);
     $dns->shouldReceive('setTxtByLabel')
         ->once()
-        ->withArgs(fn ($proxyZone, $label, $tokens) => in_array('NEW-TOKEN', $tokens, true))
+        ->with($delegation->proxy_domain, $delegation->label, ['NEW-TOKEN'])
         ->andReturnTrue();
     app()->instance(DelegationDnsService::class, $dns);
 

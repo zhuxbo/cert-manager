@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-07-21 15:23:35",
+    "generated_at": "2026-08-30 01:57:50",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -2200,8 +2200,16 @@
                     "extra": "",
                     "comment": "SHA256哈希标签(64位hex)"
                 },
-                "valid": {
+                "proxy_domain": {
                     "position": 6,
+                    "type": "varchar(255)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "最近检测命中的委托代理域"
+                },
+                "valid": {
+                    "position": 7,
                     "type": "tinyint(1)",
                     "nullable": false,
                     "default": "0",
@@ -2209,7 +2217,7 @@
                     "comment": "委托是否有效(健康检查结果)"
                 },
                 "last_checked_at": {
-                    "position": 7,
+                    "position": 8,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -2217,7 +2225,7 @@
                     "comment": "上次健康检查时间"
                 },
                 "fail_count": {
-                    "position": 8,
+                    "position": 9,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -2225,7 +2233,7 @@
                     "comment": "连续失败次数(用于熔断\/预警)"
                 },
                 "last_error": {
-                    "position": 9,
+                    "position": 10,
                     "type": "varchar(255)",
                     "nullable": false,
                     "default": "",
@@ -2233,7 +2241,7 @@
                     "comment": "最近一次检查失败原因"
                 },
                 "created_at": {
-                    "position": 10,
+                    "position": 11,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -2241,7 +2249,7 @@
                     "comment": ""
                 },
                 "updated_at": {
-                    "position": 11,
+                    "position": 12,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -2255,6 +2263,16 @@
                     "type": "BTREE",
                     "columns": [
                         "prefix"
+                    ],
+                    "sub_parts": [
+                        null
+                    ]
+                },
+                "cname_delegations_proxy_domain_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "proxy_domain"
                     ],
                     "sub_parts": [
                         null

@@ -14,6 +14,7 @@ uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('da
 beforeEach(function () {
     $this->seed = true;
     $this->seeder = DatabaseSeeder::class;
+    $this->configureTestDelegationProxyDomain();
     $this->service = app(AutoRenewService::class);
 });
 
@@ -603,6 +604,37 @@ test('check delegation validity handles multiple domains auto creates missing', 
     );
 
     expect($result)->toBeTrue();
+});
+
+test('check delegation validity uses the source validation logical delegation before current domain lookup', function () {
+    $user = $this->createTestUser();
+    $sourceDelegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_pki-validation',
+    ]);
+    $this->createTestDelegation($user, [
+        'zone' => 'sub.example.com',
+        'prefix' => '_pki-validation',
+    ]);
+
+    $mockService = Mockery::mock(CnameDelegationService::class);
+    $mockService->shouldNotReceive('findDelegation');
+    $mockService->shouldReceive('checkAndUpdateValidity')
+        ->once()
+        ->withArgs(fn (CnameDelegation $delegation) => $delegation->id === $sourceDelegation->id)
+        ->andReturnTrue();
+
+    $service = new AutoRenewService($mockService);
+
+    expect($service->checkDelegationValidity(
+        $user->id,
+        'sub.example.com',
+        'sectigo',
+        [[
+            'domain' => 'sub.example.com',
+            'delegation_id' => $sourceDelegation->id,
+        ]],
+    ))->toBeTrue();
 });
 
 test('check delegation validity auto creates dnsauth with root domain when not exact', function () {

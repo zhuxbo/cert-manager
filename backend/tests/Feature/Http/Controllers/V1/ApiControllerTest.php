@@ -88,6 +88,40 @@ test('V1 获取产品列表', function () {
         ->assertJson(['code' => 1]);
 });
 
+test('V1 产品列表不暴露 delegation 验证方法', function () {
+    $user = User::factory()->create();
+    $headers = createV1AuthHeaders($user);
+    $product = Product::factory()->create([
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    $data = $this->withHeaders($headers)
+        ->postJson('/api/V1/product')
+        ->assertOk()
+        ->assertJson(['code' => 1])
+        ->json('data');
+    $item = collect($data)->firstWhere('code', $product->code);
+
+    expect($item['validation_methods'])->toBe(['txt']);
+});
+
+test('V1 API 不接受 delegation 验证方法', function (string $uri, array $params) {
+    $user = User::factory()->create();
+
+    $this->withHeaders(createV1AuthHeaders($user))
+        ->postJson($uri, $params)
+        ->assertOk()
+        ->assertJson([
+            'code' => 0,
+            'msg' => 'API 不支持委托验证方法',
+        ]);
+})->with([
+    'new' => ['/api/V1/new', ['validation_method' => 'delegation']],
+    'renew' => ['/api/V1/renew', ['validation_method' => 'delegation']],
+    'reissue' => ['/api/V1/reissue', ['validation_method' => 'delegation']],
+    'updateDCV' => ['/api/V1/updateDCV', ['method' => 'delegation']],
+]);
+
 test('V1 获取产品列表-按品牌筛选', function () {
     $user = User::factory()->create();
     $headers = createV1AuthHeaders($user);

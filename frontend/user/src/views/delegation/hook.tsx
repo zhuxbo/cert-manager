@@ -1,8 +1,8 @@
 import type { PaginationProps } from "@pureadmin/table";
 import { reactive, ref, toRaw, nextTick } from "vue";
-import type { IndexParams } from "@/api/delegation";
+import type { DelegationItem, IndexParams } from "@/api/delegation";
 import * as delegationApi from "@/api/delegation";
-import { message } from "@shared/utils";
+import { formatDelegationCopyText, message } from "@shared/utils";
 
 export function useDelegation(tableRef, selectedIds: { value: number[] }) {
   const search = ref<IndexParams>({});
@@ -89,11 +89,7 @@ export function useDelegation(tableRef, selectedIds: { value: number[] }) {
     delegationApi.batchShow(selectedIds.value).then(res => {
       if (res.data && Array.isArray(res.data)) {
         const copyText = res.data
-          .map((item: any) => {
-            const subdomain =
-              item.cname_to?.host?.replace(`.${item.zone}`, "") || item.prefix;
-            return `域名: ${item.zone}\n主机记录: ${subdomain}\n记录类型: CNAME\n记录值: ${item.target_fqdn || item.cname_to?.value || ""}`;
-          })
+          .map((item: DelegationItem) => formatDelegationCopyText(item))
           .join("\n\n");
 
         navigator.clipboard.writeText(copyText).then(() => {

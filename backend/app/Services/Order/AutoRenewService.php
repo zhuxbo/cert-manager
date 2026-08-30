@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Order;
 
+use App\Models\CnameDelegation;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\Delegation\CnameDelegationService;
@@ -138,12 +139,29 @@ class AutoRenewService
      * @param  int  $userId  用户ID
      * @param  string  $domains  域名列表（逗号分隔）
      * @param  string  $ca  CA名称
+     * @param  array<int, array<string, mixed>>  $sourceValidation  源证书委托快照
      * @return bool 是否所有域名都有有效委托
      */
-    public function checkDelegationValidity(int $userId, string $domains, string $ca): bool
-    {
+    public function checkDelegationValidity(
+        int $userId,
+        string $domains,
+        string $ca,
+        array $sourceValidation = [],
+    ): bool {
         $prefix = CnameDelegationService::getDelegationPrefixForCa($ca);
         $domainList = explode(',', $domains);
+        $sourceDelegationIds = [];
+        foreach ($sourceValidation as $item) {
+            if (! is_numeric($item['delegation_id'] ?? null)) {
+                continue;
+            }
+
+            $sourceDomain = strtolower(trim((string) ($item['domain'] ?? '')));
+            if ($sourceDomain !== '') {
+                $sourceDelegationIds[$sourceDomain] = (int) $item['delegation_id'];
+            }
+        }
+        $checkedDelegationIds = [];
 
         foreach ($domainList as $domain) {
             $domain = trim($domain);
@@ -151,8 +169,11 @@ class AutoRenewService
                 continue;
             }
 
-            // 查找委托记录（不检查 valid 状态，全 ca_map 驱动）
-            $delegation = $this->delegationService->findDelegation($userId, $domain, $ca);
+            $sourceDelegationId = $sourceDelegationIds[strtolower($domain)] ?? null;
+            $delegation = $sourceDelegationId
+                ? CnameDelegation::where('user_id', $userId)->find($sourceDelegationId)
+                : null;
+            $delegation ??= $this->delegationService->findDelegation($userId, $domain, $ca);
 
             // 缺失则自动创建（zone 由 ca 派生：exact 精确域名 / 非 exact 根域）
             if (! $delegation) {
@@ -160,7 +181,12 @@ class AutoRenewService
                 $delegation = $this->delegationService->createOrGet($userId, $zone, $prefix);
             }
 
-            // 即时验证 CNAME 记录
+            if (isset($checkedDelegationIds[$delegation->id])) {
+                continue;
+            }
+            $checkedDelegationIds[$delegation->id] = true;
+
+            // 即时验证所有完整委托域，命中结果会校正共享 proxy_domain
             if (! $this->delegationService->checkAndUpdateValidity($delegation)) {
                 return false;
             }

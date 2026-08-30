@@ -16,7 +16,7 @@ export interface DelegationItem {
   zone: string;
   prefix: string;
   label: string;
-  proxy_zone: string;
+  proxy_domain: string | null;
   target_fqdn: string;
   valid: boolean;
   last_checked_at: string | null;

@@ -2,102 +2,357 @@
 
 use App\Models\Setting;
 use App\Models\SettingGroup;
-use App\Services\Delegation\ProxyDNS;
+use App\Services\Delegation\DelegationConfigService;
+use App\Services\Delegation\DelegationDnsService;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use Tests\Traits\CreatesTestData;
+
+uses(CreatesTestData::class);
 
 beforeEach(function () {
-    $this->proxyDNS = Mockery::mock(ProxyDNS::class);
-    $this->app->instance(ProxyDNS::class, $this->proxyDNS);
+    $this->dnsService = Mockery::mock(DelegationDnsService::class);
+    $this->app->instance(DelegationDnsService::class, $this->dnsService);
 });
 
-test('签名为 delegation:cleanup', function () {
-    // 代理域名未配置时直接返回
-    $this->artisan('delegation:cleanup')
-        ->expectsOutputToContain('代理域名未设置')
-        ->assertSuccessful();
-});
+afterEach(fn () => Mockery::close());
 
-test('代理域名未配置时终止执行', function () {
-    $this->artisan('delegation:cleanup')
-        ->expectsOutputToContain('代理域名未设置')
-        ->assertSuccessful();
-});
-
-test('没有需要清理的记录时正常退出', function () {
-    // 清除设置缓存
+/** 配置一个会被 DelegationConfigService::all() 枚举到的代理域。 */
+function cleanupConfigureDomain(string $domain, array $overrides = []): void
+{
     Cache::flush();
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'delegation'],
+        ['title' => '委托设置', 'weight' => 1],
+    );
+    $key = app(DelegationConfigService::class)->keyForDomain($domain);
 
-    // 设置系统配置
-    $group = SettingGroup::factory()->create(['name' => 'site']);
-    Setting::factory()->create([
-        'group_id' => $group->id,
-        'key' => 'delegation',
-        'type' => 'array',
-        'value' => ['proxyZone' => 'proxy.example.com'],
-    ]);
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => $key],
+        [
+            'type' => 'array',
+            'value' => array_merge([
+                'domain' => $domain,
+                'provider' => 'cloudflare',
+                'apiToken' => 'test-token',
+                'zoneId' => 'test-zone',
+            ], $overrides),
+            'weight' => 1,
+        ],
+    );
+    Setting::clearGroupCache($group->id);
+}
 
-    $this->proxyDNS->shouldReceive('getAllTxtRecords')
-        ->with('proxy.example.com')
-        ->andReturn([]);
+function cleanupConfigureRawSetting(string $key, mixed $value): void
+{
+    Cache::flush();
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'delegation'],
+        ['title' => '委托设置', 'weight' => 1],
+    );
+    Setting::updateOrCreate(
+        ['group_id' => $group->id, 'key' => $key],
+        ['type' => 'array', 'value' => $value, 'weight' => 1],
+    );
+    Setting::clearGroupCache($group->id);
+}
+
+test('未配置任何代理域时正常终止', function () {
+    $this->artisan('delegation:cleanup')
+        ->expectsOutputToContain('代理域名未设置')
+        ->assertSuccessful();
+});
+
+test('单域没有需要清理的记录时正常退出', function () {
+    cleanupConfigureDomain('proxy.example.com');
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('proxy.example.com')->andReturn([]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
 
     $this->artisan('delegation:cleanup')
         ->expectsOutputToContain('没有需要清理的记录')
         ->assertSuccessful();
 });
 
-/** 造 site.delegation.proxyZone 设置。 */
-function cleanupSetProxyZone(string $zone = 'proxy.example.com'): void
-{
-    Cache::flush();
-    $group = SettingGroup::factory()->create(['name' => 'site']);
-    Setting::factory()->create([
-        'group_id' => $group->id,
-        'key' => 'delegation',
-        'type' => 'array',
-        'value' => ['proxyZone' => $zone],
-    ]);
-}
+test('仅删除 32 位 hex 委托记录并保留其他 TXT', function () {
+    cleanupConfigureDomain('proxy.example.com');
+    $hex32 = str_repeat('a', 32);
 
-test('仅删委托格式记录：保留非委托 TXT（_dmarc/apex/DKIM），清 32-hex 孤儿', function () {
-    cleanupSetProxyZone();
-
-    $hex32 = str_repeat('a', 32); // 32 位 hex 委托 label 孤儿
-    $records = [
-        ['id' => 1, 'name' => '_dmarc', 'value' => 'v=DMARC1; p=none;'],
-        ['id' => 2, 'name' => '@', 'value' => 'v=spf1 include:_spf.example.com ~all'],
-        ['id' => 3, 'name' => 'default._domainkey', 'value' => 'v=DKIM1; k=rsa; p=MIGf...'],
-        ['id' => 4, 'name' => $hex32, 'value' => 'orphan-token'],
-    ];
-
-    $this->proxyDNS->shouldReceive('getAllTxtRecords')
-        ->with('proxy.example.com')
-        ->andReturn($records);
-
-    // 仅 32-hex 孤儿（id=4）进删除集，非委托 TXT 全部保留
-    $this->proxyDNS->shouldReceive('batchDeleteRecords')
-        ->once()
-        ->with(Mockery::on(fn ($ids) => $ids === [4]));
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('proxy.example.com')->andReturn([
+            ['id' => 1, 'name' => '_dmarc', 'value' => 'v=DMARC1; p=none;'],
+            ['id' => 2, 'name' => '@', 'value' => 'v=spf1 include:_spf.example.com ~all'],
+            ['id' => 3, 'name' => 'default._domainkey', 'value' => 'v=DKIM1; k=rsa; p=MIGf...'],
+            ['id' => 4, 'name' => $hex32, 'value' => 'orphan-token'],
+        ]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('proxy.example.com', $hex32);
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 });
 
-test('64-hex 孤儿委托记录仍被清理（历史存量形态，兼容判据）', function () {
-    cleanupSetProxyZone();
+test('64 位 hex 历史委托记录仍被清理', function () {
+    cleanupConfigureDomain('proxy.example.com');
+    $hex64 = str_repeat('b', 64);
 
-    $hex64 = str_repeat('b', 64); // 64 位 hex（前身仓历史 full-sha256 形态）
-    $records = [
-        ['id' => 10, 'name' => '_dmarc', 'value' => 'v=DMARC1; p=none;'],
-        ['id' => 11, 'name' => $hex64, 'value' => 'orphan-token-64'],
-    ];
-
-    $this->proxyDNS->shouldReceive('getAllTxtRecords')
-        ->with('proxy.example.com')
-        ->andReturn($records);
-
-    // 64-hex 孤儿（id=11）被兼容判据命中删除，_dmarc 保留
-    $this->proxyDNS->shouldReceive('batchDeleteRecords')
-        ->once()
-        ->with(Mockery::on(fn ($ids) => $ids === [11]));
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('proxy.example.com')->andReturn([
+            ['id' => 10, 'name' => 'site-verification', 'value' => 'keep-me'],
+            ['id' => 11, 'name' => $hex64, 'value' => 'orphan-token-64'],
+        ]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('proxy.example.com', $hex64);
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
+});
+
+test('同一 label 的多条 TXT 完整删除后按初始记录数记录成功计数', function () {
+    cleanupConfigureDomain('proxy.example.com');
+    $label = str_repeat('1', 32);
+    Log::spy();
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('proxy.example.com')->andReturn([
+            ['id' => 'first-token', 'name' => $label, 'value' => 'token-one'],
+            ['id' => 'second-token', 'name' => strtoupper($label), 'value' => 'token-two'],
+        ]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('proxy.example.com', $label);
+
+    $this->artisan('delegation:cleanup')->assertSuccessful();
+
+    Log::shouldHaveReceived('info')->once()->with(
+        '批量清理委托DNS记录成功',
+        [
+            'proxy_domain' => 'proxy.example.com',
+            'deleted_count' => 2,
+            'deleted_labels' => [$label],
+        ],
+    );
+});
+
+test('后一 label 删除失败时成功计数只包含此前完整删除 label 的初始记录数', function () {
+    cleanupConfigureDomain('proxy.example.com');
+    $firstLabel = str_repeat('2', 32);
+    $secondLabel = str_repeat('3', 32);
+    Log::spy();
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('proxy.example.com')->andReturn([
+            ['id' => 'first-token', 'name' => $firstLabel, 'value' => 'token-one'],
+            ['id' => 'second-token', 'name' => strtoupper($firstLabel), 'value' => 'token-two'],
+            ['id' => 'third-token', 'name' => $secondLabel, 'value' => 'token-three'],
+        ]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->ordered()->with('proxy.example.com', $firstLabel);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->ordered()->with('proxy.example.com', $secondLabel)
+        ->andThrow(new RuntimeException('second label failed'));
+
+    $this->artisan('delegation:cleanup')->assertExitCode(1);
+
+    Log::shouldHaveReceived('info')->once()->with(
+        '批量清理委托DNS记录成功',
+        [
+            'proxy_domain' => 'proxy.example.com',
+            'deleted_count' => 2,
+            'deleted_labels' => [$firstLabel],
+        ],
+    );
+});
+
+test('相同 label 只在其绑定代理域进入保留集', function () {
+    cleanupConfigureDomain('old.example.com');
+    cleanupConfigureDomain('new.example.com');
+
+    $user = $this->createTestUser();
+    $sharedLabel = str_repeat('c', 32);
+    $oldDelegation = $this->createTestDelegation($user, [
+        'zone' => 'active.example.com',
+        'label' => $sharedLabel,
+        'proxy_domain' => 'old.example.com',
+    ]);
+    $this->createTestDelegation($this->createTestUser(), [
+        'zone' => 'inactive.example.com',
+        'label' => $sharedLabel,
+        'proxy_domain' => 'new.example.com',
+    ]);
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, [
+        'status' => 'processing',
+        'validation' => [[
+            'domain' => 'active.example.com',
+            'method' => 'txt',
+            'delegation_id' => $oldDelegation->id,
+            'auto_txt_written' => true,
+        ]],
+    ]);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('old.example.com')
+        ->andReturn([['id' => 'old-id', 'name' => strtoupper($sharedLabel)]]);
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('new.example.com')
+        ->andReturn([['id' => 'new-id', 'name' => $sharedLabel]]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('new.example.com', $sharedLabel);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->with('old.example.com', Mockery::any())->never();
+
+    $this->artisan('delegation:cleanup')->assertSuccessful();
+});
+
+test('在途订单按冻结目标保留 TXT 而不是共享记录当前代理域', function () {
+    cleanupConfigureDomain('old.example.com');
+    cleanupConfigureDomain('new.example.com');
+
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'active.example.com',
+        'label' => str_repeat('7', 32),
+        'proxy_domain' => 'old.example.com',
+    ]);
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, [
+        'status' => 'processing',
+        'validation' => [[
+            'domain' => 'active.example.com',
+            'method' => 'txt',
+            'delegation_id' => $delegation->id,
+            'delegation_target' => $delegation->label.'.new.example.com',
+            'auto_txt_written' => true,
+        ]],
+    ]);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('old.example.com')
+        ->andReturn([['id' => 'old-id', 'name' => $delegation->label]]);
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('new.example.com')
+        ->andReturn([['id' => 'new-id', 'name' => $delegation->label]]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('old.example.com', $delegation->label);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->with('new.example.com', Mockery::any())->never();
+
+    $this->artisan('delegation:cleanup')->assertSuccessful();
+});
+
+test('一个域查询失败后继续清理其他域并失败退出', function () {
+    cleanupConfigureDomain('old.example.com');
+    cleanupConfigureDomain('new.example.com');
+    $newOrphan = str_repeat('d', 32);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('old.example.com')
+        ->andThrow(new RuntimeException('旧域配置不可用'));
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('new.example.com')
+        ->andReturn([['id' => 'new-id', 'name' => $newOrphan]]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('new.example.com', $newOrphan);
+
+    $this->artisan('delegation:cleanup')
+        ->expectsOutputToContain('old.example.com')
+        ->assertExitCode(1);
+});
+
+test('一个域删除失败后继续删除其他域并失败退出', function () {
+    cleanupConfigureDomain('old.example.com');
+    cleanupConfigureDomain('new.example.com');
+    $oldOrphan = str_repeat('e', 32);
+    $newOrphan = str_repeat('f', 32);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('old.example.com')
+        ->andReturn([['id' => 'old-id', 'name' => $oldOrphan]]);
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('new.example.com')
+        ->andReturn([['id' => 'new-id', 'name' => $newOrphan]]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('old.example.com', $oldOrphan)
+        ->andThrow(new RuntimeException('旧域删除失败'));
+    $this->dnsService->shouldReceive('deleteTxtByLabel')
+        ->once()->with('new.example.com', $newOrphan);
+
+    $this->artisan('delegation:cleanup')->assertExitCode(1);
+});
+
+dataset('畸形在途 delegation_id', ['numeric string', 'boolean', 'float']);
+
+test('在途 validation 的非正整数 delegation_id 在 DNS 操作前失败关闭', function (string $type) {
+    cleanupConfigureDomain('proxy.example.com');
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user);
+    $invalidId = match ($type) {
+        'numeric string' => (string) $delegation->id,
+        'boolean' => true,
+        'float' => 1.5,
+    };
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $this->createTestCert($order, [
+        'status' => 'processing',
+        'validation' => [[
+            'domain' => 'example.com',
+            'method' => 'txt',
+            'delegation_id' => $invalidId,
+            'auto_txt_written' => true,
+        ]],
+    ]);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')->never();
+    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
+
+    $this->artisan('delegation:cleanup')
+        ->expectsOutputToContain('委托 ID 无效')
+        ->assertExitCode(1);
+})->with('畸形在途 delegation_id');
+
+test('畸形域配置不阻断健康域清理且最终失败退出', function () {
+    cleanupConfigureDomain('healthy.example.com');
+    cleanupConfigureRawSetting('missingDomain', [
+        'provider' => 'cloudflare',
+        'apiToken' => 'must-not-be-logged',
+    ]);
+    cleanupConfigureRawSetting('wrongKey', [
+        'domain' => 'mismatch.example.com',
+        'provider' => 'cloudflare',
+        'apiToken' => 'must-not-be-logged-either',
+    ]);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('healthy.example.com')->andReturn([]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
+
+    $this->artisan('delegation:cleanup')
+        ->expectsOutputToContain('missingDomain')
+        ->expectsOutputToContain('wrongKey')
+        ->assertExitCode(1);
+});
+
+test('超长域配置不阻断健康域清理且最终失败退出', function () {
+    cleanupConfigureDomain('healthy.example.com');
+    cleanupConfigureRawSetting('overlongDomain', [
+        'domain' => implode('.', array_fill(0, 51, 'ab')).'.com',
+        'provider' => 'cloudflare',
+        'apiToken' => 'must-not-be-logged',
+    ]);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('healthy.example.com')->andReturn([]);
+    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
+
+    $this->artisan('delegation:cleanup')
+        ->expectsOutputToContain('overlongDomain')
+        ->assertExitCode(1);
+});
+
+test('只有畸形域配置时失败退出且不访问 DNS', function () {
+    cleanupConfigureRawSetting('missingDomain', ['provider' => 'cloudflare']);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')->never();
+    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
+
+    $this->artisan('delegation:cleanup')->assertExitCode(1);
 });

@@ -139,7 +139,7 @@ pending 订单「到顶(maxed-out) / 产品缺失(product-missing)」判据是 r
 
 - **ApiResponseException 流控**：`renew()/reissue()` 的 `success()` 抛 `ApiResponseException`（带 `data.order_id`）是**成功信号**——吞掉取 id；业务失败（无 order_id）rethrow `\Exception` 逸出闭包触发回滚（**勿把成功路径当失败回滚**）。pay 段 `code!==1` rethrow 逸出。
 - **attempts=1 是必需约束、非从简**：`renew()/reissue()` 入口 `checkDuplicate` 是 `Cache::add`（SETNX，10s TTL）且回滚不清缓存；若事务级重试（attempts>1），重入命中自己首轮残留键 → error → 必自败。故用 `DB::transaction` 默认 attempts=1，勿改大；死锁 → 回滚 → `processOrders` catch 兜底通知 → 次日自愈。
-- **锁内无上游 HTTP（非「零上游 HTTP」）**：new/reissue 的 SQL 与 charge 纯本地扣费在源订单行锁内；`initParams` 的 CSR keygen（openssl fork）与**委托 TXT 上游写（`ProxyDNS`，确属上游 HTTP）**都落在**首个源订单行锁之前**（故不违反「锁内不做上游 HTTP」红线，而非闭包内没有上游 HTTP）；含上游的 commit 走事务外（V1/V2 延时任务、Deploy 同步于 `DB::commit()` 后，见 O3-B）。
+- **锁内无上游 HTTP（非「零上游 HTTP」）**：new/reissue 的 SQL 与 charge 纯本地扣费在源订单行锁内；`initParams` 的 CSR keygen（openssl fork）与**委托 TXT 上游 DNS 提供商写入（确属上游 HTTP）**都落在**首个源订单行锁之前**（故不违反「锁内不做上游 HTTP」红线，而非闭包内没有上游 HTTP）；含上游的 commit 走事务外（V1/V2 延时任务、Deploy 同步于 `DB::commit()` 后，见 O3-B）。
 
 ### 续费/重签锁下沉（防并发双开）
 
@@ -162,7 +162,7 @@ AutoRenew 续费预检前 `$user->refresh()`（O2）：`getRenewOrders` 一次�
 active 续费分支**完整移植** V2 范式（非「只包事务」）：
 
 - **O3-A**：`pay(false)` 进 `withMutex(order_mutate_$id)` 事务，与 renew/reissue 同事务原子（charge 纯本地扣费、无上游、无嵌套 mutex → 安全嵌套），charge 失败整体回滚，杜绝「旧证书终态 + 新单卡 unpaid」孤儿（P0-1 路径 2）。
-- **O3-A′（锁纪律收口）**：`withMutex` 事务内**不再对订单行显式预锁**（原 `Order::...->whereHas('user')->lock()->find()` + active 守卫已移除）。renew/reissue 的 `initParams`（CSR keygen + 委托 TXT 上游 DNS 写 `ProxyDNS`，逐 token 15s）在其**内部源订单行锁之前**执行；防并发双开的串行主体是 renew(`persistOrder`)/reissue 内部「源订单行锁 + 前驱翻转 affected-rows CAS」（**CAS 是锁定写 current read，不受 initParams 前置一致读建立的 RR view 影响**，与 V1/V2「不套 mutex 靠内部 CAS」同源，无需外层再叠预锁）。旧预锁把 keygen + 委托 DNS HTTP 全罩进订单行锁内——DNSPod 劣化时 ≥4 token 即超 `innodb_lock_wait_timeout=50` → 同订单 sync/renew 抢锁 1205，违反「锁内不做上游 HTTP」红线。移除后 Deploy 与 V2「CSR/委托生成先于行锁」范式一致（并发前驱翻 renewed 由内部 CAS 挡下、报「订单已续费」`code=0`，不双开）。
+- **O3-A′（锁纪律收口）**：`withMutex` 事务内**不再对订单行显式预锁**（原 `Order::...->whereHas('user')->lock()->find()` + active 守卫已移除）。renew/reissue 的 `initParams`（CSR keygen + 委托 TXT 上游 DNS 提供商写入，逐 token 15s）在其**内部源订单行锁之前**执行；防并发双开的串行主体是 renew(`persistOrder`)/reissue 内部「源订单行锁 + 前驱翻转 affected-rows CAS」（**CAS 是锁定写 current read，不受 initParams 前置一致读建立的 RR view 影响**，与 V1/V2「不套 mutex 靠内部 CAS」同源，无需外层再叠预锁）。旧预锁把 keygen + 委托 DNS HTTP 全罩进订单行锁内——DNSPod 劣化时 ≥4 token 即超 `innodb_lock_wait_timeout=50` → 同订单 sync/renew 抢锁 1205，违反「锁内不做上游 HTTP」红线。移除后 Deploy 与 V2「CSR/委托生成先于行锁」范式一致（并发前驱翻 renewed 由内部 CAS 挡下、报「订单已续费」`code=0`，不双开）。
 - **O3-B**：`commit` 移到互斥锁**外**（commit 自取同键 mutex，锁内二次抢必自死锁；且 commit 含上游 HTTP，锁内不做上游调用红线）。
 - **O3-C**：`getData('commit')` 段 SDK `code=0` 超时/失败**不冒泡**（`return []`）——订单停 pending、已扣费保留，返 200+pending 展示态（下游轮询容忍，见 deploy.yaml），权威自愈 = ReconcilePendingCommand 主扫描（无 channel 过滤）+ 下游 pull `get` 条件式加速。
 - **M-2 知情不对称**：unpaid resume 分支走 `pay(autoCommit=true)`，其 `MutationBusyException` 经 `method='pay'≠'commit'` 仍上抛 503——与 active 分支 commit 段吞不对称；既有行为、有意不改（O3 范围仅 active 分支 + getData commit 段），下游重试即收敛。

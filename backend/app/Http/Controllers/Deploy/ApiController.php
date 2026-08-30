@@ -275,6 +275,15 @@ class ApiController extends Controller
                 $updateParams['validation_method'] = $resolved;
             }
 
+            if ($validationMethod === 'delegation' && ! app(AutoRenewService::class)->checkDelegationValidity(
+                $order->user_id,
+                $updateParams['domains'],
+                strtolower((string) ($order->product->ca ?? '')),
+                is_array($cert->validation) ? $cert->validation : [],
+            )) {
+                $this->error('部分域名 CNAME 委托未配置或验证未通过');
+            }
+
             // 如果订单到期时间小于 15 天则续费，否则重签
             // 产品校验 / auto_renew 校验放互斥锁之前（行为不变，早失败不进临界区）
             $isRenew = $order->period_till?->lt(now()->addDays(15));
@@ -338,7 +347,7 @@ class ApiController extends Controller
                 //  3) commit 移到互斥锁「外」——reissue 复用同一 orderId，commit 自带同键互斥锁，
                 //     若在锁内则二次抢锁必失败自死锁；且 commit 含上游 HTTP，锁内不做上游调用（红线）。
                 //  4) 【锁纪律】不在此处对订单行做「先于 renew/reissue 的显式 FOR UPDATE 预锁」：
-                //     renew/reissue 的 initParams（CSR keygen + 委托 TXT 逐 token 上游 DNS 写，ProxyDNS 单 token 15s）
+                //     renew/reissue 的 initParams（CSR keygen + 委托 TXT 逐 token 上游 DNS 提供商写入，单 token 15s）
                 //     在其内部【源订单行锁之前】执行；并发双开的串行主体是 renew(persistOrder)/reissue 内的
                 //     「源订单行锁 + 前驱翻转 affected-rows CAS」（CAS 是锁定写 current read，不受 initParams 前置
                 //     一致读建立的 RR view 影响，无需外层再叠一把预锁）。此前的预锁会把 keygen + 委托 DNS HTTP 全

@@ -1,16 +1,19 @@
 <?php
 
 use App\Models\Cert;
+use App\Models\CnameDelegation;
 use App\Models\DeployToken;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
+use App\Services\Delegation\DnsResolver;
 use App\Services\Order\Api\Api;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Traits\CreatesTestData;
 
-uses(RefreshDatabase::class);
+uses(RefreshDatabase::class, CreatesTestData::class);
 
 /**
  * 锁纪律回归：Deploy update 续费/重签时，Action::initParams（CSR keygen +
@@ -28,6 +31,18 @@ uses(RefreshDatabase::class);
  * 路由：POST /api/deploy → Deploy\ApiController@update（route:list 核实）。
  */
 beforeEach(function () {
+    $this->configureTestDelegationProxyDomain();
+
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('cnameRecords')->andReturnUsing(function (string $host): array {
+        $delegation = CnameDelegation::all()->first(
+            fn (CnameDelegation $item) => strtolower("$item->prefix.$item->zone") === strtolower($host),
+        );
+
+        return $delegation ? [$delegation->target_fqdn] : [];
+    });
+    app()->instance(DnsResolver::class, $resolver);
+
     $this->user = User::factory()->create([
         'balance' => 1000,
         'credit_limit' => 0,

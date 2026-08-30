@@ -3,12 +3,14 @@
 use App\Models\ApiLog;
 use App\Models\AutoDeployReport;
 use App\Models\Cert;
+use App\Models\CnameDelegation;
 use App\Models\DeployToken;
 use App\Models\ErrorLog;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
 use App\Models\User;
+use App\Services\Delegation\DnsResolver;
 use App\Services\Order\Api\Api;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -17,8 +19,24 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
+use Tests\Traits\CreatesTestData;
 
-uses(RefreshDatabase::class);
+uses(RefreshDatabase::class, CreatesTestData::class);
+
+beforeEach(function () {
+    $this->configureTestDelegationProxyDomain();
+    Cache::put('setting:group_name:site', [], 3600);
+
+    $resolver = Mockery::mock(DnsResolver::class);
+    $resolver->shouldReceive('cnameRecords')->andReturnUsing(function (string $host): array {
+        $delegation = CnameDelegation::all()->first(
+            fn (CnameDelegation $item) => strtolower("$item->prefix.$item->zone") === strtolower($host),
+        );
+
+        return $delegation ? [$delegation->target_fqdn] : [];
+    });
+    app()->instance(DnsResolver::class, $resolver);
+});
 
 // ===== 辅助函数 =====
 
@@ -845,6 +863,39 @@ test('update active 产品不支持委托验证', function () {
         'validation_method' => 'delegation',
     ])->assertOk()->assertJson(['code' => 0, 'msg' => '该产品不支持委托验证'])
         ->assertJsonPath('errors.error_code', 'validation_method_unsupported');
+});
+
+test('update deploy 委托检测使用源 validation 的逻辑委托', function () {
+    [$user, $token] = createDeployAuth();
+    $sourceDelegation = $this->createTestDelegation($user, [
+        'zone' => 'example.com',
+        'prefix' => '_pki-validation',
+    ]);
+    $currentDelegation = $this->createTestDelegation($user, [
+        'zone' => 'sub.example.com',
+        'prefix' => '_pki-validation',
+    ]);
+    [$order] = createDeployOrder($user, 'active', [
+        'common_name' => 'sub.example.com',
+        'alternative_names' => 'sub.example.com',
+        'validation' => [[
+            'domain' => 'sub.example.com',
+            'method' => 'txt',
+            'delegation_id' => $sourceDelegation->id,
+            'delegation_target' => $sourceDelegation->target_fqdn,
+        ]],
+    ], [], [
+        'ca' => 'sectigo',
+        'validation_methods' => ['delegation', 'txt'],
+    ]);
+
+    deployPost($token, '/api/deploy/', [
+        'order_id' => $order->id,
+        'validation_method' => 'delegation',
+    ])->assertOk();
+
+    expect($sourceDelegation->fresh()->last_checked_at)->not->toBeNull()
+        ->and($currentDelegation->fresh()->last_checked_at)->toBeNull();
 });
 
 test('update 本地 CSR 前置校验失败不写签发失败记录', function () {

@@ -429,10 +429,16 @@ trait ActionTrait
                 $cert['unique_value'] ?? ''
             );
 
+            $automaticDelegation = in_array($cert['channel'], ['auto', 'deploy'], true);
+            $sourceValidation = $automaticDelegation && in_array($cert['action'], ['renew', 'reissue'], true)
+                ? ($params['last_cert']['validation'] ?? [])
+                : [];
             $cert['validation'] = $this->generateValidation(
                 $cert['dcv'],
                 $cert['alternative_names'],
-                $params['user_id'] ?? null
+                $params['user_id'] ?? null,
+                ! $automaticDelegation,
+                is_array($sourceValidation) ? $sourceValidation : [],
             );
 
             // 如果是委托验证，尝试写入 TXT 记录
@@ -611,12 +617,31 @@ trait ActionTrait
      * @param  array  $dcv  DCV 信息
      * @param  string  $domains  域名列表（逗号分隔）
      * @param  int|null  $userId  用户ID（委托验证时需要）
+     * @param  bool  $useDefaultTarget  手工操作是否为订单暂存当前默认委托目标
+     * @param  array  $sourceValidation  自动续费/重签的源证书委托绑定
      */
-    protected function generateValidation(array $dcv, string $domains, ?int $userId = null): ?array
-    {
+    protected function generateValidation(
+        array $dcv,
+        string $domains,
+        ?int $userId = null,
+        bool $useDefaultTarget = false,
+        array $sourceValidation = [],
+    ): ?array {
         $method = strtolower($dcv['method']);
         $isDelegate = $dcv['is_delegate'] ?? false;
         $domains = explode(',', trim($domains, ','));
+
+        $sourceDelegationIds = [];
+        foreach ($sourceValidation as $item) {
+            if (! is_array($item) || ! is_numeric($item['delegation_id'] ?? null)) {
+                continue;
+            }
+
+            $sourceDomain = strtolower((string) ($item['domain'] ?? ''));
+            if ($sourceDomain !== '') {
+                $sourceDelegationIds[$sourceDomain] = (int) $item['delegation_id'];
+            }
+        }
 
         // 委托验证时需要查找委托记录
         $delegationService = $isDelegate && $userId ? app(CnameDelegationService::class) : null;
@@ -639,19 +664,38 @@ trait ActionTrait
                     // 根据 CA 确定委托前缀（不同 CA 使用不同的验证前缀）
                     $prefix = CnameDelegationService::getDelegationPrefixForCa($ca);
 
-                    // 查找委托记录（行为由 ca 决定：exact 精确匹配 / 非 exact 子域优先+回落根域）
-                    $delegation = $delegationService->findDelegation($userId, $domain, $ca);
+                    // 自动续费/重签优先沿用源证书已冻结的逻辑委托 ID；缺失时兼容旧数据，
+                    // 再按 CA 规则查找现有委托。手工操作只在订单 validation 暂存当前默认目标，
+                    // 不立即修改共享委托，避免未支付订单取消后破坏旧订单。
+                    $sourceDelegationId = $sourceDelegationIds[strtolower($domain)] ?? null;
+                    $delegation = $sourceDelegationId
+                        ? CnameDelegation::where('user_id', $userId)->find($sourceDelegationId)
+                        : null;
+                    $delegation ??= $delegationService->findDelegation($userId, $domain, $ca);
 
                     // 找不到则自动创建（zone 由 ca 派生：exact 精确域名 / 非 exact 根域）
                     if (! $delegation) {
                         $zone = $delegationService->resolveZone($domain, $ca);
-                        $delegation = $delegationService->createOrGet($userId, $zone, $prefix);
+                        $delegation = $delegationService->createOrGet(
+                            $userId,
+                            $zone,
+                            $prefix,
+                        );
                     }
 
                     // 始终保存委托信息（即使 valid=false）
                     $validation[$k]['delegation_id'] = $delegation->id;
-                    $validation[$k]['delegation_target'] = $delegation->target_fqdn;
-                    $validation[$k]['delegation_valid'] = $delegation->valid;
+                    $target = $delegation->target_fqdn;
+                    $valid = $delegation->valid;
+                    if ($useDefaultTarget) {
+                        $defaultProxyDomain = $delegationService->defaultProxyDomain();
+                        if ($delegation->proxy_domain !== $defaultProxyDomain) {
+                            $target = $delegationService->targetForProxyDomain($delegation, $defaultProxyDomain);
+                            $valid = false;
+                        }
+                    }
+                    $validation[$k]['delegation_target'] = $target;
+                    $validation[$k]['delegation_valid'] = $valid;
                     $validation[$k]['delegation_zone'] = $delegation->zone;
                 }
             }
@@ -727,55 +771,71 @@ trait ActionTrait
     protected function writeDelegationTxtRecords(array $validation): array
     {
         $dnsService = app(DelegationDnsService::class);
+        $delegationService = app(CnameDelegationService::class);
 
-        // 按 delegation_id 分组收集 tokens
+        // 按逻辑委托与冻结目标共同分组，避免同一委托的新旧目标互相串写。
         $tokensByDelegation = [];
-        foreach ($validation as $item) {
+        foreach ($validation as $index => $item) {
             $delegationId = $item['delegation_id'] ?? null;
-            $delegationValid = $item['delegation_valid'] ?? false;
-
-            // 跳过无效委托或已写入的
-            if (! $delegationId || ! $delegationValid || ($item['auto_txt_written'] ?? false)) {
+            if (! $delegationId || ($item['auto_txt_written'] ?? false)) {
                 continue;
             }
 
-            if (! isset($tokensByDelegation[$delegationId])) {
-                $tokensByDelegation[$delegationId] = [
+            $delegation = CnameDelegation::find($delegationId);
+            if (! $delegation) {
+                continue;
+            }
+
+            $target = $item['delegation_target'] ?? null;
+            $proxyDomain = is_string($target) && $target !== ''
+                ? $delegationService->proxyDomainFromTarget($delegation, $target)
+                : $delegation->proxy_domain;
+            if ($proxyDomain === null) {
+                continue;
+            }
+
+            $delegationKey = $delegationId.'|'.$proxyDomain;
+            if (! isset($tokensByDelegation[$delegationKey])) {
+                $tokensByDelegation[$delegationKey] = [
                     'tokens' => [],
-                    'delegation' => CnameDelegation::find($delegationId),
+                    'indexes' => [],
+                    'delegation' => $delegation,
+                    'proxy_domain' => $proxyDomain,
                 ];
             }
 
             if (! empty($item['value'])) {
-                $tokensByDelegation[$delegationId]['tokens'][] = $item['value'];
+                $tokensByDelegation[$delegationKey]['tokens'][] = $item['value'];
+                $tokensByDelegation[$delegationKey]['indexes'][] = $index;
             }
         }
 
         // 批量写入 TXT 记录
-        $writtenDelegations = [];
-        foreach ($tokensByDelegation as $delegationId => $data) {
+        $writtenIndexes = [];
+        foreach ($tokensByDelegation as $data) {
             $delegation = $data['delegation'];
             $tokens = array_unique($data['tokens']);
 
-            if (! $delegation || empty($tokens)) {
+            if (empty($tokens)) {
                 continue;
             }
 
             $isSuccess = $dnsService->setTxtByLabel(
-                $delegation->proxy_zone,
+                $data['proxy_domain'],
                 $delegation->label,
                 $tokens
             );
 
             if ($isSuccess) {
-                $writtenDelegations[$delegationId] = true;
+                foreach ($data['indexes'] as $index) {
+                    $writtenIndexes[$index] = true;
+                }
             }
         }
 
         // 更新 validation 中的写入标记
-        foreach ($validation as &$item) {
-            $delegationId = $item['delegation_id'] ?? null;
-            if ($delegationId && isset($writtenDelegations[$delegationId])) {
+        foreach ($validation as $index => &$item) {
+            if (isset($writtenIndexes[$index])) {
                 $item['auto_txt_written'] = true;
                 $item['auto_txt_written_at'] = now()->toDateTimeString();
             }
@@ -789,6 +849,14 @@ trait ActionTrait
      */
     protected function mergeValidation(array $apiValidation, array $certValidation): array
     {
+        $localOnlyKeys = [
+            'delegation_id',
+            'delegation_target',
+            'delegation_zone',
+            'delegation_valid',
+            'auto_txt_written',
+            'auto_txt_written_at',
+        ];
         $indexed = [];
         foreach ($certValidation as $item) {
             $domain = $item['domain'] ?? '';
@@ -796,6 +864,11 @@ trait ActionTrait
         }
 
         foreach ($apiValidation as &$item) {
+            // 委托与自动写入状态只由本地管理，不接受上游注入或覆盖。
+            foreach ($localOnlyKeys as $key) {
+                unset($item[$key]);
+            }
+
             $domain = $item['domain'] ?? '';
             if (isset($indexed[$domain])) {
                 $indexedDomain = $indexed[$domain];

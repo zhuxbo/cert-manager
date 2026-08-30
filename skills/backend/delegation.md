@@ -27,6 +27,30 @@
 
 ## 委托验证
 
+### 多代理域设置与 DNS provider
+
+委托配置使用独立的 `delegation` 设置组，配置项平铺存储：
+
+- `defaultDomain` 是手工新订单及新建委托记录初始指引使用的代理域名。
+- 每个代理域有一个 `array` 类型设置，域名先按项目 IDNA 规则转为 ASCII，再转小写、去末尾点并校验 DNS 总长/label，key 由该 ASCII 域将点号替换为下划线后转 camelCase 得到；例如 `proxy.example.com` 对应 `proxyExampleCom`。Unicode 与等价 Punycode 必须归一为同一域和同一 key。value 必须内含与 key 一致的 `domain`，provider 字段和凭据直接平铺在同一数组内。
+- Tencent 配置形如 `{domain, provider: "tencent", secretId, secretKey}`；Cloudflare 配置形如 `{domain, provider: "cloudflare", zoneId, apiToken}`；Aliyun 配置形如 `{domain, provider: "aliyun", accessKeyId, accessKeySecret}`。`DelegationDnsProviderFactory` 按 `provider` 路由，三者都通过统一的 TXT upsert、枚举和删除接口工作。Cloudflare 直接调用必要 HTTP 接口；Tencent 只保留一个 TC3 签名器并直接调用 DNSPod 的 `DescribeRecordList`、`CreateTXTRecord`、`DeleteRecord`，请求不携带 DNSPod 不需要的 Region；Aliyun 只保留一个 AliDNS RPC HMAC-SHA1 签名器并调用 `DescribeDomainRecords`、`AddDomainRecord`、`DeleteDomainRecord`，不得引入三家完整 SDK。
+- 只有 domain、provider 和该 provider 必填凭据全部有效，且设置 key 与 domain 派生 key 一致的配置才进入运行时。`domain` 为空的数组项视为未启用草稿，既不进入运行配置也不作为畸形配置告警；已经填写 domain 但凭据不完整的项仍排除运行时，并由配置诊断报告错误。
+
+Seeder 首次创建“域名委托”设置组时，按数据库中“证书接口”组的当前权重插入其后；目标权重被占用时才将该位置及其后的组整体后移。后续重跑不修改任何已有设置组权重，保留管理员排序。Seeder 并幂等创建空的 `defaultDomain`；完成旧配置迁移后，再为尚无非空域配置的 provider 补充对应的 `tencentExample`、`cloudflareExample`、`aliyunExample` 空凭据示例。已有 provider 配置即使凭据尚未补全，也不再添加同 provider 示例；已有示例不覆盖、不自动删除。示例是普通可编辑草稿：填写 domain 和凭据时，应同时把 key 改为该域名派生的小驼峰 key，完整后即可进入运行时。升级迁移只处理旧版 `site.delegation` 腾讯云单项设置，将其转换为 Tencent 域配置，并只回填 `proxy_domain` 为空的历史委托；已有的非空绑定不会被覆盖。旧配置凭据不完整时仍按原值迁移为草稿，由运行配置解析统一排除。
+
+### 逻辑委托、订单快照与 provider 切换
+
+`CnameDelegation` 以 `(user_id, zone, prefix)` 标识逻辑委托，`validation.delegation_id` 持久化引用该记录。`proxy_domain` 表示最近一次全局 CNAME 检测实际命中的代理域；`validation.delegation_target` 则是某张证书使用的不可变 TXT 目标快照。两者职责不同：后续全局检测可以校正共享记录，但不得改写旧订单快照。
+
+- 手工 web/admin 新建、续费、重签一律冻结当前完整 `defaultDomain`；`updateDCV(delegation)` 也把现有订单切换到当前默认域。两者都不直接修改共享 `proxy_domain`。
+- 手工 revalidate 只清验证状态和 `auto_txt_written` 后，向原 `delegation_target` 幂等重写；不切换目标。后台定时 revalidate 不换目标，也不清写入标记。
+- auto/deploy 续费或重签先从源证书 validation 取得精确 `delegation_id`，全局检测该逻辑委托，再以其检测结果生成新订单快照。旧数据缺少有效 ID 时才按 CA 规则回落查找或创建。
+- V1/V2 API 不支持 delegation 验证方式，也不接收或下传本地委托字段。
+
+全局检测按“完整默认域优先，其余完整配置按设置顺序”逐一检测。任一目标命中即更新 `valid=true` 和 `proxy_domain=命中域`；得到权威答案但全部未命中时置 `valid=false` 并保留原 `proxy_domain`；全部渠道不可达时只更新检查时间，不改变有效状态或失败计数。CA 返回 `active` 不能替代 CNAME 检测，因为客户可能直接解析 TXT 绕过委托。
+
+委托体系只承诺单节点部署，不引入命名锁、状态机、revision 或额外表。同一代理域切换 provider 后，域名身份和订单快照不变，后续 TXT 操作按该域当前完整 provider 配置执行。
+
 ### 验证方法转换
 
 用户选择 `delegation` 验证方法时：
@@ -62,21 +86,21 @@
 **处理流程**：
 
 1. 检查 `dcv['is_delegate'] = true`
-2. 按 `delegation_id` 分组收集验证 tokens
-3. 跳过无效委托（`delegation_valid = false`）或已写入的记录
-4. 调用 `DelegationDnsService::setTxtByLabel()` 批量写入 TXT 记录
+2. 按 `delegation_id + delegation_target` 分组收集验证 tokens，避免同一逻辑委托的新旧目标串写
+3. 已写入的记录直接跳过；写入域优先从 `delegation_target` 解析，旧数据缺失快照时才回落共享 `proxy_domain`
+4. 调用 `DelegationDnsService::setTxtByLabel()` 批量幂等写入 TXT 记录；共享记录当前 `valid=false` 不阻止写入冻结目标
 5. 更新 validation 中的 `auto_txt_written` 和 `auto_txt_written_at` 标记
 
 **validation 字段说明**：
 
-| 字段                  | 说明            |
-| --------------------- | --------------- |
-| `delegation_id`       | 委托记录 ID     |
-| `delegation_target`   | CNAME 目标 FQDN |
-| `delegation_valid`    | 委托是否有效    |
-| `delegation_zone`     | 委托的根域名    |
-| `auto_txt_written`    | TXT 是否已写入  |
-| `auto_txt_written_at` | 写入时间        |
+| 字段                  | 说明                           |
+| --------------------- | ------------------------------ |
+| `delegation_id`       | 委托记录 ID                    |
+| `delegation_target`   | 本订单应配置的 CNAME 目标 FQDN |
+| `delegation_valid`    | 本订单目标是否有效             |
+| `delegation_zone`     | 委托的根域名                   |
+| `auto_txt_written`    | TXT 是否已写入                 |
+| `auto_txt_written_at` | 写入时间                       |
 
 ### 即时检测
 
@@ -119,56 +143,48 @@ const getDisplayMethod = dcv => {
 ### 委托验证自动续签数据流
 
 ```
-用户创建订单（validation_method=delegation）
+手工创建/续费/重签（validation_method=delegation）
     ↓
-ActionTrait::generateDcv()
-    → method 转换为 txt
-    → 设置 is_delegate=true, ca=xxx
+使用当前 defaultDomain 生成 validation.delegation_target 快照
+    → 立即向该目标写 TXT
+    → 不修改共享 proxy_domain
     ↓
-ActionTrait::generateValidation()
-    → CnameDelegationService::findValidDelegation() 查找委托
-    → 找不到则 createOrGet() 创建
-    → 填充 delegation_id, delegation_target, delegation_valid
+任一路径发起全局委托检测
+    → 默认域优先，回落其他完整配置
+    → 命中后校正共享 proxy_domain
     ↓
-ActionTrait::writeDelegationTxtRecords()
-    → 按 delegation_id 分组
-    → DelegationDnsService::setTxtByLabel() 批量写入
-    → 标记 auto_txt_written=true
+自动续费/重签或 deploy
+    → 从源 validation.delegation_id 加载同一逻辑委托
+    → 先全局检测，再按检测结果生成新订单快照
     ↓
-订单提交到 CA（dcv.method=txt）
-    ↓
-ValidateCommand 定时验证
-    → checkDelegationValidity() 即时检测
-    → 触发 CA 验证
-    ↓
-证书签发完成
-    ↓
-[到期前 15 天] AutoRenewCommand（排除 acme 通道）
-    → checkDelegationValidity() 即时检查委托有效性
-    → 无有效委托 → 跳过，不发起续费/重签
-    → 有有效委托 → 强制使用 delegation 验证方法
-    → 重新走上述流程
+CA active 只更新证书状态，不切换共享委托
 ```
 
 ### 委托 DNS 清理
 
 `DelegationCleanupCommand` 每天 06:00 清理无用的委托 TXT 记录：
 
-- **委托格式白名单（数据破坏防线）**：删除判据在 keepLabels 白名单之上前置「委托格式收敛」——只删 label 形如 **32 或 64 位 hex**（`preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', ...)`，大小写不敏感）的记录。当代 `generateLabel` 恒产 32-hex，64-hex 兼容前身仓历史存量 + 迁移列注释。护住 proxyZone 下用户自放的 SPF/DKIM/`_dmarc`/apex `@`/站点验证等**非委托 TXT**（含点/下划线/非 hex 长度的名字永不进删除集），防误删破坏邮件收发/域名验证。
-- **保留**：`processing`/`approving` 状态订单使用的委托记录（在途 label 恒在 keepLabels、`! contains` 结构性堵死误删方向）。
-- **删除**：代理域名下**委托格式**且不在 keepLabels 的记录（孤儿委托 label 仍为 hex、表内已删 → 仍被清理，格式过滤两全不漏清）。
-- **清理数据库标记**：移除已删除记录对应的 `auto_txt_written` 标记（`cleanDatabaseMarks` 全扫，含 delegation_id 指向已删委托的孤儿标记）。
+- **按域隔离**：枚举每个完整代理域配置，通过该域自己的 provider 拉取和删除记录。`processing`/`approving` 订单优先按 `validation.delegation_target` 建立 keepLabels；旧数据缺少目标快照时才回落共享 `proxy_domain`。同名 label 不会跨域误保留，单域失败不阻止其他域继续处理。
+- **委托格式白名单（数据破坏防线）**：删除判据在 keepLabels 白名单之上前置「委托格式收敛」——只删 label 形如 **32 或 64 位 hex**（`preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', ...)`，大小写不敏感）的记录。当代 `generateLabel` 恒产 32-hex，64-hex 兼容历史存量。护住代理域下用户自放的 SPF/DKIM/`_dmarc`/apex `@`/站点验证等**非委托 TXT**（含点、下划线或非 hex 长度的名字永不进删除集）。
+- **保留**：`processing`/`approving` 状态订单引用的委托 label，在订单冻结目标所属代理域内保留。
+- **删除**：每个代理域下符合委托格式且不在该域 keepLabels 的 TXT 记录。
+- **删除计数**：成功日志的 `deleted_count` 按初始 DNS inventory 中、所属 label 已完整删除成功的实际 TXT 记录条数累计；同一 label 多条 TXT 按多条计，后续 label 失败不计入。
+- **清理数据库标记**：按同一订单快照域与成功删除 label 精确匹配后，移除 `delegation_id`、`auto_txt_written` 和 `auto_txt_written_at`。委托行不存在时只清本地失效字段，不猜测远端归属。
+
+### 删除代理域设置
+
+删除操作沿用通用设置界面，不增加“下岗”按钮。`defaultDomain` 设置本身和当前默认域配置不可删除；其他域只执行一次索引计数：`CnameDelegation::where('proxy_domain', $domain)->count()`。计数大于零时提示“仍有 N 条委托记录使用该委托域”，等周巡检清理无引用记录后再删除。删除路径不扫描证书 validation JSON、不清远端 TXT、不迁移委托记录。批量删除先检查全部目标，避免部分删除。
+
+`delegation` 核心设置组不可改名或删除；空 domain 示例可直接删除，畸形域配置失败关闭。已启用域不能原地改名，但可以在保持域名身份的前提下切换 provider 和凭据。
 
 ### 委托健康周巡检（`delegation:check`）
 
-`DelegationCheckCommand` 每周一 07:00 巡检全部委托，**两阶段 + 全局熔断**防 dnsTools 系统性停摆误报/误删：
+`DelegationCheckCommand` 每周一 07:00 逐条处理：
 
-- **三态探测（分档核心）**：`CnameDelegationService::probeValidity` 经 `VerifyUtil::verifyCnameDelegationDetailed` 返 `valid|invalid|unreachable`。detailed 在既有「宽松匹配」上额外暴露 `authoritative`（本轮是否拿到任一权威 DNS 答案）——任一 dnsTools 节点 `code=1`（records 为空亦算权威「无记录」）或本地 `DnsResolver::cnameRecords` 返数组（含空数组）→ authoritative；全渠道失败且本地返 null（不可达）→ 非 authoritative。**本地渠道钉死三态 `cnameRecords`（`null`=不可达 / `[]`=权威无记录 / 非空=记录列表），绝不复用把二者塌缩的 `checkCnameRecordLocal`（已删）/ `DnsResolver::cname`（保留供 F2-1 命中即用场景）**——误接即 authoritative 恒真 → 熔断/冻结整体虚设。
-- **落库分档**：`applyProbeOutcome` 三态落库——`valid`→valid=true+归零；`invalid`→valid=false+`fail_count++`（硬截断上限类常量 `FAIL_COUNT_MAX`=100，PHP 侧 / DB 侧 LEAST / 命令 post-apply gate 三处共用防漂移）+固定 last_error；`unreachable`→**冻结计数**（不写 valid/fail_count/last_error，仅更新 last_checked_at 留痕）。`checkAndUpdateValidity` = probe+apply 组合、签名不变，既有消费方（AutoRenewService/DelegationController/ValidateCommand）零改动且同获「unreachable 不误计数」修复。
-- **两阶段 + 熔断**：阶段①逐条探测（不落库）跨 chunk 累积标量 outcome + `last_checked_at` 快照，**并滚动增量判熔断**（每条后以已探测计数判 `unreachable 占比 ≥ 0.5 且样本 ≥ 20`，命中即 `return false` 提前终止本轮探测——系统性停摆下免对满表逐条付满价探测；fail-safe 方向：提前终止本轮零写、下轮重判）；阶段②轮末以（提前终止时偏 partial 的）计数**复判**熔断——同一判据（类常量 `CIRCUIT_BREAKER_RATIO`/`CIRCUIT_BREAKER_MIN_SAMPLE`）判系统性停摆，**本轮零落库/零删除/零通知** + `SystemAlert`（category `delegation_patrol`、固定指纹 `patrol_outage`、dedupeKey `delegation_patrol_outage`、TTL **504h=3×周巡检周期**）；未熔断轮 `clearDedupe` 复位。探测与落库分离使熔断在写库前拦截。
-- **阶段② TOCTOU CAS 落库（防陈旧覆盖）**：两阶段间隔可达数十分钟，窗口内 ValidateCommand（每分钟）/双端手动检查/AutoRenew 可能已写入更新鲜结论——巡检落库不走 `applyProbeOutcome`，走 `applyProbeOutcomeIfUnchanged`：单条原子 `UPDATE ... WHERE id = ? AND last_checked_at <=> 阶段①快照`（NULL-safe，MySQL 5.7/8.x 均支持），affected=0 即本条陈旧结论作废、跳过清理 gate（统计「陈旧跳过」）；invalid 的 `fail_count` 用 DB 侧 `LEAST(fail_count+1,100)` 原子自增（顺带消多写者 lost update）；删除加 `valid=false` 条件（落库到删除的极窄窗被并发恢复则不删）。CAS 基准依赖不变式「`last_checked_at` 前移的全局唯一写点是 `applyProbeOutcome`（三态均写 now()）」——新增探测落库路径必须写结论同步写 `last_checked_at`，否则 CAS 误判。
-- **抖动 gate（post-apply 口径）**：无效委托的清理阈值为 `fail_count ≥ 2`（类常量 `CLEANUP_FAIL_THRESHOLD`），gate 读**落库后**值（算术 `累积现值 + invalid?1:0`）——有 active 证书（active/unpaid/pending/processing/approving）→ 保留；无 active 证书 → 达阈才删除（未达阈保留、等下轮确认）。`fail_count` 是多写者计数器（ValidateCommand 每分钟/双端手动/AutoRenew 每日均写），「≈2 周确认」是唯一写者情形的下界。
-- **用户通知收敛到自动续签前**：`delegation:check` 周巡检只做健康检查、无用记录清理和系统性停摆告警，不再单独向用户发委托失效通知。`AutoRenewCommand` 在真正创建续费/重签单之前即时调用 `AutoRenewService::checkDelegationValidity()`；只有委托无效实际阻碍该次自动续签/重签时，才跳过处理并通过 `auto_renew_failed` 在 14/7/3/1 天节点发送委托专属原因。独立 `delegation_invalid` Builder、模板和配置均已删除。
+- 先查询同一用户是否还有 `active/unpaid/pending/processing/approving/cancelling` 证书覆盖该 zone；查询同时匹配 Unicode/Punycode 以及子域和通配符形式。
+- 没有引用时立即删除委托记录，不查询 DNS，不参考 `valid` 或 `fail_count`；`--dry-run` 只报告。
+- 有引用时才执行全局多域检测，并用原始 `last_checked_at` 做单字段 CAS 落库；CAS 未命中说明期间已有更新，本轮结果作废。
+- 无效或不可达的有引用记录继续保留。周巡检不发送用户通知；自动续签真正受阻时才复用 `auto_renew_failed` 通知。
 
 ### 相关服务
 

@@ -1,0 +1,20 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingGroupControllerTest::__pest_evaluable_核心_delegation_设置组不可改名且缓存仍指向原组",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/setting-group/{id}",
+            "request_keys": [
+                "name",
+                "title",
+                "weight"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

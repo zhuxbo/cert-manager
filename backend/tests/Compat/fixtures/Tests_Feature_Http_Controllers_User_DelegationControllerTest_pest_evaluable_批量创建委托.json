@@ -19,13 +19,13 @@
                             "zone": "string",
                             "prefix": "string",
                             "label": "string",
+                            "proxy_domain": "string",
                             "valid": "boolean",
                             "fail_count": "integer",
                             "last_error": "string",
                             "id": "integer",
                             "updated_at": "string",
                             "created_at": "string",
-                            "proxy_zone": "string",
                             "target_fqdn": "string"
                         }
                     },

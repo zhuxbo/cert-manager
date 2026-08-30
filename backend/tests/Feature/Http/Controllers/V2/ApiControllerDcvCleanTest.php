@@ -72,6 +72,7 @@ test('cleanDcvAndValidation 剥离 delegation 内部字段', function () {
             'delegation_target' => 'xxx.delegate.example.com',
             'delegation_valid' => true,
             'delegation_zone' => 'example.com',
+            'delegation_pending_proxy_domain' => 'new.delegate.example.com',
             'auto_txt_written' => true,
             'host' => '_hash',
             'value' => 'xxx.sectigo.com',
@@ -92,7 +93,8 @@ test('cleanDcvAndValidation 剥离 delegation 内部字段', function () {
     expect($item)->toHaveKeys(['domain', 'method', 'host', 'value']);
     expect($item)->not->toHaveKeys([
         'is_delegate', 'delegation_id', 'delegation_target',
-        'delegation_valid', 'delegation_zone', 'auto_txt_written',
+        'delegation_valid', 'delegation_zone', 'delegation_pending_proxy_domain',
+        'auto_txt_written',
     ]);
 });
 

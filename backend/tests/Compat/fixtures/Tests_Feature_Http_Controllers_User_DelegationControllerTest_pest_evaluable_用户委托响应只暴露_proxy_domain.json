@@ -1,0 +1,34 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\User\\DelegationControllerTest::__pest_evaluable_用户委托响应只暴露_proxy__domain",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/delegation/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "id": "integer",
+                    "user_id": "integer",
+                    "zone": "string",
+                    "prefix": "string",
+                    "label": "string",
+                    "proxy_domain": "string",
+                    "valid": "boolean",
+                    "last_checked_at": "null",
+                    "fail_count": "integer",
+                    "last_error": "string",
+                    "created_at": "string",
+                    "updated_at": "string",
+                    "target_fqdn": "string",
+                    "cname_to": {
+                        "host": "string",
+                        "value": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

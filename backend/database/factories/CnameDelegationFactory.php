@@ -26,6 +26,7 @@ class CnameDelegationFactory extends Factory
             'zone' => $zone,
             'prefix' => $prefix,
             'label' => substr(hash('sha256', "$userId:$prefix.$zone"), 0, 32),
+            'proxy_domain' => 'proxy.example.com',
             'valid' => true,
             'fail_count' => 0,
             'last_error' => '',
