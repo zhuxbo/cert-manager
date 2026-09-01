@@ -31,7 +31,7 @@ use Tests\Fixtures\Jobs\ProbeTriesOneJob;
  */
 
 beforeEach(function () {
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
     Cache::flush();
     ProbeTriesOneJob::$ran = 0;
     ProbeTriesFiveJob::$ran = 0;
@@ -43,7 +43,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 /**
@@ -228,4 +228,20 @@ test('tries=5 且 maxExceptions=null Job 经 4 次 freeze release 仍存活，�
     expect(ProbeTriesFiveNoMaxJob::$ran)->toBe(1)
         ->and($failures)->toBeEmpty()
         ->and(Queue::connection('database')->size('default'))->toBe(0); // 成功删除
+});
+
+test('restore owner 冻结不能被普通解锁移除且业务 Job 继续 release', function () {
+    $failures = [];
+    captureJobFailures($failures);
+
+    UpgradeFreezeLock::freezeRestore('atomic restore');
+    ProbeTriesFiveNoMaxJob::dispatch();
+
+    popOnce(probeWorker());
+
+    expect(ProbeTriesFiveNoMaxJob::$ran)->toBe(0)
+        ->and($failures)->toBeEmpty()
+        ->and(Queue::connection('database')->size('default'))->toBe(1)
+        ->and(UpgradeFreezeLock::unfreeze())->toBeFalse()
+        ->and(UpgradeFreezeLock::isFrozen())->toBeTrue();
 });

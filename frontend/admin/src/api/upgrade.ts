@@ -75,23 +75,27 @@ export interface UpgradeStartResult {
   message: string;
 }
 
+export interface StructureCheckSummary {
+  missing_tables: string[];
+  extra_tables: string[];
+  missing_columns: string[];
+  extra_columns: string[];
+  modified_columns: string[];
+  missing_indexes: string[];
+  extra_indexes: string[];
+  modified_indexes: string[];
+  missing_foreign_keys: string[];
+  extra_foreign_keys: string[];
+  modified_foreign_keys: string[];
+  manual_actions: string[];
+  can_auto_fix: boolean;
+}
+
 // 数据库结构检查结果
 export interface StructureCheckResult {
   has_diff: boolean;
   auto_fixed: boolean;
-  summary?: {
-    missing_tables: string[];
-    extra_tables: string[];
-    missing_columns: string[];
-    extra_columns: string[];
-    modified_columns: string[];
-    missing_indexes: string[];
-    extra_indexes: string[];
-    missing_foreign_keys: string[];
-    extra_foreign_keys: string[];
-    manual_actions: string[];
-    can_auto_fix: boolean;
-  };
+  summary?: StructureCheckSummary;
   executed_count?: number;
   message?: string;
 }

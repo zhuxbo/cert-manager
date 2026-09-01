@@ -98,7 +98,7 @@ beforeEach(function () {
     Config::set('upgrade.behavior.auto_seed', false);
     Config::set('upgrade.behavior.auto_structure_check', false);
     Config::set('upgrade.behavior.clear_cache', false);
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
     (new UpgradeStatusManager)->clear();
     File::deleteDirectory(storage_path('app/legacy-platform-config'));
     h2FakeBinary();
@@ -106,7 +106,7 @@ beforeEach(function () {
 
 afterEach(function () {
     Mockery::close();
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
     (new UpgradeStatusManager)->clear();
     File::deleteDirectory(storage_path('app/legacy-platform-config'));
 });
@@ -147,6 +147,21 @@ test('H2-A 成功升级：apply 期间 freeze 生效，unfreeze 严格先于 up�
     $downIdx = collect($callLog)->search(fn ($c) => $c['cmd'] === 'down');
     $upIdx = collect($callLog)->search(fn ($c) => $c['cmd'] === 'up');
     expect($downIdx)->toBeLessThan($upIdx);
+});
+
+test('restore 持锁时升级在备份和维护模式前停止且不覆盖 owner', function () {
+    Config::set('upgrade.behavior.force_backup', true);
+    Artisan::shouldReceive('call')->never();
+    expect(UpgradeFreezeLock::freezeRestore('database restore'))->toBeTrue();
+
+    $service = h2MakeService(fn () => true);
+    $sm = new UpgradeStatusManager;
+    $sm->start('v1.0.0');
+    $result = $service->performUpgradeWithStatus('latest', $sm);
+
+    expect($result['success'])->toBeFalse()
+        ->and($result['error'])->toContain('无法取得升级冻结锁')
+        ->and(UpgradeFreezeLock::info()['owner_source'])->toBe('restore');
 });
 
 test('升级包已携带与 lock 对齐的 vendor 时不依赖 Composer 也能完成', function () {

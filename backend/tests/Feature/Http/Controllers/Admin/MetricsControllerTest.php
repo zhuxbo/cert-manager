@@ -126,8 +126,7 @@ test('返回 CA 延迟 P50 / P95（基于 ca_logs.duration 秒列转毫秒）', 
 
     $response->assertOk();
     expect($response->json('data.ca.requests_24h'))->toBe(10);
-    // 80% 成功率 — JSON 编码可能丢失末位 0，宽容比较
-    expect((float) $response->json('data.ca.success_rate'))->toBe(80.0);
+    expect($response->json('data.ca.success_rate'))->toBeFloat()->toBe(80.0);
     // 排序后 [0.1..1.0]，count=10，p50_idx=floor(10*0.5)=5 → durations[5]=0.6s=600ms
     expect($response->json('data.ca.latency_p50_ms'))->toBe(600);
     // p95_idx=floor(10*0.95)=9 → durations[9]=1.0s=1000ms
@@ -139,7 +138,7 @@ test('CA 无数据时延迟字段返回 0 且 success_rate 为 0', function () {
 
     $response->assertOk();
     expect($response->json('data.ca.requests_24h'))->toBe(0);
-    expect((float) $response->json('data.ca.success_rate'))->toBe(0.0);
+    expect($response->json('data.ca.success_rate'))->toBeFloat()->toBe(0.0);
     expect($response->json('data.ca.latency_p50_ms'))->toBe(0);
     expect($response->json('data.ca.latency_p95_ms'))->toBe(0);
 });
@@ -200,7 +199,7 @@ test('返回数据库总大小（mysql information_schema 求和）', function (
     $db = $response->json('data.database');
     expect($db['driver'])->toBeString();
     expect($db['total_size_bytes'])->toBeGreaterThanOrEqual(0);
-    expect($db['total_size_mb'])->toBeGreaterThanOrEqual(0);
+    expect($db['total_size_mb'])->toBeFloat()->toBeGreaterThanOrEqual(0);
 });
 
 test('状态分布仅统计近 30 天下单的订单', function () {

@@ -241,7 +241,7 @@ final class SnapshotListener
             if ($route instanceof Route) {
                 $uri = $route->uri();
                 if ($uri !== '') {
-                    return '/'.ltrim($uri, '/');
+                    return self::normalizeUri('/'.ltrim($uri, '/'));
                 }
             }
         } catch (\Throwable) {
@@ -252,7 +252,7 @@ final class SnapshotListener
     }
 
     /**
-     * fallback 归一化：数字段 → {id}；长 token 段（≥ 16 字符的字母数字）→ {token}。
+     * fallback 归一化：数字段 → {id}；长 token 段（≥ 32 字符的字母数字）→ {token}。
      */
     private static function normalizeUri(string $path): string
     {
@@ -260,7 +260,7 @@ final class SnapshotListener
         $path = preg_replace('@/\d+(?=/|$)@', '/{id}', $path) ?? $path;
 
         // 长 token / hash 段 → {token}（避免随机 token 占位污染 fixture）
-        $path = preg_replace('@/[A-Za-z0-9_-]{16,}(?=/|$)@', '/{token}', $path) ?? $path;
+        $path = preg_replace('@/[A-Za-z0-9_-]{32,}(?=/|$)@', '/{token}', $path) ?? $path;
 
         return $path;
     }

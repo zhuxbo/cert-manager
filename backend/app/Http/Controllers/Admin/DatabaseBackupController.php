@@ -5,10 +5,12 @@ namespace App\Http\Controllers\Admin;
 use App\Jobs\CreateBackupJob;
 use App\Jobs\RestoreBackupJob;
 use App\Services\Backup\BackupService;
-use App\Services\Binary\BinaryLocator;
-use App\Services\Binary\Exceptions\BinaryNotFoundException;
-use App\Services\Upgrade\DatabaseStructureService;
+use App\Services\Backup\MysqlToolchainChecker;
+use App\Services\Backup\Restore\RestorePreflight;
+use App\Services\Backup\Restore\RestoreRequest;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -21,7 +23,6 @@ class DatabaseBackupController extends BaseController
 {
     public function __construct(
         private BackupService $service,
-        private DatabaseStructureService $structureService
     ) {
         parent::__construct();
     }
@@ -44,10 +45,9 @@ class DatabaseBackupController extends BaseController
      */
     public function store(): void
     {
-        try {
-            app(BinaryLocator::class)->mysqldump();
-        } catch (BinaryNotFoundException $e) {
-            $this->error('未找到 mysqldump 命令', $e->diagnose());
+        $inspection = app(MysqlToolchainChecker::class)->inspect(requireMysql: false, requireMysqldump: true);
+        if (! $inspection['supported']) {
+            $this->error('MySQL 工具链不受支持', $inspection['errors']);
         }
 
         $token = $this->service->newJobToken();
@@ -66,130 +66,57 @@ class DatabaseBackupController extends BaseController
         $this->success(['token' => $token]);
     }
 
-    /**
-     * 查进度：GET /api/admin/database/jobs/{token}
-     */
-    public function jobStatus(string $token): void
+    public function restorePreflight(string $backupId): void
     {
-        if (! preg_match('/^[A-Za-z0-9]{32,40}$/', $token)) {
-            $this->error('非法 token');
-        }
+        $adminId = (int) ($this->guard->id() ?? 0);
+        $report = app(RestorePreflight::class)->inspect(
+            new RestoreRequest($backupId, false, 'admin:'.$adminId),
+        );
 
-        $progress = $this->service->getJobProgress($token);
-        if ($progress === null) {
-            $this->error('任务不存在或已过期');
-        }
-
-        $this->success(['progress' => $progress]);
-    }
-
-    /**
-     * Schema 对比：GET /api/admin/database/backups/{backupId}/schema-diff
-     * 返回当前数据库结构 vs 备份自带 schema.json 的差异摘要。
-     */
-    public function schemaDiff(string $backupId): void
-    {
-        $backup = $this->service->resolveBackup($backupId);
-        if ($backup === null) {
-            $this->error('备份不存在');
-        }
-
-        $schema = $this->service->readSchema($backupId);
-        if ($schema === null) {
-            $this->success([
-                'has_schema' => false,
-                'message' => '旧备份无 schema 信息，无法比对',
-            ]);
-        }
-
-        // 双方都按"当前 ignore 列表"过滤：
-        //   - 旧备份 schema.json 可能含有现已排除的表（如 refresh_tokens），过滤掉避免误报
-        //   - 当前库同样过滤，对齐基准
-        $connection = config('database.default');
-        $database = config("database.connections.$connection.database");
-        $ignoreTables = $this->service->resolveIgnoreTables($database);
-
-        $schema = $this->service->filterStructureTables($schema, $ignoreTables);
-        $current = $this->structureService->exportCurrentStructure($connection);
-        $current = $this->service->filterStructureTables($current, $ignoreTables);
-        $diff = $this->structureService->compareStructures($schema, $current);
-
-        $summary = [
-            'missing_tables' => array_keys($diff['missing_tables'] ?? []),
-            'extra_tables' => array_keys($diff['extra_tables'] ?? []),
-            'modified_tables' => [],
-        ];
-        foreach ($diff['table_differences'] ?? [] as $table => $td) {
-            $items = [];
-            foreach (['missing_columns', 'extra_columns', 'modified_columns', 'missing_indexes', 'modified_indexes', 'extra_indexes'] as $k) {
-                if (! empty($td[$k])) {
-                    $items[$k] = array_keys($td[$k]);
-                }
-            }
-            if (! empty($items)) {
-                $summary['modified_tables'][$table] = $items;
-            }
-        }
-
-        $hasDiff = ! empty($summary['missing_tables'])
-            || ! empty($summary['extra_tables'])
-            || ! empty($summary['modified_tables']);
-
-        // 备份结构中文概览：表名 + MySQL 表注释 + 列数，供前端展示
-        $tablesOverview = [];
-        foreach ($schema['tables'] ?? [] as $tableName => $tableDef) {
-            $tablesOverview[] = [
-                'name' => $tableName,
-                'comment' => (string) ($tableDef['comment'] ?? ''),
-                'columns' => count($tableDef['columns'] ?? []),
-            ];
-        }
-        usort($tablesOverview, fn ($a, $b) => strcmp($a['name'], $b['name']));
-
-        $this->success([
-            'has_schema' => true,
-            'has_diff' => $hasDiff,
-            'summary' => $summary,
-            'tables_overview' => $tablesOverview,
-        ]);
+        $this->success($this->publicPreflightReport($report));
     }
 
     /**
      * 触发异步恢复：POST /api/admin/database/backups/{backupId}/restore
-     * body: { mode: full|incremental }
+     * body: { allow_schema_difference: boolean }
      */
     public function restore(Request $request, string $backupId): void
     {
-        $data = $request->validate([
-            'mode' => 'required|in:full,incremental',
+        $validator = Validator::make($request->all(), [
+            'allow_schema_difference' => ['required', 'boolean'],
+            'mode' => ['prohibited'],
         ]);
+        if ($validator->fails()) {
+            $this->unprocessable('提交数据验证失败', ['errors' => $validator->errors()->toArray()]);
+        }
+        $allowSchemaDifference = (bool) $validator->validated()['allow_schema_difference'];
 
         $backup = $this->service->resolveBackup($backupId);
         if ($backup === null) {
             $this->error('备份不存在');
         }
 
-        try {
-            $locator = app(BinaryLocator::class);
-            $locator->mysqldump();
-            $locator->mysql();
-        } catch (BinaryNotFoundException $e) {
-            $this->error('未找到 '.$e->getTool().' 命令', $e->diagnose());
-        }
-
-        $token = $this->service->newJobToken();
         $adminId = (int) ($this->guard->id() ?? 0);
+        $report = app(RestorePreflight::class)->inspect(
+            new RestoreRequest($backupId, $allowSchemaDifference, 'admin:'.$adminId),
+        );
+        if (($report['runnable'] ?? false) !== true) {
+            $message = ($report['hard_blockers'] ?? []) !== []
+                ? '恢复预检存在硬阻断'
+                : '恢复预检需要确认 Schema 差异';
+            $this->unprocessable($message, ['data' => $this->publicPreflightReport($report)]);
+        }
+        $token = $this->service->newJobToken();
 
         $this->service->setJobProgress($token, [
             'status' => 'queued',
             'message' => '任务已入队',
             'backup_id' => $backupId,
-            'mode' => $data['mode'],
             'admin_id' => $adminId,
             'updated_at' => now()->toDateTimeString(),
         ]);
 
-        RestoreBackupJob::dispatch($token, $backupId, $data['mode'], $adminId)
+        RestoreBackupJob::dispatch($token, $backupId, $allowSchemaDifference, 'admin:'.$adminId)
             ->onQueue(config('queue.names.tasks'));
 
         $this->success(['token' => $token]);
@@ -258,5 +185,31 @@ class DatabaseBackupController extends BaseController
                 'Cache-Control' => 'no-store',
             ]
         );
+    }
+
+    /** @return array<string, mixed> */
+    private function publicPreflightReport(array $report): array
+    {
+        return array_intersect_key($report, array_flip([
+            'runnable',
+            'hard_blockers',
+            'confirmations',
+            'warnings',
+            'artifact',
+            'toolchain',
+            'versions',
+            'schema',
+            'space',
+            'state',
+        ]));
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function unprocessable(string $message, array $payload): never
+    {
+        throw new HttpResponseException(response()->json([
+            'code' => 0,
+            'msg' => $message,
+        ] + $payload, 422, [], JSON_UNESCAPED_UNICODE));
     }
 }

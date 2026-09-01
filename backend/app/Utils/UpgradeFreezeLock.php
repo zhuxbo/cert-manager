@@ -10,7 +10,7 @@ use Throwable;
  *
  * 升级期 freeze flag 不存 cache，存文件锁 storage/framework/upgrade.lock：
  * - 文件存在 = freeze 中
- * - 文件内容：{frozen_at, version_from, version_to, ttl_seconds, owner_source, owner_pid}
+ * - 文件内容：{frozen_at, version_from, version_to, ttl_seconds, owner_source, owner_pid, reason?}
  * - owner_source/owner_pid = 持有方身份（web=后台升级进程本体、shell=upgrade.sh 经 artisan
  *   子进程、manual=admin 手动），供 upgrade:watchdog 判「锁是否属于 status.json 追踪的那场
  *   已死升级」——他方持锁绝不 unfreeze（防拆掉别人升级危险窗的 HTTP 写闸）；
@@ -29,7 +29,8 @@ class UpgradeFreezeLock
     /**
      * 写入 freeze 锁文件
      *
-     * 已存在则覆盖；用 LOCK_EX 防并发损坏。
+     * 已存在普通升级锁则覆盖；已存在恢复锁则拒绝，避免升级进入恢复危险窗口。
+     * 稳定 guard lock 串行化替换与删除，临时文件 rename 保证读者只见完整 JSON。
      *
      * @return bool true=写锁成功；false=写锁失败（json_encode / file_put_contents / 异常路径）
      *              调用方（UpgradeController::freeze、upgrade.sh）应据此回滚或停止流程，
@@ -37,43 +38,56 @@ class UpgradeFreezeLock
      */
     public static function freeze(?string $versionFrom = null, ?string $versionTo = null, int $ttlSeconds = self::DEFAULT_TTL_SECONDS, string $ownerSource = 'unknown'): bool
     {
-        $path = self::path();
+        $data = [
+            'frozen_at' => Carbon::now()->toIso8601String(),
+            'version_from' => $versionFrom,
+            'version_to' => $versionTo,
+            'ttl_seconds' => $ttlSeconds,
+            'owner_source' => $ownerSource,
+            'owner_pid' => getmypid() ?: null,
+        ];
 
-        try {
-            $dir = dirname($path);
-            if (! is_dir($dir)) {
-                @mkdir($dir, 0755, true);
+        return self::withExclusiveGuard(function () use ($data): bool {
+            $current = self::read();
+            if ($current === null && is_file(self::path())) {
+                return false;
             }
-
-            $data = [
-                'frozen_at' => Carbon::now()->toIso8601String(),
-                'version_from' => $versionFrom,
-                'version_to' => $versionTo,
-                'ttl_seconds' => $ttlSeconds,
-                'owner_source' => $ownerSource,
-                'owner_pid' => getmypid() ?: null,
-            ];
-
-            $json = json_encode($data, JSON_UNESCAPED_UNICODE);
-            if ($json === false) {
-                error_log('UpgradeFreezeLock::freeze() json_encode failed');
-
+            if ($current !== null && ! self::isExpired($current) && ($current['owner_source'] ?? null) === 'restore') {
                 return false;
             }
 
-            $result = @file_put_contents($path, $json, LOCK_EX);
-            if ($result === false) {
-                error_log("UpgradeFreezeLock::freeze() file_put_contents failed: $path");
+            return self::writeAtomically($data);
+        });
+    }
 
+    /**
+     * 写入数据库恢复专用持久冻结锁。
+     *
+     * null TTL 表示只能由 restore owner 显式解除，普通升级 watchdog 不得按时间清除。
+     */
+    public static function freezeRestore(string $reason): bool
+    {
+        $data = [
+            'frozen_at' => Carbon::now()->toIso8601String(),
+            'version_from' => null,
+            'version_to' => null,
+            'ttl_seconds' => null,
+            'owner_source' => 'restore',
+            'owner_pid' => getmypid() ?: null,
+            'reason' => $reason,
+        ];
+
+        return self::withExclusiveGuard(function () use ($data): bool {
+            $current = self::read();
+            if ($current === null && is_file(self::path())) {
+                return false;
+            }
+            if ($current !== null && ! self::isExpired($current) && ($current['owner_source'] ?? null) !== 'restore') {
                 return false;
             }
 
-            return true;
-        } catch (Throwable $e) {
-            error_log('UpgradeFreezeLock::freeze() exception: '.$e->getMessage());
-
-            return false;
-        }
+            return self::writeAtomically($data);
+        });
     }
 
     /**
@@ -81,19 +95,31 @@ class UpgradeFreezeLock
      *
      * 文件不存在则静默；删除失败仅记录 error_log，不抛异常。
      */
-    public static function unfreeze(): void
+    public static function unfreeze(?string $requesterOwner = null): bool
     {
-        $path = self::path();
-
-        try {
-            if (is_file($path)) {
-                if (! @unlink($path)) {
-                    error_log("UpgradeFreezeLock::unfreeze() unlink failed: $path");
-                }
+        return self::withExclusiveGuard(function () use ($requesterOwner): bool {
+            $path = self::path();
+            if (! is_file($path)) {
+                return true;
             }
-        } catch (Throwable $e) {
-            error_log('UpgradeFreezeLock::unfreeze() exception: '.$e->getMessage());
-        }
+
+            $data = self::read();
+            if ($data === null) {
+                return false;
+            }
+
+            if (($data['owner_source'] ?? null) === 'restore' && $requesterOwner !== 'restore') {
+                return false;
+            }
+
+            if (! @unlink($path)) {
+                error_log("UpgradeFreezeLock::unfreeze() unlink failed: $path");
+
+                return false;
+            }
+
+            return true;
+        });
     }
 
     /**
@@ -107,13 +133,11 @@ class UpgradeFreezeLock
     {
         $data = self::read();
         if ($data === null) {
-            return false;
+            return is_file(self::path());
         }
 
         if (self::isExpired($data)) {
-            self::unfreeze();
-
-            return false;
+            return ! self::unfreeze();
         }
 
         return true;
@@ -134,9 +158,11 @@ class UpgradeFreezeLock
         }
 
         if (self::isExpired($data)) {
-            self::unfreeze();
+            if (self::unfreeze()) {
+                return null;
+            }
 
-            return null;
+            return self::read();
         }
 
         return $data;
@@ -205,10 +231,16 @@ class UpgradeFreezeLock
     private static function isExpired(array $data): bool
     {
         $frozenAt = $data['frozen_at'] ?? null;
-        $ttlSeconds = $data['ttl_seconds'] ?? self::DEFAULT_TTL_SECONDS;
+        $ttlSeconds = array_key_exists('ttl_seconds', $data)
+            ? $data['ttl_seconds']
+            : self::DEFAULT_TTL_SECONDS;
 
         if (! is_string($frozenAt) || $frozenAt === '') {
             return false;
+        }
+
+        if ($ttlSeconds === null) {
+            return ($data['owner_source'] ?? null) !== 'restore';
         }
 
         if (! is_int($ttlSeconds) && ! (is_string($ttlSeconds) && ctype_digit($ttlSeconds))) {
@@ -219,6 +251,81 @@ class UpgradeFreezeLock
             return Carbon::parse($frozenAt)->addSeconds((int) $ttlSeconds)->isPast();
         } catch (Throwable) {
             return false;
+        }
+    }
+
+    /**
+     * 使用不会被 rename 替换的同目录 guard inode，串行化替换与读判删。
+     */
+    private static function withExclusiveGuard(callable $callback): bool
+    {
+        $path = self::path();
+        $dir = dirname($path);
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            return false;
+        }
+
+        $guard = @fopen($path.'.guard', 'c+');
+        if ($guard === false) {
+            return false;
+        }
+
+        $locked = false;
+        try {
+            $locked = @flock($guard, LOCK_EX);
+            if (! $locked) {
+                return false;
+            }
+
+            return (bool) $callback();
+        } catch (Throwable $e) {
+            error_log('UpgradeFreezeLock::withExclusiveGuard() exception: '.$e->getMessage());
+
+            return false;
+        } finally {
+            if ($locked) {
+                @flock($guard, LOCK_UN);
+            }
+            @fclose($guard);
+        }
+    }
+
+    private static function writeAtomically(array $data): bool
+    {
+        $path = self::path();
+        $temporaryPath = null;
+
+        try {
+            $dir = dirname($path);
+            if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+                return false;
+            }
+
+            $json = json_encode($data, JSON_UNESCAPED_UNICODE);
+            if ($json === false) {
+                return false;
+            }
+
+            $temporaryPath = $path.'.tmp.'.bin2hex(random_bytes(8));
+            if (@file_put_contents($temporaryPath, $json, LOCK_EX) === false) {
+                return false;
+            }
+
+            if (! @rename($temporaryPath, $path)) {
+                return false;
+            }
+
+            $temporaryPath = null;
+
+            return true;
+        } catch (Throwable $e) {
+            error_log('UpgradeFreezeLock::writeAtomically() exception: '.$e->getMessage());
+
+            return false;
+        } finally {
+            if ($temporaryPath !== null && is_file($temporaryPath)) {
+                @unlink($temporaryPath);
+            }
         }
     }
 }

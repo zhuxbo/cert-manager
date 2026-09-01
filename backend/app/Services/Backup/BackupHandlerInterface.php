@@ -15,18 +15,12 @@ namespace App\Services\Backup;
 interface BackupHandlerInterface
 {
     /**
-     * 探测客户端二进制工具，返回真实路径；找不到时抛 RuntimeException。
-     *
-     * 子类实现需保证：返回的路径可以直接作为 Symfony Process 第一个参数。
-     */
-    public function ensureClient(): string;
-
-    /**
-     * 执行备份，写入 outputPath 并返回最终文件路径。
+     * 执行备份并写入明确的 .sql.gz.part 临时文件。
      *
      * @param  array<string, mixed>  $config  database.connections.<conn> 整段
-     * @param  string  $outputPath  目标 .sql.gz 文件路径
+     * @param  string  $outputPath  目标 .sql.gz.part 临时文件路径
      * @param  array<int, string>  $ignoreTables  本次备份要排除的表名
+     * @param  array<string, mixed>  $toolchain  由命令入口一次检查并确认 supported 的工具链报告
      */
-    public function backup(array $config, string $outputPath, array $ignoreTables): string;
+    public function backup(array $config, string $outputPath, array $ignoreTables, array $toolchain): PipelineResult;
 }

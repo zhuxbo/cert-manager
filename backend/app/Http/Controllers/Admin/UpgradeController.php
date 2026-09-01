@@ -287,7 +287,14 @@ class UpgradeController extends BaseController
      */
     public function unfreeze(): void
     {
-        UpgradeFreezeLock::unfreeze();
+        if (! UpgradeFreezeLock::unfreeze()) {
+            $info = UpgradeFreezeLock::info();
+            if (($info['owner_source'] ?? null) === 'restore') {
+                $this->error('数据库恢复进行中，不能解除冻结锁');
+            }
+
+            $this->error('删除升级冻结锁失败，请检查 storage/framework 目录权限');
+        }
 
         $this->success();
     }

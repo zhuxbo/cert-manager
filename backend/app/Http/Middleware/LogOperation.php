@@ -157,6 +157,12 @@ class LogOperation
      */
     protected function shouldSkipLogging(Request $request): bool
     {
+        // bearer token 即此只读状态端点的完整授权凭据；精确路径和固定长度 token
+        // 对所有 method 都跳过，避免 HEAD/POST 等拒绝响应也把凭据写入日志。
+        if (preg_match('#^api/admin/database/jobs/[A-Za-z0-9_-]{32}$#D', $request->path()) === 1) {
+            return true;
+        }
+
         if (UpgradeFreezeLock::isFrozen() && ! app(MaintenanceMode::class)->isWhitelisted($request)) {
             return true;
         }

@@ -1,0 +1,110 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_硬阻断即使确认_Schema_差异也返回_422_且不入队",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/database/backups/{backupId}/restore",
+            "request_keys": [
+                "allow_schema_difference"
+            ],
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "data": {
+                    "runnable": "boolean",
+                    "hard_blockers": {
+                        "__list_of__": {
+                            "code": "string",
+                            "message": "string",
+                            "facts": "array<unknown>"
+                        }
+                    },
+                    "confirmations": "array<unknown>",
+                    "warnings": {
+                        "__list_of__": {
+                            "code": "string",
+                            "message": "string"
+                        }
+                    },
+                    "artifact": {
+                        "id": "string",
+                        "legacy": "boolean",
+                        "sql": "string",
+                        "schema": "string",
+                        "integrity": {
+                            "verified": "boolean",
+                            "compressed_bytes": "integer",
+                            "sha256": "string",
+                            "gzip_eof": "boolean"
+                        }
+                    },
+                    "toolchain": {
+                        "supported": "boolean",
+                        "errors": "array<unknown>",
+                        "warnings": "array<unknown>",
+                        "server": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        },
+                        "mysql": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        },
+                        "gzip": {
+                            "version": "string"
+                        }
+                    },
+                    "versions": {
+                        "backup_application": {
+                            "version": "string",
+                            "channel": "string"
+                        },
+                        "current_application": {
+                            "version": "string",
+                            "channel": "string"
+                        },
+                        "backup_toolchain": {
+                            "server_version": "string",
+                            "client_version": "string"
+                        },
+                        "current_server": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        },
+                        "current_mysql_client": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        }
+                    },
+                    "schema": {
+                        "authoritative": "boolean",
+                        "diff": {
+                            "has_difference": "boolean",
+                            "missing_tables": "array<unknown>",
+                            "extra_tables": "array<unknown>",
+                            "changed_tables": "array<unknown>"
+                        }
+                    },
+                    "space": {
+                        "backup_data_and_indexes_bytes": "integer",
+                        "current_tables_retained_bytes": "integer",
+                        "streaming_temp_bytes": "integer",
+                        "total_estimated_footprint_bytes": "integer",
+                        "available_bytes": "null",
+                        "verified": "boolean",
+                        "note": "string"
+                    },
+                    "state": {
+                        "state": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

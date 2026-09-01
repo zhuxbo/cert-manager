@@ -22,8 +22,8 @@ class RateLimiter
     public function handle(Request $request, Closure $next, string $limiter = 'v2')
     {
         // 1. 优先检查 token 级别的限流
-        // acme 没有有效的 token，deploy 使用 DeployToken
-        if ($limiter === 'acme') {
+        // acme 和恢复状态端点没有有效的 API token，deploy 使用 DeployToken
+        if (in_array($limiter, ['acme', 'database-job-status'], true)) {
             $this->checkIpRateLimit($request, $limiter);
         } elseif ($limiter === 'deploy') {
             $hasValidToken = $this->checkDeployTokenRateLimit($request);
@@ -50,7 +50,7 @@ class RateLimiter
 
         // IP 限流相对宽松，主要防止暴力攻击
         $limit = match ($limiter) {
-            'v1', 'v2', 'deploy', 'acme' => 120,
+            'v1', 'v2', 'deploy', 'acme', 'database-job-status' => 120,
             'enterprise-lookup' => 30,
             'zipcode-lookup' => 60,
             default => 60,

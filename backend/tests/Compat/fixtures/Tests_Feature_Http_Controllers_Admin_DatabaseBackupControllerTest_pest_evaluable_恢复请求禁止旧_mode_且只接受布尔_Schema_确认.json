@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_恢复要求_mode_参数合法",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_恢复请求禁止旧_mode_且只接受布尔_Schema_确认",
     "version": "1.0.0",
     "calls": [
         {
@@ -8,11 +8,12 @@
             "request_keys": [
                 "mode"
             ],
-            "response_status": "2xx",
+            "response_status": "4xx",
             "response_schema": {
                 "code": "integer",
                 "msg": "string",
                 "errors": {
+                    "allow_schema_difference": "array<string>",
                     "mode": "array<string>"
                 }
             }

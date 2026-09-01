@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_jobStatus_返回进度信息",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_jobStatus_无需管理员认证即可凭_token_返回脱敏进度",
     "version": "1.0.0",
     "calls": [
         {
@@ -12,7 +12,9 @@
                 "data": {
                     "progress": {
                         "status": "string",
-                        "message": "string"
+                        "message": "string",
+                        "stage": "string",
+                        "progress": "integer"
                     }
                 }
             }

@@ -25,6 +25,8 @@ class BinaryLocator
         'keytool' => ['/usr/local/bin/keytool', '/usr/bin/keytool'],
         'mysqldump' => ['/www/server/mysql/bin/mysqldump', '/usr/local/mysql/bin/mysqldump', '/usr/bin/mysqldump'],
         'mysql' => ['/www/server/mysql/bin/mysql', '/usr/local/mysql/bin/mysql', '/usr/bin/mysql'],
+        'gzip' => ['/usr/bin/gzip', '/bin/gzip', '/usr/local/bin/gzip'],
+        'setsid' => ['/usr/bin/setsid', '/bin/setsid', '/usr/local/bin/setsid'],
         'curl' => ['/usr/bin/curl', '/usr/local/bin/curl'],
     ];
 
@@ -37,6 +39,8 @@ class BinaryLocator
         'keytool' => ['-help', ''],          // keytool 无 --version；中文 locale 输出不含 'keytool'，仅校验 exit 0
         'mysqldump' => ['--version', 'Ver '],
         'mysql' => ['--version', 'Ver '],
+        'gzip' => ['--version', 'gzip '],
+        'setsid' => ['--version', 'setsid '],
         'curl' => ['--version', 'curl '],
     ];
 
@@ -391,6 +395,16 @@ class BinaryLocator
         return $this->resolveSoft('mysql');
     }
 
+    public function gzip(): string
+    {
+        return $this->resolveSoft('gzip');
+    }
+
+    public function setsid(): string
+    {
+        return $this->resolveSoft('setsid');
+    }
+
     public function curl(): string
     {
         return $this->resolveSoft('curl');
@@ -661,7 +675,11 @@ class BinaryLocator
         $hint = match ($tool) {
             'openssl' => ['Debian: apt install openssl', 'RHEL: yum install openssl', 'macOS: brew install openssl'],
             'java', 'keytool' => ['Debian: apt install default-jdk', 'RHEL: yum install java', 'macOS: brew install openjdk'],
-            'mysqldump', 'mysql' => ['Debian: apt install default-mysql-client', 'RHEL: yum install mysql', 'macOS: brew install mysql-client'],
+            'mysqldump', 'mysql' => [
+                '安装 Oracle MySQL 官方 mysql-client，版本系列必须与目标服务端一致（5.7、8.0 或 8.4）',
+                '不要使用可能实际提供 MariaDB 的 default-mysql-client',
+                '宝塔面板优先检查 /www/server/mysql/bin',
+            ],
             'curl' => ['Debian: apt install curl', 'RHEL: yum install curl', 'macOS: brew install curl'],
             'composer' => ['curl -sS https://getcomposer.org/installer | php', 'mv composer.phar /usr/local/bin/composer'],
             'php' => ['请使用 upgrade.sh 重新部署，确保站点 PHP 可被探测到'],

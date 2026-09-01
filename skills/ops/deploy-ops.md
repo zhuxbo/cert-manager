@@ -351,11 +351,20 @@ bt-install 不落盘保存 admin 密码，seed 后直接调用 `admin:reset-pass
 
 理由：备份文件与 `.env`、数据库本身住在同一台机器，应用层加密对"获取文件读取权限"的攻击者无效；密钥保管反而是新的失败模式。防护交给文件系统层（`storage/` chmod、`.env` 600）。异地保存（S3 / 邮件 / U 盘）请在**传输前**自行 `gpg --encrypt` 或 `age` 加密。
 
-恢复方式：
+备份和恢复由部署程序所在机器上的客户端执行，并通过现有数据库连接访问目标 MySQL；目标数据库可以在内网其它机器上，部署机不需要安装 MySQL 服务端，但必须安装客户端。只支持 Oracle MySQL 5.7、8.0、8.4，且 `mysql` / `mysqldump` 必须与目标服务端同系列。不要安装可能实际提供 MariaDB 的 `default-mysql-client`；宝塔部署优先使用 `/www/server/mysql/bin` 中目标 MySQL 自带的客户端。
+
+恢复前会校验备份完整性、当前服务端和本机客户端版本、备份 `schema.json` 与当前 Schema 差异及空间事实。Schema 差异只展示事实并要求恢复人员显式确认，不推荐或自动切换程序版本；确认后允许跨程序版本恢复。成功恢复后正常退出维护和冻结状态，由恢复人员自行处理程序版本。
+
+后台恢复走同步命令：
 
 ```bash
-gunzip -c backup_20260101_120000.sql.gz | mysql -u<user> -p <db>
+cd backend
+php artisan database:restore backup_20260101_120000
+# Schema 有差异且确认继续时：
+php artisan database:restore backup_20260101_120000 --allow-schema-difference
 ```
+
+恢复在目标库内流式导入影子表，再用一条 `RENAME TABLE` 同批切换全部业务表和需清空的运行时表，不创建第二数据库连接、临时数据库或永久状态表，也不落完整解压 SQL。`*_logs`（包括插件日志）保留目标库现状；队列、缓存、会话、刷新令牌和域名验证运行时表切换为空表。换表前失败保持原 active；换表后校验失败执行完整反向切换；新 active 已验证但 cleanup 失败时保持冻结并保留 old 表，修复原因后重跑同一命令续接。不要用 `gunzip | mysql` 绕过预检、生成列改写、日志保留和原子切换。
 
 ## 升级注意事项
 

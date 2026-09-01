@@ -11,6 +11,7 @@ use App\Http\Controllers\Admin\ChainController;
 use App\Http\Controllers\Admin\ContactController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DatabaseBackupController;
+use App\Http\Controllers\Admin\DatabaseRestoreStatusController;
 use App\Http\Controllers\Admin\DelegationController;
 use App\Http\Controllers\Admin\DeployTokenController;
 use App\Http\Controllers\Admin\EnterpriseLookupController;
@@ -50,6 +51,9 @@ Route::prefix('admin')->middleware('api.admin.refresh')->group(function () {
 // 目的：浏览器原生流式下载，避免前端把整文件读进 blob
 Route::prefix('admin/database')->group(function () {
     Route::get('backups/download', [DatabaseBackupController::class, 'download']);
+    Route::get('jobs/{token}', DatabaseRestoreStatusController::class)
+        ->middleware('throttle:database-job-status')
+        ->where('token', '[A-Za-z0-9_-]{32}');
 });
 
 // 需要认证的路由
@@ -277,13 +281,12 @@ Route::prefix('admin')->middleware('api.admin')->group(function () {
         Route::post('backups', [DatabaseBackupController::class, 'store']);
         Route::delete('backups/{backupId}', [DatabaseBackupController::class, 'destroy'])
             ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
-        Route::get('backups/{backupId}/schema-diff', [DatabaseBackupController::class, 'schemaDiff'])
+        Route::get('backups/{backupId}/restore-preflight', [DatabaseBackupController::class, 'restorePreflight'])
             ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
         Route::post('backups/{backupId}/restore', [DatabaseBackupController::class, 'restore'])
             ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
         Route::post('backups/{backupId}/download-token', [DatabaseBackupController::class, 'downloadToken'])
             ->where('backupId', '[a-z_]+_[0-9]{8}_[0-9]{6}');
-        Route::get('jobs/{token}', [DatabaseBackupController::class, 'jobStatus']);
     });
 
     // 系统升级管理

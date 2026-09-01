@@ -3,17 +3,19 @@
 use App\Models\Admin;
 use App\Models\AdminLog;
 use App\Models\ApiLog;
+use App\Services\Backup\BackupService;
 use App\Utils\UpgradeFreezeLock;
+use Illuminate\Support\Facades\Cache;
 use Tests\Traits\ActsAsAdmin;
 
 uses(ActsAsAdmin::class)->group('database');
 
 beforeEach(function () {
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 afterEach(function () {
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 // ==========================================
@@ -182,6 +184,18 @@ test('POST /api/admin/upgrade/unfreeze 删除锁文件', function () {
     expect(file_exists(UpgradeFreezeLock::path()))->toBeFalse();
 });
 
+test('POST /api/admin/upgrade/unfreeze 不能冒充成功解除 restore 锁', function () {
+    $admin = Admin::factory()->create();
+    UpgradeFreezeLock::freezeRestore('database restore');
+
+    $response = $this->actingAsAdmin($admin)->postJson('/api/admin/upgrade/unfreeze');
+
+    $response->assertOk()
+        ->assertJson(['code' => 0]);
+    expect($response->json('msg'))->toContain('数据库恢复')
+        ->and(UpgradeFreezeLock::isFrozen())->toBeTrue();
+});
+
 test('POST /api/admin/upgrade/freeze 拒绝非法 ttl_seconds（< 60）', function () {
     $admin = Admin::factory()->create();
 
@@ -205,4 +219,38 @@ test('freeze / unfreeze 路由在 admin 中间件下，无 admin token 拒绝访
     $admin = Admin::factory()->create();
     $this->actingAsAdmin($admin)->postJson('/api/admin/upgrade/freeze')->assertOk();
     $this->actingAsAdmin($admin)->postJson('/api/admin/upgrade/unfreeze')->assertOk();
+});
+
+test('restore 冻结期间仅精确 GET 状态路径和合法 token 放行', function () {
+    $token = str_repeat('a', 32);
+    Cache::put(BackupService::JOB_CACHE_PREFIX.$token, [
+        'status' => 'running',
+        'stage' => 'import',
+        'message' => '正在恢复数据库',
+    ], 600);
+    UpgradeFreezeLock::freezeRestore('database restore');
+
+    $this->getJson('/api/admin/database/jobs/'.$token)
+        ->assertOk()
+        ->assertJsonPath('data.progress.status', 'running');
+
+    $this->postJson('/api/admin/database/jobs/'.$token)->assertStatus(503);
+    $this->getJson('/api/admin/database/jobs/'.$token.'/extra')->assertStatus(503);
+    $this->getJson('/api/admin/database/jobs/invalid-token')->assertStatus(503);
+    $this->getJson('/api/admin/database/backups')->assertStatus(503);
+});
+
+test('restore 冻结期间未知但格式合法的状态 token 返回 404', function () {
+    Cache::forget(BackupService::JOB_CACHE_PREFIX.str_repeat('b', 32));
+    UpgradeFreezeLock::freezeRestore('database restore');
+
+    $this->getJson('/api/admin/database/jobs/'.str_repeat('b', 32))->assertNotFound();
+});
+
+test('restore 冻结期间 HEAD 状态请求仍被维护模式阻断', function () {
+    $token = str_repeat('d', 32);
+    Cache::put(BackupService::JOB_CACHE_PREFIX.$token, ['status' => 'running'], 600);
+    UpgradeFreezeLock::freezeRestore('database restore');
+
+    $this->call('HEAD', '/api/admin/database/jobs/'.$token)->assertStatus(503);
 });

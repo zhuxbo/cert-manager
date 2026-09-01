@@ -1,0 +1,21 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_jobStatus_对未知状态码和越界数值_fail_closed",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "progress": {
+                        "status": "string",
+                        "message": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

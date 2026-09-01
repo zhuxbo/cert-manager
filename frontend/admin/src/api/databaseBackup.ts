@@ -2,7 +2,7 @@ import { http } from "@/utils/http";
 
 export interface BackupItem {
   id: string;
-  prefix: string; // backup | pre_restore
+  prefix: string;
   filename: string;
   path: string;
   size: number;
@@ -16,30 +16,76 @@ export interface JobProgress {
   stage?: string;
   message: string;
   backup_id?: string;
-  mode?: "full" | "incremental";
-  admin_id?: number;
-  output?: string;
+  progress?: number;
+  percent?: number;
   updated_at?: string;
 }
 
-export interface SchemaDiffSummary {
+export interface RestoreSchemaDiff {
+  has_difference: boolean;
   missing_tables: string[];
   extra_tables: string[];
-  modified_tables: Record<string, Record<string, string[]>>;
+  changed_tables: string[];
 }
 
-export interface TableOverviewItem {
-  name: string;
-  comment: string;
-  columns: number;
+export interface RestorePreflightMessage {
+  code: string;
+  message: string;
+  facts?: Record<string, unknown>;
 }
 
-export interface SchemaDiffResult {
-  has_schema: boolean;
-  has_diff?: boolean;
-  message?: string;
-  summary?: SchemaDiffSummary;
-  tables_overview?: TableOverviewItem[];
+export interface MysqlVersionFacts {
+  vendor: string;
+  version: string;
+  series: string;
+}
+
+export interface RestorePreflightResult {
+  runnable: boolean;
+  hard_blockers: RestorePreflightMessage[];
+  confirmations: RestorePreflightMessage[];
+  warnings: RestorePreflightMessage[];
+  artifact: {
+    id: string | null;
+    legacy: boolean | null;
+    sql: string | null;
+    schema: string | null;
+    integrity: {
+      verified: boolean;
+      compressed_bytes?: number;
+      uncompressed_bytes?: number;
+      gzip_eof?: boolean;
+    };
+  };
+  toolchain: {
+    supported: boolean;
+    errors: string[];
+    warnings: string[];
+    server?: MysqlVersionFacts;
+    mysql?: MysqlVersionFacts | null;
+    gzip?: { version: string };
+  };
+  versions: {
+    backup_application: Record<string, string | null> | null;
+    current_application: Record<string, string | null>;
+    backup_toolchain: Record<string, string | null> | null;
+    current_server: MysqlVersionFacts | null;
+    current_mysql_client: MysqlVersionFacts | null;
+  };
+  schema: {
+    authoritative: boolean;
+    diff: RestoreSchemaDiff;
+  };
+  space: {
+    backup_data_and_indexes_bytes: number;
+    current_tables_retained_bytes: number;
+    streaming_temp_bytes: number;
+    total_estimated_footprint_bytes: number;
+    available_bytes: number | null;
+    verified: boolean;
+    note: string;
+  };
+  state: { state: string };
 }
 
 export function listBackups(): Promise<
@@ -67,23 +113,25 @@ export function getJobStatus(
   );
 }
 
-export function getSchemaDiff(
+export function getRestorePreflight(
   backupId: string
-): Promise<BaseResponse<SchemaDiffResult>> {
-  return http.request<BaseResponse<SchemaDiffResult>>(
+): Promise<BaseResponse<RestorePreflightResult>> {
+  return http.request<BaseResponse<RestorePreflightResult>>(
     "get",
-    `/database/backups/${backupId}/schema-diff`
+    `/database/backups/${backupId}/restore-preflight`,
+    undefined,
+    { timeout: 300000, suppressErrorMessage: true }
   );
 }
 
 export function restoreBackup(
   backupId: string,
-  mode: "full" | "incremental"
+  allowSchemaDifference: boolean
 ): Promise<BaseResponse<{ token: string }>> {
   return http.request<BaseResponse<{ token: string }>>(
     "post",
     `/database/backups/${backupId}/restore`,
-    { data: { mode } }
+    { data: { allow_schema_difference: allowSchemaDifference } }
   );
 }
 

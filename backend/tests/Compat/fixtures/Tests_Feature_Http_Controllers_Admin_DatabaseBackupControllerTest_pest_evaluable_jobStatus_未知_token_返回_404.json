@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_jobStatus_未知_token_返回_404",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

@@ -58,6 +58,12 @@ class MaintenanceMode
             return $next($request);
         }
 
+        // 恢复期间仅放行精确的匿名只读状态端点。这里不并入通用 whitelist：
+        // LogOperation 会据 isWhitelisted() 对冻结期非白名单请求短路，避免 bearer token 落日志。
+        if ($this->isDatabaseRestoreStatusRequest($request)) {
+            return $next($request);
+        }
+
         if ($this->isWhitelisted($request)) {
             return $next($request);
         }
@@ -98,5 +104,14 @@ class MaintenanceMode
         }
 
         return false;
+    }
+
+    private function isDatabaseRestoreStatusRequest(Request $request): bool
+    {
+        return $request->isMethod('GET')
+            && preg_match(
+                '#^api/admin/database/jobs/[A-Za-z0-9_-]{32}$#D',
+                $request->path(),
+            ) === 1;
     }
 }

@@ -6,7 +6,7 @@
             "method": "POST",
             "uri_pattern": "/api/admin/database/backups/{backupId}/restore",
             "request_keys": [
-                "mode"
+                "allow_schema_difference"
             ],
             "response_status": "2xx",
             "response_schema": {

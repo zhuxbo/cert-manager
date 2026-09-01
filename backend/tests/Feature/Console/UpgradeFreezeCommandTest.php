@@ -5,11 +5,11 @@ use App\Utils\UpgradeFreezeLock;
 uses()->group('database');
 
 beforeEach(function () {
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 afterEach(function () {
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 // ==========================================
@@ -132,4 +132,14 @@ test('upgrade:freeze 默认 source=shell，--source 白名单校验', function (
     UpgradeFreezeLock::unfreeze();
     $this->artisan('upgrade:freeze', ['--source' => 'bogus'])->assertFailed();
     expect(UpgradeFreezeLock::isFrozen())->toBeFalse();
+});
+
+test('upgrade:freeze 不得把现有恢复锁误报为写入成功', function () {
+    expect(UpgradeFreezeLock::freezeRestore('restore-in-progress'))->toBeTrue();
+
+    $this->artisan('upgrade:freeze')
+        ->expectsOutputToContain('可能有数据库恢复正在执行')
+        ->assertFailed();
+
+    expect(UpgradeFreezeLock::info()['owner_source'] ?? null)->toBe('restore');
 });

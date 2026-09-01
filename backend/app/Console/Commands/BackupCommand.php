@@ -1,12 +1,17 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Console\Commands;
 
+use App\Services\Backup\BackupMetadataFactory;
 use App\Services\Backup\BackupService;
+use App\Services\Backup\DatabaseOperationMutex;
+use App\Services\Backup\MysqlToolchainChecker;
+use App\Services\Backup\PipelineResult;
 use App\Services\Notification\SystemAlert;
 use App\Services\Upgrade\DatabaseStructureService;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command as CommandAlias;
 use Throwable;
@@ -14,15 +19,11 @@ use Throwable;
 class BackupCommand extends Command
 {
     protected $signature = 'schedule:backup
- {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")；仅按天清理 backup_ 前缀，pre_restore_ 不参与（改按 config("database.backup.pre_restore_keep") 数量上限清理）}
- {--path= : 输出目录，默认 storage/databak}
- {--prefix=backup : 文件名前缀，内部调用可传 pre_restore}
- {--internal-no-lock : （内部）调用方已持 backup:mutex，仅供 CreateBackupJob/RestoreBackupJob 重入旁路，勿手工使用}';
+ {--keep= : 保留天数，0 表示不清理；默认读 config("database.backup.keep_days")}
+ {--path= : 输出目录，默认 storage/databak}';
 
-    protected $description = '备份数据库（mysql）：通过 MysqlBackupHandler 走 mysqldump，剔除日志与队列等运行时表';
+    protected $description = '原子备份 MySQL 数据库，剔除日志与队列等运行时表';
 
-    // SystemAlert 去重键：send 与 clear 两端引同一常量，杜绝裸键名两处手写、打错一字致 healthy 分支
-    // 清错键 → 去重永不解除（计数型 forever vs 24h TTL 的分叉是有意设计，见 notification.md，不在此统一）。
     private const DEDUPE_LOCK_CONTENTION = 'backup_lock_contention';
 
     private const DEDUPE_CLIENT_MISSING = 'backup_client_missing';
@@ -30,245 +31,288 @@ class BackupCommand extends Command
     private const DEDUPE_DUMP_ERROR = 'backup_dump_error';
 
     public function __construct(
-        private DatabaseStructureService $structureService,
-        private BackupService $backupService
+        private readonly DatabaseStructureService $structureService,
+        private readonly BackupService $backupService,
+        private readonly BackupMetadataFactory $metadataFactory,
+        private readonly MysqlToolchainChecker $toolchainChecker,
+        private readonly DatabaseOperationMutex $mutex,
     ) {
         parent::__construct();
     }
 
     public function handle(): int
     {
-        $connection = config('database.default');
-        $config = config("database.connections.$connection");
+        $connection = (string) config('database.default');
+        $config = (array) config("database.connections.$connection", []);
         $driver = (string) ($config['driver'] ?? '');
-
-        if (! in_array($driver, ['mysql', 'mariadb'], true)) {
-            $this->error("不支持的数据库驱动: {$driver}（仅支持 mysql）");
+        if ($driver !== 'mysql') {
+            $this->error("不支持的数据库驱动: {$driver}（仅支持 Oracle MySQL）");
 
             return CommandAlias::FAILURE;
         }
 
-        // 定时备份是「可跳过的从操作」：非阻塞抢 backup:mutex，避免与持锁 3600s 的
-        // Create/RestoreBackupJob 并发 dump 出半恢复库（垃圾备份污染灾备轮转）。
-        // --internal-no-lock 供已持锁的父 Job 重入旁路（防命令无脑抢锁 → 自死锁 → pre_restore 快照缺失）。
-        $owns = ! $this->option('internal-no-lock');
-        $lock = null;
-        if ($owns) {
-            $lock = Cache::lock(BackupService::MUTEX_LOCK_KEY, 3600);
-            if (! $lock->get()) {
-                app(SystemAlert::class)->send(
-                    'backup',
-                    '定时备份跳过（互斥）',
-                    '已有备份/恢复任务执行中，本次定时备份已跳过',
-                    [],
-                    self::DEDUPE_LOCK_CONTENTION,
-                    24,
-                );
+        if (! $this->mutex->acquire()) {
+            app(SystemAlert::class)->send(
+                'backup',
+                '定时备份跳过（互斥）',
+                '已有备份/恢复任务执行中，本次备份未执行',
+                [],
+                self::DEDUPE_LOCK_CONTENTION,
+                24,
+            );
+            $this->error('已有备份/恢复任务在执行，请稍后再试');
 
-                // 跳过≠失败：返回 SUCCESS，避免与 console 层 onFailure 双告警
-                return CommandAlias::SUCCESS;
-            }
+            return CommandAlias::FAILURE;
         }
 
         try {
-            return $this->runBackup($connection, $config, $driver, $owns);
+            return $this->runBackup($connection, $config, $driver);
         } finally {
-            $lock?->release();
+            $this->mutex->release();
         }
     }
 
-    /**
-     * 实际执行备份（锁已由 handle 处理）。仅 $owns（自持锁的定时/手工入口）才发/清 SystemAlert；
-     * --internal-no-lock 的父 Job 重入路径不告警（父 Job 自管进度上报）。
-     */
-    private function runBackup(string $connection, array $config, string $driver, bool $owns): int
+    private function runBackup(string $connection, array $config, string $driver): int
     {
         try {
+            $toolchain = $this->toolchainChecker->inspect(requireMysql: false, requireMysqldump: true);
+            if (! $toolchain['supported'] || $toolchain['mysqldump'] === null) {
+                throw new RuntimeException(implode('；', $toolchain['errors']));
+            }
             $handler = $this->backupService->makeHandler($driver);
-            $handler->ensureClient();
         } catch (Throwable $e) {
             $this->error($e->getMessage());
-            foreach (BackupService::installHintLines($driver) as $line) {
-                $this->line($line);
-            }
-            if ($owns) {
-                app(SystemAlert::class)->send(
-                    'backup',
-                    '备份客户端缺失',
-                    $e->getMessage(),
-                    [],
-                    self::DEDUPE_CLIENT_MISSING,
-                    24,
-                );
-            }
+            app(SystemAlert::class)->send(
+                'backup',
+                '备份客户端缺失',
+                $e->getMessage(),
+                [],
+                self::DEDUPE_CLIENT_MISSING,
+                24,
+            );
 
             return CommandAlias::FAILURE;
         }
 
-        $path = $this->option('path') ?: storage_path('databak');
-
+        $path = (string) ($this->option('path') ?: storage_path('databak'));
         if (! is_dir($path) && ! mkdir($path, 0755, true) && ! is_dir($path)) {
             $this->error("创建目录失败: $path");
 
             return CommandAlias::FAILURE;
         }
 
-        $prefix = (string) $this->option('prefix') ?: 'backup';
-        if (! preg_match('/^[a-z_]+$/', $prefix)) {
-            $this->error('--prefix 只能包含小写字母与下划线');
-
-            return CommandAlias::FAILURE;
-        }
-
         $timestamp = now()->format('Ymd_His');
         $database = (string) ($config['database'] ?? '');
-        $finalPath = "$path/{$prefix}_$timestamp.sql.gz";
-        $schemaPath = "$path/{$prefix}_$timestamp.schema.json";
-
-        $ignoreTables = $this->backupService->resolveIgnoreTables($database);
-        $this->info('忽略表: '.(empty($ignoreTables) ? '无' : implode(', ', $ignoreTables)));
-
-        try {
-            $this->info('导出并压缩中...');
-            $handler->backup($config, $finalPath, $ignoreTables);
-
-            $this->info('导出数据库结构到 schema.json...');
-            $this->writeSchemaJson($connection, $schemaPath, $ignoreTables);
-        } catch (Throwable $e) {
-            @unlink($finalPath);
-            @unlink($schemaPath);
-            $this->error('备份失败: '.$e->getMessage());
-            if ($owns) {
-                app(SystemAlert::class)->send(
-                    'backup',
-                    '数据库备份失败',
-                    $e->getMessage(),
-                    [],
-                    self::DEDUPE_DUMP_ERROR,
-                    24,
-                );
-            }
+        $finalPath = "$path/backup_$timestamp.sql.gz";
+        $partPath = "$path/backup_$timestamp.".bin2hex(random_bytes(8)).'.sql.gz.part';
+        $schemaPath = "$path/backup_$timestamp.schema.json";
+        $schemaPartPath = $schemaPath.'.'.bin2hex(random_bytes(8)).'.part';
+        $sqlPublished = false;
+        if (file_exists($finalPath) || file_exists($schemaPath)) {
+            $this->error('同名备份已存在，拒绝覆盖已完成产物');
 
             return CommandAlias::FAILURE;
         }
 
-        $size = is_file($finalPath) ? filesize($finalPath) : 0;
-        $this->info('备份完成: '.$finalPath.' ('.$this->formatSize((int) $size).')');
+        $retainedTables = $this->backupService->resolveRetainedTables($database);
+        $runtimeResetTables = $this->backupService->resolveRuntimeResetTables();
+        $ignoreTables = array_values(array_unique(array_merge($retainedTables, $runtimeResetTables)));
+        $this->info('忽略表: '.($ignoreTables === [] ? '无' : implode(', ', $ignoreTables)));
 
+        try {
+            $this->info('导出前数据库结构...');
+            $structureBefore = $this->filteredStructure($connection, $retainedTables);
+
+            $this->info('导出并压缩中...');
+            $result = $handler->backup($config, $partPath, $ignoreTables, $toolchain);
+            $this->syncFile($partPath);
+
+            $this->info('导出后数据库结构...');
+            $structureAfter = $this->filteredStructure($connection, $retainedTables);
+            $diff = $this->structureService->compareBackupStructures($structureBefore, $structureAfter);
+            if ($this->hasStructureDifferences($diff)) {
+                throw new RuntimeException('备份期间数据库结构发生变化，已拒绝发布本次备份');
+            }
+
+            $schema = $this->buildSchema(
+                $structureAfter,
+                $toolchain,
+                $result,
+                $ignoreTables,
+            );
+            $this->writeSchemaPart($schemaPartPath, $schema);
+
+            $this->info('原子发布备份...');
+            if (! @rename($schemaPartPath, $schemaPath)) {
+                throw new RuntimeException("无法原子发布 schema.json: $schemaPath");
+            }
+            $this->syncDirectory($path);
+            if (! @rename($partPath, $finalPath)) {
+                throw new RuntimeException("无法原子发布 SQL 备份: $finalPath");
+            }
+            $sqlPublished = true;
+            $this->syncDirectory($path);
+        } catch (Throwable $e) {
+            if ($sqlPublished) {
+                @unlink($finalPath);
+            }
+            @unlink($partPath);
+            @unlink($schemaPartPath);
+            if ($sqlPublished) {
+                try {
+                    $this->syncDirectory($path);
+                } catch (Throwable) {
+                    // 已失败路径仅尽力持久化撤下结果，保留原始异常。
+                }
+            }
+            $this->error('备份失败: '.$e->getMessage());
+            app(SystemAlert::class)->send(
+                'backup',
+                '数据库备份失败',
+                $e->getMessage(),
+                [],
+                self::DEDUPE_DUMP_ERROR,
+                24,
+            );
+
+            return CommandAlias::FAILURE;
+        }
+
+        $this->info('备份完成: '.$finalPath.' ('.$this->formatSize($result->outputBytes).')');
         $keepOption = $this->option('keep');
         $keep = $keepOption === null
-        ? (int) config('database.backup.keep_days', 30)
-        : (int) $keepOption;
+            ? (int) config('database.backup.keep_days', 30)
+            : (int) $keepOption;
         if ($keep > 0) {
             $minKeep = (int) config('database.backup.min_keep', 3);
             $purged = $this->purgeOldBackups($path, $keep, $minKeep);
             $this->info("清理 $purged 个过期备份（保留 $keep 天，兜底最少保留 $minKeep 份）");
         }
 
-        // pre_restore_ 不参与上面的天数清理（恢复前保险快照，随时可能要回退），
-        // 改用数量上限兜底：防止恢复重试（tries>1）或多次恢复导致其无限累积占盘。
-        // keep<1（不限制）的语义由 purgePreRestoreSnapshots 自身处理（no-op），此处无条件调用。
-        if ($prefix === 'pre_restore') {
-            $preKeep = (int) config('database.backup.pre_restore_keep', 5);
-            $purged = $this->purgePreRestoreSnapshots($path, $preKeep);
-            if ($preKeep > 0) {
-                $this->info("清理 $purged 个旧的 pre_restore 快照（保留最近 $preKeep 份）");
-            }
-        }
-
-        // 成功即清去重键（对齐 E 系恢复语义：故障恢复后下次异常立即再告警）
-        if ($owns) {
-            $alert = app(SystemAlert::class);
-            $alert->clearDedupe(self::DEDUPE_LOCK_CONTENTION);
-            $alert->clearDedupe(self::DEDUPE_CLIENT_MISSING);
-            $alert->clearDedupe(self::DEDUPE_DUMP_ERROR);
-        }
+        $alert = app(SystemAlert::class);
+        $alert->clearDedupe(self::DEDUPE_LOCK_CONTENTION);
+        $alert->clearDedupe(self::DEDUPE_CLIENT_MISSING);
+        $alert->clearDedupe(self::DEDUPE_DUMP_ERROR);
 
         return CommandAlias::SUCCESS;
     }
 
-    /**
-     * 导出当前数据库结构为 JSON，剔除与 dump 同样被忽略的表，确保 schema 与备份内容一致。
-     */
-    private function writeSchemaJson(string $connection, string $outputPath, array $ignoreTables): void
+    private function filteredStructure(string $connection, array $ignoreTables): array
     {
-        $structure = $this->structureService->exportCurrentStructure($connection);
-        $structure = $this->backupService->filterStructureTables($structure, $ignoreTables);
-        $structure['generated_at'] = now()->toDateTimeString();
+        return $this->backupService->filterStructureTables(
+            $this->structureService->exportBackupStructure($connection),
+            $ignoreTables,
+        );
+    }
 
-        $json = json_encode($structure, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-        if ($json === false) {
-            throw new RuntimeException('schema.json 序列化失败');
+    private function buildSchema(
+        array $structure,
+        array $toolchain,
+        PipelineResult $result,
+        array $ignoreTables,
+    ): array {
+        $structure['generated_at'] = now()->toDateTimeString();
+        $includedTables = array_values(array_diff(
+            array_keys($structure['tables'] ?? []),
+            $ignoreTables,
+        ));
+        $metadata = $this->metadataFactory->make(
+            structure: $structure,
+            toolchain: [
+                'server_version' => $toolchain['server']['version'],
+                'client_version' => $toolchain['mysqldump']['version'],
+            ],
+            streamStats: [
+                'compressed_bytes' => $result->outputBytes,
+                'uncompressed_bytes' => $result->inputBytes,
+                'sha256' => $result->outputSha256,
+            ],
+            includedTables: $includedTables,
+            excludedTables: $ignoreTables,
+        );
+
+        return array_merge($structure, $metadata);
+    }
+
+    private function writeSchemaPart(string $path, array $schema): void
+    {
+        $json = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $stream = @fopen($path, 'xb');
+        if ($stream === false) {
+            throw new RuntimeException("无法创建 schema.json 临时文件: $path");
         }
 
-        if (file_put_contents($outputPath, $json) === false) {
-            throw new RuntimeException("无法写入 schema.json: $outputPath");
+        try {
+            $written = fwrite($stream, $json);
+            if ($written === false || $written !== strlen($json) || ! fflush($stream)) {
+                throw new RuntimeException("无法写入 schema.json 临时文件: $path");
+            }
+            if (function_exists('fsync') && ! fsync($stream)) {
+                throw new RuntimeException("无法同步 schema.json 临时文件: $path");
+            }
+        } finally {
+            fclose($stream);
         }
     }
 
-    /**
-     * 清理过期的 backup_ 前缀备份（pre_restore_ 不参与天数清理，由 purgePreRestoreSnapshots 按数量上限清理）。
-     *
-     * 策略：按 mtime 倒序排序，前 $minKeep 份无论多老都保留；其余按 $keepDays 判断。
-     * 这样既能"保留 30 天内"，又能防止长期不创建被清到 0 份。
-     */
+    private function syncFile(string $path): void
+    {
+        $stream = @fopen($path, 'rb');
+        if ($stream === false) {
+            throw new RuntimeException("无法读取备份临时文件: $path");
+        }
+
+        try {
+            if (function_exists('fsync') && ! fsync($stream)) {
+                throw new RuntimeException("无法同步备份临时文件: $path");
+            }
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    private function syncDirectory(string $directory): void
+    {
+        if (! function_exists('fsync')) {
+            throw new RuntimeException('当前 PHP 不支持目录 fsync');
+        }
+        $stream = @fopen($directory, 'rb');
+        if ($stream === false) {
+            throw new RuntimeException("无法打开备份目录进行同步: $directory");
+        }
+        $synced = @fsync($stream);
+        $closed = @fclose($stream);
+        if (! $synced || ! $closed) {
+            throw new RuntimeException("无法同步备份目录: $directory");
+        }
+    }
+
+    private function hasStructureDifferences(array $diff): bool
+    {
+        foreach ($diff as $changes) {
+            if ($changes !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function purgeOldBackups(string $dir, int $keepDays, int $minKeep): int
     {
         $cutoff = time() - $keepDays * 86400;
         $files = glob("$dir/backup_*.sql.gz") ?: [];
-
-        // 按 mtime 降序（新在前）
-        usort($files, fn ($a, $b) => filemtime($b) <=> filemtime($a));
+        usort($files, fn (string $left, string $right): int => filemtime($right) <=> filemtime($left));
 
         $deleted = 0;
-        foreach ($files as $idx => $file) {
-            // 前 minKeep 份无条件保留
-            if ($idx < $minKeep) {
+        foreach ($files as $index => $file) {
+            if ($index < $minKeep || filemtime($file) >= $cutoff || ! @unlink($file)) {
                 continue;
             }
-            if (filemtime($file) < $cutoff && @unlink($file)) {
-                $deleted++;
-                $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
-                if ($schema && is_file($schema)) {
-                    @unlink($schema);
-                }
-            }
-        }
-
-        return $deleted;
-    }
-
-    /**
-     * 按数量上限清理 pre_restore_ 快照：按 mtime 倒序保留最近 $keep 份，其余成对删除（含 schema.json）。
-     *
-     * 与 purgeOldBackups（backup_ 前缀、按天清理 + min_keep 兜底）互补 —— pre_restore_ 是恢复前
-     * 保险快照，不按天清理，但需防恢复重试/多次恢复无限累积占盘，故用数量上限封顶。
-     */
-    private function purgePreRestoreSnapshots(string $dir, int $keep): int
-    {
-        // keep<1：不限制（永久保留），no-op —— 与 config 注释 "0 表示不限制" 契约自洽，
-        // 且防调用方误传 0/负数当"无限"却把快照全删的 footgun（$idx < keep 恒假会删光）。
-        if ($keep < 1) {
-            return 0;
-        }
-
-        $files = glob("$dir/pre_restore_*.sql.gz") ?: [];
-
-        // 按 mtime 降序（新在前）
-        usort($files, fn ($a, $b) => filemtime($b) <=> filemtime($a));
-
-        $deleted = 0;
-        foreach ($files as $idx => $file) {
-            // 前 keep 份（最新）无条件保留
-            if ($idx < $keep) {
-                continue;
-            }
-            if (@unlink($file)) {
-                $deleted++;
-                $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
-                if ($schema && is_file($schema)) {
-                    @unlink($schema);
-                }
+            $deleted++;
+            $schema = preg_replace('/\.sql\.gz$/', '.schema.json', $file);
+            if ($schema !== null && is_file($schema)) {
+                @unlink($schema);
             }
         }
 
@@ -278,13 +322,13 @@ class BackupCommand extends Command
     private function formatSize(int $bytes): string
     {
         $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $i = 0;
+        $unit = 0;
         $size = (float) $bytes;
-        while ($size >= 1024 && $i < count($units) - 1) {
+        while ($size >= 1024 && $unit < count($units) - 1) {
             $size /= 1024;
-            $i++;
+            $unit++;
         }
 
-        return round($size, 2).' '.$units[$i];
+        return round($size, 2).' '.$units[$unit];
     }
 }

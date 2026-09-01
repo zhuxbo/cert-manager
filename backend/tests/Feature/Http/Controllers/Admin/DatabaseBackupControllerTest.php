@@ -3,12 +3,16 @@
 use App\Jobs\CreateBackupJob;
 use App\Jobs\RestoreBackupJob;
 use App\Models\Admin;
+use App\Models\AdminLog;
 use App\Services\Backup\BackupService;
+use App\Services\Backup\Restore\RestorePreflight;
+use App\Services\Backup\Restore\RestoreRequest;
 use App\Services\Binary\BinaryLocator;
 use App\Services\Binary\Exceptions\BinaryNotFoundException;
-use App\Services\Upgrade\DatabaseStructureService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Traits\ActsAsAdmin;
 
@@ -54,6 +58,23 @@ function createFakeBackup(string $dir, string $id, bool $withSchema = true): voi
     }
 }
 
+function fakeMysqlToolchainBinary(string $tool): string
+{
+    $path = sys_get_temp_dir().'/fake_'.$tool.'_'.uniqid().'.sh';
+    if ($tool === 'gzip') {
+        $output = 'gzip 1.12';
+    } else {
+        $version = (string) DB::selectOne('SELECT VERSION() AS version')->version;
+        preg_match('/(\d+\.\d+)/', $version, $matches);
+        $output = "$tool  Ver {$matches[1]}.99 for Linux on x86_64 (MySQL Community Server - GPL)";
+    }
+    file_put_contents($path, "#!/bin/sh\nprintf '%s\\n' ".escapeshellarg($output)."\n");
+    chmod($path, 0700);
+    register_shutdown_function(static fn () => @unlink($path));
+
+    return $path;
+}
+
 test('列表返回所有备份及配套 schema 标记', function () {
     createFakeBackup($this->testDir, 'backup_20260424_120000', true);
     createFakeBackup($this->testDir, 'pre_restore_20260424_130000', false);
@@ -74,11 +95,10 @@ test('列表返回所有备份及配套 schema 标记', function () {
 test('store 入队 CreateBackupJob 并返回 token', function () {
     Queue::fake();
 
-    // mock BinaryLocator 让 mysqldump 探测通过（解耦本地环境：开发机/CI 是否装 mysqldump
-    // 不应影响 controller 行为测试。之前隐式依赖 ExecutableFinder + shell PATH 找到本地
-    // mysqldump，是"开发机能跑、生产挂"的典型隐患）
+    // 检查器从 BinaryLocator 获取绝对路径，并在测试脚本上执行 --version。
     $mock = Mockery::mock(BinaryLocator::class);
-    $mock->shouldReceive('mysqldump')->andReturn('/usr/bin/mysqldump');
+    $mock->shouldReceive('mysqldump')->andReturn(fakeMysqlToolchainBinary('mysqldump'));
+    $mock->shouldReceive('gzip')->andReturn(fakeMysqlToolchainBinary('gzip'));
     $this->app->instance(BinaryLocator::class, $mock);
 
     $resp = $this->actingAsAdmin($this->admin)->postJson('/api/admin/database/backups');
@@ -94,38 +114,51 @@ test('未认证访问管理 API 返回 401', function () {
     $this->getJson('/api/admin/database/backups')->assertStatus(401);
 });
 
-test('恢复要求 mode 参数合法', function () {
+test('恢复请求禁止旧 mode 且只接受布尔 Schema 确认', function () {
     createFakeBackup($this->testDir, 'backup_20260424_120000');
 
     $this->actingAsAdmin($this->admin)
-        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'nonsense'])
-        ->assertOk()
-        ->assertJson(['code' => 0])
-        ->assertJsonStructure(['errors' => ['mode']]);
+        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'full'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['mode', 'allow_schema_difference']);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', [
+            'allow_schema_difference' => 'yes',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['allow_schema_difference']);
 });
 
 test('恢复入队 RestoreBackupJob 并返回 token', function () {
+    expectsBreakingChange('atomic-restore-2026-08: restore body removes mode and adds allow_schema_difference');
     Queue::fake();
     createFakeBackup($this->testDir, 'backup_20260424_120000');
-
-    // mock BinaryLocator 让 mysqldump+mysql 探测通过（restore 路径同时探测两个）
-    // 同上，解耦本地环境依赖
-    $mock = Mockery::mock(BinaryLocator::class);
-    $mock->shouldReceive('mysqldump')->andReturn('/usr/bin/mysqldump');
-    $mock->shouldReceive('mysql')->andReturn('/usr/bin/mysql');
-    $this->app->instance(BinaryLocator::class, $mock);
+    $preflight = new Task11RestorePreflightFake;
+    $this->app->instance(RestorePreflight::class, $preflight);
 
     $resp = $this->actingAsAdmin($this->admin)
-        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'incremental']);
+        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', [
+            'allow_schema_difference' => false,
+        ]);
 
     $resp->assertOk();
     expect($resp->json('data.token'))->toBeString();
-    Queue::assertPushed(RestoreBackupJob::class);
+    Queue::assertPushed(RestoreBackupJob::class, function (RestoreBackupJob $job): bool {
+        return $job->backupId === 'backup_20260424_120000'
+            && $job->allowSchemaDifference === false
+            && $job->actor === 'admin:'.$this->admin->id;
+    });
+    expect($preflight->requests)->toHaveCount(1)
+        ->and($preflight->requests[0]->allowSchemaDifference)->toBeFalse();
 });
 
 test('恢复不存在的备份返回错误', function () {
+    expectsBreakingChange('atomic-restore-2026-08: restore body removes mode and adds allow_schema_difference');
     $this->actingAsAdmin($this->admin)
-        ->postJson('/api/admin/database/backups/backup_19990101_000000/restore', ['mode' => 'full'])
+        ->postJson('/api/admin/database/backups/backup_19990101_000000/restore', [
+            'allow_schema_difference' => false,
+        ])
         ->assertOk()
         ->assertJson(['code' => 0]); // error() 在 ApiResponse 里返回 code=0
 });
@@ -171,195 +204,338 @@ test('非法/过期下载 token 返回 404', function () {
     $this->get('/api/admin/database/backups/download?token='.str_repeat('a', 40))->assertNotFound();
 });
 
-test('jobStatus 返回进度信息', function () {
+test('jobStatus 无需管理员认证即可凭 token 返回脱敏进度', function () {
     Cache::flush();
     /** @var BackupService $svc */
     $svc = app(BackupService::class);
     $token = $svc->newJobToken();
-    $svc->setJobProgress($token, ['status' => 'running', 'message' => 'dumping']);
+    $svc->setJobProgress($token, [
+        'status' => 'running',
+        'stage' => 'import',
+        'message' => 'password is database-secret',
+        'error' => 'SQLSTATE[42000]: GRANT ALL ON *.* TO attacker',
+        'admin_id' => $this->admin->id,
+        'sql' => 'GRANT ALL ON *.* TO attacker',
+        'password' => 'database-secret',
+        'dump_path' => '/var/lib/mysql/backup.sql.gz',
+        'output' => 'mysql --password=database-secret < /tmp/backup.sql',
+        'mode' => 'full',
+        'progress' => 45,
+    ]);
 
-    $this->actingAsAdmin($this->admin)
-        ->getJson('/api/admin/database/jobs/'.$token)
+    expect(AdminLog::count())->toBe(0);
+    $response = $this->getJson('/api/admin/database/jobs/'.$token)
         ->assertOk()
         ->assertJsonPath('data.progress.status', 'running')
-        ->assertJsonPath('data.progress.message', 'dumping');
+        ->assertJsonPath('data.progress.stage', 'import')
+        ->assertJsonPath('data.progress.message', '正在导入备份')
+        ->assertJsonPath('data.progress.progress', 45);
+
+    expect($response->getContent())
+        ->not->toContain('GRANT ALL')
+        ->not->toContain('SQLSTATE')
+        ->not->toContain('password is')
+        ->not->toContain('database-secret')
+        ->not->toContain('/var/lib/mysql')
+        ->not->toContain('/tmp/backup.sql');
+    expect($response->json('data.progress'))->not->toHaveKeys([
+        'admin_id',
+        'error',
+        'sql',
+        'password',
+        'dump_path',
+        'output',
+        'mode',
+    ]);
+    expect(AdminLog::count())->toBe(0);
 });
 
-test('schemaDiff 无 schema 时返回 has_schema=false', function () {
-    createFakeBackup($this->testDir, 'backup_20260424_120000', withSchema: false);
+test('jobStatus 只保留原子恢复的固定阶段', function () {
+    /** @var BackupService $svc */
+    $svc = app(BackupService::class);
+    $stages = [
+        'preflight',
+        'freeze',
+        'create_shadow',
+        'import',
+        'prepare_structure',
+        'validate',
+        'wait_metadata_lock',
+        'cutover',
+        'runtime_cleanup',
+        'complete',
+    ];
+
+    foreach ($stages as $stage) {
+        $token = $svc->newJobToken();
+        $svc->setJobProgress($token, ['status' => 'running', 'stage' => $stage]);
+        $this->getJson('/api/admin/database/jobs/'.$token)
+            ->assertOk()
+            ->assertJsonPath('data.progress.stage', $stage);
+    }
+});
+
+test('jobStatus 对未知状态码和越界数值 fail closed', function () {
+    /** @var BackupService $svc */
+    $svc = app(BackupService::class);
+    $token = $svc->newJobToken();
+    $svc->setJobProgress($token, [
+        'status' => '/var/lib/mysql',
+        'stage' => 'GRANT ALL',
+        'message' => 'password is leaked',
+        'progress' => 101,
+    ]);
+
+    $response = $this->getJson('/api/admin/database/jobs/'.$token)
+        ->assertOk()
+        ->assertJsonPath('data.progress.status', 'unknown')
+        ->assertJsonPath('data.progress.message', '任务状态暂不可用');
+
+    expect($response->json('data.progress'))->not->toHaveKeys([
+        'stage',
+        'progress',
+    ]);
+    expect($response->getContent())
+        ->not->toContain('/var/lib/mysql')
+        ->not->toContain('GRANT ALL')
+        ->not->toContain('password is leaked');
+});
+
+test('jobStatus 在非冻结时显式拒绝 HEAD', function () {
+    /** @var BackupService $svc */
+    $svc = app(BackupService::class);
+    $token = $svc->newJobToken();
+    $svc->setJobProgress($token, ['status' => 'running', 'stage' => 'import']);
+
+    $this->call('HEAD', '/api/admin/database/jobs/'.$token)->assertStatus(405);
+});
+
+test('jobStatus 任意 method 都不会把 bearer token 写入 AdminLog', function () {
+    /** @var BackupService $svc */
+    $svc = app(BackupService::class);
+    $token = $svc->newJobToken();
+    $svc->setJobProgress($token, ['status' => 'running', 'stage' => 'import']);
+    $path = '/api/admin/database/jobs/'.$token;
+
+    expect(AdminLog::count())->toBe(0);
+    foreach (['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as $method) {
+        $response = $this->call($method, $path);
+        if ($method === 'GET') {
+            $response->assertOk();
+        } elseif ($method !== 'OPTIONS') {
+            $response->assertStatus(405);
+        }
+    }
+
+    expect(AdminLog::count())->toBe(0);
+});
+
+test('jobStatus 未知 token 返回 404', function () {
+    Cache::flush();
+    Carbon::setTestNow(Carbon::createFromTimestamp(1800000020));
+
+    try {
+        $this->getJson('/api/admin/database/jobs/'.str_repeat('c', 32))->assertNotFound();
+
+        for ($i = 0; $i < 119; $i++) {
+            $token = str_pad(base_convert((string) $i, 10, 36), 32, 'a');
+            $this->getJson('/api/admin/database/jobs/'.$token)->assertNotFound();
+        }
+
+        $this->getJson('/api/admin/database/jobs/'.str_repeat('z', 32))
+            ->assertOk()
+            ->assertJsonPath('code', 0)
+            ->assertJsonPath('errors.error_code', 'rate_limited')
+            ->assertJsonPath('errors.retry_after', 100);
+    } finally {
+        Carbon::setTestNow();
+        Cache::flush();
+    }
+});
+
+test('恢复预检只返回公开事实且不泄露内部上下文路径密码或 SQL', function () {
+    $preflight = new Task11RestorePreflightFake;
+    $this->app->instance(RestorePreflight::class, $preflight);
+
+    $response = $this->actingAsAdmin($this->admin)
+        ->getJson('/api/admin/database/backups/backup_20260424_120000/restore-preflight');
+
+    $response->assertOk()
+        ->assertJsonPath('data.runnable', true)
+        ->assertJsonPath('data.artifact.integrity.verified', true)
+        ->assertJsonPath('data.versions.backup_application.version', '1.2.3')
+        ->assertJsonPath('data.versions.current_application.version', '2.0.0')
+        ->assertJsonPath('data.schema.diff.has_difference', false)
+        ->assertJsonMissingPath('data.context');
+    expect($response->getContent())
+        ->not->toContain('/var/lib/mysql/private.sql.gz')
+        ->not->toContain('database-secret')
+        ->not->toContain('INSERT INTO');
+});
+
+test('Schema 差异未确认时恢复返回 422 且不入队', function () {
+    Queue::fake();
+    createFakeBackup($this->testDir, 'backup_20260424_120000');
+    $preflight = new Task11RestorePreflightFake;
+    $preflight->confirmations = [[
+        'code' => 'schema_difference',
+        'message' => '备份 Schema 与当前数据库结构存在语义差异。',
+    ]];
+    $preflight->schemaDifference = true;
+    $this->app->instance(RestorePreflight::class, $preflight);
 
     $this->actingAsAdmin($this->admin)
-        ->getJson('/api/admin/database/backups/backup_20260424_120000/schema-diff')
-        ->assertOk()
-        ->assertJsonPath('data.has_schema', false);
+        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', [
+            'allow_schema_difference' => false,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonPath('data.schema.diff.has_difference', true)
+        ->assertJsonPath('data.confirmations.0.code', 'schema_difference');
+
+    Queue::assertNotPushed(RestoreBackupJob::class);
 });
 
-test('schemaDiff: schema 与当前一致时 has_diff=false 且返回表概览', function () {
-    // 写一个与当前库结构 mock 完全一致的 schema.json
-    $schema = [
-        'tables' => [
-            'users' => [
-                'comment' => '用户表',
-                'columns' => ['id' => [], 'name' => []],
-                'indexes' => [],
-            ],
-        ],
-        'generated_at' => '2026-04-24 12:00:00',
-    ];
-    $sql = $this->testDir.'/backup_20260424_120000.sql.gz';
-    $gz = gzopen($sql, 'wb');
-    gzwrite($gz, "-- fake\n");
-    gzclose($gz);
-    file_put_contents(
-        $this->testDir.'/backup_20260424_120000.schema.json',
-        json_encode($schema)
-    );
-
-    // mock DatabaseStructureService 返回相同结构 + 空差异
-    $this->mock(DatabaseStructureService::class, function ($m) use ($schema) {
-        $m->shouldReceive('exportCurrentStructure')->andReturn($schema);
-        $m->shouldReceive('compareStructures')->andReturn([
-            'missing_tables' => [],
-            'extra_tables' => [],
-            'table_differences' => [],
-        ]);
-    });
-
-    // resolveIgnoreTables 不应触发真实 information_schema 查询，用 partial mock 屏蔽
-    // 实际上这里用真实库也行，但我们替 service 的实例
-    $svc = new class($this->testDir) extends BackupService
-    {
-        public function __construct(private string $dir) {}
-
-        public function basePath(): string
-        {
-            return $this->dir;
-        }
-
-        public function resolveIgnoreTables(string $database): array
-        {
-            return [];
-        }
-    };
-    $this->app->instance(BackupService::class, $svc);
-
-    $resp = $this->actingAsAdmin($this->admin)
-        ->getJson('/api/admin/database/backups/backup_20260424_120000/schema-diff');
-
-    $resp->assertOk()
-        ->assertJsonPath('data.has_schema', true)
-        ->assertJsonPath('data.has_diff', false);
-
-    $overview = $resp->json('data.tables_overview');
-    expect($overview)->toBeArray()
-        ->and($overview[0]['name'])->toBe('users')
-        ->and($overview[0]['comment'])->toBe('用户表')
-        ->and($overview[0]['columns'])->toBe(2);
-});
-
-test('schemaDiff: schema 与当前不一致时 has_diff=true 含 missing/extra/modified', function () {
-    $schema = ['tables' => ['old_table' => ['columns' => ['a' => []]]]];
-    $sql = $this->testDir.'/backup_20260424_120000.sql.gz';
-    $gz = gzopen($sql, 'wb');
-    gzwrite($gz, "-- fake\n");
-    gzclose($gz);
-    file_put_contents(
-        $this->testDir.'/backup_20260424_120000.schema.json',
-        json_encode($schema)
-    );
-
-    $this->mock(DatabaseStructureService::class, function ($m) {
-        $m->shouldReceive('exportCurrentStructure')->andReturn(['tables' => ['new_table' => []]]);
-        $m->shouldReceive('compareStructures')->andReturn([
-            'missing_tables' => ['old_table' => []],
-            'extra_tables' => ['new_table' => []],
-            'table_differences' => [
-                'users' => [
-                    'missing_columns' => ['email' => []],
-                    'extra_columns' => [],
-                    'modified_columns' => ['name' => []],
-                    'missing_indexes' => [],
-                    'extra_indexes' => [],
-                ],
-            ],
-        ]);
-    });
-
-    $svc = new class($this->testDir) extends BackupService
-    {
-        public function __construct(private string $dir) {}
-
-        public function basePath(): string
-        {
-            return $this->dir;
-        }
-
-        public function resolveIgnoreTables(string $database): array
-        {
-            return [];
-        }
-    };
-    $this->app->instance(BackupService::class, $svc);
-
-    $resp = $this->actingAsAdmin($this->admin)
-        ->getJson('/api/admin/database/backups/backup_20260424_120000/schema-diff');
-
-    $resp->assertOk()
-        ->assertJsonPath('data.has_schema', true)
-        ->assertJsonPath('data.has_diff', true);
-
-    $summary = $resp->json('data.summary');
-    expect($summary['missing_tables'])->toEqual(['old_table'])
-        ->and($summary['extra_tables'])->toEqual(['new_table'])
-        ->and($summary['modified_tables']['users']['missing_columns'])->toEqual(['email'])
-        ->and($summary['modified_tables']['users']['modified_columns'])->toEqual(['name']);
-});
-
-test('store 在 mysqldump 不可用时立即返回错误，不入队 Job', function () {
+test('Schema 差异明确确认后允许入队', function () {
     Queue::fake();
-    // delegate 后通过 mock BinaryLocator 模拟"找不到 mysqldump"（不再依赖 config 路径）
-    // diagnose 参数模拟 BinaryLocator::diagnose() 含 "mysql-client" 的安装提示
+    createFakeBackup($this->testDir, 'backup_20260424_120000');
+    $preflight = new Task11RestorePreflightFake;
+    $preflight->confirmations = [[
+        'code' => 'schema_difference',
+        'message' => '备份 Schema 与当前数据库结构存在语义差异。',
+    ]];
+    $preflight->schemaDifference = true;
+    $this->app->instance(RestorePreflight::class, $preflight);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', [
+            'allow_schema_difference' => true,
+        ])
+        ->assertOk();
+
+    Queue::assertPushed(RestoreBackupJob::class, fn (RestoreBackupJob $job): bool => $job->allowSchemaDifference);
+});
+
+test('硬阻断即使确认 Schema 差异也返回 422 且不入队', function () {
+    Queue::fake();
+    createFakeBackup($this->testDir, 'backup_20260424_120000');
+    $preflight = new Task11RestorePreflightFake;
+    $preflight->hardBlockers = [[
+        'code' => 'toolchain_unsupported',
+        'message' => 'MySQL 客户端与服务端系列不一致。',
+        'facts' => [],
+    ]];
+    $this->app->instance(RestorePreflight::class, $preflight);
+
+    $this->actingAsAdmin($this->admin)
+        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', [
+            'allow_schema_difference' => true,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonPath('data.hard_blockers.0.code', 'toolchain_unsupported');
+
+    Queue::assertNotPushed(RestoreBackupJob::class);
+});
+
+test('store 在工具链不受支持时立即返回错误，不入队 Job', function () {
+    Queue::fake();
     $mock = Mockery::mock(BinaryLocator::class);
     $mock->shouldReceive('mysqldump')->andThrow(new BinaryNotFoundException(
         tool: 'mysqldump',
         triedPaths: ['/nonexistent'],
-        diagnose: ['推荐安装命令:', '  macOS: brew install mysql-client'],
     ));
+    $mock->shouldReceive('gzip')->andReturn(fakeMysqlToolchainBinary('gzip'));
     $this->app->instance(BinaryLocator::class, $mock);
 
     $resp = $this->actingAsAdmin($this->admin)->postJson('/api/admin/database/backups');
 
     $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('未找到 mysqldump 命令')
+    expect($resp->json('msg'))->toContain('MySQL 工具链不受支持')
         ->and($resp->json('msg'))->not->toContain('mysql-client');
     expect($resp->json('errors'))->toBeArray()
-        ->and(implode("\n", $resp->json('errors')))->toContain('mysql-client');
+        ->and(implode("\n", $resp->json('errors')))->toContain('/www/server/mysql/bin/mysqldump')
+        ->toContain('apt-get install -y mysql-client')
+        ->toContain('dnf install -y mysql-community-client')
+        ->not->toContain('/nonexistent');
 
     Queue::assertNotPushed(CreateBackupJob::class);
 });
 
-test('restore 在 mysql 不可用时立即返回错误，不入队 Job', function () {
-    Queue::fake();
-    createFakeBackup($this->testDir, 'backup_20260424_120000');
-    // Controller 顺序探测 mysqldump → mysql，mysqldump 在真实环境可能找到（mock 必须显式返回）
-    // 让 mysqldump 返回任意路径以通过第一道探测，mysql 抛 BinaryNotFoundException 触发分支
-    $mock = Mockery::mock(BinaryLocator::class);
-    $mock->shouldReceive('mysqldump')->andReturn('/fake/mysqldump');
-    $mock->shouldReceive('mysql')->andThrow(new BinaryNotFoundException(
-        tool: 'mysql',
-        triedPaths: ['/nonexistent'],
-        diagnose: ['推荐安装命令:', '  macOS: brew install mysql-client'],
-    ));
-    $this->app->instance(BinaryLocator::class, $mock);
+final class Task11RestorePreflightFake
+{
+    /** @var list<RestoreRequest> */
+    public array $requests = [];
 
-    $resp = $this->actingAsAdmin($this->admin)
-        ->postJson('/api/admin/database/backups/backup_20260424_120000/restore', ['mode' => 'full']);
+    /** @var list<array<string, mixed>> */
+    public array $hardBlockers = [];
 
-    $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('未找到 mysql 命令')
-        ->and($resp->json('msg'))->not->toContain('mysql-client');
-    expect($resp->json('errors'))->toBeArray()
-        ->and(implode("\n", $resp->json('errors')))->toContain('mysql-client');
+    /** @var list<array<string, mixed>> */
+    public array $confirmations = [];
 
-    Queue::assertNotPushed(RestoreBackupJob::class);
-});
+    public bool $schemaDifference = false;
+
+    /** @return array<string, mixed> */
+    public function inspect(RestoreRequest $request): array
+    {
+        $this->requests[] = $request;
+        $runnable = $this->hardBlockers === []
+            && ($this->confirmations === [] || $request->allowSchemaDifference);
+
+        return [
+            'runnable' => $runnable,
+            'hard_blockers' => $this->hardBlockers,
+            'confirmations' => $this->confirmations,
+            'warnings' => [['code' => 'fixture_warning', 'message' => '测试告警']],
+            'artifact' => [
+                'id' => $request->backupId,
+                'legacy' => false,
+                'sql' => 'backup_20260424_120000.sql.gz',
+                'schema' => 'backup_20260424_120000.schema.json',
+                'integrity' => [
+                    'verified' => true,
+                    'compressed_bytes' => 1024,
+                    'sha256' => str_repeat('a', 64),
+                    'gzip_eof' => true,
+                ],
+            ],
+            'toolchain' => [
+                'supported' => $this->hardBlockers === [],
+                'errors' => [],
+                'warnings' => [],
+                'server' => ['vendor' => 'mysql', 'version' => '8.4.6', 'series' => '8.4'],
+                'mysql' => ['vendor' => 'mysql', 'version' => '8.4.6', 'series' => '8.4'],
+                'gzip' => ['version' => '1.13'],
+            ],
+            'versions' => [
+                'backup_application' => ['version' => '1.2.3', 'channel' => 'main'],
+                'current_application' => ['version' => '2.0.0', 'channel' => 'main'],
+                'backup_toolchain' => ['server_version' => '8.0.40', 'client_version' => '8.0.40'],
+                'current_server' => ['vendor' => 'mysql', 'version' => '8.4.6', 'series' => '8.4'],
+                'current_mysql_client' => ['vendor' => 'mysql', 'version' => '8.4.6', 'series' => '8.4'],
+            ],
+            'schema' => [
+                'authoritative' => true,
+                'diff' => [
+                    'has_difference' => $this->schemaDifference,
+                    'missing_tables' => $this->schemaDifference ? ['orders'] : [],
+                    'extra_tables' => [],
+                    'changed_tables' => [],
+                ],
+            ],
+            'space' => [
+                'backup_data_and_indexes_bytes' => 2048,
+                'current_tables_retained_bytes' => 4096,
+                'streaming_temp_bytes' => 0,
+                'total_estimated_footprint_bytes' => 6144,
+                'available_bytes' => null,
+                'verified' => false,
+                'note' => '未测量远程 MySQL 主机的可用磁盘空间。',
+            ],
+            'state' => ['state' => 'clean'],
+            'context' => [
+                'dump_path' => '/var/lib/mysql/private.sql.gz',
+                'password' => 'database-secret',
+                'sql' => 'INSERT INTO admins VALUES (1)',
+            ],
+        ];
+    }
+}

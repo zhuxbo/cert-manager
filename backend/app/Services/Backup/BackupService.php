@@ -14,16 +14,14 @@ use RuntimeException;
  * 产物约定：
  * {prefix}_YYYYMMDD_HHMMSS.sql.gz — mysqldump + gzip
  * {prefix}_YYYYMMDD_HHMMSS.schema.json — 当前数据库结构（同名异后缀）
- * prefix：
- * backup — 常规备份（受 --keep 清理）
- * pre_restore — 恢复前自动保险备份（不按天清理，按 config('database.backup.pre_restore_keep') 保留最近 N 份）
+ * 新备份只创建 backup 前缀；列表/下载/删除仍识别历史 pre_restore 前缀文件。
  */
 class BackupService
 {
     /** 进度信息 Cache key 前缀 */
     public const JOB_CACHE_PREFIX = 'backup:job:';
 
-    /** 互斥锁 Cache key（create/restore 共享，保证同一时刻只有一个） */
+    /** 遗留恢复流程仍使用的 Cache 锁键；新备份互斥由 DatabaseOperationMutex 负责。 */
     public const MUTEX_LOCK_KEY = 'backup:mutex';
 
     /** 下载 token Cache key 前缀 */
@@ -36,13 +34,12 @@ class BackupService
     public const JOB_CACHE_TTL = 3600;
 
     /**
-     * 备份时固定排除的运行时表（日志表通过 %_logs 动态发现）。
-     * BackupCommand 的 mysqldump、schema.json 写入、Controller 的 schemaDiff 共用同一份。
+     * 备份时只保留结构、重置数据的运行时表（日志表通过 %_logs 动态发现并完全排除）。
      * - jobs/failed_jobs/job_batches/cache/cache_locks/sessions：Laravel 运行时
      * - *_refresh_tokens：JWT 刷新令牌，恢复后旧 token 不应复活，让用户重新登录
      * - domain_validation_records：证书域名验证的瞬时记录，恢复后是过时数据
      */
-    public const EXCLUDED_TABLES = [
+    public const RUNTIME_RESET_TABLES = [
         'jobs',
         'failed_jobs',
         'job_batches',
@@ -70,7 +67,7 @@ class BackupService
         $driver = $driver ?? (string) config('database.connections.'.config('database.default').'.driver');
 
         return match ($driver) {
-            'mysql', 'mariadb' => new MysqlBackupHandler,
+            'mysql' => app(MysqlBackupHandler::class),
             default => throw new RuntimeException("不支持的备份 driver: {$driver}（仅支持 mysql）"),
         };
     }
@@ -110,11 +107,11 @@ class BackupService
                 $clientName = 'mysql';
                 $lines[] = "⚠ 检测到 PHP open_basedir 限制可能阻止访问 $clientName 二进制目录。";
                 $lines[] = " 当前 open_basedir: $openBasedir";
-                $lines[] = " 解决：在站点 PHP 配置里把 $clientName bin 目录加入 open_basedir。";
+                $lines[] = " 解决：编辑该网站根目录的 .user.ini，把 $clientName bin 目录加入 open_basedir；不要修改全局 php.ini。";
                 if ($driver === 'mysql' || $driver === '') {
-                    $lines[] = ' 宝塔面板：网站 → 设置 → 配置文件，在 php_admin_value[open_basedir] 行末追加 ":/www/server/mysql/bin/:/tmp/"';
+                    $lines[] = ' 宝塔：在 .user.ini 的 open_basedir 原值末尾追加 ":/www/server/mysql/bin/:/tmp/"。';
                 }
-                $lines[] = ' 修改后重启 php-fpm 生效。';
+                $lines[] = ' 保存后重启该站点使用的 PHP-FPM 生效。';
             }
         }
 
@@ -137,19 +134,20 @@ class BackupService
      */
     private static function installHintLinesMysql(): array
     {
-        $lines = ['请确认已安装 mysql 客户端工具（提供 mysqldump 与 mysql 两个命令）。'];
+        $lines = [
+            '请安装 Oracle MySQL 官方 mysql-client（提供 mysqldump 与 mysql），并与目标服务端保持同系列（5.7、8.0 或 8.4）。',
+        ];
 
         $family = PHP_OS_FAMILY;
         if ($family === 'Linux') {
-            $lines[] = '安装命令：';
-            $lines[] = ' Debian/Ubuntu: apt install default-mysql-client';
-            $lines[] = ' RHEL/CentOS: yum install mysql';
-            $lines[] = '宝塔面板：自带 mysql-client，已将 /www/server/mysql/bin 加入查找路径。';
+            $lines[] = 'Debian/Ubuntu（先启用对应系列的 Oracle MySQL 官方仓库）：`apt-get update && apt-get install -y mysql-client`。';
+            $lines[] = 'RHEL/Rocky/Alma（先启用对应系列的 Oracle MySQL 官方仓库）：`dnf install -y mysql-community-client`。';
+            $lines[] = '不要使用可能实际提供 MariaDB 的 default-mysql-client。';
+            $lines[] = '宝塔面板：优先使用目标 MySQL 安装自带的 /www/server/mysql/bin/mysql 与 mysqldump。';
         } elseif ($family === 'Darwin') {
-            $lines[] = 'macOS 安装命令： brew install mysql-client';
-            $lines[] = '安装后将 mysql-client 的 bin 路径加入 PATH。';
+            $lines[] = 'macOS：安装与目标服务端同系列的 Oracle MySQL 客户端，并把 bin 目录加入 PATH。';
         } else {
-            $lines[] = '请安装 MySQL 官方客户端工具，并确保 mysqldump/mysql 在 PATH 中。';
+            $lines[] = '请安装同系列 Oracle MySQL 官方客户端，并确保 mysqldump/mysql 在 PATH 中。';
         }
         $lines[] = '若已安装但仍报错，运行 `php artisan tinker` 后调用 `app(\App\Services\Binary\BinaryLocator::class)->diagnose("mysqldump")` 查看候选路径与试探日志。';
 
@@ -164,28 +162,29 @@ class BackupService
         }
     }
 
-    /**
-     * 解析当前数据库中需要从备份/对比中排除的表：%_logs 动态发现 + EXCLUDED_TABLES。
-     *
-     * 仅 mysql：information_schema.TABLES。
-     */
-    public function resolveIgnoreTables(string $database): array
+    /** 动态日志表不进入备份 artifact，恢复时保留目标库现状。 @return list<string> */
+    public function resolveRetainedTables(string $database): array
     {
         $connection = (string) config('database.default');
         $driver = (string) config("database.connections.$connection.driver");
 
-        $tables = match ($driver) {
-            'mysql', 'mariadb' => $this->discoverLogsTablesMysql($database),
+        return match ($driver) {
+            'mysql' => $this->discoverLogsTablesMysql($database),
             default => [],
         };
+    }
 
-        foreach (self::EXCLUDED_TABLES as $t) {
-            if (Schema::hasTable($t)) {
-                $tables[] = $t;
+    /** @return list<string> */
+    public function resolveRuntimeResetTables(): array
+    {
+        $tables = [];
+        foreach (self::RUNTIME_RESET_TABLES as $table) {
+            if (Schema::hasTable($table)) {
+                $tables[] = $table;
             }
         }
 
-        return array_values(array_unique($tables));
+        return $tables;
     }
 
     /**
@@ -219,7 +218,7 @@ class BackupService
     }
 
     /**
-     * 列出所有备份文件（按时间倒序），每条含 .sql.gz 文件信息与配套 schema.json 标记。
+     * 列出所有完整备份（按时间倒序）。检查器只接受最终 SQL 文件，天然忽略 .part。
      *
      * @return array<int, array{id:string,prefix:string,filename:string,path:string,size:int,created_at:string,has_schema:bool,schema_size:int}>
      */
@@ -238,8 +237,12 @@ class BackupService
             }
 
             $id = "{$m[1]}_$m[2]";
-            $schemaFile = "$base/$id.schema.json";
-            $hasSchema = is_file($schemaFile);
+            try {
+                $artifact = (new BackupArtifactInspector($base))->inspect($id, verifyContents: false);
+            } catch (RuntimeException) {
+                continue;
+            }
+            $hasSchema = $artifact['schema_path'] !== null;
 
             $items[] = [
                 'id' => $id,
@@ -249,7 +252,7 @@ class BackupService
                 'size' => (int) (@filesize($file) ?: 0),
                 'created_at' => date('Y-m-d H:i:s', (int) (@filemtime($file) ?: 0)),
                 'has_schema' => $hasSchema,
-                'schema_size' => $hasSchema ? (int) (@filesize($schemaFile) ?: 0) : 0,
+                'schema_size' => $hasSchema ? (int) (@filesize($artifact['schema_path']) ?: 0) : 0,
             ];
         }
 
@@ -269,19 +272,16 @@ class BackupService
             return null;
         }
 
-        $base = $this->basePath();
-        $sqlPath = "$base/$id.sql.gz";
-        if (! is_file($sqlPath)) {
+        try {
+            $artifact = (new BackupArtifactInspector($this->basePath()))->inspect($id, verifyContents: false);
+        } catch (RuntimeException) {
             return null;
         }
 
-        $schemaPath = "$base/$id.schema.json";
-        $schema = is_file($schemaPath) ? $schemaPath : null;
-
         return [
-            'id' => $id,
-            'sql' => $sqlPath,
-            'schema' => $schema,
+            'id' => $artifact['id'],
+            'sql' => $artifact['sql_path'],
+            'schema' => $artifact['schema_path'],
         ];
     }
 
@@ -311,19 +311,13 @@ class BackupService
      */
     public function readSchema(string $id): ?array
     {
-        $backup = $this->resolveBackup($id);
-        if ($backup === null || $backup['schema'] === null) {
+        try {
+            $artifact = (new BackupArtifactInspector($this->basePath()))->inspect($id, verifyContents: false);
+        } catch (RuntimeException) {
             return null;
         }
 
-        $content = @file_get_contents($backup['schema']);
-        if ($content === false) {
-            return null;
-        }
-
-        $data = json_decode($content, true);
-
-        return is_array($data) ? $data : null;
+        return $artifact['schema'];
     }
 
     // ----- 异步 Job 进度 -----

@@ -9,12 +9,12 @@ uses(TestCase::class);
 
 beforeEach(function () {
     // 每个用例前确保锁文件不存在
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 afterEach(function () {
     // 每个用例后清理锁文件
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 test('freeze 后 isFrozen 返回 true', function () {
@@ -196,4 +196,200 @@ test('freeze 写入 owner_source/owner_pid，缺省 source=unknown', function ()
     $info = UpgradeFreezeLock::info();
     expect($info['owner_source'])->toBe('unknown')
         ->and($info['owner_pid'])->toBe(getmypid());
+});
+
+test('freezeRestore 写入 restore owner 的 null TTL 并公开 reason', function () {
+    try {
+        $result = UpgradeFreezeLock::freezeRestore('database restore');
+    } catch (Throwable $e) {
+        test()->fail('restore 持久冻结接口尚不可用: '.$e->getMessage());
+
+        return;
+    }
+
+    $state = UpgradeFreezeLock::info();
+    expect($result)->toBeTrue()
+        ->and($state)->toBeArray()
+        ->and($state['reason'])->toBe('database restore')
+        ->and($state['owner_source'])->toBe('restore')
+        ->and($state['ttl_seconds'])->toBeNull();
+});
+
+test('restore null TTL 冻结不会被普通升级 watchdog 过期清除', function () {
+    $now = Carbon\Carbon::parse('2026-08-30 12:00:00');
+    Carbon\Carbon::setTestNow($now);
+
+    try {
+        UpgradeFreezeLock::freezeRestore('database restore');
+        Carbon\Carbon::setTestNow($now->copy()->addYear());
+
+        expect(UpgradeFreezeLock::isFrozen())->toBeTrue()
+            ->and(UpgradeFreezeLock::info()['owner_source'])->toBe('restore');
+    } finally {
+        Carbon\Carbon::setTestNow();
+    }
+});
+
+test('非 restore owner 不能解除恢复冻结', function () {
+    try {
+        UpgradeFreezeLock::freezeRestore('database restore');
+        $released = UpgradeFreezeLock::unfreeze('manual');
+    } catch (Throwable $e) {
+        test()->fail('restore owner 解锁保护接口尚不可用: '.$e->getMessage());
+
+        return;
+    }
+
+    expect($released)->toBeFalse()
+        ->and(UpgradeFreezeLock::isFrozen())->toBeTrue();
+
+    expect(UpgradeFreezeLock::unfreeze('restore'))->toBeTrue()
+        ->and(UpgradeFreezeLock::isFrozen())->toBeFalse();
+});
+
+test('稳定 guard 锁串行化并拒绝 restore 覆盖进行中的升级锁', function () {
+    if (! function_exists('pcntl_fork') || ! function_exists('stream_socket_pair')) {
+        test()->markTestSkipped('需要 pcntl 与 Unix socket pair');
+    }
+
+    UpgradeFreezeLock::freeze('1.0.0', '1.1.0', 3600, 'manual');
+    $guardPath = UpgradeFreezeLock::path().'.guard';
+    $guard = fopen($guardPath, 'c+');
+    expect($guard)->not->toBeFalse();
+    /** @var resource $guard */
+    expect(flock($guard, LOCK_EX))->toBeTrue();
+
+    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    expect($sockets)->not->toBeFalse();
+    /** @var array{0: resource, 1: resource} $sockets */
+    [$parentSocket, $childSocket] = $sockets;
+    $pid = pcntl_fork();
+    if ($pid === -1) {
+        throw new RuntimeException('pcntl_fork 失败');
+    }
+
+    if ($pid === 0) {
+        fclose($parentSocket);
+        fwrite($childSocket, 'started');
+        $result = UpgradeFreezeLock::freezeRestore('database restore');
+        fclose($childSocket);
+        exit($result ? 0 : 1);
+    }
+
+    fclose($childSocket);
+    try {
+        expect(fread($parentSocket, 7))->toBe('started');
+        usleep(100_000);
+
+        expect(UpgradeFreezeLock::info()['owner_source'])->toBe('manual');
+    } finally {
+        flock($guard, LOCK_UN);
+        fclose($guard);
+        fclose($parentSocket);
+        pcntl_waitpid($pid, $status);
+    }
+
+    expect(pcntl_wexitstatus($status))->toBe(1)
+        ->and(UpgradeFreezeLock::info()['owner_source'])->toBe('manual')
+        ->and(UpgradeFreezeLock::unfreeze())->toBeTrue()
+        ->and(UpgradeFreezeLock::isFrozen())->toBeFalse();
+});
+
+test('普通升级锁不能覆盖进行中的 restore 锁', function () {
+    expect(UpgradeFreezeLock::freezeRestore('database restore'))->toBeTrue()
+        ->and(UpgradeFreezeLock::freeze('1.0.0', '1.1.0', 3600, 'web'))->toBeFalse()
+        ->and(UpgradeFreezeLock::info()['owner_source'])->toBe('restore');
+});
+
+test('普通 unfreeze 在 guard 后重新读取并拒绝删除交错写入的 restore 锁', function () {
+    if (! function_exists('pcntl_fork') || ! function_exists('stream_socket_pair')) {
+        test()->markTestSkipped('需要 pcntl 与 Unix socket pair');
+    }
+
+    UpgradeFreezeLock::freeze('1.0.0', '1.1.0', 3600, 'manual');
+    $guard = fopen(UpgradeFreezeLock::path().'.guard', 'c+');
+    expect($guard)->not->toBeFalse();
+    /** @var resource $guard */
+    expect(flock($guard, LOCK_EX))->toBeTrue();
+
+    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    expect($sockets)->not->toBeFalse();
+    /** @var array{0: resource, 1: resource} $sockets */
+    [$parentSocket, $childSocket] = $sockets;
+    $pid = pcntl_fork();
+    if ($pid === -1) {
+        throw new RuntimeException('pcntl_fork 失败');
+    }
+
+    if ($pid === 0) {
+        fclose($parentSocket);
+        fclose($guard);
+        fwrite($childSocket, 'started');
+        fwrite($childSocket, UpgradeFreezeLock::unfreeze() ? '1' : '0');
+        fclose($childSocket);
+        exit(0);
+    }
+
+    fclose($childSocket);
+    try {
+        expect(fread($parentSocket, 7))->toBe('started');
+        usleep(100_000);
+        $readable = [$parentSocket];
+        $writable = null;
+        $except = null;
+        expect(stream_select($readable, $writable, $except, 0, 0))->toBe(0);
+
+        $restoreState = [
+            'frozen_at' => now()->toIso8601String(),
+            'version_from' => null,
+            'version_to' => null,
+            'ttl_seconds' => null,
+            'owner_source' => 'restore',
+            'owner_pid' => getmypid(),
+            'reason' => 'controlled interleaving',
+        ];
+        $temporaryPath = UpgradeFreezeLock::path().'.controlled.tmp';
+        file_put_contents($temporaryPath, json_encode($restoreState, JSON_UNESCAPED_UNICODE));
+        expect(rename($temporaryPath, UpgradeFreezeLock::path()))->toBeTrue();
+    } finally {
+        flock($guard, LOCK_UN);
+        fclose($guard);
+    }
+
+    expect(fread($parentSocket, 1))->toBe('0');
+    fclose($parentSocket);
+    pcntl_waitpid($pid, $status);
+
+    expect(pcntl_wexitstatus($status))->toBe(0)
+        ->and(UpgradeFreezeLock::info()['owner_source'])->toBe('restore')
+        ->and(UpgradeFreezeLock::isFrozen())->toBeTrue();
+});
+
+test('guard 不可用时替换和删除都 fail closed', function () {
+    UpgradeFreezeLock::freeze('1.0.0', '1.1.0', 3600, 'manual');
+    $guardPath = UpgradeFreezeLock::path().'.guard';
+    @unlink($guardPath);
+    expect(mkdir($guardPath))->toBeTrue();
+
+    try {
+        expect(UpgradeFreezeLock::freezeRestore('database restore'))->toBeFalse()
+            ->and(UpgradeFreezeLock::info()['owner_source'])->toBe('manual')
+            ->and(UpgradeFreezeLock::unfreeze())->toBeFalse()
+            ->and(UpgradeFreezeLock::isFrozen())->toBeTrue();
+    } finally {
+        rmdir($guardPath);
+        UpgradeFreezeLock::unfreeze('restore');
+    }
+});
+
+test('锁内容损坏时不按普通锁删除并保持 fail closed', function () {
+    file_put_contents(UpgradeFreezeLock::path(), '{invalid-json');
+
+    try {
+        expect(UpgradeFreezeLock::unfreeze())->toBeFalse()
+            ->and(UpgradeFreezeLock::isFrozen())->toBeTrue()
+            ->and(file_exists(UpgradeFreezeLock::path()))->toBeTrue();
+    } finally {
+        @unlink(UpgradeFreezeLock::path());
+    }
 });

@@ -1,0 +1,16 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_jobStatus_在非冻结时显式拒绝_HEAD",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "HEAD",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

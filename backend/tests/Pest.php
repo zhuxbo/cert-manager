@@ -10,6 +10,7 @@ use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Store;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 use Yansongda\Pay\Pay;
 use Yansongda\Supports\Collection;
@@ -154,17 +155,24 @@ function setEnterpriseLookupSetting(string $key, mixed $value, string $type = 's
 }
 
 /**
- * 造一个 shell 脚本，模拟 mysql/mysqldump 的 --version 输出，供
- * BinaryLocator::probeWith 的 proc_open 探测识别为合法 mysql 客户端。
+ * 造一个 shell 脚本，模拟 mysql/mysqldump/gzip 的 --version 输出，供
+ * MysqlToolchainChecker 在与当前测试库相同的 MySQL 系列上执行探测。
  *
  * 返回脚本绝对路径。注册 shutdown 时自动清理。
  */
 function fakeMysqlClientBin(string $tool = 'mysqldump'): string
 {
     $path = sys_get_temp_dir().'/fake_'.$tool.'_'.uniqid().'.sh';
+    if ($tool === 'gzip') {
+        $output = 'gzip 1.12';
+    } else {
+        $version = (string) DB::selectOne('SELECT VERSION() AS version')->version;
+        preg_match('/(\d+\.\d+)/', $version, $matches);
+        $output = "$tool Ver {$matches[1]}.99 for Linux on x86_64 (MySQL Community Server - GPL)";
+    }
     file_put_contents(
         $path,
-        "#!/bin/sh\necho '$tool Ver 8.0.99 for Linux on x86_64 (MySQL Distrib 8.0.99)'\n"
+        "#!/bin/sh\nprintf '%s\\n' ".escapeshellarg($output)."\n"
     );
     chmod($path, 0755);
     register_shutdown_function(static fn () => @unlink($path));

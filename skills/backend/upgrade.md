@@ -41,9 +41,9 @@
 
 #### 定时备份互斥 + 失败告警（`schedule:backup`）
 
-- **非阻塞抢锁**：`BackupCommand` 抢 `Cache::lock(backup:mutex)` 非阻塞 `get()`——抢不到（Create/RestoreBackupJob 持锁 3600s 中）→ 去重 `SystemAlert('backup', 'backup_lock_contention')` + 返回 **SUCCESS**（跳过≠失败），避免与半恢复库并发 dump 出垃圾备份污染灾备。
-- **`--internal-no-lock` 重入旁路（对端契约）**：`CreateBackupJob`/`RestoreBackupJob` 已持 `backup:mutex`，重入命令时**必须**传 `--internal-no-lock`（`$owns=false`）绕过抢锁——**漏传则命令抢锁失败静默跳过、备份/`pre_restore` 快照缺失（恢复无护栏）**。两调用点 + 命令三处对称，Job 测试断调用参数含该 flag。
-- **失败告警（仅 `$owns`）**：client-missing → `backup_client_missing`；dump/schema 异常 → `backup_dump_error`；成功清三个去重键（恢复后下次异常立即再告警）。`--internal-no-lock` 路径不告警（父 Job 自管进度）。
+- **非阻塞抢锁**：`BackupCommand` 通过 `DatabaseOperationMutex` 非阻塞获取 MySQL named lock；抢不到则去重告警 `backup_lock_contention` 并返回 **FAILURE**，不产生任何备份文件。
+- **Job/CLI 同一入口**：`CreateBackupJob` 先上报 `dumping` 阶段，再直接调用 `schedule:backup`；它不持有第二套 Cache 锁，由命令统一获取 `DatabaseOperationMutex`。遗留恢复 Job 的互斥改造归恢复编排任务，不在备份发布中引入兼容旁路。
+- **失败告警**：client-missing → `backup_client_missing`；dump/schema 异常 → `backup_dump_error`；成功清三个去重键（恢复后下次异常立即再告警）。
 
 ### 关键服务
 
@@ -107,6 +107,9 @@
 ### 数据库结构校验
 
 升级后自动校验数据库结构与标准 `structure.json` 是否一致。
+
+- 升级校验只比较核心结构语义；插件等额外表属于信息项，不作为删除建议，也不阻断仅新增结构的自动修复。
+- 备份侧 `<backup>.schema.json` 使用独立的恢复比较入口；备份显式记录字符集、生成列表达式时才比较这些扩展元数据，旧备份缺少字段时保持可恢复。
 
 #### 平台设置升级顺序
 

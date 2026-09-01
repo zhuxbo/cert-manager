@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_store_在_mysqldump_不可用时立即返回错误，不入队_Job",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_store_在工具链不受支持时立即返回错误，不入队_Job",
     "version": "1.0.0",
     "calls": [
         {

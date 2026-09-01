@@ -19,6 +19,20 @@ afterEach(function () {
     Mockery::close();
 });
 
+test('structure warning message omits extra tables from upgrade actions', function () {
+    $service = (new ReflectionClass(UpgradeService::class))->newInstanceWithoutConstructor();
+    $method = new ReflectionMethod(UpgradeService::class, 'buildStructureWarningMessage');
+
+    $message = $method->invoke($service, [
+        'missing_tables' => ['users_archive'],
+        'extra_tables' => ['easy_logs', 'cloud_deploy_logs'],
+    ]);
+
+    expect($message)
+        ->toBe('缺失表: users_archive')
+        ->not->toContain('多余表', 'easy_logs', 'cloud_deploy_logs');
+});
+
 test('check for update returns no update when same version', function () {
     $versionManager = Mockery::mock(VersionManager::class);
     $versionManager->shouldReceive('getCurrentVersion')->andReturn([

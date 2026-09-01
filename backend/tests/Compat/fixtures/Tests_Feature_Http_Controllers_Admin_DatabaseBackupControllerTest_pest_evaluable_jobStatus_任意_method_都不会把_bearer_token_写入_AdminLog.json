@@ -1,0 +1,79 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_jobStatus_任意_method_都不会把_bearer_token_写入_AdminLog",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "progress": {
+                        "status": "string",
+                        "message": "string",
+                        "stage": "string"
+                    }
+                }
+            }
+        },
+        {
+            "method": "HEAD",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "OPTIONS",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": null
+        },
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/database/jobs/{token}",
+            "request_keys": null,
+            "response_status": "4xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        }
+    ]
+}

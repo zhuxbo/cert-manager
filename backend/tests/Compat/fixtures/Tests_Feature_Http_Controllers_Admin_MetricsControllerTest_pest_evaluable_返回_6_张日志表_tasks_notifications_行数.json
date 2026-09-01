@@ -22,7 +22,7 @@
                     },
                     "ca": {
                         "requests_24h": "integer",
-                        "success_rate": "integer",
+                        "success_rate": "float",
                         "latency_p50_ms": "integer",
                         "latency_p95_ms": "integer"
                     },

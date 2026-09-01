@@ -18,6 +18,7 @@ export interface PureHttpError extends AxiosError {
 export interface PureHttpRequestConfig extends AxiosRequestConfig {
   beforeRequestCallback?: (request: PureHttpRequestConfig) => void;
   beforeResponseCallback?: (response: PureHttpResponse) => void;
+  suppressErrorMessage?: boolean;
 }
 
 export interface PureHttpResponse<T = any, D = any> extends AxiosResponse<

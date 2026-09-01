@@ -135,6 +135,12 @@ class UpgradeService
 
             $statusManager->completeStep('check_version');
 
+            // 升级与数据库恢复共用同一持久冻结锁。必须在备份、维护模式和下载之前原子占位，
+            // 否则“先检查、后写锁”会给恢复留下并发进入窗口。
+            if (! UpgradeFreezeLock::freeze($currentVersion, $targetVersion, 7200, 'web')) {
+                throw new RuntimeException('无法取得升级冻结锁，可能有数据库恢复正在执行');
+            }
+
             // 步骤 3: 创建备份
             $forceBackup = Config::get('upgrade.behavior.force_backup', true);
             $backupId = null;
@@ -193,13 +199,6 @@ class UpgradeService
             // 记录当前 composer 文件的 hash（用于检测变化）
             $oldComposerHashes = $this->getComposerHashes(base_path());
             Log::info('[Upgrade] Current composer hashes', $oldComposerHashes);
-
-            // 危险窗起点：切代码 + 迁移前 freeze —— 本仓已删 PreventRequestsDuringMaintenance，
-            // artisan down 不挡 HTTP（只暂停 worker/scheduler），freeze 才是唯一真正挡外部写请求
-            // （下单/支付回调/文档上传）的 HTTP 闸。写锁失败仅告警继续（不新增失败模式，保护缺失可接受）。
-            if (! UpgradeFreezeLock::freeze($currentVersion, $targetVersion, 7200, 'web')) {
-                Log::warning('[Upgrade] freeze 写锁失败，升级继续但危险窗未挡 HTTP 写');
-            }
 
             // 步骤 7: 应用升级
             $statusManager->startStep('apply');
@@ -881,9 +880,6 @@ class UpgradeService
         }
         if (! empty($summary['modified_columns'])) {
             $parts[] = '需修改列: '.implode(', ', array_slice($summary['modified_columns'], 0, 3));
-        }
-        if (! empty($summary['extra_tables'])) {
-            $parts[] = '多余表: '.implode(', ', $summary['extra_tables']);
         }
         if (! empty($summary['extra_indexes'])) {
             $parts[] = '多余索引: '.implode(', ', array_slice($summary['extra_indexes'], 0, 3));

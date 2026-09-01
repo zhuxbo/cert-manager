@@ -208,6 +208,34 @@ test('curl() 第二次调用复用 memoize', function () {
     }
 });
 
+test('setsid() 通过子进程探测候选路径而不依赖文件检查', function () {
+    $stub = sys_get_temp_dir().'/fake-setsid-'.bin2hex(random_bytes(8)).'.sh';
+    file_put_contents($stub, "#!/bin/sh\nprintf 'setsid from util-linux 2.39\\n'\n");
+    chmod($stub, 0700);
+
+    try {
+        $locator = new class($stub) extends BinaryLocator
+        {
+            public function __construct(private readonly string $stub) {}
+
+            protected function candidatePathsFor(string $tool): array
+            {
+                return [$this->stub];
+            }
+
+            protected function probeViaShell(string $tool, string $flag, string $expected): ?string
+            {
+                return null;
+            }
+        };
+
+        expect($locator->setsid())->toBe($stub)
+            ->and($locator->setsid())->toBe($stub);
+    } finally {
+        @unlink($stub);
+    }
+});
+
 test('BinaryNotFoundException 抛出时包含 diagnose 多行', function () {
     $locator = new class extends BinaryLocator
     {

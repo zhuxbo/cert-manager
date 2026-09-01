@@ -1,18 +1,19 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_restore_在_mysql_不可用时立即返回错误，不入队_Job",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_Schema_差异明确确认后允许入队",
     "version": "1.0.0",
     "calls": [
         {
             "method": "POST",
             "uri_pattern": "/api/admin/database/backups/{backupId}/restore",
             "request_keys": [
-                "mode"
+                "allow_schema_difference"
             ],
             "response_status": "2xx",
             "response_schema": {
                 "code": "integer",
-                "msg": "string",
-                "errors": "array<string>"
+                "data": {
+                    "token": "string"
+                }
             }
         }
     ]

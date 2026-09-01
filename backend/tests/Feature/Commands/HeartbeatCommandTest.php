@@ -1,15 +1,18 @@
 <?php
 
+use App\Utils\UpgradeFreezeLock;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 
 uses()->group('database');
 
 beforeEach(function () {
+    UpgradeFreezeLock::unfreeze('restore');
     Cache::forget('schedule:heartbeat');
 });
 
 afterEach(function () {
+    UpgradeFreezeLock::unfreeze('restore');
     Cache::forget('schedule:heartbeat');
     Carbon::setTestNow();
 });
@@ -35,4 +38,14 @@ test('重复跑 schedule:heartbeat 刷新时间戳（心跳续期，供 /api/hea
     $second = (int) Cache::get('schedule:heartbeat');
 
     expect($second)->toBeGreaterThan($first);
+});
+
+test('schedule:heartbeat 在恢复冻结期只刷新心跳且不移除 restore owner 锁', function () {
+    UpgradeFreezeLock::freezeRestore('atomic restore');
+
+    $this->artisan('schedule:heartbeat')->assertSuccessful();
+
+    expect(Cache::get('schedule:heartbeat'))->not->toBeNull()
+        ->and(UpgradeFreezeLock::info()['owner_source'] ?? null)->toBe('restore')
+        ->and(UpgradeFreezeLock::isFrozen())->toBeTrue();
 });

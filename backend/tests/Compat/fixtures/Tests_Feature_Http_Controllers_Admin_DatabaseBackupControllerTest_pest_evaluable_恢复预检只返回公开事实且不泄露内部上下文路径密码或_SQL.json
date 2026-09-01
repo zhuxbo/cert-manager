@@ -1,0 +1,101 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\DatabaseBackupControllerTest::__pest_evaluable_恢复预检只返回公开事实且不泄露内部上下文路径密码或_SQL",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/database/backups/{backupId}/restore-preflight",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "runnable": "boolean",
+                    "hard_blockers": "array<unknown>",
+                    "confirmations": "array<unknown>",
+                    "warnings": {
+                        "__list_of__": {
+                            "code": "string",
+                            "message": "string"
+                        }
+                    },
+                    "artifact": {
+                        "id": "string",
+                        "legacy": "boolean",
+                        "sql": "string",
+                        "schema": "string",
+                        "integrity": {
+                            "verified": "boolean",
+                            "compressed_bytes": "integer",
+                            "sha256": "string",
+                            "gzip_eof": "boolean"
+                        }
+                    },
+                    "toolchain": {
+                        "supported": "boolean",
+                        "errors": "array<unknown>",
+                        "warnings": "array<unknown>",
+                        "server": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        },
+                        "mysql": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        },
+                        "gzip": {
+                            "version": "string"
+                        }
+                    },
+                    "versions": {
+                        "backup_application": {
+                            "version": "string",
+                            "channel": "string"
+                        },
+                        "current_application": {
+                            "version": "string",
+                            "channel": "string"
+                        },
+                        "backup_toolchain": {
+                            "server_version": "string",
+                            "client_version": "string"
+                        },
+                        "current_server": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        },
+                        "current_mysql_client": {
+                            "vendor": "string",
+                            "version": "string",
+                            "series": "string"
+                        }
+                    },
+                    "schema": {
+                        "authoritative": "boolean",
+                        "diff": {
+                            "has_difference": "boolean",
+                            "missing_tables": "array<unknown>",
+                            "extra_tables": "array<unknown>",
+                            "changed_tables": "array<unknown>"
+                        }
+                    },
+                    "space": {
+                        "backup_data_and_indexes_bytes": "integer",
+                        "current_tables_retained_bytes": "integer",
+                        "streaming_temp_bytes": "integer",
+                        "total_estimated_footprint_bytes": "integer",
+                        "available_bytes": "null",
+                        "verified": "boolean",
+                        "note": "string"
+                    },
+                    "state": {
+                        "state": "string"
+                    }
+                }
+            }
+        }
+    ]
+}

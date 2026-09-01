@@ -69,5 +69,6 @@ PHP_VERSION=8.3 make test       # 用 8.3 跑测试
 - **开发调度器默认启动**：`scheduler` 等待 `app` 完成依赖安装、环境配置和迁移后运行 `schedule:work`，为调度心跳和定时业务任务提供与生产一致的执行路径；生产仍由宝塔每分钟运行 `schedule:run`。
 - **可选 Redis 队列/缓存**：默认 `file`/`sync` 即可开发；需要时在 `backend/.env` 设 `CACHE_DRIVER=redis`、`QUEUE_CONNECTION=redis`（redis 扩展镜像已内置）。
 - **MySQL 版本（5.7 与 8.x 双覆盖）**：生产二者都有。本地默认 `mysql:8.4`（ARM 原生，不依赖将被淘汰的 Rosetta）；CI core 跑 `5.7×{8.3,8.4}` + `8.4×{8.4,8.5}`、各 plugin 跑 5.7+8.4，两版本都验证。本地要复现 5.7 用内网实例或看 CI。新增迁移/SQL 避开 8.0+ 保留字（`rank`/`groups`/`system`）与 5.7 不支持的语法。
+- **备份客户端与本地服务端同系列**：PHP 开发镜像直接从官方 `mysql:8.4` 镜像复制 `mysql` / `mysqldump`，不安装会实际提供 MariaDB 的 `default-mysql-client`；因此本地备份、预检和原子恢复可通过同系列工具链检查。
 - **collation 按版本自动选择**（与 `bt-install.sh`/生产一致）：MySQL 8.x→`utf8mb4_0900_ai_ci`、5.7→`utf8mb4_unicode_520_ci`、MariaDB→`utf8mb4_unicode_ci`。三处逻辑统一：容器 `entrypoint.sh`（PDO 探测 `SELECT VERSION()`）、CI 的 `matrix.collation`、`bt-install.sh` 的 `_detect_db_collation`。`structure.json` 以 8.4 为基准（`db:structure --export` 临时容器已改 `mysql:8.4`）。
 - **测试库隔离 + 并发**：`make test` 注入 `DB_DATABASE=ssl_manager_test`，并行 worker 各建临时库，绝不触碰开发库 `ssl_manager`。并发 `PROCESSES` 默认 4（满核 10 个 worker 并发加载 phpunit 会超出 VM 内存而 OOM），机器内存富裕可 `make test PROCESSES=8`。

@@ -79,13 +79,13 @@ function wdSpySystemAlert(): object
 beforeEach(function () {
     Config::set('upgrade.stale_seconds', 3600);
     (new UpgradeStatusManager)->clear();
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
 });
 
 afterEach(function () {
     Mockery::close();
     (new UpgradeStatusManager)->clear();
-    UpgradeFreezeLock::unfreeze();
+    UpgradeFreezeLock::unfreeze('restore');
     try {
         Artisan::call('up');
     } catch (Throwable) {
@@ -305,4 +305,23 @@ test('⑩ 活 PID 但 starttime 不符（PID 复用）→ 不再一票否决，w
         ->and(UpgradeFreezeLock::isFrozen())->toBeFalse()
         ->and($spy->sendCount)->toBe(1)
         ->and($spy->lastArgs[4])->toBe('upgrade_watchdog');
+});
+
+test('⑪ stale web 状态遇到 restore owner 锁时 watchdog 不解除恢复冻结或维护模式', function () {
+    Artisan::call('down', ['--retry' => 60]);
+    wdWriteStatus([
+        'pid' => wdDeadPid(),
+        'started_at' => now()->subHours(2)->toDateTimeString(),
+        'updated_at' => now()->subHours(2)->toDateTimeString(),
+    ]);
+    UpgradeFreezeLock::freezeRestore('atomic restore');
+    $spy = wdSpySystemAlert();
+
+    $this->artisan('upgrade:watchdog')->assertSuccessful();
+
+    expect((new UpgradeStatusManager)->get()['status'])->toBe('running')
+        ->and($this->app->isDownForMaintenance())->toBeTrue()
+        ->and(UpgradeFreezeLock::info()['owner_source'] ?? null)->toBe('restore')
+        ->and($spy->sendCount)->toBe(1)
+        ->and($spy->lastArgs[4])->toBe('upgrade_watchdog_foreign');
 });

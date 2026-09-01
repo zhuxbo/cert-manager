@@ -54,15 +54,15 @@ class UpgradeFreezeCommand extends Command
             return CommandAlias::FAILURE;
         }
 
-        UpgradeFreezeLock::freeze(
+        $frozen = UpgradeFreezeLock::freeze(
             is_string($from) ? $from : null,
             is_string($to) ? $to : null,
             $ttl,
             $source,
         );
 
-        if (! UpgradeFreezeLock::isFrozen()) {
-            $this->error('写入 upgrade.lock 失败，请检查 storage/framework 目录权限');
+        if (! $frozen) {
+            $this->error('写入 upgrade.lock 失败：可能有数据库恢复正在执行，或 storage/framework 目录不可写');
 
             return CommandAlias::FAILURE;
         }

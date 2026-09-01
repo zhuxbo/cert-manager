@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Models\Order;
-use App\Traits\ApiResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -16,8 +16,6 @@ use Illuminate\Support\Facades\Schema;
  */
 class MetricsController extends BaseController
 {
-    use ApiResponse;
-
     /**
      * 系统状态页可能轮询此端点，整份指标快照走 30s 短 TTL 缓存，
      * 避免每次轮询都重复跑全表聚合 / information_schema 查询。
@@ -25,7 +23,7 @@ class MetricsController extends BaseController
      */
     private const int CACHE_TTL_SECONDS = 30;
 
-    public function index(): void
+    public function index(): JsonResponse
     {
         $data = Cache::remember('metrics:index', self::CACHE_TTL_SECONDS, function () {
             return [
@@ -38,7 +36,12 @@ class MetricsController extends BaseController
             ];
         });
 
-        $this->success($data);
+        return new JsonResponse(
+            ['code' => 1, 'data' => $data],
+            200,
+            [],
+            JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION,
+        );
     }
 
     /**

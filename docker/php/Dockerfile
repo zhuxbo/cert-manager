@@ -2,9 +2,12 @@
 # 跑 backend：composer install + artisan serve + 测试。代码通过 bind mount 注入，
 # 因此这里不 COPY 代码、不在构建期 composer install（会被挂载覆盖），依赖安装放在 entrypoint。
 
-# PHP 版本可切换：默认 8.4（贴合生产），测 8.3 兼容用 `PHP_VERSION=8.3 make rebuild`
+# 开发库固定 MySQL 8.4，直接复用同系列官方客户端二进制，避免 Debian
+# default-mysql-client 实际安装 MariaDB 而被备份/恢复预检拒绝。
 ARG PHP_VERSION=8.4
+FROM mysql:8.4 AS mysql-client
 
+# PHP 版本可切换：默认 8.4（贴合生产），测 8.3 兼容用 `PHP_VERSION=8.3 make rebuild`
 # 开发后端镜像（系统 OpenSSL 3.0+ 原生支持 SM2，国密 CSR 生成统一走系统 openssl，与 CI ubuntu-latest 一致）
 FROM php:${PHP_VERSION}-cli-bookworm
 
@@ -17,10 +20,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # 1. 系统依赖（PHP 扩展编译所需 + 常用工具）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git unzip default-mysql-client jq default-jre-headless \
+        git unzip jq default-jre-headless libncurses6 libtinfo6 \
         libicu-dev libzip-dev libonig-dev libxml2-dev \
         libpng-dev libjpeg-dev libfreetype6-dev \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=mysql-client --chmod=0755 /usr/bin/mysql /usr/bin/mysqldump /usr/bin/
 
 # 2. PHP 扩展（对齐 composer.json require + CI：bcmath/calendar/gd/intl/mbstring/pcntl/pdo_mysql/zip/exif + redis）
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg \

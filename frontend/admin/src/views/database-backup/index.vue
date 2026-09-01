@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import {
   ElButton,
   ElCard,
@@ -7,27 +7,30 @@ import {
   ElTableColumn,
   ElTag,
   ElDialog,
-  ElRadioGroup,
-  ElRadio,
+  ElCheckbox,
   ElAlert,
   ElPopconfirm,
   ElEmpty,
   ElMessageBox,
+  ElDescriptions,
+  ElDescriptionsItem,
   ElCollapse,
   ElCollapseItem
 } from "element-plus";
 import { message } from "@shared/utils";
+import { usePolling } from "@shared/hooks";
 import {
   listBackups,
   createBackup,
   getJobStatus,
-  getSchemaDiff,
+  getRestorePreflight,
   restoreBackup,
   deleteBackup,
   issueDownloadToken,
   type BackupItem,
   type JobProgress,
-  type SchemaDiffResult
+  type RestorePreflightMessage,
+  type RestorePreflightResult
 } from "@/api/databaseBackup";
 
 defineOptions({ name: "DatabaseBackup" });
@@ -38,19 +41,43 @@ const loading = ref(false);
 // 当前运行的 Job（创建 or 恢复）
 const activeJob = reactive({
   token: "" as string,
+  backupId: "" as string,
+  allowSchemaDifference: false,
   progress: null as JobProgress | null
 });
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+const jobRunning = computed(
+  () =>
+    activeJob.progress?.status === "queued" ||
+    activeJob.progress?.status === "running"
+);
 
 // 恢复弹窗状态
 const restoreDialog = reactive({
   visible: false,
   backup: null as BackupItem | null,
-  mode: "incremental" as "incremental" | "full",
-  loadingDiff: false,
-  diff: null as SchemaDiffResult | null,
+  loadingPreflight: false,
+  preflight: null as RestorePreflightResult | null,
+  allowSchemaDifference: false,
   submitting: false
 });
+const restoreDetailSections = ref<string[]>([]);
+let restorePreflightRequestId = 0;
+
+const needsSchemaConfirmation = computed(() =>
+  restoreDialog.preflight?.confirmations.some(item =>
+    ["schema_difference", "schema_not_authoritative"].includes(item.code)
+  )
+);
+const hasPreflightWarnings = computed(
+  () => (restoreDialog.preflight?.warnings.length ?? 0) > 0
+);
+
+const canSubmitRestore = computed(
+  () =>
+    restoreDialog.preflight !== null &&
+    restoreDialog.preflight.hard_blockers.length === 0 &&
+    (!needsSchemaConfirmation.value || restoreDialog.allowSchemaDifference)
+);
 
 function formatSize(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
@@ -75,36 +102,38 @@ async function load() {
   }
 }
 
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
+function startPolling(
+  token: string,
+  backupId = "",
+  allowSchemaDifference = false
+) {
+  activeJob.token = token;
+  activeJob.backupId = backupId;
+  activeJob.allowSchemaDifference = allowSchemaDifference;
+  activeJob.progress = { status: "queued", message: "任务已入队" };
+}
+
+async function pollActiveJob() {
+  if (!activeJob.token || !jobRunning.value) return;
+  try {
+    const resp = await getJobStatus(activeJob.token);
+    const progress = resp.data?.progress;
+    if (!progress) return;
+    activeJob.progress = progress;
+    if (progress.status === "completed" || progress.status === "failed") {
+      const type = progress.status === "completed" ? "success" : "error";
+      message(progress.message || progress.status, { type });
+      await load();
+    }
+  } catch {
+    activeJob.progress = { status: "failed", message: "轮询进度失败" };
   }
 }
 
-function startPolling(token: string, onDone: () => void) {
-  stopPolling();
-  activeJob.token = token;
-  activeJob.progress = { status: "queued", message: "任务已入队" };
-
-  pollTimer = setInterval(async () => {
-    try {
-      const resp = await getJobStatus(token);
-      const p = resp.data?.progress;
-      if (!p) return;
-      activeJob.progress = p;
-      if (p.status === "completed" || p.status === "failed") {
-        stopPolling();
-        const type = p.status === "completed" ? "success" : "error";
-        message(p.message || p.status, { type });
-        onDone();
-      }
-    } catch {
-      stopPolling();
-      activeJob.progress = { status: "failed", message: "轮询进度失败" };
-    }
-  }, 2000);
-}
+usePolling(pollActiveJob, {
+  interval: 2000,
+  shouldSkip: () => !activeJob.token || !jobRunning.value
+});
 
 async function handleCreate() {
   try {
@@ -121,10 +150,7 @@ async function handleCreate() {
     const resp = await createBackup();
     const token = resp.data?.token;
     if (!token) throw new Error("无 token");
-    startPolling(token, () => {
-      activeJob.token = "";
-      load();
-    });
+    startPolling(token);
   } catch {
     message("创建备份失败", { type: "error" });
   }
@@ -154,33 +180,44 @@ async function handleDownload(backup: BackupItem) {
 
 function openRestore(backup: BackupItem) {
   restoreDialog.backup = backup;
-  restoreDialog.mode = "incremental";
-  restoreDialog.diff = null;
+  restoreDialog.preflight = null;
+  restoreDialog.allowSchemaDifference = false;
+  restoreDetailSections.value = [];
   restoreDialog.visible = true;
-  loadDiff();
+  loadPreflight();
 }
 
-async function loadDiff() {
+async function loadPreflight() {
   if (!restoreDialog.backup) return;
-  restoreDialog.loadingDiff = true;
+  const backupId = restoreDialog.backup.id;
+  const requestId = ++restorePreflightRequestId;
+  const isCurrentRequest = () =>
+    requestId === restorePreflightRequestId &&
+    restoreDialog.visible &&
+    restoreDialog.backup?.id === backupId;
+  restoreDialog.loadingPreflight = true;
   try {
-    const resp = await getSchemaDiff(restoreDialog.backup.id);
-    restoreDialog.diff = resp.data ?? null;
+    const resp = await getRestorePreflight(backupId);
+    if (!isCurrentRequest()) return;
+    restoreDialog.preflight = resp.data ?? null;
   } catch {
-    restoreDialog.diff = { has_schema: false, message: "加载 schema 失败" };
+    if (!isCurrentRequest()) return;
+    restoreDialog.preflight = null;
+    message("加载恢复预检失败", { type: "error" });
   } finally {
-    restoreDialog.loadingDiff = false;
+    if (isCurrentRequest()) {
+      restoreDialog.loadingPreflight = false;
+    }
   }
 }
 
 async function submitRestore() {
   if (!restoreDialog.backup) return;
 
-  const modeLabel =
-    restoreDialog.mode === "full" ? "全量恢复（覆盖当前库）" : "增量恢复";
+  if (!canSubmitRestore.value) return;
   try {
     await ElMessageBox.confirm(
-      `确认执行 ${modeLabel}？系统将自动创建"恢复前快照"作为保险，恢复期间进入维护模式。`,
+      "确认执行原子数据库恢复？恢复期间将冻结写入、暂停队列并进入维护模式。",
       "恢复确认",
       {
         type: "warning",
@@ -194,17 +231,13 @@ async function submitRestore() {
 
   restoreDialog.submitting = true;
   try {
-    const resp = await restoreBackup(
-      restoreDialog.backup.id,
-      restoreDialog.mode
-    );
+    const backupId = restoreDialog.backup.id;
+    const allowSchemaDifference = restoreDialog.allowSchemaDifference;
+    const resp = await restoreBackup(backupId, allowSchemaDifference);
     const token = resp.data?.token;
     if (!token) throw new Error("无 token");
     restoreDialog.visible = false;
-    startPolling(token, () => {
-      activeJob.token = "";
-      load();
-    });
+    startPolling(token, backupId, allowSchemaDifference);
   } catch {
     message("发起恢复失败", { type: "error" });
   } finally {
@@ -212,39 +245,126 @@ async function submitRestore() {
   }
 }
 
-function diffSummaryText(diff: SchemaDiffResult): string[] {
-  if (!diff.has_schema || !diff.summary) return [];
-  const out: string[] = [];
-  const s = diff.summary;
-  if (s.missing_tables.length) {
-    out.push(
-      `备份中存在、当前库缺少的表 (${s.missing_tables.length}): ${s.missing_tables.join(", ")}`
-    );
+function schemaDiffSummary(preflight: RestorePreflightResult): string {
+  const diff = preflight.schema.diff;
+  const parts: string[] = [];
+  if (diff.missing_tables.length) {
+    parts.push(`备份多 ${diff.missing_tables.length} 张表`);
   }
-  if (s.extra_tables.length) {
-    out.push(
-      `当前库存在、备份中没有的表 (${s.extra_tables.length}): ${s.extra_tables.join(", ")}`
-    );
+  if (diff.extra_tables.length) {
+    parts.push(`当前库多 ${diff.extra_tables.length} 张表`);
   }
-  Object.entries(s.modified_tables).forEach(([table, parts]) => {
-    const descs: string[] = [];
-    if (parts.missing_columns?.length)
-      descs.push(`缺失列 ${parts.missing_columns.join("/")}`);
-    if (parts.extra_columns?.length)
-      descs.push(`多余列 ${parts.extra_columns.join("/")}`);
-    if (parts.modified_columns?.length)
-      descs.push(`列类型变更 ${parts.modified_columns.join("/")}`);
-    if (parts.missing_indexes?.length)
-      descs.push(`缺失索引 ${parts.missing_indexes.join("/")}`);
-    if (parts.extra_indexes?.length)
-      descs.push(`多余索引 ${parts.extra_indexes.join("/")}`);
-    if (descs.length) out.push(`${table}: ${descs.join("；")}`);
+  if (diff.changed_tables.length) {
+    parts.push(`${diff.changed_tables.length} 张表结构有变化`);
+  }
+  return parts.join("，") || "结构一致";
+}
+
+function isForeignKeyBlocker(item: RestorePreflightMessage): boolean {
+  return ["cross_range_foreign_key", "foreign_key_name_conflict"].includes(
+    item.code
+  );
+}
+
+function blockerShortLabel(item: RestorePreflightMessage): string {
+  const labels: Record<string, string> = {
+    artifact_invalid: "备份文件无效",
+    current_schema_unavailable: "无法读取当前数据库结构",
+    invalid_identifier: "备份中包含无效表名",
+    schema_invalid: "备份 Schema 无效",
+    sql_table_set_mismatch: "备份 SQL 与 Schema 的表不一致",
+    sql_unsafe: "备份 SQL 未通过安全检查",
+    restore_state_not_clean: "存在未清理的恢复现场",
+    restore_state_unavailable: "无法检查恢复现场"
+  };
+  return labels[item.code] || "存在其它恢复阻断";
+}
+
+function blockerSummary(preflight: RestorePreflightResult): string[] {
+  const summaries = new Set<string>();
+  const blockers = preflight.hard_blockers;
+  if (blockers.some(item => item.code === "toolchain_unsupported")) {
+    summaries.add("当前 MySQL 工具链不受支持");
+  }
+  const foreignKeyCount = blockers.filter(isForeignKeyBlocker).length;
+  if (foreignKeyCount > 0) {
+    summaries.add(`存在 ${foreignKeyCount} 个无法自动处理的外键`);
+  }
+  blockers.forEach(item => {
+    if (item.code !== "toolchain_unsupported" && !isForeignKeyBlocker(item)) {
+      summaries.add(blockerShortLabel(item));
+    }
   });
-  return out;
+  return [...summaries];
+}
+
+function toolchainDetails(preflight: RestorePreflightResult): string[] {
+  if (preflight.toolchain.errors.length) return preflight.toolchain.errors;
+  return preflight.hard_blockers
+    .filter(item => item.code === "toolchain_unsupported")
+    .map(item => item.message);
+}
+
+function otherBlockers(
+  preflight: RestorePreflightResult
+): RestorePreflightMessage[] {
+  return preflight.hard_blockers.filter(
+    item => item.code !== "toolchain_unsupported"
+  );
+}
+
+function preflightConclusion(preflight: RestorePreflightResult): string {
+  if (preflight.hard_blockers.length > 0) {
+    return `暂时无法恢复（${preflight.hard_blockers.length} 项阻断）`;
+  }
+  if (needsSchemaConfirmation.value) return "可以恢复，但需确认 Schema 差异";
+  if (hasPreflightWarnings.value) return "可以恢复，但存在兼容提示";
+  return "预检通过，可以恢复";
+}
+
+function applicationVersion(
+  facts: Record<string, string | null> | null
+): string {
+  if (!facts) return "未记录";
+  const version = facts.version || "未知";
+  const channel = facts.channel ? ` (${facts.channel})` : "";
+  return `${version}${channel}`;
+}
+
+function mysqlVersion(
+  facts: { vendor: string; version: string; series: string } | null | undefined
+): string {
+  return facts
+    ? `${facts.vendor} ${facts.version} (series ${facts.series})`
+    : "未记录";
+}
+
+const progressStageLabels: Record<string, string> = {
+  preflight: "恢复预检",
+  freeze: "冻结写入与队列",
+  create_shadow: "创建影子表",
+  import: "导入备份",
+  prepare_structure: "整理恢复结构",
+  validate: "校验数据库",
+  wait_metadata_lock: "等待元数据锁",
+  cutover: "原子切换",
+  runtime_cleanup: "清理运行时",
+  complete: "恢复完成"
+};
+
+function progressStage(stage?: string): string {
+  return stage ? progressStageLabels[stage] || stage : "等待执行";
+}
+
+function retryCommand(): string {
+  if (!activeJob.backupId) return "";
+  const flag = activeJob.allowSchemaDifference
+    ? " --allow-schema-difference"
+    : "";
+  return `php artisan database:restore ${activeJob.backupId}${flag}`;
 }
 
 onMounted(load);
-onUnmounted(stopPolling);
 </script>
 
 <template>
@@ -256,7 +376,7 @@ onUnmounted(stopPolling);
           <div class="flex gap-2">
             <el-button
               type="primary"
-              :disabled="!!activeJob.token"
+              :disabled="jobRunning"
               @click="handleCreate"
             >
               创建备份
@@ -269,7 +389,7 @@ onUnmounted(stopPolling);
       <!-- 当前任务进度 -->
       <el-alert
         v-if="activeJob.progress && activeJob.token"
-        :title="`任务进行中：${activeJob.progress.message}`"
+        :title="`${progressStage(activeJob.progress.stage)}：${activeJob.progress.message}`"
         :type="
           activeJob.progress.status === 'failed'
             ? 'error'
@@ -280,6 +400,15 @@ onUnmounted(stopPolling);
         :closable="false"
         class="mb-3"
       />
+      <el-alert
+        v-if="activeJob.progress?.status === 'failed' && retryCommand()"
+        type="warning"
+        :closable="false"
+        class="mb-3"
+      >
+        <template #title>可在服务器上同步续接恢复</template>
+        <code class="text-xs">{{ retryCommand() }}</code>
+      </el-alert>
 
       <el-table v-loading="loading" :data="items" empty-text="暂无备份" stripe>
         <el-table-column prop="filename" label="文件名" min-width="260" />
@@ -289,7 +418,7 @@ onUnmounted(stopPolling);
               :type="row.prefix === 'pre_restore' ? 'warning' : 'success'"
               size="small"
             >
-              {{ row.prefix === "pre_restore" ? "恢复前快照" : "常规备份" }}
+              {{ row.prefix === "pre_restore" ? "历史恢复快照" : "常规备份" }}
             </el-tag>
           </template>
         </el-table-column>
@@ -310,7 +439,7 @@ onUnmounted(stopPolling);
             <el-button
               size="small"
               type="primary"
-              :disabled="!!activeJob.token"
+              :disabled="jobRunning"
               @click="openRestore(row)"
             >
               恢复
@@ -323,11 +452,7 @@ onUnmounted(stopPolling);
               @confirm="handleDelete(row)"
             >
               <template #reference>
-                <el-button
-                  size="small"
-                  type="danger"
-                  :disabled="!!activeJob.token"
-                >
+                <el-button size="small" type="danger" :disabled="jobRunning">
                   删除
                 </el-button>
               </template>
@@ -358,122 +483,240 @@ onUnmounted(stopPolling);
           </span>
         </div>
 
-        <!-- 结构对比 -->
+        <!-- 恢复预检 -->
         <div class="mb-4">
-          <div class="mb-2 text-sm font-medium">结构对比</div>
-          <div v-if="restoreDialog.loadingDiff" class="text-gray-400 text-sm">
-            正在对比...
+          <div class="mb-2 text-sm font-medium">恢复预检</div>
+          <div
+            v-if="restoreDialog.loadingPreflight"
+            class="text-gray-400 text-sm"
+          >
+            正在检查备份完整性、工具链和 Schema...
           </div>
-          <template v-else-if="restoreDialog.diff">
+          <template v-else-if="restoreDialog.preflight">
             <el-alert
-              v-if="!restoreDialog.diff.has_schema"
-              type="warning"
-              :closable="false"
-              :title="
-                restoreDialog.diff.message ||
-                '旧备份无结构信息，无法对比。增量恢复可能遇到列不存在错误。'
+              :type="
+                restoreDialog.preflight.hard_blockers.length
+                  ? 'error'
+                  : needsSchemaConfirmation
+                    ? 'warning'
+                    : hasPreflightWarnings
+                      ? 'warning'
+                      : 'success'
               "
-            />
-            <el-alert
-              v-else-if="!restoreDialog.diff.has_diff"
-              type="success"
               :closable="false"
-              title="当前数据库结构与备份完全一致"
-            />
-            <el-alert
-              v-else
-              type="warning"
-              :closable="false"
-              title="结构存在差异，增量恢复可能失败；建议先审查差异"
+              :title="preflightConclusion(restoreDialog.preflight)"
+              class="mb-3"
             >
               <template #default>
-                <ul class="mt-2 list-disc pl-5 text-xs">
+                <ul
+                  v-if="restoreDialog.preflight.hard_blockers.length"
+                  class="mt-2 list-disc pl-5 text-xs"
+                >
                   <li
-                    v-for="(line, i) in diffSummaryText(restoreDialog.diff)"
-                    :key="i"
+                    v-for="line in blockerSummary(restoreDialog.preflight)"
+                    :key="line"
                   >
                     {{ line }}
                   </li>
                 </ul>
+                <div v-else class="mt-1 text-xs">
+                  {{
+                    !restoreDialog.preflight.artifact.legacy &&
+                    restoreDialog.preflight.artifact.integrity.verified
+                      ? "备份文件 SHA-256 校验通过。"
+                      : "旧版备份没有完整性元数据，将按兼容规则校验。"
+                  }}
+                </div>
+                <div
+                  v-if="restoreDialog.preflight.warnings.length"
+                  class="mt-1 text-xs"
+                >
+                  另有 {{ restoreDialog.preflight.warnings.length }}
+                  条提示，可展开查看。
+                </div>
               </template>
             </el-alert>
+
+            <el-alert
+              v-if="restoreDialog.preflight.schema.diff.has_difference"
+              type="warning"
+              :closable="false"
+              :title="`Schema 存在差异：${schemaDiffSummary(restoreDialog.preflight)}`"
+              class="mb-3"
+            />
+
+            <el-collapse
+              v-model="restoreDetailSections"
+              class="restore-preflight-details"
+            >
+              <el-collapse-item name="preflight" title="查看完整预检详情">
+                <el-descriptions :column="2" border size="small" class="mb-3">
+                  <el-descriptions-item label="备份程序版本">
+                    {{
+                      applicationVersion(
+                        restoreDialog.preflight.versions.backup_application
+                      )
+                    }}
+                  </el-descriptions-item>
+                  <el-descriptions-item label="当前程序版本">
+                    {{
+                      applicationVersion(
+                        restoreDialog.preflight.versions.current_application
+                      )
+                    }}
+                  </el-descriptions-item>
+                  <el-descriptions-item label="备份时 MySQL">
+                    服务端
+                    {{
+                      restoreDialog.preflight.versions.backup_toolchain
+                        ?.server_version || "未记录"
+                    }}，客户端
+                    {{
+                      restoreDialog.preflight.versions.backup_toolchain
+                        ?.client_version || "未记录"
+                    }}
+                  </el-descriptions-item>
+                  <el-descriptions-item label="当前 MySQL">
+                    服务端
+                    {{
+                      mysqlVersion(
+                        restoreDialog.preflight.versions.current_server
+                      )
+                    }}，客户端
+                    {{
+                      mysqlVersion(
+                        restoreDialog.preflight.versions.current_mysql_client
+                      )
+                    }}
+                  </el-descriptions-item>
+                  <el-descriptions-item label="工具链">
+                    {{
+                      restoreDialog.preflight.toolchain.supported
+                        ? "已匹配"
+                        : "不受支持"
+                    }}
+                  </el-descriptions-item>
+                  <el-descriptions-item label="容量估算">
+                    {{
+                      formatSize(
+                        restoreDialog.preflight.space
+                          .total_estimated_footprint_bytes
+                      )
+                    }}
+                  </el-descriptions-item>
+                </el-descriptions>
+
+                <div
+                  v-if="restoreDialog.preflight.schema.diff.has_difference"
+                  class="mb-3 text-xs"
+                >
+                  <div class="mb-1 font-medium">Schema 差异表</div>
+                  <div
+                    v-if="
+                      restoreDialog.preflight.schema.diff.missing_tables.length
+                    "
+                    class="mb-1 break-all"
+                  >
+                    <b>仅备份：</b>
+                    {{
+                      restoreDialog.preflight.schema.diff.missing_tables.join(
+                        ", "
+                      )
+                    }}
+                  </div>
+                  <div
+                    v-if="
+                      restoreDialog.preflight.schema.diff.extra_tables.length
+                    "
+                    class="mb-1 break-all"
+                  >
+                    <b>仅当前库：</b>
+                    {{
+                      restoreDialog.preflight.schema.diff.extra_tables.join(
+                        ", "
+                      )
+                    }}
+                  </div>
+                  <div
+                    v-if="
+                      restoreDialog.preflight.schema.diff.changed_tables.length
+                    "
+                    class="break-all"
+                  >
+                    <b>结构变化：</b>
+                    {{
+                      restoreDialog.preflight.schema.diff.changed_tables.join(
+                        ", "
+                      )
+                    }}
+                  </div>
+                </div>
+
+                <div
+                  v-if="toolchainDetails(restoreDialog.preflight).length"
+                  class="mb-3 text-xs"
+                >
+                  <div class="mb-1 font-medium text-red-500">工具链诊断</div>
+                  <ul class="list-disc pl-5 break-all">
+                    <li
+                      v-for="(line, i) in toolchainDetails(
+                        restoreDialog.preflight
+                      )"
+                      :key="`toolchain-${i}`"
+                    >
+                      {{ line }}
+                    </li>
+                  </ul>
+                </div>
+
+                <div
+                  v-if="otherBlockers(restoreDialog.preflight).length"
+                  class="mb-3 text-xs"
+                >
+                  <div class="mb-1 font-medium text-red-500">其它阻断</div>
+                  <ul class="list-disc pl-5 break-all">
+                    <li
+                      v-for="item in otherBlockers(restoreDialog.preflight)"
+                      :key="`blocker-${item.code}-${item.message}`"
+                    >
+                      {{ item.message }}
+                    </li>
+                  </ul>
+                </div>
+
+                <div
+                  v-if="restoreDialog.preflight.warnings.length"
+                  class="mb-3 text-xs"
+                >
+                  <div class="mb-1 font-medium text-amber-500">兼容提示</div>
+                  <ul class="list-disc pl-5 break-all">
+                    <li
+                      v-for="item in restoreDialog.preflight.warnings"
+                      :key="`warning-${item.code}`"
+                    >
+                      {{ item.message }}
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="text-xs text-gray-500">
+                  {{ restoreDialog.preflight.space.note }}
+                </div>
+              </el-collapse-item>
+            </el-collapse>
+
+            <el-checkbox
+              v-if="
+                needsSchemaConfirmation &&
+                restoreDialog.preflight.hard_blockers.length === 0
+              "
+              v-model="restoreDialog.allowSchemaDifference"
+              class="mt-4 h-auto items-start whitespace-normal"
+            >
+              我已确认 Schema 差异，仍然恢复
+            </el-checkbox>
           </template>
         </div>
-
-        <!-- 备份结构中文概览（折叠，无论是否有差异都可查看） -->
-        <el-collapse
-          v-if="
-            restoreDialog.diff?.has_schema &&
-            restoreDialog.diff.tables_overview?.length
-          "
-          class="mb-4"
-        >
-          <el-collapse-item name="overview">
-            <template #title>
-              <span class="text-sm">
-                查看备份结构（{{ restoreDialog.diff.tables_overview.length }}
-                张表）
-              </span>
-            </template>
-            <el-table
-              :data="restoreDialog.diff.tables_overview"
-              size="small"
-              max-height="260"
-              stripe
-            >
-              <el-table-column
-                prop="name"
-                label="表名"
-                min-width="180"
-                show-overflow-tooltip
-              />
-              <el-table-column
-                prop="comment"
-                label="说明"
-                min-width="200"
-                show-overflow-tooltip
-              >
-                <template #default="{ row }">
-                  <span :class="{ 'text-gray-400': !row.comment }">
-                    {{ row.comment || "—" }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column
-                prop="columns"
-                label="字段数"
-                width="90"
-                align="center"
-              />
-            </el-table>
-          </el-collapse-item>
-        </el-collapse>
-
-        <!-- 模式选择 -->
-        <div class="mb-2 text-sm font-medium">恢复模式</div>
-        <el-radio-group
-          v-model="restoreDialog.mode"
-          class="restore-mode-group flex w-full flex-col gap-3"
-        >
-          <el-radio value="incremental" class="restore-mode-radio">
-            <div class="flex flex-col gap-1">
-              <span class="font-semibold">增量恢复（INSERT IGNORE）</span>
-              <span class="text-xs text-gray-500 leading-relaxed">
-                保留当前库数据，仅补回备份中存在、当前库缺失的主键行；不改结构
-              </span>
-            </div>
-          </el-radio>
-          <el-radio value="full" class="restore-mode-radio">
-            <div class="flex flex-col gap-1">
-              <span class="font-semibold"
-                >全量恢复（DROP + CREATE + INSERT）</span
-              >
-              <span class="text-xs text-gray-500 leading-relaxed">
-                把库回滚到备份时刻，当前库内容被覆盖，请谨慎
-              </span>
-            </div>
-          </el-radio>
-        </el-radio-group>
       </template>
 
       <template #footer>
@@ -481,6 +724,9 @@ onUnmounted(stopPolling);
         <el-button
           type="danger"
           :loading="restoreDialog.submitting"
+          :disabled="
+            restoreDialog.loadingPreflight || !canSubmitRestore || jobRunning
+          "
           @click="submitRestore"
         >
           执行恢复
@@ -489,28 +735,3 @@ onUnmounted(stopPolling);
     </el-dialog>
   </div>
 </template>
-
-<style scoped>
-/* el-radio 默认 inline、有 margin-left；改为左对齐 + 顶对齐 + label 可换行 */
-.restore-mode-group :deep(.el-radio) {
-  width: 100%;
-  margin-right: 0;
-  margin-left: 0;
-}
-
-.restore-mode-radio {
-  align-items: flex-start;
-  height: auto;
-  white-space: normal;
-}
-
-.restore-mode-radio :deep(.el-radio__label) {
-  padding-left: 8px;
-  line-height: 1.4;
-  white-space: normal;
-}
-
-.restore-mode-radio :deep(.el-radio__input) {
-  margin-top: 3px;
-}
-</style>

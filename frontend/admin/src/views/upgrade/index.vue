@@ -19,6 +19,7 @@ import {
   type PhpEnvironmentErrorDetails
 } from "@/api/upgrade";
 import { message } from "@shared/utils";
+import { buildStructureWarningView } from "./structureWarning";
 import {
   ElAlert,
   ElButton,
@@ -31,7 +32,9 @@ import {
   ElSelect,
   ElOption,
   ElDialog,
-  ElMessageBox
+  ElMessageBox,
+  ElCollapse,
+  ElCollapseItem
 } from "element-plus";
 import { useRouter } from "vue-router";
 
@@ -75,14 +78,17 @@ const structureWarning = ref<{
   canAutoFix: boolean;
   autoFixed: boolean;
   message: string;
+  details: string[];
   manualActions: string[];
 }>({
   show: false,
   canAutoFix: true,
   autoFixed: false,
   message: "",
+  details: [],
   manualActions: []
 });
+const structureDetailSections = ref<string[]>([]);
 
 // PHP 环境检测失败弹窗（后台升级仅检测，不能自动修复 PHP；引导用户用 upgrade.sh）
 const phpEnvError = ref<{
@@ -284,34 +290,21 @@ const pollUpgradeStatus = async () => {
       if (data.structure_check?.has_diff && !data.structure_check?.auto_fixed) {
         const sc = data.structure_check;
         const summary = sc.summary;
-        const items: string[] = [];
+        if (!summary) {
+          structureWarning.value.show = false;
+        } else {
+          const warningView = buildStructureWarningView(summary);
 
-        if (summary.missing_tables?.length)
-          items.push(`缺失表: ${summary.missing_tables.join(", ")}`);
-        if (summary.extra_tables?.length)
-          items.push(`多余表: ${summary.extra_tables.join(", ")}`);
-        if (summary.missing_columns?.length)
-          items.push(`缺失列: ${summary.missing_columns.join(", ")}`);
-        if (summary.extra_columns?.length)
-          items.push(`多余列: ${summary.extra_columns.join(", ")}`);
-        if (summary.modified_columns?.length)
-          items.push(`类型不匹配: ${summary.modified_columns.join(", ")}`);
-        if (summary.missing_indexes?.length)
-          items.push(`缺失索引: ${summary.missing_indexes.join(", ")}`);
-        if (summary.extra_indexes?.length)
-          items.push(`多余索引: ${summary.extra_indexes.join(", ")}`);
-        if (summary.missing_foreign_keys?.length)
-          items.push(`缺失外键: ${summary.missing_foreign_keys.join(", ")}`);
-        if (summary.extra_foreign_keys?.length)
-          items.push(`多余外键: ${summary.extra_foreign_keys.join(", ")}`);
-
-        structureWarning.value = {
-          show: true,
-          canAutoFix: sc.summary?.can_auto_fix ?? false,
-          autoFixed: sc.auto_fixed,
-          message: items.join("\n"),
-          manualActions: summary.manual_actions || []
-        };
+          structureWarning.value = {
+            show: true,
+            canAutoFix: summary.can_auto_fix,
+            autoFixed: sc.auto_fixed,
+            message: warningView.message,
+            details: warningView.details,
+            manualActions: warningView.manualActions
+          };
+          structureDetailSections.value = [];
+        }
       } else {
         structureWarning.value.show = false;
       }
@@ -705,37 +698,54 @@ onUnmounted(() => {
         </div>
       </template>
       <div class="structure-warning-content">
-        <pre class="text-sm whitespace-pre-wrap mb-2">{{
-          structureWarning.message
-        }}</pre>
-        <div
-          v-if="structureWarning.manualActions.length"
-          class="manual-actions mt-2"
+        <div class="text-sm">{{ structureWarning.message }}</div>
+        <el-collapse
+          v-if="
+            structureWarning.details.length ||
+            structureWarning.manualActions.length
+          "
+          v-model="structureDetailSections"
+          class="mt-3"
         >
-          <div class="font-bold text-sm mb-1">需手动执行的操作：</div>
-          <ul class="list-disc pl-4 text-sm">
-            <li
-              v-for="(action, idx) in structureWarning.manualActions"
-              :key="idx"
+          <el-collapse-item name="structure" title="查看完整结构差异">
+            <ul
+              v-if="structureWarning.details.length"
+              class="list-disc pl-4 text-sm space-y-1"
             >
-              {{ action }}
-            </li>
-          </ul>
-        </div>
-        <div class="mt-3 text-sm text-gray-600 space-y-1">
-          <div>
-            <code class="bg-gray-100 px-2 py-1 rounded"
-              >php artisan db:structure --check</code
+              <li v-for="detail in structureWarning.details" :key="detail">
+                {{ detail }}
+              </li>
+            </ul>
+            <div
+              v-if="structureWarning.manualActions.length"
+              class="manual-actions mt-3"
             >
-            查看详细差异
-          </div>
-          <div>
-            <code class="bg-gray-100 px-2 py-1 rounded"
-              >php artisan db:structure --fix</code
-            >
-            自动修复
-          </div>
-        </div>
+              <div class="font-bold text-sm mb-1">需手动执行的操作：</div>
+              <ul class="list-disc pl-4 text-sm space-y-1">
+                <li
+                  v-for="action in structureWarning.manualActions"
+                  :key="action"
+                >
+                  {{ action }}
+                </li>
+              </ul>
+            </div>
+            <div class="mt-3 text-sm text-gray-600 space-y-2">
+              <div>
+                <code class="bg-gray-100 px-2 py-1 rounded"
+                  >php artisan db:structure --check</code
+                >
+                查看详细差异
+              </div>
+              <div>
+                <code class="bg-gray-100 px-2 py-1 rounded"
+                  >php artisan db:structure --fix</code
+                >
+                自动修复
+              </div>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
       </div>
     </el-card>
 
@@ -1003,13 +1013,6 @@ onUnmounted(() => {
 .changelog {
   max-height: 200px;
   overflow-y: auto;
-}
-
-.structure-warning-content pre {
-  padding: 8px 12px;
-  margin: 0;
-  background: rgb(0 0 0 / 3%);
-  border-radius: 4px;
 }
 
 .structure-warning-content code {

@@ -123,10 +123,28 @@ class DatabaseStructureService
      */
     public function exportCurrentStructure(string $connection): array
     {
+        $excludeTables = (array) Config::get('upgrade.exclude_tables', [
+            'migrations', 'failed_jobs', 'password_reset_tokens', 'personal_access_tokens',
+            'telescope_entries', 'telescope_entries_tags', 'telescope_monitoring', 'queue_batches',
+        ]);
+
+        return $this->exportStructure($connection, $excludeTables);
+    }
+
+    /**
+     * 导出备份覆盖的全部物理表结构（仅 mysql）。
+     */
+    public function exportBackupStructure(string $connection): array
+    {
+        return $this->exportStructure($connection, []);
+    }
+
+    private function exportStructure(string $connection, array $excludeTables): array
+    {
         $driver = (string) Config::get("database.connections.$connection.driver");
 
         return match ($driver) {
-            'mysql', 'mariadb' => $this->exportMysqlStructure($connection),
+            'mysql', 'mariadb' => $this->exportMysqlStructure($connection, $excludeTables),
             default => throw new \RuntimeException("不支持的 driver: {$driver}（仅支持 mysql）"),
         };
     }
@@ -134,7 +152,7 @@ class DatabaseStructureService
     /**
      * MySQL 完整结构导出（保留原行为，structure.json 比对逻辑依赖此格式）。
      */
-    protected function exportMysqlStructure(string $connection): array
+    protected function exportMysqlStructure(string $connection, array $excludeTables): array
     {
         $database = Config::get("database.connections.$connection.database");
 
@@ -143,14 +161,9 @@ class DatabaseStructureService
         ];
 
         $tables = DB::connection($connection)
-            ->select('SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, AUTO_INCREMENT
+            ->select('SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, AUTO_INCREMENT, DATA_LENGTH, INDEX_LENGTH
  FROM information_schema.TABLES
  WHERE TABLE_SCHEMA = ?', [$database]);
-
-        $excludeTables = Config::get('upgrade.exclude_tables', [
-            'migrations', 'failed_jobs', 'password_reset_tokens', 'personal_access_tokens',
-            'telescope_entries', 'telescope_entries_tags', 'telescope_monitoring', 'queue_batches',
-        ]);
 
         foreach ($tables as $table) {
             $tableName = $table->TABLE_NAME;
@@ -164,6 +177,10 @@ class DatabaseStructureService
                 'engine' => $table->ENGINE,
                 'collation' => $table->TABLE_COLLATION,
                 'comment' => $table->TABLE_COMMENT,
+                // 这些值记录在备份 Schema 中供容量评估，但不参与结构语义比较。
+                'auto_increment' => $table->AUTO_INCREMENT ?? null,
+                'data_length' => (int) ($table->DATA_LENGTH ?? 0),
+                'index_length' => (int) ($table->INDEX_LENGTH ?? 0),
                 'columns' => $this->getTableColumns($connection, $database, $tableName),
                 'indexes' => $this->getTableIndexes($connection, $database, $tableName),
                 'foreign_keys' => $this->getTableForeignKeys($connection, $database, $tableName),
@@ -192,6 +209,8 @@ class DatabaseStructureService
                 'default' => $column->COLUMN_DEFAULT,
                 'extra' => $column->EXTRA,
                 'comment' => $column->COLUMN_COMMENT,
+                'character_set' => $column->CHARACTER_SET_NAME ?? null,
+                'generation_expression' => $column->GENERATION_EXPRESSION ?? '',
             ];
         }
 
@@ -273,6 +292,22 @@ class DatabaseStructureService
      */
     public function compareStructures(array $standard, array $current): array
     {
+        return $this->compareStructuresWithMode($standard, $current, false);
+    }
+
+    /**
+     * 对比备份 Schema，额外检查备份明确记录的恢复元数据。
+     */
+    public function compareBackupStructures(array $standard, array $current): array
+    {
+        return $this->compareStructuresWithMode($standard, $current, true);
+    }
+
+    private function compareStructuresWithMode(
+        array $standard,
+        array $current,
+        bool $compareBackupColumnMetadata,
+    ): array {
         $diff = [
             'missing_tables' => [],
             'extra_tables' => [],
@@ -287,7 +322,11 @@ class DatabaseStructureService
             if (! isset($currentTables[$tableName])) {
                 $diff['missing_tables'][$tableName] = $tableSchema;
             } else {
-                $tableDiff = $this->compareTableStructure($tableSchema, $currentTables[$tableName]);
+                $tableDiff = $this->compareTableStructure(
+                    $tableSchema,
+                    $currentTables[$tableName],
+                    $compareBackupColumnMetadata,
+                );
                 if (! empty($tableDiff)) {
                     $diff['table_differences'][$tableName] = $tableDiff;
                 }
@@ -307,8 +346,11 @@ class DatabaseStructureService
     /**
      * 对比表结构
      */
-    protected function compareTableStructure(array $standard, array $current): array
-    {
+    protected function compareTableStructure(
+        array $standard,
+        array $current,
+        bool $compareBackupColumnMetadata = false,
+    ): array {
         $diff = [
             'missing_columns' => [],
             'extra_columns' => [],
@@ -318,13 +360,18 @@ class DatabaseStructureService
             'modified_indexes' => [],
             'missing_foreign_keys' => [],
             'extra_foreign_keys' => [],
+            'modified_foreign_keys' => [],
         ];
 
         // 对比列
         foreach ($standard['columns'] as $columnName => $columnDef) {
             if (! isset($current['columns'][$columnName])) {
                 $diff['missing_columns'][$columnName] = $columnDef;
-            } elseif ($this->isColumnDifferent($columnDef, $current['columns'][$columnName])) {
+            } elseif ($this->isColumnDifferent(
+                $columnDef,
+                $current['columns'][$columnName],
+                $compareBackupColumnMetadata,
+            )) {
                 $diff['modified_columns'][$columnName] = [
                     'standard' => $columnDef,
                     'current' => $current['columns'][$columnName],
@@ -338,28 +385,22 @@ class DatabaseStructureService
             }
         }
 
-        // 对比索引
-        foreach ($standard['indexes'] as $indexName => $indexDef) {
-            if (! isset($current['indexes'][$indexName])) {
-                $diff['missing_indexes'][$indexName] = $indexDef;
-            } elseif ($this->isIndexDifferent($indexDef, $current['indexes'][$indexName])) {
-                $diff['modified_indexes'][$indexName] = [
-                    'standard' => $indexDef,
-                    'current' => $current['indexes'][$indexName],
-                ];
-            }
-        }
-
-        foreach ($current['indexes'] as $indexName => $indexDef) {
-            if (! isset($standard['indexes'][$indexName])) {
-                $diff['extra_indexes'][$indexName] = $indexDef;
-            }
-        }
+        $diff = array_merge($diff, $this->compareIndexes(
+            $standard['indexes'],
+            $current['indexes'],
+            $standard['foreign_keys'],
+            $current['foreign_keys']
+        ));
 
         // 对比外键
         foreach ($standard['foreign_keys'] as $fkName => $fkDef) {
             if (! isset($current['foreign_keys'][$fkName])) {
                 $diff['missing_foreign_keys'][$fkName] = $fkDef;
+            } elseif ($this->isForeignKeyDifferent($fkDef, $current['foreign_keys'][$fkName])) {
+                $diff['modified_foreign_keys'][$fkName] = [
+                    'standard' => $fkDef,
+                    'current' => $current['foreign_keys'][$fkName],
+                ];
             }
         }
 
@@ -375,8 +416,11 @@ class DatabaseStructureService
     /**
      * 判断列是否不同
      */
-    protected function isColumnDifferent(array $standard, array $current): bool
-    {
+    protected function isColumnDifferent(
+        array $standard,
+        array $current,
+        bool $compareBackupColumnMetadata = false,
+    ): bool {
         // MySQL 5.7 整型必须有显示宽度如 int(11)、bigint(20)，
         // MySQL 8.0 废弃了显示宽度只显示 int、bigint，
         // 标准化后忽略此差异避免跨版本检测时产生误报
@@ -387,6 +431,14 @@ class DatabaseStructureService
         $standard['nullable'] !== $current['nullable'] ||
         $standard['default'] !== $current['default'] ||
         $standard['extra'] !== $current['extra']) {
+            return true;
+        }
+
+        if ($compareBackupColumnMetadata &&
+            ((array_key_exists('character_set', $standard) &&
+                $this->columnValue($standard, 'character_set') !== $this->columnValue($current, 'character_set')) ||
+             (array_key_exists('generation_expression', $standard) &&
+                $this->columnValue($standard, 'generation_expression', '') !== $this->columnValue($current, 'generation_expression', '')))) {
             return true;
         }
 
@@ -408,6 +460,106 @@ class DatabaseStructureService
         $standard['type'] !== $current['type'] ||
         $standard['columns'] !== $current['columns'] ||
         $standard['sub_parts'] !== $current['sub_parts'];
+    }
+
+    /**
+     * 对比索引。先按稳定名称配对，再仅配对一对一可确认的外键隐式索引。
+     *
+     * @param  array<string, array<string, mixed>>  $standard
+     * @param  array<string, array<string, mixed>>  $current
+     * @param  array<string, array<string, mixed>>  $standardForeignKeys
+     * @param  array<string, array<string, mixed>>  $currentForeignKeys
+     * @return array{missing_indexes:array,extra_indexes:array,modified_indexes:array}
+     */
+    protected function compareIndexes(array $standard, array $current, array $standardForeignKeys, array $currentForeignKeys): array
+    {
+        $diff = [
+            'missing_indexes' => [],
+            'extra_indexes' => [],
+            'modified_indexes' => [],
+        ];
+        $unmatchedStandard = [];
+        $unmatchedCurrent = $current;
+
+        foreach ($standard as $indexName => $index) {
+            if (! isset($unmatchedCurrent[$indexName])) {
+                $unmatchedStandard[$indexName] = $index;
+
+                continue;
+            }
+
+            if ($this->isIndexDifferent($index, $unmatchedCurrent[$indexName])) {
+                $diff['modified_indexes'][$indexName] = [
+                    'standard' => $index,
+                    'current' => $unmatchedCurrent[$indexName],
+                ];
+            }
+            unset($unmatchedCurrent[$indexName]);
+        }
+
+        foreach ($unmatchedStandard as $standardName => $standardIndex) {
+            if (! array_key_exists($standardName, $unmatchedStandard)) {
+                continue;
+            }
+            $standardMatches = array_filter(
+                $unmatchedStandard,
+                fn ($index) => ! $this->isIndexDifferent($standardIndex, $index) &&
+                    $this->isPotentialImplicitForeignKeyIndex($index, $standardForeignKeys)
+            );
+            $currentMatches = array_filter(
+                $unmatchedCurrent,
+                fn ($index) => ! $this->isIndexDifferent($standardIndex, $index) &&
+                    $this->isPotentialImplicitForeignKeyIndex($index, $currentForeignKeys)
+            );
+
+            // 仅一对一时才能确定为版本造成的隐式索引命名差异。
+            if (count($standardMatches) === 1 && count($currentMatches) === 1) {
+                unset($unmatchedStandard[$standardName], $unmatchedCurrent[array_key_first($currentMatches)]);
+            }
+        }
+
+        $diff['missing_indexes'] = $unmatchedStandard;
+        $diff['extra_indexes'] = $unmatchedCurrent;
+
+        return $diff;
+    }
+
+    /** @param array<string, array<string, mixed>> $foreignKeys */
+    protected function isPotentialImplicitForeignKeyIndex(array $index, array $foreignKeys): bool
+    {
+        if (($index['unique'] ?? false) ||
+            strtoupper((string) ($index['type'] ?? '')) !== 'BTREE' ||
+            array_filter($index['sub_parts'] ?? [], fn ($part) => $part !== null) !== []) {
+            return false;
+        }
+
+        foreach ($foreignKeys as $foreignKey) {
+            if (($index['columns'] ?? []) === ($foreignKey['columns'] ?? [])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function isForeignKeyDifferent(array $standard, array $current): bool
+    {
+        return $standard['columns'] !== $current['columns'] ||
+            $standard['references']['table'] !== $current['references']['table'] ||
+            $standard['references']['columns'] !== $current['references']['columns'] ||
+            $standard['on_delete'] !== $current['on_delete'] ||
+            $standard['on_update'] !== $current['on_update'];
+    }
+
+    protected function columnValue(array $column, string $key, mixed $default = null): mixed
+    {
+        $value = $column[$key] ?? $default;
+
+        return match ($key) {
+            'character_set' => $value === null ? null : strtolower((string) $value),
+            'generation_expression' => trim((string) $value),
+            default => $value,
+        };
     }
 
     /**
@@ -524,6 +676,7 @@ class DatabaseStructureService
             'modified_indexes' => [],
             'missing_foreign_keys' => [],
             'extra_foreign_keys' => [],
+            'modified_foreign_keys' => [],
             'can_auto_fix' => true,
             'manual_actions' => [], // 需要手动处理的操作
         ];
@@ -565,15 +718,14 @@ class DatabaseStructureService
                 $summary['can_auto_fix'] = false;
                 $summary['manual_actions'][] = "删除多余外键 $tableName.$fk";
             }
-        }
-
-        // 有多余的表或列，不能自动删除
-        if (! empty($summary['extra_tables'])) {
-            $summary['can_auto_fix'] = false;
-            foreach ($summary['extra_tables'] as $table) {
-                $summary['manual_actions'][] = "删除多余表 $table";
+            foreach ($tableDiff['modified_foreign_keys'] ?? [] as $fk => $def) {
+                $summary['modified_foreign_keys'][] = "$tableName.$fk";
+                $summary['can_auto_fix'] = false;
+                $summary['manual_actions'][] = "修改外键 $tableName.$fk";
             }
         }
+
+        // 额外表可能由插件拥有，不属于主程序可以删除或阻断自动修复的范围。
         if (! empty($summary['extra_columns'])) {
             $summary['can_auto_fix'] = false;
             foreach ($summary['extra_columns'] as $col) {

@@ -209,9 +209,11 @@ class PureHttp {
         }
         // 返回错误信息则抛出错误
         if (response.data.code === 0) {
-          message(response.data.msg, { type: "error" });
-          response.data?.errors &&
-            messageBox(response.data?.msg, response.data?.errors);
+          if (!$config.suppressErrorMessage) {
+            message(response.data.msg, { type: "error" });
+            response.data?.errors &&
+              messageBox(response.data?.msg, response.data?.errors);
+          }
           return Promise.reject({ response: response });
         }
         return response.data;
@@ -270,7 +272,8 @@ class PureHttp {
         } else {
           // 返回错误信息则抛出错误
           const data = error.response?.data as any;
-          if (data?.code === 0) {
+          const $config = error.config as PureHttpRequestConfig | undefined;
+          if (data?.code === 0 && !$config?.suppressErrorMessage) {
             message(data?.msg, { type: "error" });
             data?.errors && messageBox(data?.msg, data?.errors);
           }
