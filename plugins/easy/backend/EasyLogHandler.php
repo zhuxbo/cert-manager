@@ -15,6 +15,8 @@ class EasyLogHandler implements PluginLogHandler
 
     public function handle(array $logData): void
     {
-        LogBuffer::add(EasyLog::class, $logData);
+        LogBuffer::add(EasyLog::class, array_intersect_key($logData, array_flip([
+            'action', 'method', 'url', 'params', 'response', 'ip', 'status',
+        ])));
     }
 }

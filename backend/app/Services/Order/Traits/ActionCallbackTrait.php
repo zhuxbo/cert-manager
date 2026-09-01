@@ -7,6 +7,8 @@ namespace App\Services\Order\Traits;
 use App\Models\Callback;
 use App\Models\Order;
 use App\Utils\IpUtil;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 trait ActionCallbackTrait
@@ -66,13 +68,10 @@ trait ActionCallbackTrait
         // 考虑回调提供订单数据
         // 显式超时（不靠 Laravel 框架默认 30s+10s）：回推下游是纯通知，跑在 TaskJob 事务内持 task 行锁，
         // 30s < worker --timeout 60s；框架升级或全局 Http::macro 改默认也不会静默退回无界阻塞。
-        $response = Http::asForm()
-            ->timeout(30)
-            ->connectTimeout(10)
-            ->post($callback->url, [
-                'id' => $orderId,
-                'token' => $callback->token,
-            ]);
+        $response = $this->postCallback($callback->url, [
+            'id' => $orderId,
+            'token' => $callback->token,
+        ]);
 
         $httpCode = $response->status();
 
@@ -83,5 +82,17 @@ trait ActionCallbackTrait
         }
 
         $this->success();
+    }
+
+    private function postCallback(string $url, array $data): Response
+    {
+        try {
+            return Http::asForm()
+                ->timeout(30)
+                ->connectTimeout(10)
+                ->post($url, $data);
+        } catch (ConnectionException) {
+            $this->error('回调地址暂时无法连接');
+        }
     }
 }

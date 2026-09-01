@@ -13,6 +13,7 @@ use Plugins\CloudDeploy\Commands\CloudDeployAuditDestinationsCommand;
 use Plugins\CloudDeploy\Commands\CloudDeployReconcileCommand;
 use Plugins\CloudDeploy\Deployers\Registry;
 use Plugins\CloudDeploy\Notifications\CloudDeployFailedNotificationBuilder;
+use Plugins\CloudDeploy\Services\CloudDeployLogPurger;
 use Plugins\CloudDeploy\Support\CloudDeployTriggers;
 use Plugins\CloudDeploy\Support\OutboundDestinationPolicy;
 use Plugins\CloudDeploy\Support\SafeHttpClientFactory;
@@ -26,6 +27,7 @@ class CloudDeployServiceProvider extends ServiceProvider
 
         $this->app->singleton(OutboundDestinationPolicy::class);
         $this->app->singleton(SafeHttpClientFactory::class);
+        $this->app->tag([CloudDeployLogPurger::class], 'plugin.log_purgers');
 
         // Registry 单例：按 provider 拆分的 registry/*.php 各返回一个 Closure(Registry)，逐个 apply 注册 provider + deployer
         $this->app->singleton(Registry::class, function () {

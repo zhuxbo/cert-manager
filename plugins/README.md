@@ -13,17 +13,17 @@ plugins/
     ├── frontend/         # 前端（可选）
     │   ├── admin/        # 管理端 IIFE Vue 组件
     │   ├── user/         # 用户端 IIFE Vue 组件
-    │   └── web/          # 独立静态页（原生 HTML+JS，如 Easy 简易申请/简易开票）
+    │   └── web/          # 独立静态页（原生 HTML+JS，如 Easy 简易申请）
     └── nginx/            # nginx 配置（可选）
 ```
 
 ## 内置插件
 
-| 插件              | 功能                                                                        | 参考用途                               |
-| ----------------- | --------------------------------------------------------------------------- | -------------------------------------- |
-| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称                                      | 最小可用插件骨架                       |
-| `plugins/invoice` | 发票管理（双端 CRUD）+ 外部开票方接入（pending/complete）+ Admin 配置面板   | CRUD + 对外鉴权接口 + storage 加密配置 |
-| `plugins/easy`    | Easy 简易证书申请 + 简易开票（依赖 `invoice` 插件，软 `class_exists` 守门） | 多回调、跨插件协作、tid+email 业务鉴权 |
+| 插件              | 功能                                                                      | 参考用途                                 |
+| ----------------- | ------------------------------------------------------------------------- | ---------------------------------------- |
+| `plugins/notice`  | 单表 CRUD（公告），用户/管理端基本对称                                    | 最小可用插件骨架                         |
+| `plugins/invoice` | 发票管理（双端 CRUD）+ 外部开票方接入（pending/complete）+ Admin 配置面板 | CRUD + 对外鉴权接口 + storage 加密配置   |
+| `plugins/easy`    | Easy 简易证书申请                                                         | 多回调、产品级别映射、tid+email 业务鉴权 |
 
 开发规范按主题拆分，索引见 [`skills/SKILL.md`](../skills/SKILL.md)。
 

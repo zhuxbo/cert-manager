@@ -60,13 +60,13 @@ class LogsController extends BaseController
 
     public function api(LogsApiRequest $request): void
     {
-        $fields = ['id', 'url', 'status', 'created_at', 'method', 'user_id', 'version', 'status_code', 'duration', 'ip'];
+        $fields = ['id', 'module', 'action', 'url', 'status', 'created_at', 'method', 'user_id', 'version', 'status_code', 'duration', 'ip'];
         $this->logsQuery(ApiLog::query()->select($fields), 'user', $request);
     }
 
     public function callback(LogsCallbackRequest $request): void
     {
-        $fields = ['id', 'url', 'status', 'created_at', 'method', 'ip'];
+        $fields = ['id', 'module', 'action', 'url', 'status', 'created_at', 'method', 'ip'];
         $this->logsQuery(CallbackLog::query()->select($fields), '', $request);
     }
 
@@ -78,7 +78,7 @@ class LogsController extends BaseController
 
     public function errors(LogsErrorRequest $request): void
     {
-        $fields = ['id', 'url', 'method', 'created_at', 'status_code', 'exception', 'message', 'ip'];
+        $fields = ['id', 'module', 'action', 'url', 'method', 'created_at', 'status_code', 'exception', 'message', 'ip'];
         $this->logsQuery(ErrorLog::query()->select($fields), '', $request);
     }
 

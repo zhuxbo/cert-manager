@@ -9,6 +9,7 @@ class EasyLog extends BaseModel
     const null UPDATED_AT = null;
 
     protected $fillable = [
+        'action',
         'method',
         'url',
         'params',

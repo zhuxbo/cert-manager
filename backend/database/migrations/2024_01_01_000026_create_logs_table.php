@@ -25,6 +25,8 @@ return new class extends Migration
         if (! Schema::hasTable('callback_logs')) {
             Schema::create('callback_logs', function (Blueprint $table) {
                 $table->id();
+                $table->string('module', 100)->nullable()->comment('模块');
+                $table->string('action', 100)->nullable()->comment('操作');
                 $table->string('method', 10)->index()->comment('请求方法');
                 $table->string('url', 2000)->comment('请求地址');
                 $table->mediumtext('params')->comment('回调参数');
@@ -32,12 +34,15 @@ return new class extends Migration
                 $table->string('ip', 100)->nullable()->comment('IP地址');
                 $table->unsignedTinyInteger('status')->default(0)->index()->comment('状态: 0=失败, 1=成功');
                 $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
+                $table->index(['module', 'action', 'created_at']);
             });
         }
 
         if (! Schema::hasTable('api_logs')) {
             Schema::create('api_logs', function (Blueprint $table) {
                 $table->id();
+                $table->string('module', 100)->nullable()->comment('模块');
+                $table->string('action', 100)->nullable()->comment('操作');
                 $table->unsignedBigInteger('user_id')->nullable()->index()->comment('用户ID');
                 $table->string('version', 10)->default('v2')->index()->comment('API版本');
                 $table->string('method', 10)->index()->comment('请求方法');
@@ -50,6 +55,7 @@ return new class extends Migration
                 $table->string('ip', 100)->nullable()->comment('IP地址');
                 $table->string('user_agent', 500)->nullable()->comment('User Agent');
                 $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
+                $table->index(['module', 'action', 'created_at']);
             });
         }
 
@@ -94,6 +100,8 @@ return new class extends Migration
         if (! Schema::hasTable('error_logs')) {
             Schema::create('error_logs', function (Blueprint $table) {
                 $table->id();
+                $table->string('module', 100)->nullable()->comment('模块');
+                $table->string('action', 100)->nullable()->comment('操作');
                 $table->string('method', 10)->index()->comment('请求方法');
                 $table->string('url', 2000)->comment('请求URL');
                 $table->string('exception', 255)->comment('异常类型');
@@ -102,6 +110,7 @@ return new class extends Migration
                 $table->integer('status_code')->default(500)->index()->comment('状态码');
                 $table->string('ip', 100)->nullable()->comment('IP地址');
                 $table->timestamp('created_at')->nullable()->index()->comment('创建时间');
+                $table->index(['module', 'action', 'created_at']);
             });
         }
     }

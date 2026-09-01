@@ -128,7 +128,7 @@ php artisan route:clear && php artisan config:clear
 - 公共端点仅返回 bundle/css 路径，管理端返回完整信息
 - plugin-loader 校验 URL 必须以 `/` 开头
 - 插件包 sha256：`PluginManager` 安装/更新时若 `release.json` 提供 sha256 则强校验（verify-if-present）；下载入口 `validateReleaseUrl` 对**最终下载 URL**做 SSRF 校验（https 放行 / 公网 http 拒绝 / 明文 http 仅放行 RFC1918 私网 + loopback，**link-local 169.254（含云元数据 169.254.169.254）/CGNAT/保留段一律拒绝**，由 `isPrivateOrLoopbackIp` 判定）。下载 curl/Http 重定向限 `--proto-redir =https` + 限 5 跳（Guzzle `allow_redirects.protocols=['https']`），防「校验通过的 https → 302 降级到 http 内网/元数据」绕过
-- 插件可自注册限流中间件：`easy` 插件的 `EasyRateLimiter` 对其公开回调/简易开票端点限流（中间件别名插件内自注册，参考 `invoice` 插件）
+- 插件可自注册限流中间件：`easy` 插件的 `EasyRateLimiter` 对公开证书申请端点限流（中间件别名由插件自行注册）
 
 ---
 
@@ -139,11 +139,25 @@ php artisan route:clear && php artisan config:clear
 | 插件               | 特点                                                                                                                                                                                     | 适合参考                                                           |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `plugins/notice`   | 单表 CRUD（公告），用户/管理端基本对称，自带 Pest 测试 + Factory                                                                                                                         | 最小可用插件骨架                                                   |
-| `plugins/invoice`  | 双端 CRUD（发票）+ 配额服务 + 外部开票方接入（`/api/invoice/external/{pending,complete}`，token+IP 鉴权）+ Admin 配置面板（storage 文件 + Crypt 加密 token）                             | 对外接口 + 中间件别名插件内自注册 + 跨插件被 `easy` 软依赖         |
-| `plugins/easy`     | 复杂度最高：多回调控制器、log handler 接入主系统、产品级别映射；简易开票（独立 web 静态页 `invoice.html`，tid+email 鉴权，class_exists 软依赖 invoice 插件）                             | 涉及 Callback / 日志处理 / 跨模型关联 / 跨插件软依赖               |
+| `plugins/invoice`  | 双端 CRUD（发票）+ 配额服务 + 外部开票方接入（`/api/invoice/external/{pending,complete}`，token+IP 鉴权）+ Admin 配置面板（storage 文件 + Crypt 加密 token）                             | 对外接口 + 中间件别名插件内自注册                                  |
+| `plugins/easy`     | 多回调控制器、log handler 接入主系统、产品级别映射、独立 web 证书申请页                                                                                                                  | 涉及 Callback / 日志处理 / 产品映射                                |
 | `plugins/api-docs` | **纯前端插件**（无 backend / 无迁移 / 无 CI job，仅 user 端）：iframe(srcdoc) 内嵌 Scalar 官方 standalone 渲染对外 API 文档；spec 由主系统 `/api/meta/api-doc` 提供、iframe 内同源 fetch | 纯前端插件骨架 + 第三方重型库 iframe 隔离 + Scalar Shadow DOM 定制 |
 
 各插件的 ServiceProvider `boot()` 同时调 `loadRoutesFrom`（admin / user / api / callback 视需要）+ `loadMigrationsFrom`，主系统 `php artisan migrate` 自动覆盖。
+
+### 插件日志清理挂钩
+
+插件自有日志表由插件决定动作分层和保留规则，主系统不猜测插件表结构。插件需要实现 `App\Contracts\PluginLogPurger`，并在 ServiceProvider 中注册 `plugin.log_purgers` 标签：
+
+```php
+$this->app->tag([PluginLogPurger::class], 'plugin.log_purgers');
+```
+
+- `plugin()` 返回用于清理结果归属的安全短名称；`tables()` 明确声明插件负责的日志表。
+- `purge(LogPurgeContext $context)` 必须遵守 7 天全量、180 天动作审计窗口以及 `dryRun`、`chunkSize` 参数，返回逐表删除数、未分类数和必要告警。
+- 表不存在等插件自身状态由清理器返回 skipped/warning；主系统不得硬依赖插件模型、迁移或表。
+- 各插件清理器故障隔离，一个失败不阻断其他插件；未被任何清理器声明的 `*_logs` 表只告警，不自动删除。
+- 删除使用 `ChunkedLogDeleter` 分批执行，不在自动清理中运行 `OPTIMIZE TABLE` 或表重建。
 
 ### 纯前端插件（api-docs 范例）
 

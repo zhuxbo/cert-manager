@@ -7,10 +7,8 @@
  * 运行时表的终态历史行（tasks {successful,failed}、notifications {sent,failed}）。
  * 非日志表（logs.php）、非健康监控域（monitoring.php），单列一个负责域。
  *
- * - retention.tasks：对账痕迹保留期（天）。90 天 >> 已收尾订单的对账/取证窗口（到顶转人工 /
- *   O4 收尾）。**未收尾的 pending 卡单 task 由 PurgeCommand::purgeTerminalTasks 显式排除、不受本保留期约束**
- *   （否则失败 commit task 归零 → 到顶计数复位 → 卡单周期性复活重打上游 + 重发去重通知，见该方法注释）——
- *   故 90 天对已收尾订单成立、对卡单不适用（卡单收尾后其 task 才进入清理）。
+ * - tasks 最近 7 天保留全部终态记录；commit/cancel/callback 类审计动作保留 180 天。
+ *   pending 普通订单与 ACME 仅保护当前周期 failed commit 计数，其他诊断任务仍按 7 天清理。
  * - retention.notifications：交付记录保留期（天）。90 天 >> 自动重试窗口（1h）+
  *   admin 手动重发运维窗口（几天），清理与重发时间窗零重叠。
  * - retention.auto_deploy_reports：自动部署上报记录保留期（天）。报告随订单生命周期管理——
@@ -23,7 +21,8 @@
  */
 return [
     'retention' => [
-        'tasks' => (int) env('PURGE_RETENTION_TASKS_DAYS', 90),
+        'tasks_full_days' => (int) env('PURGE_RETENTION_TASKS_FULL_DAYS', 7),
+        'tasks_audit_days' => (int) env('PURGE_RETENTION_TASKS_AUDIT_DAYS', 180),
         'notifications' => (int) env('PURGE_RETENTION_NOTIFICATIONS_DAYS', 90),
         'auto_deploy_reports' => (int) env('PURGE_RETENTION_AUTO_DEPLOY_REPORTS_DAYS', 90),
     ],

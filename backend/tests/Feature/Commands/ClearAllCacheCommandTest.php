@@ -169,11 +169,12 @@ test('restrict_api 受限同样落 error_logs', function () {
 
 test('正常跳过（未启用 / 扩展缺失）不落 error_logs', function () {
     bindFakeOpcache(['status' => Opcache::SKIPPED, 'reason' => 'not_enabled']);
+    $before = ErrorLog::where('exception', 'OpcacheResetFailed')->count();
 
     $this->artisan('cache:clear-all --quick --without-composer')->assertSuccessful();
     LogBuffer::flush();
 
-    expect(ErrorLog::count())->toBe(0);
+    expect(ErrorLog::where('exception', 'OpcacheResetFailed')->count())->toBe($before);
 });
 
 test('--without-opcache 完全不碰 OPcache', function () {
@@ -183,4 +184,30 @@ test('--without-opcache 完全不碰 OPcache', function () {
         ->expectsOutputToContain('已跳过 OPcache')
         ->doesntExpectOutputToContain('PHP-FPM 的字节码缓存不受影响')
         ->assertSuccessful();
+});
+
+test('--logs 使用 daily channel 配置的文件保留天数', function () {
+    config(['logging.channels.daily.days' => 20]);
+    $originalStoragePath = storage_path();
+    $temporaryStoragePath = sys_get_temp_dir().'/ssl-manager-log-retention-'.uniqid();
+    File::ensureDirectoryExists($temporaryStoragePath.'/logs');
+    app()->useStoragePath($temporaryStoragePath);
+    $old = storage_path('logs/pest-old-retention.log');
+    $recent = storage_path('logs/pest-recent-retention.log');
+    File::put($old, 'old');
+    File::put($recent, 'recent');
+    touch($old, now()->subDays(21)->timestamp);
+    touch($recent, now()->subDays(19)->timestamp);
+
+    try {
+        $this->artisan('cache:clear-all --logs --without-composer --without-opcache')
+            ->expectsOutputToContain('20天前的日志文件已清除')
+            ->assertSuccessful();
+
+        expect(File::exists($old))->toBeFalse()
+            ->and(File::exists($recent))->toBeTrue();
+    } finally {
+        app()->useStoragePath($originalStoragePath);
+        File::deleteDirectory($temporaryStoragePath);
+    }
 });

@@ -4,6 +4,7 @@ export interface EasyLogsParams {
   currentPage?: number;
   pageSize?: number;
   created_at?: [string, string];
+  action?: string;
   url?: string;
   method?: string;
   params?: string;

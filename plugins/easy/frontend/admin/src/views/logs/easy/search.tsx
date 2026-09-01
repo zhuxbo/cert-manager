@@ -3,6 +3,12 @@ import { getPickerShortcuts } from "../../../shared/utils";
 
 export const searchColumns: PlusColumn[] = [
   {
+    label: "操作",
+    prop: "action",
+    valueType: "input",
+    fieldProps: { placeholder: "请输入操作名称" }
+  },
+  {
     label: "请求URL",
     prop: "url",
     valueType: "input",

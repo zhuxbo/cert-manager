@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-08-30 01:57:50",
+    "generated_at": "2026-09-01 17:42:53",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -776,8 +776,24 @@
                     "extra": "",
                     "comment": "跨表追踪 ID"
                 },
-                "user_id": {
+                "module": {
                     "position": 3,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "模块"
+                },
+                "action": {
+                    "position": 4,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "操作"
+                },
+                "user_id": {
+                    "position": 5,
                     "type": "bigint unsigned",
                     "nullable": true,
                     "default": null,
@@ -785,7 +801,7 @@
                     "comment": "用户ID"
                 },
                 "version": {
-                    "position": 4,
+                    "position": 6,
                     "type": "varchar(10)",
                     "nullable": false,
                     "default": "v2",
@@ -793,7 +809,7 @@
                     "comment": "API版本"
                 },
                 "method": {
-                    "position": 5,
+                    "position": 7,
                     "type": "varchar(10)",
                     "nullable": false,
                     "default": null,
@@ -801,7 +817,7 @@
                     "comment": "请求方法"
                 },
                 "url": {
-                    "position": 6,
+                    "position": 8,
                     "type": "varchar(2000)",
                     "nullable": false,
                     "default": null,
@@ -809,7 +825,7 @@
                     "comment": "请求URL"
                 },
                 "params": {
-                    "position": 7,
+                    "position": 9,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -817,7 +833,7 @@
                     "comment": "请求参数"
                 },
                 "response": {
-                    "position": 8,
+                    "position": 10,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -825,7 +841,7 @@
                     "comment": "响应内容"
                 },
                 "status_code": {
-                    "position": 9,
+                    "position": 11,
                     "type": "int",
                     "nullable": false,
                     "default": "200",
@@ -833,7 +849,7 @@
                     "comment": "状态码"
                 },
                 "status": {
-                    "position": 10,
+                    "position": 12,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -841,7 +857,7 @@
                     "comment": "状态: 0=失败, 1=成功"
                 },
                 "duration": {
-                    "position": 11,
+                    "position": 13,
                     "type": "decimal(8,2)",
                     "nullable": false,
                     "default": "0.00",
@@ -849,7 +865,7 @@
                     "comment": "耗时(秒)"
                 },
                 "ip": {
-                    "position": 12,
+                    "position": 14,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -857,7 +873,7 @@
                     "comment": "IP地址"
                 },
                 "user_agent": {
-                    "position": 13,
+                    "position": 15,
                     "type": "varchar(500)",
                     "nullable": true,
                     "default": null,
@@ -865,7 +881,7 @@
                     "comment": "User Agent"
                 },
                 "created_at": {
-                    "position": 14,
+                    "position": 16,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -901,6 +917,20 @@
                         "method"
                     ],
                     "sub_parts": [
+                        null
+                    ]
+                },
+                "api_logs_module_action_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "module",
+                        "action",
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null,
                         null
                     ]
                 },
@@ -1410,8 +1440,24 @@
                     "extra": "",
                     "comment": "跨表追踪 ID"
                 },
-                "method": {
+                "module": {
                     "position": 3,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "模块"
+                },
+                "action": {
+                    "position": 4,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "操作"
+                },
+                "method": {
+                    "position": 5,
                     "type": "varchar(10)",
                     "nullable": false,
                     "default": null,
@@ -1419,7 +1465,7 @@
                     "comment": "请求方法"
                 },
                 "url": {
-                    "position": 4,
+                    "position": 6,
                     "type": "varchar(2000)",
                     "nullable": false,
                     "default": null,
@@ -1427,7 +1473,7 @@
                     "comment": "请求地址"
                 },
                 "params": {
-                    "position": 5,
+                    "position": 7,
                     "type": "mediumtext",
                     "nullable": false,
                     "default": null,
@@ -1435,7 +1481,7 @@
                     "comment": "回调参数"
                 },
                 "response": {
-                    "position": 6,
+                    "position": 8,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -1443,7 +1489,7 @@
                     "comment": "响应内容"
                 },
                 "ip": {
-                    "position": 7,
+                    "position": 9,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -1451,7 +1497,7 @@
                     "comment": "IP地址"
                 },
                 "status": {
-                    "position": 8,
+                    "position": 10,
                     "type": "tinyint unsigned",
                     "nullable": false,
                     "default": "0",
@@ -1459,7 +1505,7 @@
                     "comment": "状态: 0=失败, 1=成功"
                 },
                 "created_at": {
-                    "position": 9,
+                    "position": 11,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -1495,6 +1541,20 @@
                         "method"
                     ],
                     "sub_parts": [
+                        null
+                    ]
+                },
+                "callback_logs_module_action_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "module",
+                        "action",
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null,
                         null
                     ]
                 },
@@ -2746,8 +2806,24 @@
                     "extra": "",
                     "comment": "跨表追踪 ID"
                 },
-                "method": {
+                "module": {
                     "position": 3,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "模块"
+                },
+                "action": {
+                    "position": 4,
+                    "type": "varchar(100)",
+                    "nullable": true,
+                    "default": null,
+                    "extra": "",
+                    "comment": "操作"
+                },
+                "method": {
+                    "position": 5,
                     "type": "varchar(10)",
                     "nullable": false,
                     "default": null,
@@ -2755,7 +2831,7 @@
                     "comment": "请求方法"
                 },
                 "url": {
-                    "position": 4,
+                    "position": 6,
                     "type": "varchar(2000)",
                     "nullable": false,
                     "default": null,
@@ -2763,7 +2839,7 @@
                     "comment": "请求URL"
                 },
                 "exception": {
-                    "position": 5,
+                    "position": 7,
                     "type": "varchar(255)",
                     "nullable": false,
                     "default": null,
@@ -2771,7 +2847,7 @@
                     "comment": "异常类型"
                 },
                 "message": {
-                    "position": 6,
+                    "position": 8,
                     "type": "varchar(1000)",
                     "nullable": false,
                     "default": null,
@@ -2779,7 +2855,7 @@
                     "comment": "错误信息"
                 },
                 "trace": {
-                    "position": 7,
+                    "position": 9,
                     "type": "mediumtext",
                     "nullable": true,
                     "default": null,
@@ -2787,7 +2863,7 @@
                     "comment": "错误堆栈跟踪"
                 },
                 "status_code": {
-                    "position": 8,
+                    "position": 10,
                     "type": "int",
                     "nullable": false,
                     "default": "500",
@@ -2795,7 +2871,7 @@
                     "comment": "状态码"
                 },
                 "ip": {
-                    "position": 9,
+                    "position": 11,
                     "type": "varchar(100)",
                     "nullable": true,
                     "default": null,
@@ -2803,7 +2879,7 @@
                     "comment": "IP地址"
                 },
                 "created_at": {
-                    "position": 10,
+                    "position": 12,
                     "type": "timestamp",
                     "nullable": true,
                     "default": null,
@@ -2839,6 +2915,20 @@
                         "method"
                     ],
                     "sub_parts": [
+                        null
+                    ]
+                },
+                "error_logs_module_action_created_at_index": {
+                    "unique": false,
+                    "type": "BTREE",
+                    "columns": [
+                        "module",
+                        "action",
+                        "created_at"
+                    ],
+                    "sub_parts": [
+                        null,
+                        null,
                         null
                     ]
                 },
@@ -4950,7 +5040,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 2,
+            "auto_increment": 1,
             "columns": {
                 "id": {
                     "position": 1,
@@ -5047,7 +5137,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 3,
+            "auto_increment": 1,
             "columns": {
                 "id": {
                     "position": 1,

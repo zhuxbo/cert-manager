@@ -30,7 +30,15 @@ test('M6：关键命令非零退出触发 onFailure 落 Log::error', function (s
     'schedule:validate',
     'schedule:auto-renew',
     'schedule:reconcile-pending',
+    'logs:purge',
+    'schedule:purge',
 ]);
+
+test('日志与运行时清理错峰且备份仍为 02:00', function () {
+    expect(findScheduledEvent('logs:purge')?->expression)->toBe('0 1 * * *')
+        ->and(findScheduledEvent('schedule:purge')?->expression)->toBe('30 1 * * *')
+        ->and(findScheduledEvent('schedule:backup')?->expression)->toBe('0 2 * * *');
+});
 
 test('M6：命令成功（exitCode=0）不触发 onFailure 日志', function () {
     $event = findScheduledEvent('schedule:validate');

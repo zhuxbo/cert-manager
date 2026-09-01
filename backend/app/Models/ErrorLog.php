@@ -8,6 +8,8 @@ class ErrorLog extends BaseModel
 
     protected $fillable = [
         'correlation_id',
+        'module',
+        'action',
         'method',
         'url',
         'exception',

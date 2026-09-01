@@ -13,6 +13,8 @@ class LogsApiRequest extends BaseRequest
             'pageSize' => 'nullable|integer|min:1|max:100',
             'created_at' => 'nullable|array|size:2',
             'created_at.*' => 'string|date_format:Y-m-d\TH:i:s.v\Z',
+            'module' => 'nullable|string|max:100',
+            'action' => 'nullable|string|max:100',
             'url' => 'nullable|string|max:500',
             'method' => 'nullable|string|max:10',
             'params' => 'nullable|string',

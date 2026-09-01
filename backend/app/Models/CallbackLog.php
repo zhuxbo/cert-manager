@@ -8,6 +8,8 @@ class CallbackLog extends BaseModel
 
     protected $fillable = [
         'correlation_id',
+        'module',
+        'action',
         'method',
         'url',
         'params',

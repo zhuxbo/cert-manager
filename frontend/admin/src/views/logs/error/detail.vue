@@ -13,6 +13,8 @@ const props = defineProps({
 });
 
 const columns = [
+  { label: "模块", prop: "module" },
+  { label: "操作", prop: "action" },
   {
     label: "请求地址",
     prop: "url"

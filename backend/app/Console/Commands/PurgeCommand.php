@@ -3,30 +3,27 @@
 namespace App\Console\Commands;
 
 use App\Exceptions\ApiResponseException;
-use App\Models\AdminLog;
-use App\Models\ApiLog;
 use App\Models\AutoDeployReport;
-use App\Models\CallbackLog;
-use App\Models\CaLog;
-use App\Models\ErrorLog;
 use App\Models\Fund;
 use App\Models\Notification;
 use App\Models\Order;
 use App\Models\OrderDocument;
 use App\Models\Task;
-use App\Models\UserLog;
 use App\Services\Order\Action;
 use App\Services\Order\AutoDeployReportService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 class PurgeCommand extends Command
 {
     private const SYNC_INTERVAL_HOURS = 24;
+
+    private const TASK_AUDIT_ACTIONS = ['commit', 'commit_acme', 'cancel', 'cancel_acme', 'callback'];
+
+    private const TASK_DIAGNOSTIC_ACTIONS = ['sync', 'sync_acme', 'revalidate', 'delegation'];
 
     /**
      * The name and signature of the console command.
@@ -40,87 +37,21 @@ class PurgeCommand extends Command
      *
      * @var string
      */
-    protected $description = 'Purge cache, logs, or other unnecessary data';
+    protected $description = 'Purge expired runtime and operational data';
 
     /**
      * Execute the console command.
      *
      * @throws Throwable
      */
-    public function handle(): void
+    public function handle(): int
     {
         $this->info(get_system_setting('site', 'name', 'SSL证书管理系统'));
+        $maintenanceFailed = false;
 
         // 清理超过24小时的未支付充值
         $result = Fund::where('created_at', '<', now()->subHours(24))->where('status', 0)->delete();
         $this->info("Purged $result fund records");
-
-        // 日志保留期 / GET-only 短保留期（config('logs.retention.*') 优先，env 兜底）
-        $retentionApi = (int) config('logs.retention.api', 180);
-        $retentionAdmin = (int) config('logs.retention.admin', 180);
-        $retentionUser = (int) config('logs.retention.user', 180);
-        $retentionCallback = (int) config('logs.retention.callback', 180);
-        $retentionCa = (int) config('logs.retention.ca', 180);
-        $retentionError = (int) config('logs.retention.error', 90);
-        $retentionGet = (int) config('logs.retention.get_only', 30);
-
-        // 清理过期的接口日志
-        $result = ApiLog::where('created_at', '<', now()->subDays($retentionApi))->delete();
-        $this->info("Purged $result API logs");
-
-        // 清理过期的 GET 方法接口日志
-        $result = ApiLog::where('created_at', '<', now()->subDays($retentionGet))->where('method', 'GET')->delete();
-        $this->info("Purged $result GET API logs");
-
-        // 清理过期的管理员日志
-        $result = AdminLog::where('created_at', '<', now()->subDays($retentionAdmin))->delete();
-        $this->info("Purged $result admin logs");
-
-        // 清理过期的 GET 方法管理员日志
-        $result = AdminLog::where('created_at', '<', now()->subDays($retentionGet))->whereIn('method', ['GET', 'OPTIONS'])->delete();
-        $this->info("Purged $result GET admin logs");
-
-        // 清理过期的用户日志
-        $result = UserLog::where('created_at', '<', now()->subDays($retentionUser))->delete();
-        $this->info("Purged $result user logs");
-
-        // 清理过期的 GET 方法用户日志
-        $result = UserLog::where('created_at', '<', now()->subDays($retentionGet))->whereIn('method', ['GET', 'OPTIONS'])->delete();
-        $this->info("Purged $result GET user logs");
-
-        // 清理过期的回调日志
-        $result = CallbackLog::where('created_at', '<', now()->subDays($retentionCallback))->delete();
-        $this->info("Purged $result callback logs");
-
-        // 清理过期的 CA 日志
-        $result = CaLog::where('created_at', '<', now()->subDays($retentionCa))->delete();
-        $this->info("Purged $result ca logs");
-
-        // 清理过期的错误日志
-        $result = ErrorLog::where('created_at', '<', now()->subDays($retentionError))->delete();
-        $this->info("Purged $result error logs");
-
-        // 动态清理其他 _logs 后缀表（插件日志表等）
-        // 用 Schema::getTableListing() 替代 raw SHOW TABLES LIKE，统一走 Laravel 抽象（Laravel 11+）
-        $knownLogTables = ['api_logs', 'admin_logs', 'user_logs', 'callback_logs', 'ca_logs', 'error_logs'];
-        try {
-            $tableNames = Schema::getTableListing();
-            foreach ($tableNames as $tableName) {
-                if (! is_string($tableName) || ! str_ends_with($tableName, '_logs')) {
-                    continue;
-                }
-                if (! preg_match('/^[a-zA-Z0-9_]+$/', $tableName)) {
-                    continue;
-                }
-                if (in_array($tableName, $knownLogTables)) {
-                    continue;
-                }
-                $result = DB::table($tableName)->where('created_at', '<', now()->subDays($retentionApi))->delete();
-                $this->info("Purged $result $tableName");
-            }
-        } catch (Throwable $e) {
-            $this->warn('Dynamic log cleanup failed: '.$e->getMessage());
-        }
 
         // 清理已签发订单的用户上传文档（保留验证报告表单）
         $this->purgeIssuedOrderDocuments();
@@ -129,13 +60,14 @@ class PurgeCommand extends Command
         $this->purgeStaleTempCerts();
 
         // 清理超保留期的终态运行时表行（对账痕迹 tasks / 交付记录 notifications / 自动部署上报 auto_deploy_reports）
-        // 包裹与上方 _logs 清理对称：清理是次要职责，抛错不得中止后续退款期取消主流程
-        try {
-            $this->purgeTerminalTasks();
-            $this->purgeTerminalNotifications();
-            $this->purgeTerminalOrderReports();
-        } catch (Throwable $e) {
-            $this->warn('Terminal rows cleanup failed: '.$e->getMessage());
+        // 各运行时表清理故障隔离：清理是次要职责，抛错不得中止后续退款期取消主流程
+        foreach (['tasks' => 'purgeTerminalTasks', 'notifications' => 'purgeTerminalNotifications', 'reports' => 'purgeTerminalOrderReports'] as $owner => $method) {
+            try {
+                $this->{$method}();
+            } catch (Throwable $e) {
+                $maintenanceFailed = true;
+                $this->warn("Terminal $owner cleanup failed: ".class_basename($e));
+            }
         }
 
         // 预同步：距退款期限2-4天的处理中订单，24小时内无同步则创建sync任务
@@ -216,6 +148,8 @@ class PurgeCommand extends Command
         } else {
             $this->info('No orders to cancel near refund deadline');
         }
+
+        return $maintenanceFailed ? self::FAILURE : self::SUCCESS;
     }
 
     /**
@@ -255,30 +189,95 @@ class PurgeCommand extends Command
         $this->info("Purged $cleared stale temp-cert entries");
     }
 
-    /**
-     * 清理超保留期的终态 task 行（successful / failed）。
-     *
-     * 只清终态历史行：清理集 {successful,failed} 与业务锁定集 {executing,stopped}
-     * （Task::scopeLockForMutation / deleteTask 的锁定/删除集）完全不相交，DELETE 不与任何
-     * 持 task 锁的业务路径争同一行、无锁序义务。failed 可被 admin batchStart 复活，
-     * 但 DELETE 与 batchStart(failed→executing) 由 InnoDB 行锁串行、90d 窗口远大于人工重试窗口。
-     *
-     * 例外：关联订单仍为 pending 卡单（latestCert.status=pending）的终态 task **不清**——其 failed commit
-     * task 是卡单对账「到顶」判据（PendingReconcileQuery::MAXED_COUNT_SUBQUERY，锚 latestCert.created_at、
-     * 下界无上界）的计数集，被 created_at>90d 删掉会让计数归零 → 订单重回 actionable → reconcile 重打上游
-     * + 重发去重通知（reconcile_user_alerted_at 随 task.result 删丢失）。订单收尾（cancelled/active/renewed
-     * 等非 pending）后其历史 task 正常清理、不永久堆积；孤儿 task（order 不存在）照常清理。
-     */
     private function purgeTerminalTasks(): void
     {
-        $cutoff = now()->subDays((int) config('purge.retention.tasks', 90));
+        $fullDays = (int) config('purge.retention.tasks_full_days', 7);
+        $auditDays = (int) config('purge.retention.tasks_audit_days', 180);
+        if ($fullDays <= 0 || $auditDays <= $fullDays || (int) config('purge.chunk', 1000) <= 0) {
+            throw new \InvalidArgumentException('Invalid task retention configuration');
+        }
 
-        $query = fn () => Task::whereIn('status', ['successful', 'failed'])
-            ->where('created_at', '<', $cutoff)
-            ->whereDoesntHave('order', fn ($q) => $q->whereHas('latestCert', fn ($c) => $c->where('status', 'pending')));
+        $fullCutoff = now()->subDays($fullDays);
+        $auditCutoff = now()->subDays($auditDays);
+        $deleted = 0;
 
-        $deleted = $this->deletePurgeInChunks($query, 'terminal tasks');
+        $expiredActions = $this->terminalTaskQuery($auditCutoff)
+            ->distinct()->pluck('action')->all();
+        foreach ($expiredActions as $action) {
+            $count = $this->deletePurgeInChunks(
+                fn () => $this->terminalTaskQuery($auditCutoff, (string) $action),
+                "terminal tasks action=$action",
+            );
+            $deleted += $count;
+            $this->info("Purged $count terminal tasks action=$action");
+        }
+
+        foreach (self::TASK_DIAGNOSTIC_ACTIONS as $action) {
+            $count = $this->deletePurgeInChunks(
+                fn () => Task::whereIn('status', ['successful', 'failed'])
+                    ->where('action', $action)
+                    ->whereRaw('COALESCE(last_execute_at, created_at) < ?', [$fullCutoff])
+                    ->whereRaw('COALESCE(last_execute_at, created_at) >= ?', [$auditCutoff]),
+                "terminal tasks action=$action",
+            );
+            $deleted += $count;
+            if ($count > 0) {
+                $this->info("Purged $count terminal tasks action=$action");
+            }
+        }
+
+        $unknown = Task::whereIn('status', ['successful', 'failed'])
+            ->whereNotIn('action', array_merge(self::TASK_AUDIT_ACTIONS, self::TASK_DIAGNOSTIC_ACTIONS))
+            ->whereRaw('COALESCE(last_execute_at, created_at) < ?', [$fullCutoff])
+            ->whereRaw('COALESCE(last_execute_at, created_at) >= ?', [$auditCutoff])
+            ->selectRaw('action, COUNT(*) AS aggregate')
+            ->groupBy('action')
+            ->pluck('aggregate', 'action');
+        foreach ($unknown as $action => $count) {
+            $this->warn("Unclassified terminal task action=$action count=$count");
+        }
+
         $this->info("Purged $deleted terminal tasks");
+    }
+
+    private function terminalTaskQuery($cutoff, ?string $action = null): Builder
+    {
+        $query = Task::whereIn('status', ['successful', 'failed'])
+            ->whereRaw('COALESCE(last_execute_at, created_at) < ?', [$cutoff]);
+        if ($action !== null) {
+            $query->where('action', $action);
+            $this->excludeProtectedPendingCommit($query, $action);
+        }
+
+        return $query;
+    }
+
+    private function excludeProtectedPendingCommit(Builder $query, string $action): void
+    {
+        if ($action === 'commit') {
+            $query->whereNot(fn (Builder $protected) => $protected
+                ->where('status', 'failed')
+                ->whereExists(fn ($orders) => $orders
+                    ->selectRaw('1')
+                    ->from('orders as protected_orders')
+                    ->join('certs as protected_certs', 'protected_certs.id', '=', 'protected_orders.latest_cert_id')
+                    ->whereColumn('protected_orders.id', 'tasks.order_id')
+                    ->where('protected_certs.status', 'pending')
+                    ->whereNull('protected_certs.api_id')
+                    ->whereColumn('tasks.last_execute_at', '>=', 'protected_certs.created_at')));
+        }
+
+        if ($action === 'commit_acme') {
+            $query->whereNot(fn (Builder $protected) => $protected
+                ->where('status', 'failed')
+                ->whereExists(fn ($acmes) => $acmes
+                    ->selectRaw('1')
+                    ->from('acmes as protected_acmes')
+                    ->whereColumn('protected_acmes.id', 'tasks.order_id')
+                    ->where('protected_acmes.status', 'pending')
+                    ->whereNull('protected_acmes.api_id')
+                    ->whereColumn('tasks.last_execute_at', '>=', 'protected_acmes.created_at')));
+        }
     }
 
     /**
@@ -324,7 +323,7 @@ class PurgeCommand extends Command
     /**
      * 分批删除匹配行（复用 UserDataPurger::deleteInChunks 范式：do-while + 每批独立事务 +
      * gc_collect_cycles + maxIterations 护栏）。单批 LIMIT chunk 避免单条大事务撑爆 binlog /
-     * 长事务锁等待；每批独立事务在低峰 02:00 控制主从复制延迟。
+     * 长事务锁等待；每批独立事务在低峰 01:30 控制主从复制延迟。
      *
      * @param  callable():Builder  $query  返回新建查询（每批/计数各取一次，避免 builder 复用）
      * @return int 累计删除行数

@@ -4,13 +4,14 @@ namespace Plugins\Easy;
 
 use Illuminate\Support\ServiceProvider;
 use Plugins\Easy\Middleware\EasyRateLimiter;
-use Plugins\Invoice\Models\Invoice;
+use Plugins\Easy\Services\EasyLogPurger;
 
 class EasyServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
         $this->app->tag([EasyLogHandler::class], 'plugin.log_handlers');
+        $this->app->tag([EasyLogPurger::class], 'plugin.log_purgers');
     }
 
     public function boot(): void
@@ -26,8 +27,5 @@ class EasyServiceProvider extends ServiceProvider
         $this->loadRoutesFrom("$basePath/backend/routes/user.php");
         $this->loadMigrationsFrom("$basePath/backend/migrations");
 
-        if (class_exists(Invoice::class)) {
-            $this->loadRoutesFrom("$basePath/backend/routes/invoice.php");
-        }
     }
 }

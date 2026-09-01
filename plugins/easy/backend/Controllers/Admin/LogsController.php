@@ -19,7 +19,7 @@ class LogsController extends BaseController
         $currentPage = (int) ($validated['currentPage'] ?? 1);
         $pageSize = (int) ($validated['pageSize'] ?? 10);
 
-        $query = EasyLog::query()->select(['id', 'url', 'status', 'created_at', 'method', 'ip']);
+        $query = EasyLog::query()->select(['id', 'action', 'url', 'status', 'created_at', 'method', 'ip']);
 
         $this->applyFilters($query, $validated);
 
@@ -51,6 +51,10 @@ class LogsController extends BaseController
 
     private function applyFilters($query, array $validated): void
     {
+        if (! empty($validated['action'])) {
+            $query->where('action', $validated['action']);
+        }
+
         if (! empty($validated['url'])) {
             $query->where('url', 'like', "%{$validated['url']}%");
         }

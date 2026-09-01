@@ -1,0 +1,39 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\LogsControllerTest::__pest_evaluable_日志列表未传时间范围时可以返回_7_天前的保留记录",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/logs/admin",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "url": "string",
+                            "status": "integer",
+                            "created_at": "string",
+                            "method": "string",
+                            "admin_id": "integer",
+                            "module": "string",
+                            "action": "string",
+                            "status_code": "integer",
+                            "duration": "string",
+                            "ip": "null",
+                            "admin": {
+                                "id": "integer",
+                                "username": "string"
+                            }
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

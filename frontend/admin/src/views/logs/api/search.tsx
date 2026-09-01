@@ -5,6 +5,18 @@ import { ReRemoteSelect } from "@shared/components/ReRemoteSelect";
 
 export const searchColumns: PlusColumn[] = [
   {
+    label: "模块",
+    prop: "module",
+    valueType: "input",
+    fieldProps: { placeholder: "请输入模块名称" }
+  },
+  {
+    label: "操作",
+    prop: "action",
+    valueType: "input",
+    fieldProps: { placeholder: "请输入操作名称" }
+  },
+  {
     label: "用户",
     prop: "user_id",
     valueType: "select",

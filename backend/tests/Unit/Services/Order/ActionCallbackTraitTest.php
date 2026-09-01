@@ -1,7 +1,14 @@
 <?php
 
+use App\Exceptions\ApiResponseException;
 use App\Services\Order\Traits\ActionCallbackTrait;
+use App\Traits\ApiResponse;
 use App\Utils\IpUtil;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+uses(TestCase::class);
 
 /**
  * 回调地址 SSRF 防护（isPrivateUrl）单元测试 — 白名单制（反模式 18）
@@ -90,3 +97,27 @@ test('IpUtil::isPrivateOrReserved 放行公网 IP', function (string $ip) {
     '公网 IPv6' => ['2001:4860:4860::8888'],
     'IPv4-mapped 公网' => ['::ffff:8.8.8.8'],
 ]);
+
+test('callback 临时传输失败转换为固定简洁业务错误', function () {
+    Http::fake(fn () => throw new ConnectionException('cURL error 35: vendor/path/PendingRequest.php:1822'));
+
+    $harness = new class
+    {
+        use ActionCallbackTrait, ApiResponse;
+    };
+
+    try {
+        (new ReflectionMethod($harness, 'postCallback'))->invoke($harness, 'https://8.8.8.8/callback', ['id' => 1]);
+        test()->fail('Expected ApiResponseException');
+    } catch (ReflectionException $e) {
+        throw $e;
+    } catch (Throwable $e) {
+        $exception = $e instanceof ReflectionException ? $e : ($e->getPrevious() ?? $e);
+        expect($exception)->toBeInstanceOf(ApiResponseException::class);
+        $response = $exception->getApiResponse();
+        expect($response)->toBe(['code' => 0, 'msg' => '回调地址暂时无法连接'])
+            ->and(json_encode($response))->not->toContain('cURL')
+            ->not->toContain('PendingRequest.php')
+            ->not->toContain('trace');
+    }
+});

@@ -282,6 +282,10 @@ class TaskJob implements ShouldQueue
             ]);
         }
 
+        if ($task->action === 'callback') {
+            return;
+        }
+
         // admin 目标解析单一源（Admin::resolveAlertTarget，原 4 份内联之一）。
         ['admin' => $admin, 'email' => $targetEmail] = Admin::resolveAlertTarget();
 

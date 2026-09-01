@@ -48,13 +48,23 @@ Schedule::command('schedule:expire')
     ->name('expire-certificates')
     ->description('处理证书过期通知');
 
-// 缓存清理任务 - 每天凌晨2点执行
+// 数据库日志分层清理 - 每天 01:00
+Schedule::command('logs:purge')
+    ->dailyAt('01:00')
+    ->withoutOverlapping()
+    ->skip($skipWhenFrozen)
+    ->name('purge-tiered-logs')
+    ->description('清理核心与插件分层日志')
+    ->onFailure($logScheduleFailure('logs:purge'));
+
+// 运行时数据维护 - 每天 01:30
 Schedule::command('schedule:purge')
-    ->dailyAt('02:00')
+    ->dailyAt('01:30')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('purge-expired-data')
-    ->description('清理过期数据');
+    ->description('清理过期运行时数据')
+    ->onFailure($logScheduleFailure('schedule:purge'));
 
 // CNAME委托DNS清理任务 - 每天凌晨6点执行
 Schedule::command('delegation:cleanup')

@@ -77,11 +77,6 @@ function servePluginWeb(): Plugin {
         const [prefix, webDir] = matched;
         let relPath =
           url.slice(prefix.length).replace(/^\//, "") || "index.html";
-        // 与 plugins/easy/nginx/easy.conf 的 rewrite 对齐：
-        // /easy/invoice 与 /easy/invoice/<tid>(/...) 都映射到 invoice.html
-        if (prefix === "/easy" && /^invoice(\/|$)/.test(relPath)) {
-          relPath = "invoice.html";
-        }
         const filePath = resolve(webDir, relPath);
         const rel = relative(webDir, filePath);
         if (rel.startsWith("..") || isAbsolute(rel)) return next();

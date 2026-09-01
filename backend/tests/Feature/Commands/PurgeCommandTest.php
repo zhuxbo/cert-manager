@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Models\Acme;
 use App\Models\AdminLog;
 use App\Models\AutoDeployReport;
 use App\Models\ErrorLog;
@@ -163,29 +164,29 @@ test('清理非进行中状态订单的文档', function () {
 
 // --- 日志保留期 config 化测试 ---
 
-test('config(logs.retention.admin) 注入后清理超过保留期的 admin_logs', function () {
-    config(['logs.retention.admin' => 30]);
+test('config(logs.retention.full_days) 控制 admin 诊断日志全量窗口', function () {
+    config(['logs.retention.full_days' => 30, 'logs.retention.audit_days' => 180]);
 
     AdminLog::insert([
-        ['url' => 'https://test.local/old', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(31)],
-        ['url' => 'https://test.local/new', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(10)],
+        ['url' => 'https://test.local/old', 'method' => 'GET', 'module' => 'M', 'action' => 'index', 'created_at' => now()->subDays(31)],
+        ['url' => 'https://test.local/new', 'method' => 'GET', 'module' => 'M', 'action' => 'index', 'created_at' => now()->subDays(10)],
     ]);
 
-    $this->artisan('schedule:purge')->assertSuccessful();
+    $this->artisan('logs:purge')->assertSuccessful();
 
     expect(AdminLog::where('url', 'https://test.local/old')->exists())->toBeFalse();
     expect(AdminLog::where('url', 'https://test.local/new')->exists())->toBeTrue();
 });
 
-test('config(logs.retention.error) 注入后清理超过保留期的 error_logs', function () {
-    config(['logs.retention.error' => 7]);
+test('config(logs.retention.full_days) 控制 error 诊断日志全量窗口', function () {
+    config(['logs.retention.full_days' => 7, 'logs.retention.audit_days' => 180]);
 
     ErrorLog::insert([
-        ['url' => 'https://test.local/err-old', 'method' => 'POST', 'exception' => 'E', 'message' => 'm', 'created_at' => now()->subDays(8)],
-        ['url' => 'https://test.local/err-new', 'method' => 'POST', 'exception' => 'E', 'message' => 'm', 'created_at' => now()->subDays(2)],
+        ['module' => 'Order', 'action' => 'revalidate', 'url' => 'https://test.local/err-old', 'method' => 'POST', 'exception' => 'E', 'message' => 'm', 'created_at' => now()->subDays(8)],
+        ['module' => 'Order', 'action' => 'revalidate', 'url' => 'https://test.local/err-new', 'method' => 'POST', 'exception' => 'E', 'message' => 'm', 'created_at' => now()->subDays(2)],
     ]);
 
-    $this->artisan('schedule:purge')->assertSuccessful();
+    $this->artisan('logs:purge')->assertSuccessful();
 
     expect(ErrorLog::where('url', 'https://test.local/err-old')->exists())->toBeFalse();
     expect(ErrorLog::where('url', 'https://test.local/err-new')->exists())->toBeTrue();
@@ -198,7 +199,7 @@ test('未注入 config 时使用默认 180 天兜底（user_logs）', function (
         ['url' => 'https://test.local/u-new', 'method' => 'POST', 'module' => 'M', 'action' => 'A', 'created_at' => now()->subDays(170)],
     ]);
 
-    $this->artisan('schedule:purge')->assertSuccessful();
+    $this->artisan('logs:purge')->assertSuccessful();
 
     expect(UserLog::where('url', 'https://test.local/u-old')->exists())->toBeFalse();
     expect(UserLog::where('url', 'https://test.local/u-new')->exists())->toBeTrue();
@@ -288,10 +289,10 @@ test('PurgeCommand 仍取消 new 处理中订单', function () {
 // --- P3 包R：三表保留期清理（tasks / notifications 终态行）---
 
 test('purge 清理超保留期的 successful/failed task', function () {
-    config(['purge.retention.tasks' => 90]);
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180]);
 
     Task::insert([
-        ['order_id' => 1001, 'action' => 'commit', 'status' => 'successful', 'created_at' => now()->subDays(91), 'updated_at' => now()->subDays(91)],
+        ['order_id' => 1001, 'action' => 'commit', 'status' => 'successful', 'created_at' => now()->subDays(181), 'updated_at' => now()->subDays(181)],
         ['order_id' => 1002, 'action' => 'sync', 'status' => 'failed', 'created_at' => now()->subDays(120), 'updated_at' => now()->subDays(120)],
         // 保留期内的终态行不清
         ['order_id' => 1003, 'action' => 'commit', 'status' => 'successful', 'created_at' => now()->subDays(30), 'updated_at' => now()->subDays(30)],
@@ -309,21 +310,23 @@ test('purge 不清关联订单仍 pending（卡单未收尾）的终态 task —
     // 其 failed commit task 全在计数集内。若被 purge 按 created_at>90d 删掉 → 计数归零 → 订单重回 actionable
     // → reconcile 重打上游 + 重发 auto_renew_failed（去重键 reconcile_user_alerted_at 随行删丢失）。
     // 保护：关联订单 latestCert.status=pending（卡单未收尾）的终态 task 不清。
-    config(['purge.retention.tasks' => 90]);
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180]);
 
     $user = $this->createTestUser();
     $product = $this->createTestProduct();
     $order = $this->createTestOrder($user, $product);
-    $this->createTestCert($order, ['action' => 'renew', 'status' => 'pending']); // 卡单未收尾
+    $cert = $this->createTestCert($order, ['action' => 'renew', 'status' => 'pending', 'api_id' => null]); // 卡单未收尾
+    $cert->forceFill(['created_at' => now()->subDays(200)])->saveQuietly();
 
     // 该卡单的失败 commit task（含 reconcile 用户去重键），已超保留期
     $task = Task::create([
         'order_id' => $order->id,
         'action' => 'commit',
         'status' => 'failed',
+        'last_execute_at' => now()->subDays(190),
         'result' => ['code' => 0, 'msg' => 'timeout', 'reconcile_user_alerted_at' => now()->subDays(89)->toDateTimeString()],
     ]);
-    $task->forceFill(['created_at' => now()->subDays(120), 'updated_at' => now()->subDays(120)])->save();
+    $task->forceFill(['created_at' => now()->subDays(200), 'updated_at' => now()->subDays(190)])->save();
 
     $this->artisan('schedule:purge')->assertSuccessful();
 
@@ -333,7 +336,7 @@ test('purge 不清关联订单仍 pending（卡单未收尾）的终态 task —
 
 test('purge 清关联订单已收尾（非 pending）的终态 task', function () {
     // 对照：订单收尾成 cancelled/active 后 latestCert 非 pending，其历史 failed task 正常清理，不永久堆积。
-    config(['purge.retention.tasks' => 90]);
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180]);
 
     $user = $this->createTestUser();
     $product = $this->createTestProduct();
@@ -346,7 +349,7 @@ test('purge 清关联订单已收尾（非 pending）的终态 task', function (
         'status' => 'failed',
         'result' => ['code' => 0, 'msg' => 'timeout'],
     ]);
-    $task->forceFill(['created_at' => now()->subDays(120), 'updated_at' => now()->subDays(120)])->save();
+    $task->forceFill(['created_at' => now()->subDays(181), 'updated_at' => now()->subDays(181)])->save();
 
     $this->artisan('schedule:purge')->assertSuccessful();
 
@@ -354,7 +357,7 @@ test('purge 清关联订单已收尾（非 pending）的终态 task', function (
 });
 
 test('purge 不清 executing/stopped task（活动/转人工态永不被清）', function () {
-    config(['purge.retention.tasks' => 90]);
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180]);
 
     Task::insert([
         ['order_id' => 2001, 'action' => 'commit', 'status' => 'executing', 'created_at' => now()->subDays(200), 'updated_at' => now()->subDays(200)],
@@ -365,6 +368,61 @@ test('purge 不清 executing/stopped task（活动/转人工态永不被清）',
 
     expect(Task::where('order_id', 2001)->exists())->toBeTrue();
     expect(Task::where('order_id', 2002)->exists())->toBeTrue();
+});
+
+test('purge tasks 按动作分层并使用 last_execute_at 作为年龄锚点', function () {
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180]);
+
+    Task::insert([
+        ['order_id' => 2101, 'action' => 'commit', 'status' => 'failed', 'last_execute_at' => null, 'created_at' => now()->subDays(30), 'updated_at' => now()->subDays(30)],
+        ['order_id' => 2102, 'action' => 'revalidate', 'status' => 'failed', 'last_execute_at' => null, 'created_at' => now()->subDays(8), 'updated_at' => now()->subDays(8)],
+        ['order_id' => 2103, 'action' => 'future_action', 'status' => 'failed', 'last_execute_at' => null, 'created_at' => now()->subDays(30), 'updated_at' => now()->subDays(30)],
+        ['order_id' => 2104, 'action' => 'delegation', 'status' => 'successful', 'last_execute_at' => null, 'created_at' => now()->subDays(6), 'updated_at' => now()->subDays(6)],
+        ['order_id' => 2105, 'action' => 'callback', 'status' => 'successful', 'last_execute_at' => null, 'created_at' => now()->subDays(181), 'updated_at' => now()->subDays(181)],
+        ['order_id' => 2106, 'action' => 'commit', 'status' => 'failed', 'last_execute_at' => now(), 'created_at' => now()->subDays(181), 'updated_at' => now()],
+    ]);
+
+    $this->artisan('schedule:purge')->expectsOutputToContain('future_action')->assertSuccessful();
+
+    expect(Task::where('order_id', 2101)->exists())->toBeTrue()
+        ->and(Task::where('order_id', 2102)->exists())->toBeFalse()
+        ->and(Task::where('order_id', 2103)->exists())->toBeTrue()
+        ->and(Task::where('order_id', 2104)->exists())->toBeTrue()
+        ->and(Task::where('order_id', 2105)->exists())->toBeFalse()
+        ->and(Task::where('order_id', 2106)->exists())->toBeTrue();
+});
+
+test('pending 普通订单只保护当前证书周期的 failed commit', function () {
+    $user = $this->createTestUser();
+    $product = $this->createTestProduct();
+    $order = $this->createTestOrder($user, $product);
+    $cert = $this->createTestCert($order, ['status' => 'pending', 'api_id' => null]);
+    $cert->forceFill(['created_at' => now()->subDays(200)])->saveQuietly();
+
+    $currentCommit = Task::create(['order_id' => $order->id, 'action' => 'commit', 'status' => 'failed', 'last_execute_at' => now()->subDays(190)]);
+    $oldCommit = Task::create(['order_id' => $order->id, 'action' => 'commit', 'status' => 'failed', 'last_execute_at' => now()->subDays(201)]);
+    $oldSync = Task::create(['order_id' => $order->id, 'action' => 'sync', 'status' => 'failed', 'last_execute_at' => now()->subDays(8)]);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect($currentCommit->fresh())->not->toBeNull()
+        ->and($oldCommit->fresh())->toBeNull()
+        ->and($oldSync->fresh())->toBeNull();
+});
+
+test('pending ACME 只保护当前周期的 failed commit_acme', function () {
+    $acme = Acme::factory()->create(['status' => 'pending', 'api_id' => null]);
+    $acme->forceFill(['created_at' => now()->subDays(200)])->saveQuietly();
+
+    $currentCommit = Task::create(['order_id' => $acme->id, 'action' => 'commit_acme', 'status' => 'failed', 'last_execute_at' => now()->subDays(190)]);
+    $oldCommit = Task::create(['order_id' => $acme->id, 'action' => 'commit_acme', 'status' => 'failed', 'last_execute_at' => now()->subDays(201)]);
+    $oldSync = Task::create(['order_id' => $acme->id, 'action' => 'sync_acme', 'status' => 'failed', 'last_execute_at' => now()->subDays(8)]);
+
+    $this->artisan('schedule:purge')->assertSuccessful();
+
+    expect($currentCommit->fresh())->not->toBeNull()
+        ->and($oldCommit->fresh())->toBeNull()
+        ->and($oldSync->fresh())->toBeNull();
 });
 
 test('purge 清理超保留期的 sent/failed notification', function () {
@@ -412,11 +470,11 @@ test('purge notification 清理不删近 1h 内可复用 failed 行（杀手场�
 });
 
 test('purge tasks 分批删除大批量（chunk 循环正确性 + 护栏）', function () {
-    config(['purge.retention.tasks' => 90, 'purge.chunk' => 10]);
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180, 'purge.chunk' => 10]);
 
     $rows = [];
     for ($i = 0; $i < 25; $i++) {
-        $rows[] = ['order_id' => 3000 + $i, 'action' => 'commit', 'status' => 'successful', 'created_at' => now()->subDays(100), 'updated_at' => now()->subDays(100)];
+        $rows[] = ['order_id' => 3000 + $i, 'action' => 'sync', 'status' => 'successful', 'created_at' => now()->subDays(100), 'updated_at' => now()->subDays(100)];
     }
     Task::insert($rows);
 
@@ -430,7 +488,7 @@ test('purge tasks 分批删除大批量（chunk 循环正确性 + 护栏）', fu
 });
 
 test('purge 清理不误伤刚被 batchStart 复活的旧 failed task（M3 边界）', function () {
-    config(['purge.retention.tasks' => 90]);
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 180]);
 
     // 90 天前的 failed task 被 admin batchStart 复活 → status=executing（非终态）
     Task::insert([
@@ -443,8 +501,8 @@ test('purge 清理不误伤刚被 batchStart 复活的旧 failed task（M3 边�
     expect(Task::where('order_id', 4001)->exists())->toBeTrue();
 });
 
-test('purge retention 读 config/purge.php（tasks 保留期 config 化）', function () {
-    config(['purge.retention.tasks' => 30]);
+test('purge retention 读 config/purge.php（tasks 审计保留期 config 化）', function () {
+    config(['purge.retention.tasks_full_days' => 7, 'purge.retention.tasks_audit_days' => 30]);
 
     Task::insert([
         ['order_id' => 5001, 'action' => 'commit', 'status' => 'successful', 'created_at' => now()->subDays(31), 'updated_at' => now()->subDays(31)],

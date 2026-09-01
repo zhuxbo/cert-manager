@@ -2,6 +2,7 @@ import dayjs from "dayjs";
 
 export const tableColumns: any[] = [
   { label: "ID", prop: "id", minWidth: 90 },
+  { label: "操作", prop: "action", minWidth: 140 },
   { label: "请求URL", prop: "url", minWidth: 140 },
   { label: "请求方法", prop: "method", minWidth: 140 },
   { label: "IP 地址", prop: "ip", minWidth: 100 },

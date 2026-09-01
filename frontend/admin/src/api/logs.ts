@@ -22,6 +22,8 @@ export interface WebLogsParams extends BaseLogsParams {
 // API日志查询参数
 export interface ApiLogsParams extends BaseLogsParams {
   username?: string;
+  module?: string;
+  action?: string;
   version?: string;
   status_code?: number;
   ip?: string;
@@ -29,6 +31,8 @@ export interface ApiLogsParams extends BaseLogsParams {
 
 // 回调日志查询参数
 export interface CallbackLogsParams extends BaseLogsParams {
+  module?: string;
+  action?: string;
   url?: string;
   ip?: string;
 }
@@ -45,6 +49,8 @@ export interface ErrorLogsParams {
   currentPage?: number;
   pageSize?: number;
   created_at?: [string, string];
+  module?: string;
+  action?: string;
   url?: string;
   method?: string;
   exception?: string;

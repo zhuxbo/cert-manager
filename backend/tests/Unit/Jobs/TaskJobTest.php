@@ -833,6 +833,26 @@ test('failed() 构造 task_failed NotificationIntent 派发到 NotificationCente
     expect($captured->context['admin_email'])->toBe('ops-alias@example.com');
 });
 
+test('failed() 对 callback 只落失败状态不派发 task_failed 通知', function () {
+    Admin::factory()->create(['email' => 'ops@example.com']);
+    $task = Task::factory()->create([
+        'action' => 'callback',
+        'status' => 'executing',
+        'attempts' => 0,
+    ]);
+
+    $mock = Mockery::mock(NotificationCenter::class);
+    $mock->shouldNotReceive('dispatch');
+    app()->instance(NotificationCenter::class, $mock);
+
+    (new TaskJob(['id' => $task->id]))->failed(new RuntimeException('transport failed'));
+
+    $fresh = $task->fresh();
+    expect($fresh->status)->toBe('failed')
+        ->and($fresh->attempts)->toBe(1)
+        ->and($fresh->last_execute_at)->not->toBeNull();
+});
+
 test('failed() 在 task 不存在时直接返回，不派发通知', function () {
     $mock = Mockery::mock(NotificationCenter::class);
     $mock->shouldNotReceive('dispatch');

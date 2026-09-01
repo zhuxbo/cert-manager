@@ -22,9 +22,6 @@ class LogOperation
      * 不需要记录日志的路由
      */
     protected array $excludedPaths = [
-        '*/index*',
-        '*/list/*',
-        '*/get/*',
         'api/admin/logs/*',
         // 公开运维健康检查（精确匹配，避免误伤未来 /api/health/... 子路径）
         'api/health',
@@ -34,7 +31,6 @@ class LogOperation
         'api/meta',
         'acme/*',
         '.well-known/*',
-        '*document-preview*',
         '_debugger/*',
         '_ignition/*',
     ];
@@ -45,6 +41,7 @@ class LogOperation
     protected array $excludeResponsePaths = [
         '*download*',
         '*export*',
+        '*document-preview*',
     ];
 
     /**
@@ -110,6 +107,8 @@ class LogOperation
 
             // 基础日志数据
             $logData = [
+                'module' => $this->getModule($request),
+                'action' => $this->getAction($request),
                 'method' => $request->method(),
                 'url' => LogScrubber::scrubUrl($request->fullUrl()),
                 'params' => LogScrubber::scrub($request->all()),
@@ -208,8 +207,6 @@ class LogOperation
     {
         LogBuffer::add(AdminLog::class, array_merge($logData, [
             'admin_id' => Auth::guard('admin')->id(),
-            'module' => $this->getModule($request),
-            'action' => $this->getAction($request),
         ]));
     }
 
@@ -220,8 +217,6 @@ class LogOperation
     {
         LogBuffer::add(UserLog::class, array_merge($logData, [
             'user_id' => Auth::guard('user')->id(),
-            'module' => $this->getModule($request),
-            'action' => $this->getAction($request),
         ]));
     }
 

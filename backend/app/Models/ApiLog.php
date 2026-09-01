@@ -10,6 +10,8 @@ class ApiLog extends BaseModel
 
     protected $fillable = [
         'correlation_id',
+        'module',
+        'action',
         'user_id',
         'version',
         'method',

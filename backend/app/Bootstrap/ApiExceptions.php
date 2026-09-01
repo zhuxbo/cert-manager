@@ -72,12 +72,15 @@ class ApiExceptions
                 $method = 'CLI';
                 $url = implode(' ', $_SERVER['argv'] ?? ['unknown']);
                 $ip = '127.0.0.1';
+                $module = 'Console';
+                $action = $_SERVER['argv'][1] ?? null;
             } else {
                 $request = Request::instance();
                 $method = $request->method();
                 // 先脱敏（?token=/?access_token= 等凭据串传）再截断，避免截断切坏脱敏后的 URL
                 $url = LogScrubber::scrubUrl($request->fullUrl());
                 $ip = $request->ip();
+                [$module, $action] = $this->routeContext($request);
             }
 
             if (strlen($url) > 2000) {
@@ -91,6 +94,8 @@ class ApiExceptions
             }
 
             LogBuffer::add(ErrorLog::class, [
+                'module' => $module,
+                'action' => $action,
                 'method' => $method,
                 'url' => $url,
                 'exception' => class_basename($e),
@@ -100,6 +105,22 @@ class ApiExceptions
                 'ip' => $ip,
             ]);
         }
+    }
+
+    /**
+     * @return array{0: ?string, 1: ?string}
+     */
+    private function routeContext(\Illuminate\Http\Request $request): array
+    {
+        $controller = $request->route()?->getAction('controller');
+        if (! is_string($controller) || $controller === '') {
+            return [null, null];
+        }
+
+        [$class, $action] = array_pad(explode('@', $controller, 2), 2, null);
+        $module = str_replace('Controller', '', class_basename($class));
+
+        return [$module !== '' ? $module : null, $action];
     }
 
     /**

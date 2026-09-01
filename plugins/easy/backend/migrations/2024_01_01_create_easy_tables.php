@@ -33,13 +33,15 @@ return new class extends Migration
         if (! Schema::hasTable('easy_logs')) {
             Schema::create('easy_logs', function (Blueprint $table) {
                 $table->id();
+                $table->string('action', 100)->nullable();
                 $table->string('method', 10)->nullable();
                 $table->text('url')->nullable();
                 $table->text('params')->nullable();
                 $table->text('response')->nullable();
                 $table->string('ip', 50)->nullable();
                 $table->tinyInteger('status')->default(0);
-                $table->timestamp('created_at')->nullable();
+                $table->timestamp('created_at')->nullable()->index();
+                $table->index(['action', 'created_at']);
             });
         }
     }

@@ -1,12 +1,16 @@
 <?php
 
+use App\Http\Controllers\User\TopUpController;
+use App\Http\Controllers\V2\ApiController;
 use App\Http\Middleware\LogOperation;
+use App\Models\ApiLog;
 use App\Models\CallbackLog;
 use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
 use App\Utils\UpgradeFreezeLock;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
 
 beforeEach(function () {
     LogBuffer::clear();
@@ -36,7 +40,7 @@ test('GET 请求到排除路径不记录日志', function () {
     }
 });
 
-test('index 路径不记录日志', function () {
+test('index 路径现在记录诊断日志', function () {
     $middleware = new LogOperation;
     $request = Request::create('/api/admin/index', 'GET');
 
@@ -44,10 +48,10 @@ test('index 路径不记录日志', function () {
         return new JsonResponse(['code' => 1]);
     });
 
-    expect(LogBuffer::count())->toBe(0);
+    expect(LogBuffer::count())->toBe(1);
 });
 
-test('list 路径不记录日志', function () {
+test('list 路径现在记录诊断日志', function () {
     $middleware = new LogOperation;
     $request = Request::create('/api/admin/list/orders', 'GET');
 
@@ -55,7 +59,7 @@ test('list 路径不记录日志', function () {
         return new JsonResponse(['code' => 1]);
     });
 
-    expect(LogBuffer::count())->toBe(0);
+    expect(LogBuffer::count())->toBe(1);
 });
 
 test('acme 路由不记录日志', function () {
@@ -114,6 +118,33 @@ test('回调请求记录到 CallbackLog 缓冲区', function () {
         ->and($log->method)->toBe('POST')
         ->and($log->url)->toContain('/callback/alipay/notify')
         ->and($log->status)->toBe(1);
+});
+
+test('API 与 callback 日志记录结构化 controller module 和 action', function () {
+    $middleware = new LogOperation;
+
+    $apiRequest = Request::create('/api/v2/new', 'POST');
+    $apiRoute = new Route(['POST'], 'api/v2/new', [
+        'controller' => ApiController::class.'@new',
+    ]);
+    $apiRequest->setRouteResolver(fn () => $apiRoute);
+    $middleware->handle($apiRequest, fn () => new JsonResponse(['code' => 1]));
+
+    $callbackRequest = Request::create('/callback/alipay', 'POST');
+    $callbackRoute = new Route(['POST'], 'callback/alipay', [
+        'controller' => TopUpController::class.'@alipayNotify',
+    ]);
+    $callbackRequest->setRouteResolver(fn () => $callbackRoute);
+    $middleware->handle($callbackRequest, fn () => response('success'));
+
+    LogBuffer::flush();
+
+    expect(ApiLog::query()->latest('id')->first())
+        ->module->toBe('Api')
+        ->action->toBe('new')
+        ->and(CallbackLog::query()->latest('id')->first())
+        ->module->toBe('TopUp')
+        ->action->toBe('alipayNotify');
 });
 
 test('敏感字段在日志中被脱敏', function () {
@@ -200,6 +231,19 @@ test('导出路径跳过响应记录', function () {
     $reflection = new ReflectionMethod($middleware, 'shouldSkipResponse');
     $request = Request::create('/api/admin/orders/export', 'GET');
 
+    expect($reflection->invoke($middleware, $request))->toBeTrue();
+});
+
+test('document preview 记录请求但不记录响应内容', function () {
+    $middleware = new LogOperation;
+    $request = Request::create('/api/admin/order/document-preview/1', 'GET');
+    $request->setRouteResolver(fn () => null);
+
+    $middleware->handle($request, fn () => new JsonResponse(['secret' => 'preview']));
+
+    expect(LogBuffer::count())->toBe(1);
+
+    $reflection = new ReflectionMethod($middleware, 'shouldSkipResponse');
     expect($reflection->invoke($middleware, $request))->toBeTrue();
 });
 

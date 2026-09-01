@@ -1,0 +1,100 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\LogsControllerTest::__pest_evaluable_API_callback_error_日志支持_module_action_等值筛选并返回字段",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/logs/api",
+            "request_keys": [
+                "action",
+                "module"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "module": "string",
+                            "action": "string",
+                            "url": "string",
+                            "status": "integer",
+                            "created_at": "string",
+                            "method": "string",
+                            "user_id": "null",
+                            "version": "string",
+                            "status_code": "integer",
+                            "duration": "string",
+                            "ip": "null",
+                            "user": "null"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/logs/callback",
+            "request_keys": [
+                "action",
+                "module"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "module": "string",
+                            "action": "string",
+                            "url": "string",
+                            "status": "integer",
+                            "created_at": "string",
+                            "method": "string",
+                            "ip": "null"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        },
+        {
+            "method": "GET",
+            "uri_pattern": "/api/admin/logs/error",
+            "request_keys": [
+                "action",
+                "module"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "data": {
+                    "items": {
+                        "__list_of__": {
+                            "id": "integer",
+                            "module": "string",
+                            "action": "string",
+                            "url": "string",
+                            "method": "string",
+                            "created_at": "string",
+                            "status_code": "integer",
+                            "exception": "string",
+                            "message": "string",
+                            "ip": "null"
+                        }
+                    },
+                    "total": "integer",
+                    "pageSize": "integer",
+                    "currentPage": "integer"
+                }
+            }
+        }
+    ]
+}

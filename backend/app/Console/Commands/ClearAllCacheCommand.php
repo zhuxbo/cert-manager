@@ -256,18 +256,19 @@ class ClearAllCacheCommand extends Command
             try {
                 $files = File::glob($logsPath.'/*.log');
                 $deletedCount = 0;
-                $sevenDaysAgo = now()->subDays(7);
+                $retentionDays = (int) config('logging.channels.daily.days', 14);
+                $cutoff = now()->subDays($retentionDays);
 
                 foreach ($files as $file) {
                     $fileTime = File::lastModified($file);
-                    if ($fileTime < $sevenDaysAgo->timestamp) {
+                    if ($fileTime < $cutoff->timestamp) {
                         File::delete($file);
                         $deletedCount++;
                     }
                 }
 
                 if (! $quick) {
-                    $this->line("✓ 7天前的日志文件已清除 (删除 $deletedCount 个文件)");
+                    $this->line("✓ {$retentionDays}天前的日志文件已清除 (删除 $deletedCount 个文件)");
 
                     $remainingCount = count(File::glob($logsPath.'/*.log'));
                     $this->line("当前剩余日志文件: $remainingCount 个");
