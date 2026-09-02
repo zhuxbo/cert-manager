@@ -14,7 +14,6 @@ use App\Models\Acme;
 use App\Models\Admin;
 use App\Models\Product;
 use App\Models\User;
-use App\Models\UserLevel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Traits\ActsAsAdmin;
 use Tests\Traits\ActsAsUser;
@@ -24,10 +23,6 @@ uses(ActsAsAdmin::class);
 uses(ActsAsUser::class);
 uses(MocksExternalApis::class);
 uses(RefreshDatabase::class);
-
-beforeEach(function () {
-    UserLevel::factory()->standard()->create();
-});
 
 // ==================== exists 族：User\GetIdsRequest ====================
 

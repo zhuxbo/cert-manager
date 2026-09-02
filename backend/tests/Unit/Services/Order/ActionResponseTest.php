@@ -766,6 +766,7 @@ test('commit 为 SSL DV 新单不会泄露 SMIME 组织或前驱字段', functio
     ], [
         'action' => 'new',
         'email' => 'should-not-send@example.test',
+        'amount' => '1.00',
     ]);
     $api = Mockery::mock(Api::class);
     $api->shouldReceive('new')->once()->with(Mockery::on(function (array $data) {
@@ -790,7 +791,10 @@ test('commit 为 SSL DV 新单不会泄露 SMIME 组织或前驱字段', functio
 });
 
 test('commit 上游失败精确保留消息和结构化错误', function () {
-    [$order, $cert] = orderMutationFixture('pending', [], ['action' => 'new']);
+    [$order, $cert] = orderMutationFixture('pending', [], [
+        'action' => 'new',
+        'amount' => '1.00',
+    ]);
     $api = Mockery::mock(Api::class);
     $api->shouldReceive('new')->once()->andReturn([
         'code' => 0,

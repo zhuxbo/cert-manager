@@ -108,8 +108,8 @@ onMounted(() => {
             </span>
           </div>
           <el-popconfirm
-            title="确定要删除吗？"
-            width="160px"
+            title="删除将清理级别价格并解除定制级别绑定，确定继续？"
+            width="280px"
             @confirm="handleBatchDestroy(selectedIds)"
           >
             <template #reference>
@@ -149,8 +149,8 @@ onMounted(() => {
               编辑
             </el-button>
             <el-popconfirm
-              title="确定要删除吗？"
-              width="160px"
+              title="删除将清理级别价格并解除定制级别绑定，确定继续？"
+              width="280px"
               @confirm="handleDestroy(row.id)"
             >
               <template #reference>

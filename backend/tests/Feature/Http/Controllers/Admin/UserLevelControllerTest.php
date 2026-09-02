@@ -7,6 +7,7 @@ use App\Models\SettingGroup;
 use App\Models\User;
 use App\Models\UserLevel;
 use Illuminate\Database\Connection;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -57,7 +58,7 @@ function holdUserLevelMutationLock(object $test): void
     expect((int) ($result->acquired ?? 0))->toBe(1);
 }
 
-// ==================== destroy 删除保护（被引用禁删） ====================
+// ==================== destroy 删除保护与关联清理 ====================
 
 test('destroy 拒绝删除被用户 level_code 引用的级别', function () {
     $level = UserLevel::factory()->create(['code' => 'gold', 'name' => '黄金会员']);
@@ -71,26 +72,27 @@ test('destroy 拒绝删除被用户 level_code 引用的级别', function () {
     expect(UserLevel::find($level->id))->not->toBeNull(); // 未被删除
 });
 
-test('destroy 拒绝删除被用户 custom_level_code 引用的级别', function () {
+test('destroy 删除级别时解除用户 custom_level_code 绑定', function () {
     $level = UserLevel::factory()->create(['code' => 'vip', 'name' => 'VIP会员']);
     // level_code 用默认 standard，定制级别指向 vip
-    User::factory()->create(['level_code' => 'standard', 'custom_level_code' => 'vip']);
+    $user = User::factory()->create(['level_code' => 'standard', 'custom_level_code' => 'vip']);
 
     $resp = $this->actingAsAdmin($this->admin)->deleteJson("/api/admin/user-level/{$level->id}");
 
-    $resp->assertOk()->assertJson(['code' => 0]);
-    expect(UserLevel::find($level->id))->not->toBeNull();
+    $resp->assertOk()->assertJson(['code' => 1]);
+    expect(UserLevel::find($level->id))->toBeNull();
+    expect($user->fresh()->custom_level_code)->toBeNull();
 });
 
-test('destroy 拒绝删除被产品价格引用的级别', function () {
+test('destroy 删除级别时同步清理产品价格', function () {
     $level = UserLevel::factory()->create(['code' => 'biz', 'name' => '企业版']);
-    ProductPrice::factory()->create(['level_code' => 'biz']);
+    $price = ProductPrice::factory()->create(['level_code' => 'biz']);
 
     $resp = $this->actingAsAdmin($this->admin)->deleteJson("/api/admin/user-level/{$level->id}");
 
-    $resp->assertOk()->assertJson(['code' => 0]);
-    expect($resp->json('msg'))->toContain('产品价格');
-    expect(UserLevel::find($level->id))->not->toBeNull();
+    $resp->assertOk()->assertJson(['code' => 1]);
+    expect(UserLevel::find($level->id))->toBeNull();
+    expect(ProductPrice::find($price->id))->toBeNull();
 });
 
 test('destroy 允许删除无任何引用的级别', function () {
@@ -111,12 +113,32 @@ test('destroy 允许删除系统预设级别（custom=0）只要无引用', func
     expect(UserLevel::find($level->id))->toBeNull();
 });
 
+test('数据库外键阻止基础绑定级别删除并兜底清理可解除引用', function () {
+    $baseLevel = UserLevel::factory()->create(['code' => 'fk-base', 'name' => '外键基础级别']);
+    $customLevel = UserLevel::factory()->create(['code' => 'fk-custom', 'name' => '外键定制级别']);
+    $baseUser = User::factory()->create(['level_code' => $baseLevel->code]);
+    $customUser = User::factory()->create(['custom_level_code' => $customLevel->code]);
+    $price = ProductPrice::factory()->create(['level_code' => $customLevel->code]);
+
+    expect(fn () => DB::table('user_levels')->where('id', $baseLevel->id)->delete())
+        ->toThrow(QueryException::class);
+    expect($baseLevel->fresh())->not->toBeNull()
+        ->and($baseUser->fresh()->level_code)->toBe($baseLevel->code);
+
+    DB::table('user_levels')->where('id', $customLevel->id)->delete();
+
+    expect($customUser->fresh()->custom_level_code)->toBeNull()
+        ->and(ProductPrice::find($price->id))->toBeNull();
+});
+
 // ==================== batchDestroy 整体拒绝 ====================
 
 test('batchDestroy 任一级别被引用则整批拒绝且无一删除', function () {
     $used = UserLevel::factory()->create(['code' => 'used', 'name' => '在用级别']);
     $free = UserLevel::factory()->create(['code' => 'free', 'name' => '空闲级别']);
     User::factory()->create(['level_code' => 'used']);
+    $customUser = User::factory()->create(['custom_level_code' => 'free']);
+    $price = ProductPrice::factory()->create(['level_code' => 'free']);
 
     $resp = $this->actingAsAdmin($this->admin)->deleteJson('/api/admin/user-level/batch', [
         'ids' => [$used->id, $free->id],
@@ -127,11 +149,18 @@ test('batchDestroy 任一级别被引用则整批拒绝且无一删除', functio
     // 整批拒绝：两个都还在
     expect(UserLevel::find($used->id))->not->toBeNull();
     expect(UserLevel::find($free->id))->not->toBeNull();
+    expect($customUser->fresh()->custom_level_code)->toBe('free');
+    expect(ProductPrice::find($price->id))->not->toBeNull();
 });
 
-test('batchDestroy 全部无引用则成功删除', function () {
+test('batchDestroy 无基础绑定时成功删除并清理可解除引用', function () {
     $a = UserLevel::factory()->create(['code' => 'a1', 'name' => '级别A']);
     $b = UserLevel::factory()->create(['code' => 'b1', 'name' => '级别B']);
+    $customUser = User::factory()->create(['custom_level_code' => 'a1']);
+    $prices = [
+        ProductPrice::factory()->create(['level_code' => 'a1']),
+        ProductPrice::factory()->create(['level_code' => 'b1']),
+    ];
 
     $resp = $this->actingAsAdmin($this->admin)->deleteJson('/api/admin/user-level/batch', [
         'ids' => [$a->id, $b->id],
@@ -140,6 +169,8 @@ test('batchDestroy 全部无引用则成功删除', function () {
     $resp->assertOk()->assertJson(['code' => 1]);
     expect(UserLevel::find($a->id))->toBeNull();
     expect(UserLevel::find($b->id))->toBeNull();
+    expect($customUser->fresh()->custom_level_code)->toBeNull();
+    expect(ProductPrice::whereKey(collect($prices)->pluck('id')->all())->count())->toBe(0);
 });
 
 // ==================== site.sourceLevel 注册来源映射引用（删除保护缺口） ====================

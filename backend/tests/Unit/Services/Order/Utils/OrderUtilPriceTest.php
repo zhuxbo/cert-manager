@@ -86,6 +86,7 @@ test('hasPriceConfigured：存在 level_code 价格行 → true', function () {
 });
 
 test('hasPriceConfigured：仅存在 custom_level_code 价格行 → true', function () {
+    UserLevel::factory()->create(['code' => 'vip']);
     $user = $this->createTestUser(['level_code' => 'standard', 'custom_level_code' => 'vip']);
     $product = $this->createTestProduct();
     // 只建 custom 级价格行，standard 级无
@@ -97,6 +98,7 @@ test('hasPriceConfigured：仅存在 custom_level_code 价格行 → true', func
 });
 
 test('hasPriceConfigured：level 与 custom 皆无价格行 → false（缺价）', function () {
+    UserLevel::factory()->create(['code' => 'vip']);
     $user = $this->createTestUser(['level_code' => 'standard', 'custom_level_code' => 'vip']);
     $product = $this->createTestProduct();
     // 不建任何价格行

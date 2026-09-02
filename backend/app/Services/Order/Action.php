@@ -218,6 +218,7 @@ class Action
             $latestCert,
             $params['product'],
         );
+        OrderUtil::guardZeroAmountOrder($latestCert['amount'], $latestCert['action'] ?? 'new');
 
         $orderId = null;
         DB::transaction(function () use ($params, $orderData, $latestCert, &$orderId) {
@@ -285,6 +286,7 @@ class Action
                 $latestCert,
                 $itemParams['product'],
             );
+            OrderUtil::guardZeroAmountOrder($latestCert['amount'], $latestCert['action'] ?? 'new');
             $rows[] = [$orderData, $latestCert];
         }
 
@@ -456,6 +458,10 @@ class Action
             }
 
             $order->latestCert->status != 'pending' && $this->error('订单状态不是待提交');
+            OrderUtil::guardZeroAmountOrder(
+                $order->latestCert->amount,
+                $order->latestCert->action,
+            );
 
             $product = FindUtil::Product($order->product_id);
 

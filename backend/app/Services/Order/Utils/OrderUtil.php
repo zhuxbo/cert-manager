@@ -235,6 +235,21 @@ class OrderUtil
     }
 
     /**
+     * 拒绝未显式允许的零元新购/续费订单。
+     *
+     * 重签的 amount 是本次增购金额，未增购 SAN 时为 0 是合法语义，不受此开关限制。
+     */
+    public static function guardZeroAmountOrder(string|int|float $amount, string $action = 'new'): void
+    {
+        if (! in_array($action, ['new', 'renew'], true) || bccomp((string) $amount, '0', 2) !== 0) {
+            return;
+        }
+
+        get_system_setting('site', 'allowZeroAmountOrder', false) === true
+            || self::error('系统未启用零元订单');
+    }
+
+    /**
      * 转换数值时必须保持字符串的键（任意层级按键名豁免）
      *
      * 这些字段的取值语义就是「一段文本」，被转成数字后下游按 string 声明的形参会直接抛

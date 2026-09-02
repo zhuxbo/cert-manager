@@ -27,7 +27,7 @@ class IndexRequest extends BaseRequest
             'action' => 'nullable|string|in:new,renew,reissue',
             'expires_at' => 'nullable|array|size:2',
             'expires_at.*' => 'string|date_format:Y-m-d\TH:i:s.v\Z',
-            'status' => 'nullable|in:unpaid,pending,processing,active,approving,cancelling,failed,cancelled,renewed,replaced,reissued,expired,revoked',
+            'status' => 'nullable|in:unpaid,pending,processing,active,approving,cancelling,failed,cancelled,renewed,expired,revoked',
             'sort_prop' => 'nullable|string|in:period_till,expires_at',
             'sort_order' => 'nullable|string|in:asc,desc',
         ];

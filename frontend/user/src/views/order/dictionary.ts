@@ -55,14 +55,6 @@ export const ArchivedStatusOptions: { label: string; value: string }[] = [
     value: "renewed"
   },
   {
-    label: "已替换",
-    value: "replaced"
-  },
-  {
-    label: "已重签",
-    value: "reissued"
-  },
-  {
     label: "已过期",
     value: "expired"
   },
@@ -145,14 +137,6 @@ export const statusOptions: { label: string; value: string }[] = [
   {
     label: "已续期",
     value: "renewed"
-  },
-  {
-    label: "已替换",
-    value: "replaced"
-  },
-  {
-    label: "已重签",
-    value: "reissued"
   },
   {
     label: "已过期",

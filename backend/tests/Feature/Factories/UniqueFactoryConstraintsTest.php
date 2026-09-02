@@ -25,8 +25,8 @@ test('Admin 工厂批量创建不会命中 mobile 唯一索引', function () {
 });
 
 test('UserLevel 工厂批量创建不会命中 code 和 name 唯一索引', function () {
-    UserLevel::factory()->count(12)->create();
+    $levels = UserLevel::factory()->count(12)->create();
 
-    expect(UserLevel::query()->distinct()->count('code'))->toBe(12);
-    expect(UserLevel::query()->distinct()->count('name'))->toBe(12);
+    expect($levels->unique('code'))->toHaveCount(12);
+    expect($levels->unique('name'))->toHaveCount(12);
 });

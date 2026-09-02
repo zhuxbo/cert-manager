@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_batchDestroy_全部无引用则成功删除",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_batchDestroy_无基础绑定时成功删除并清理可解除引用",
     "version": "1.0.0",
     "calls": [
         {

@@ -15,11 +15,6 @@ export const tableColumns: TableColumnList = [
     minWidth: 140
   },
   {
-    label: "订单ID",
-    prop: "order_id",
-    minWidth: 140
-  },
-  {
     label: "通用名称",
     prop: "common_name",
     minWidth: 150

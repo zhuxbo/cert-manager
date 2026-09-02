@@ -148,7 +148,9 @@ class UserLevelController extends BaseController
     }
 
     /**
-     * 删除用户级别（被用户/定制级别/产品价格引用时禁止删除）
+     * 删除用户级别。
+     *
+     * 基础级别绑定与注册来源映射会阻止删除；定制级别绑定和产品价格随级别清理。
      */
     public function destroy($id): void
     {
@@ -159,10 +161,11 @@ class UserLevelController extends BaseController
                     $this->error('用户级别不存在');
                 }
 
-                if ($refs = $this->referenceSummary($userLevel->code)) {
+                if ($refs = $this->deletionBlockerSummary($userLevel->code)) {
                     $this->error("无法删除级别「{$userLevel->name}」：仍有 $refs 在使用");
                 }
 
+                $this->cleanupDeletionReferences([$userLevel->code]);
                 $userLevel->delete();
             });
         });
@@ -186,7 +189,7 @@ class UserLevelController extends BaseController
 
                 $blocked = [];
                 foreach ($userLevels as $userLevel) {
-                    if ($refs = $this->referenceSummary($userLevel->code)) {
+                    if ($refs = $this->deletionBlockerSummary($userLevel->code)) {
                         $blocked[] = "「{$userLevel->name}」($refs)";
                     }
                 }
@@ -194,6 +197,7 @@ class UserLevelController extends BaseController
                     $this->error('以下级别正在使用，无法删除：'.implode('、', $blocked));
                 }
 
+                $this->cleanupDeletionReferences($userLevels->pluck('code')->all());
                 UserLevel::destroy($uniqueIds);
             });
         });
@@ -205,7 +209,7 @@ class UserLevelController extends BaseController
      *
      * 引用来源：users.level_code、users.custom_level_code、product_prices.level_code，
      * 以及 site.sourceLevel 注册来源映射（注册流程据此给新用户赋 level_code）。
-     * 四者均按 code 关联且无 DB 外键，故删除保护必须在应用层兜底。
+     * 修改 code 时仍需在应用层给出可读的引用错误；site.sourceLevel 也无法使用 DB 外键约束。
      * OR 条件用闭包包裹，避免与模型全局作用域组合时的优先级问题。
      */
     private function referenceSummary(string $code): string
@@ -219,8 +223,7 @@ class UserLevelController extends BaseController
         // site.sourceLevel 是「注册来源 → level_code」映射，AuthController::register /
         // registerWithMobile 及 easy 插件据此给新注册用户赋 level_code。删除被它引用的级别
         // 会令后续该来源的新注册用户 level_code 悬空 → getMinPrice 取不到价 → 0 元签发。
-        $sourceLevel = get_system_setting('site', 'sourceLevel', []);
-        $sourceCount = is_array($sourceLevel) ? count(array_keys($sourceLevel, $code, true)) : 0;
+        $sourceCount = $this->sourceLevelReferenceCount($code);
 
         $parts = [];
         if ($userCount > 0) {
@@ -234,5 +237,42 @@ class UserLevelController extends BaseController
         }
 
         return implode('、', $parts);
+    }
+
+    /**
+     * 返回删除时不能自动处理的引用。
+     */
+    private function deletionBlockerSummary(string $code): string
+    {
+        $userCount = User::where('level_code', $code)->count();
+        $sourceCount = $this->sourceLevelReferenceCount($code);
+
+        $parts = [];
+        if ($userCount > 0) {
+            $parts[] = "$userCount 个用户基础级别";
+        }
+        if ($sourceCount > 0) {
+            $parts[] = "$sourceCount 个注册来源映射";
+        }
+
+        return implode('、', $parts);
+    }
+
+    /**
+     * 清理删除级别可安全解除的引用。
+     *
+     * @param  array<int, string>  $codes
+     */
+    private function cleanupDeletionReferences(array $codes): void
+    {
+        User::whereIn('custom_level_code', $codes)->update(['custom_level_code' => null]);
+        ProductPrice::whereIn('level_code', $codes)->delete();
+    }
+
+    private function sourceLevelReferenceCount(string $code): int
+    {
+        $sourceLevel = get_system_setting('site', 'sourceLevel', []);
+
+        return is_array($sourceLevel) ? count(array_keys($sourceLevel, $code, true)) : 0;
     }
 }

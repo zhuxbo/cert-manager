@@ -66,6 +66,22 @@ function createAcmeProductPrice(int $productId, $user, string $price = '100.00')
     ]);
 }
 
+function configureAcmeZeroAmountOrderPolicy(?bool $enabled): void
+{
+    $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => '站点设置', 'weight' => 1]);
+    Setting::where('group_id', $group->id)->where('key', 'allowZeroAmountOrder')->delete();
+    if ($enabled !== null) {
+        Setting::create([
+            'group_id' => $group->id,
+            'key' => 'allowZeroAmountOrder',
+            'type' => 'boolean',
+            'value' => $enabled,
+            'weight' => 0,
+        ]);
+    }
+    Setting::clearGroupCache($group->id);
+}
+
 /**
  * 断言 ApiResponseException 包含指定消息
  */
@@ -166,6 +182,62 @@ test('new creates unpaid order', function () {
             'remark' => 'test remark',
         ]);
 });
+
+test('ACME 零元订单默认拒绝且显式开启后允许创建支付', function (bool $enabled) {
+    Queue::fake();
+    configureAcmeZeroAmountOrderPolicy($enabled ? true : null);
+    $user = $this->createTestUser(['balance' => '0.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    createAcmeProductPrice($product->id, $user, '0.00');
+    ProductPrice::where('product_id', $product->id)->update([
+        'alternative_standard_price' => '0.00',
+        'alternative_wildcard_price' => '0.00',
+    ]);
+
+    if ($enabled) {
+        $acme = createAcmeOrder($user, $product);
+        expectApiSuccess(fn () => $this->service->pay($acme->id, false));
+        expect($acme->fresh()->status)->toBe(Acme::STATUS_PENDING);
+    } else {
+        expectApiError(
+            fn () => $this->service->new([
+                'user_id' => $user->id,
+                'product_id' => $product->id,
+                'period' => 12,
+                'contact_email' => $user->email,
+            ]),
+            '系统未启用零元订单',
+        );
+        expect(Acme::where('product_id', $product->id)->exists())->toBeFalse();
+    }
+})->with([
+    '默认关闭' => [false],
+    '显式开启' => [true],
+]);
+
+test('既有 ACME 零元订单在支付和提交入口仍被默认策略拦截', function (string $status, string $method) {
+    configureAcmeZeroAmountOrderPolicy(null);
+    $user = $this->createTestUser(['balance' => '0.00']);
+    $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME]);
+    $acme = Acme::factory()->create([
+        'user_id' => $user->id,
+        'product_id' => $product->id,
+        'status' => $status,
+        'amount' => '0.00',
+        'contact_email' => $user->email,
+    ]);
+
+    expectApiError(
+        fn () => $method === 'pay'
+            ? $this->service->pay($acme->id, false)
+            : $this->service->commit($acme->id),
+        '系统未启用零元订单',
+    );
+    expect($acme->fresh()->status)->toBe($status);
+})->with([
+    '支付入口' => [Acme::STATUS_UNPAID, 'pay'],
+    '提交入口' => [Acme::STATUS_PENDING, 'commit'],
+]);
 
 test('new generates unique refer_id', function () {
     $user = $this->createTestUser(['balance' => '500.00']);

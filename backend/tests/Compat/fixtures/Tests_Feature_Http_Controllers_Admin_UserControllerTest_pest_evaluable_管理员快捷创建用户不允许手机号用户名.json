@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserControllerTest::__pest_evaluable_管理员快捷创建用户不允许手机号用户名",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "POST",
+            "uri_pattern": "/api/admin/user/create-user",
+            "request_keys": [
+                "email",
+                "username"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "username": "array<string>"
+                }
+            }
+        }
+    ]
+}

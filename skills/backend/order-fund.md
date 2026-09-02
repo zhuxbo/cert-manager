@@ -11,6 +11,8 @@
 - **预览令牌与状态指纹**：预览绝不写库；无告警时签发 10 分钟令牌，绑定管理员、规范化参数及产品原始成本、周期、适用 SAN 类型、选中级别和选中级别现有价格的稳定指纹。正式执行必须在锁和事务内重读并复算，令牌无效、过期或指纹变化时零写入返回 `stale_preview`。
 - **写入范围**：默认模式只筛出缺失的“产品 + 级别 + 周期”唯一键并分批普通 `insert`，既有价格整行保留，禁止 `INSERT IGNORE`；强制模式只删除并重建本次选中级别。删除、插入和可选的级别倍率同步必须处于同一事务，并核对 `created + preserved = target` 或 `rebuilt = target`。
 - **全局变更锁**：初始化、产品价格新增/修改/删除/批量删除/单产品设置，以及会员级别危险变更，共用数据库命名锁 `ssl-manager:product-price:mutation`。`GET_LOCK(..., 0)` 和 `RELEASE_LOCK(...)` 必须在同一连接严格返回 1；回调成功、业务拒绝或异常都由 `finally` 释放，释放异常须 critical 记录、断开连接并 fail-closed。
+- **用户级别删除语义**：删除前在同一命名锁和事务内检查不可解除引用；`users.level_code` 基础绑定或 `site.sourceLevel` 注册映射存在时整个单项/批量删除拒绝且零写入。通过检查后，同事务将目标级别的 `users.custom_level_code` 置空、删除 `product_prices` 关联价格，再删除级别；批量语义始终是全有或全无。数据库外键同时固化最终边界：基础绑定 `RESTRICT`、定制绑定 `SET NULL`、级别价格 `CASCADE`，防止校验与删除并发时产生悬空引用。
+- **零元订单开关**：可选高级设置 `site.allowZeroAmountOrder` 不进入 Seeder，缺失时默认 `false`；如需开启，管理员手工新增 `boolean=true`。后端只有在值严格等于 `true` 时允许新购/续费和 ACME 的 0 元订单，并在创建、支付、提交及后台改价入口重复守卫；重签 `amount=0` 表示本次未增购 SAN，不属于零元新订单，仍允许。
 - **真实订单计价边界**：初始化不读取或解释 `standard_min/max`、`wildcard_min/max`、SAN 数量，也不改 `OrderUtil` 公式。`OrderUtil::getLatestCertAmount()` 继续从真实 `ProductPrice` 读取三类售价，按 SSL/ACME 各自的已购 SAN 来源和基础配额计算超额，重签只计算增购 SAN；对端测试必须用初始化实际落库的价格验证这些路径。
 
 ## order 级互斥锁（方案 C：根治 3+ 并发 1205）

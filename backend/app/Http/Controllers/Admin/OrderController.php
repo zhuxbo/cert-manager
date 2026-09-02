@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Models\User;
 use App\Services\Order\Action;
 use App\Services\Order\Utils\FilterUtil;
+use App\Services\Order\Utils\OrderUtil;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -300,6 +301,7 @@ class OrderController extends BaseController
             $this->error('只有未支付状态的订单可以修改价格');
         }
 
+        OrderUtil::guardZeroAmountOrder($amount, $cert->action);
         $cert->amount = $amount;
         $cert->save();
 

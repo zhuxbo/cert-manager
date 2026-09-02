@@ -15,7 +15,6 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->admin = Admin::factory()->create();
-    UserLevel::factory()->standard()->create();
 });
 
 test('管理员可以获取用户列表', function () {
@@ -91,6 +90,35 @@ test('管理员可以更新用户信息', function () {
     expect($user->email)->toBe('updated@test.com');
 });
 
+test('手机号用户名必须先改名才能编辑用户', function () {
+    $user = User::factory()->create([
+        'username' => '13800138000',
+        'email' => 'legacy-mobile@test.com',
+    ]);
+    $basePayload = [
+        'email' => 'renamed@test.com',
+        'level_code' => 'standard',
+        'status' => 1,
+    ];
+
+    $this->actingAsAdmin($this->admin)->putJson("/api/admin/user/$user->id", [
+        ...$basePayload,
+        'username' => '13800138000',
+    ])->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonValidationErrors('username');
+    expect($user->fresh()->email)->toBe('legacy-mobile@test.com');
+
+    $this->actingAsAdmin($this->admin)->putJson("/api/admin/user/$user->id", [
+        ...$basePayload,
+        'username' => 'renamed_user',
+    ])->assertOk()
+        ->assertJson(['code' => 1]);
+    expect($user->fresh())
+        ->username->toBe('renamed_user')
+        ->email->toBe('renamed@test.com');
+});
+
 test('管理员可以删除用户', function () {
     $user = User::factory()->create();
 
@@ -133,6 +161,7 @@ test('管理员可以直接登录用户', function () {
 
 test('管理员可以创建用户并发送通知', function () {
     $this->mockSmtp();
+    UserLevel::factory()->create(['code' => 'platinum', 'name' => '铂金会员']);
 
     $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/user/create-user', [
         'email' => 'created@test.com',
@@ -140,6 +169,18 @@ test('管理员可以创建用户并发送通知', function () {
 
     $response->assertOk()->assertJson(['code' => 1]);
     expect(User::where('email', 'created@test.com')->exists())->toBeTrue();
+});
+
+test('管理员快捷创建用户不允许手机号用户名', function () {
+    $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/user/create-user', [
+        'username' => '18877665544',
+        'email' => 'mobile-username@test.com',
+    ]);
+
+    $response->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonValidationErrors('username');
+    expect(User::where('email', 'mobile-username@test.com')->exists())->toBeFalse();
 });
 
 test('管理员可以按用户名精确搜索', function () {

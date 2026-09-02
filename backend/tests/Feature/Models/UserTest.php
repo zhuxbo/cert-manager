@@ -53,7 +53,6 @@ test('用户有多个 CNAME 委托', function () {
 });
 
 test('用户关联用户等级', function () {
-    UserLevel::factory()->standard()->create();
     $user = User::factory()->create(['level_code' => 'standard']);
 
     expect($user->level)->toBeInstanceOf(UserLevel::class);

@@ -6,6 +6,8 @@ use App\Models\Cert;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductPrice;
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Notification\NotificationCenter;
@@ -75,6 +77,14 @@ test('管理员可以筛选已存档的订单', function () {
     $response->assertOk()->assertJson(['code' => 1]);
     expect($response->json('data.total'))->toBe(1);
 });
+
+test('订单列表拒绝无意义的当前状态筛选', function (string $status) {
+    $this->actingAsAdmin($this->admin)
+        ->getJson("/api/admin/order?status=$status")
+        ->assertOk()
+        ->assertJson(['code' => 0])
+        ->assertJsonValidationErrors('status');
+})->with(['replaced', 'reissued']);
 
 test('管理员可以通过快速搜索筛选订单', function () {
     [$order, $cert] = createOrderWithCert('pending', ['remark' => 'special order']);
@@ -427,6 +437,35 @@ test('管理员可以修改未支付订单价格', function () {
     $cert->refresh();
     expect($cert->amount)->toBe('200.00');
 });
+
+test('管理员修改零元订单价格受隐藏开关控制', function (bool $enabled) {
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => '站点设置', 'weight' => 1],
+    );
+    Setting::where('group_id', $group->id)->where('key', 'allowZeroAmountOrder')->delete();
+    if ($enabled) {
+        Setting::create([
+            'group_id' => $group->id,
+            'key' => 'allowZeroAmountOrder',
+            'type' => 'boolean',
+            'value' => true,
+            'weight' => 0,
+        ]);
+    }
+    Setting::clearGroupCache($group->id);
+    [$order, $cert] = createOrderWithCert('unpaid', [], ['action' => 'new', 'amount' => '10.00']);
+
+    $response = $this->actingAsAdmin($this->admin)->patchJson("/api/admin/order/amount/$order->id", [
+        'amount' => '0.00',
+    ]);
+
+    $response->assertOk()->assertJson(['code' => $enabled ? 1 : 0]);
+    expect($cert->fresh()->amount)->toBe($enabled ? '0.00' : '10.00');
+})->with([
+    '默认关闭' => [false],
+    '显式开启' => [true],
+]);
 
 test('管理员不能修改已支付订单价格', function () {
     [$order, $cert] = createOrderWithCert('active');

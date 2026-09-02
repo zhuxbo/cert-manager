@@ -1018,6 +1018,10 @@ trait ActionTrait
             }
 
             $order->latestCert->status != 'unpaid' && $this->error('订单不是未支付状态');
+            OrderUtil::guardZeroAmountOrder(
+                $order->latestCert->amount,
+                $order->latestCert->action,
+            );
 
             // 获取交易信息 订单金额为负数
             $transaction = OrderUtil::getOrderTransaction($order->toArray());

@@ -1,5 +1,5 @@
 {
-    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_destroy_拒绝删除被产品价格引用的级别",
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserLevelControllerTest::__pest_evaluable_destroy_删除级别时同步清理产品价格",
     "version": "1.0.0",
     "calls": [
         {
@@ -8,8 +8,7 @@
             "request_keys": null,
             "response_status": "2xx",
             "response_schema": {
-                "code": "integer",
-                "msg": "string"
+                "code": "integer"
             }
         }
     ]

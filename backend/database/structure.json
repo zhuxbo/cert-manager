@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "mysql_version": "8.4.9",
-    "generated_at": "2026-09-01 17:42:53",
+    "generated_at": "2026-09-01 23:09:37",
     "database": {
         "name": "manager",
         "charset": "utf8mb4",
@@ -4564,6 +4564,19 @@
                 }
             },
             "foreign_keys": {
+                "product_prices_level_code_foreign": {
+                    "columns": [
+                        "level_code"
+                    ],
+                    "references": {
+                        "table": "user_levels",
+                        "columns": [
+                            "code"
+                        ]
+                    },
+                    "on_delete": "CASCADE",
+                    "on_update": "NO ACTION"
+                },
                 "product_prices_product_id_foreign": {
                     "columns": [
                         "product_id"
@@ -5600,7 +5613,7 @@
             "engine": "InnoDB",
             "collation": "utf8mb4_0900_ai_ci",
             "comment": "",
-            "auto_increment": 1,
+            "auto_increment": 2,
             "columns": {
                 "id": {
                     "position": 1,
@@ -6310,7 +6323,34 @@
                     ]
                 }
             },
-            "foreign_keys": []
+            "foreign_keys": {
+                "users_custom_level_code_foreign": {
+                    "columns": [
+                        "custom_level_code"
+                    ],
+                    "references": {
+                        "table": "user_levels",
+                        "columns": [
+                            "code"
+                        ]
+                    },
+                    "on_delete": "SET NULL",
+                    "on_update": "NO ACTION"
+                },
+                "users_level_code_foreign": {
+                    "columns": [
+                        "level_code"
+                    ],
+                    "references": {
+                        "table": "user_levels",
+                        "columns": [
+                            "code"
+                        ]
+                    },
+                    "on_delete": "RESTRICT",
+                    "on_update": "NO ACTION"
+                }
+            }
         }
     }
 }

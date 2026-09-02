@@ -671,7 +671,11 @@ test('commit 嵌套事务内并发错误：未达上限 release + 连接计数�
     $user = $this->createTestUser();
     $product = $this->createTestProduct(['source' => 'default']);
     $order = $this->createTestOrder($user, $product);
-    $this->createTestCert($order, ['action' => 'new', 'status' => 'pending']);
+    $this->createTestCert($order, [
+        'action' => 'new',
+        'status' => 'pending',
+        'amount' => '1.00',
+    ]);
 
     // commit 事务内的上游下单抛底层并发错误（QueryException 含 Deadlock），模拟事务内 FOR UPDATE 死锁
     $stub = new class extends Api
@@ -721,7 +725,11 @@ test('handle 整体在事务内执行：action 运行时 transactionLevel > 0（
     $user = $this->createTestUser();
     $product = $this->createTestProduct(['source' => 'default']);
     $order = $this->createTestOrder($user, $product);
-    $this->createTestCert($order, ['action' => 'new', 'status' => 'pending']);
+    $this->createTestCert($order, [
+        'action' => 'new',
+        'status' => 'pending',
+        'amount' => '1.00',
+    ]);
 
     // new Action 内部 app(Api::class)（App\Services\Order\Api\Api）→ 容器 stub 生效
     $stub = new class extends Api

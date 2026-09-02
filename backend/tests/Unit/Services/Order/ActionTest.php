@@ -1577,7 +1577,11 @@ test('charge 同用户串行支付恰好用满 credit_limit：两笔都在额度
 
 test('commit 上游 code=1：写入 api_id/dcv/validation、cert 转 processing', function () {
     Queue::fake();
-    [$order, $cert] = createOrderWithCertForAction('pending', [], ['action' => 'new', 'api_id' => null]);
+    [$order, $cert] = createOrderWithCertForAction('pending', [], [
+        'action' => 'new',
+        'api_id' => null,
+        'amount' => '1.00',
+    ]);
 
     $mockApi = Mockery::mock(Api::class);
     $mockApi->shouldReceive('new')
@@ -1614,7 +1618,11 @@ test('commit 上游 code=1：写入 api_id/dcv/validation、cert 转 processing'
 
 test('commit 上游 code=0：回滚，cert 仍 pending、api_id 未写入', function () {
     Queue::fake();
-    [$order, $cert] = createOrderWithCertForAction('pending', [], ['action' => 'new', 'api_id' => null]);
+    [$order, $cert] = createOrderWithCertForAction('pending', [], [
+        'action' => 'new',
+        'api_id' => null,
+        'amount' => '1.00',
+    ]);
 
     $mockApi = Mockery::mock(Api::class);
     $mockApi->shouldReceive('new')
@@ -1643,7 +1651,11 @@ test('commit 上游 code=0：回滚，cert 仍 pending、api_id 未写入', func
 
 test('commit 上游 code=1 但 api_id 为空：回滚，cert 仍 pending、api_id 未写入', function () {
     Queue::fake();
-    [$order, $cert] = createOrderWithCertForAction('pending', [], ['action' => 'new', 'api_id' => null]);
+    [$order, $cert] = createOrderWithCertForAction('pending', [], [
+        'action' => 'new',
+        'api_id' => null,
+        'amount' => '1.00',
+    ]);
 
     $mockApi = Mockery::mock(Api::class);
     $mockApi->shouldReceive('new')
@@ -1928,6 +1940,121 @@ function bLockParams(Order $order, Cert $cert, string $action): array
         'period' => 12,
     ];
 }
+
+function configureTraditionalZeroAmountOrderPolicy(?bool $enabled): void
+{
+    $group = SettingGroup::firstOrCreate(
+        ['name' => 'site'],
+        ['title' => 'Site', 'weight' => 1],
+    );
+    Setting::where('group_id', $group->id)->where('key', 'allowZeroAmountOrder')->delete();
+    if ($enabled !== null) {
+        Setting::create([
+            'group_id' => $group->id,
+            'key' => 'allowZeroAmountOrder',
+            'type' => 'boolean',
+            'value' => $enabled,
+            'weight' => 0,
+        ]);
+    }
+    Setting::clearGroupCache($group->id);
+}
+
+function zeroAmountNewOrderParams(Order $sourceOrder, Cert $sourceCert, Product $product): array
+{
+    return [
+        'product_id' => $product->id,
+        'product_code' => $product->code,
+        'period' => 12,
+        'domains' => $sourceCert->alternative_names,
+        'validation_method' => 'txt',
+        'csr_generate' => 1,
+        'user_id' => $sourceOrder->user_id,
+        'action' => 'new',
+        'channel' => 'web',
+    ];
+}
+
+test('零元新订单默认拒绝且显式开启后允许创建', function (bool $enabled) {
+    Queue::fake();
+    configureTraditionalZeroAmountOrderPolicy($enabled ? true : null);
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    ProductPrice::where('product_id', $product->id)->update([
+        'price' => '0.00',
+        'alternative_standard_price' => '0.00',
+        'alternative_wildcard_price' => '0.00',
+    ]);
+    $params = zeroAmountNewOrderParams($sourceOrder, $sourceCert, $product);
+
+    if ($enabled) {
+        $response = expectOrderApiSuccess(fn () => $this->service->new($params));
+        expect(Cert::where('order_id', $response['data']['order_id'])->value('amount'))->toBe('0.00');
+    } else {
+        $before = Order::count();
+        expectOrderApiError(fn () => $this->service->new($params), '系统未启用零元订单');
+        expect(Order::count())->toBe($before);
+    }
+})->with([
+    '默认关闭' => [false],
+    '显式开启' => [true],
+]);
+
+test('批量零元订单默认整批拒绝且不落单', function () {
+    Queue::fake();
+    configureTraditionalZeroAmountOrderPolicy(null);
+    [$sourceOrder, $sourceCert, $product] = makeBLockSourceOrder();
+    ProductPrice::where('product_id', $product->id)->update([
+        'price' => '0.00',
+        'alternative_standard_price' => '0.00',
+        'alternative_wildcard_price' => '0.00',
+    ]);
+    $params = zeroAmountNewOrderParams($sourceOrder, $sourceCert, $product);
+    $params['domains'] = 'zero-a.example.com,zero-b.example.com';
+    $before = Order::count();
+
+    expectOrderApiError(fn () => $this->service->batchNew($params), '系统未启用零元订单');
+    expect(Order::count())->toBe($before);
+});
+
+test('既有零元新订单在支付和提交入口仍被默认策略拦截', function (string $status, string $method) {
+    Queue::fake();
+    configureTraditionalZeroAmountOrderPolicy(null);
+    [$order, $cert] = createOrderWithCertForAction(
+        $status,
+        ['amount' => '0.00'],
+        ['action' => 'new', 'amount' => '0.00'],
+    );
+
+    expectOrderApiError(
+        fn () => $method === 'pay'
+            ? $this->service->pay($order->id, false)
+            : $this->service->commit($order->id),
+        '系统未启用零元订单',
+    );
+    expect($cert->fresh()->status)->toBe($status);
+    expect(Transaction::where('type', 'order')->where('transaction_id', $order->id)->exists())->toBeFalse();
+})->with([
+    '支付入口' => ['unpaid', 'pay'],
+    '提交入口' => ['pending', 'commit'],
+]);
+
+test('零增量重签不受零元订单开关限制', function () {
+    Queue::fake();
+    configureTraditionalZeroAmountOrderPolicy(null);
+    ProductPrice::factory()->create([
+        'product_id' => $this->product->id,
+        'level_code' => $this->user->level_code,
+        'period' => 12,
+    ]);
+    [$order, $cert] = createOrderWithCertForAction(
+        'unpaid',
+        ['amount' => '100.00'],
+        ['action' => 'reissue', 'amount' => '0.00'],
+    );
+
+    expectOrderApiSuccess(fn () => $this->service->pay($order->id, false));
+    expect($cert->fresh()->status)->toBe('pending');
+});
 
 function prepareSwitchedDelegationForAction(Order $sourceOrder, Cert $sourceCert): CnameDelegation
 {

@@ -6,6 +6,7 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Models\UserLevel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -69,6 +70,7 @@ test('管理员可以获取CA品牌统计', function () {
 });
 
 test('管理员可以获取用户等级分布', function () {
+    UserLevel::factory()->create(['code' => 'gold']);
     User::factory()->count(3)->create(['level_code' => 'standard']);
     User::factory()->count(2)->create(['level_code' => 'gold']);
 

@@ -63,7 +63,22 @@
                             "status": "integer",
                             "created_at": "string",
                             "updated_at": "string",
-                            "prices": "array<unknown>"
+                            "prices": {
+                                "standard": {
+                                    "price": {
+                                        "12": "integer",
+                                        "24": "integer"
+                                    },
+                                    "alternative_standard_price": {
+                                        "12": "integer",
+                                        "24": "integer"
+                                    },
+                                    "alternative_wildcard_price": {
+                                        "12": "integer",
+                                        "24": "integer"
+                                    }
+                                }
+                            }
                         }
                     },
                     "total": "integer",

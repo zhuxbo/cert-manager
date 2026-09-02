@@ -1,0 +1,24 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\UserControllerTest::__pest_evaluable_手机号用户名必须先改名才能编辑用户",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/user/{id}",
+            "request_keys": [
+                "email",
+                "level_code",
+                "status",
+                "username"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string",
+                "errors": {
+                    "username": "array<string>"
+                }
+            }
+        }
+    ]
+}

@@ -707,6 +707,7 @@ class Action
             ['action' => 'new'],
             $product->toArray()
         );
+        OrderUtil::guardZeroAmountOrder($amount);
 
         return Acme::create([
             'user_id' => $params['user_id'],
@@ -828,6 +829,7 @@ class Action
             if ($locked->status !== Acme::STATUS_UNPAID) {
                 $this->error('订单不是未支付状态');
             }
+            OrderUtil::guardZeroAmountOrder($locked->amount);
 
             // 锁内取 user：序列化同一用户并发的不同订单支付。
             // Transaction::creating 虽也 lockForUpdate user 并扣款，但不再校验 credit_limit，
@@ -873,6 +875,7 @@ class Action
         if ($acme->status !== Acme::STATUS_PENDING) {
             $this->error('订单状态不是待提交');
         }
+        OrderUtil::guardZeroAmountOrder($acme->amount);
 
         $product = $acme->product;
 

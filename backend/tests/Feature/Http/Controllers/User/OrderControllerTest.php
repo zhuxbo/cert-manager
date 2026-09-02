@@ -859,6 +859,7 @@ test('提交订单-commit 端到端：pending 订单真实提交上游转 proces
         'order_id' => $order->id,
         'status' => 'pending',
         'action' => 'new',
+        'amount' => '1.00',
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
