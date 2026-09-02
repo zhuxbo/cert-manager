@@ -15,6 +15,7 @@ if (! function_exists('fundAuditGuardedTestPaths')) {
             'Feature/Http/Controllers/Admin/OrderControllerTest.php',
             'Feature/Http/Controllers/Admin/TransactionControllerTest.php',
             'Feature/Http/Controllers/User/FundControllerTest.php',
+            'Feature/Http/Controllers/User/DashboardControllerTest.php',
             'Feature/Http/Controllers/User/OrderControllerTest.php',
             'Feature/Http/Controllers/Deploy/UpdateAtomicityTest.php',
             'Feature/Http/Controllers/User/TopUpControllerTest.php',

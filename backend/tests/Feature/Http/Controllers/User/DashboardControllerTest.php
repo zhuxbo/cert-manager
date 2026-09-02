@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Cert;
+use App\Models\Fund;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\Transaction;
@@ -35,6 +36,26 @@ test('获取资产统计', function () {
         ->assertOk()
         ->assertJson(['code' => 1])
         ->assertJsonStructure(['data' => ['balance']]);
+});
+
+test('余额变化后立即刷新余额卡片缓存', function () {
+    $user = User::factory()->withBalance('1000.00')->create();
+
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/assets')
+        ->assertOk()
+        ->assertJsonPath('data.balance', 1000);
+
+    $cacheKey = "dashboard:user:{$user->id}:assets";
+    expect(Cache::has($cacheKey))->toBeTrue();
+
+    seedUserDashboardFund($user, 'deduct', '125.00');
+
+    expect(Cache::has($cacheKey))->toBeFalse();
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/assets')
+        ->assertOk()
+        ->assertJsonPath('data.balance', 875);
 });
 
 test('获取订单统计', function () {
@@ -126,6 +147,57 @@ test('新增待支付订单后立即刷新订单统计缓存', function () {
         ->assertJsonPath('data.status_distribution.unpaid', 2);
 });
 
+test('证书状态变化后立即刷新订单统计缓存', function () {
+    $user = User::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => 'processing',
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.status_distribution.processing', 1);
+
+    $cacheKey = "dashboard:user:{$user->id}:orders";
+    expect(Cache::has($cacheKey))->toBeTrue();
+
+    $cert->update(['status' => 'active']);
+
+    expect(Cache::has($cacheKey))->toBeFalse();
+    $this->actingAsUser($user)
+        ->getJson('/api/dashboard/orders')
+        ->assertOk()
+        ->assertJsonPath('data.status_distribution.active', 1)
+        ->assertJsonMissingPath('data.status_distribution.processing');
+});
+
+test('证书金额变化后立即刷新月度对比缓存', function () {
+    $user = User::factory()->create();
+    $order = Order::factory()->create([
+        'user_id' => $user->id,
+        'amount' => '10.00',
+    ]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'amount' => '10.00',
+    ]);
+    $cacheKey = "dashboard:user:{$user->id}:monthly_comparison";
+    Cache::put($cacheKey, ['stale' => true], 600);
+    Order::saving(function (Order $savingOrder) use ($order, $cacheKey): void {
+        if ($savingOrder->id === $order->id && (float) $savingOrder->amount === 25.0) {
+            Cache::put($cacheKey, ['refilled_before_recalculation_finished' => true], 600);
+        }
+    });
+
+    $cert->update(['amount' => '25.00']);
+
+    expect(Cache::has($cacheKey))->toBeFalse()
+        ->and($order->fresh()->amount)->toBe('25.00');
+});
+
 test('删除待支付订单后立即刷新订单统计缓存', function () {
     $user = User::factory()->create();
     $order = Order::factory()->create(['user_id' => $user->id]);
@@ -196,6 +268,68 @@ function seedUserDashboardTransaction(User $user, string $type, float $amount, i
     ]));
 }
 
+function seedUserDashboardFund(User $user, string $type, string $amount): void
+{
+    DB::transaction(fn () => Fund::create([
+        'user_id' => $user->id,
+        'amount' => $amount,
+        'type' => $type,
+        'pay_method' => 'admin',
+        'pay_sn' => null,
+        'remark' => 'dashboard test',
+        'status' => 1,
+    ]));
+}
+
+test('订单支付和取消同事务更新状态余额时刷新全部相关首页缓存', function (
+    string $type,
+    string $initialStatus,
+    string $targetStatus,
+    float $amount,
+) {
+    $user = User::factory()->withBalance('1000.00')->create();
+    $otherUser = User::factory()->create();
+    $order = Order::factory()->create(['user_id' => $user->id]);
+    $cert = Cert::factory()->create([
+        'order_id' => $order->id,
+        'status' => $initialStatus,
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $cacheKeys = [
+        "dashboard:user:{$user->id}:overview",
+        "dashboard:user:{$user->id}:assets",
+        "dashboard:user:{$user->id}:orders",
+        "dashboard:user:{$user->id}:trend:month",
+        "dashboard:user:{$user->id}:trend:quarter",
+        "dashboard:user:{$user->id}:trend:year",
+        "dashboard:user:{$user->id}:monthly_comparison",
+    ];
+    foreach ($cacheKeys as $cacheKey) {
+        Cache::put($cacheKey, ['stale' => true], 600);
+    }
+    $otherUserCacheKey = "dashboard:user:{$otherUser->id}:assets";
+    Cache::put($otherUserCacheKey, ['stale' => false], 600);
+
+    DB::transaction(function () use ($user, $order, $cert, $type, $targetStatus, $amount): void {
+        Transaction::create([
+            'user_id' => $user->id,
+            'type' => $type,
+            'transaction_id' => $order->id,
+            'amount' => $amount,
+        ]);
+        $cert->update(['status' => $targetStatus]);
+    });
+
+    foreach ($cacheKeys as $cacheKey) {
+        expect(Cache::has($cacheKey))->toBeFalse();
+    }
+    expect(Cache::has($otherUserCacheKey))->toBeTrue();
+})->with([
+    '支付' => ['order', 'unpaid', 'pending', -100],
+    '取消' => ['cancel', 'cancelling', 'cancelled', 100],
+]);
+
 test('用户首页订单取消净增按本人交易流水及交易时间统计', function () {
     $user = User::factory()->withBalance('1000')->create();
     $other = User::factory()->withBalance('1000')->create();
@@ -211,7 +345,7 @@ test('用户首页订单取消净增按本人交易流水及交易时间统计',
     seedUserDashboardTransaction($user, 'acme_order', -30, 91001);
     seedUserDashboardTransaction($user, 'cancel', 50, $oldOrder->id);
     seedUserDashboardTransaction($user, 'acme_cancel', 10, 91001);
-    seedUserDashboardTransaction($user, 'deduct', -5, 91002);
+    seedUserDashboardFund($user, 'deduct', '5.00');
     seedUserDashboardTransaction($other, 'order', -10, 92001);
 
     $orders = $this->actingAsUser($user)->getJson('/api/dashboard/orders');

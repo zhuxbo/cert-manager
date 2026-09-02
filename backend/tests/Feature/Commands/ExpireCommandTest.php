@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\Notification\NotificationCenter;
+use Illuminate\Support\Facades\Cache;
 
 test('标记已过期的证书状态为 expired', function () {
     $user = User::factory()->create();
@@ -31,6 +32,62 @@ test('标记已过期的证书状态为 expired', function () {
 
     $cert->refresh();
     expect($cert->status)->toBe('expired');
+});
+
+test('批量标记证书过期后清理受影响用户首页缓存且隔离其他用户', function () {
+    $product = Product::factory()->create();
+    $expiredByCertificateUser = User::factory()->create();
+    $expiredByCertificateOrder = Order::factory()->create([
+        'user_id' => $expiredByCertificateUser->id,
+        'product_id' => $product->id,
+    ]);
+    Cert::factory()->create([
+        'order_id' => $expiredByCertificateOrder->id,
+        'status' => 'active',
+        'expires_at' => now()->subDay(),
+    ]);
+
+    $expiredByOrderUser = User::factory()->create();
+    $expiredByOrderOrder = Order::factory()->create([
+        'user_id' => $expiredByOrderUser->id,
+        'product_id' => $product->id,
+        'period_till' => now()->subDay(),
+    ]);
+    Cert::factory()->create([
+        'order_id' => $expiredByOrderOrder->id,
+        'status' => 'processing',
+        'expires_at' => null,
+    ]);
+
+    $unaffectedUser = User::factory()->create();
+    $unaffectedOrder = Order::factory()->create([
+        'user_id' => $unaffectedUser->id,
+        'product_id' => $product->id,
+        'period_till' => now()->addMonth(),
+    ]);
+    Cert::factory()->create([
+        'order_id' => $unaffectedOrder->id,
+        'status' => 'active',
+        'expires_at' => now()->addMonth(),
+    ]);
+
+    foreach ([$expiredByCertificateUser, $expiredByOrderUser, $unaffectedUser] as $user) {
+        Cache::put("dashboard:user:{$user->id}:overview", ['stale' => true], 600);
+        Cache::put("dashboard:user:{$user->id}:orders", ['stale' => true], 600);
+    }
+
+    $notificationCenter = Mockery::mock(NotificationCenter::class);
+    $notificationCenter->shouldReceive('dispatch')->zeroOrMoreTimes();
+    $this->app->instance(NotificationCenter::class, $notificationCenter);
+
+    $this->artisan('schedule:expire')->assertSuccessful();
+
+    foreach ([$expiredByCertificateUser, $expiredByOrderUser] as $user) {
+        expect(Cache::has("dashboard:user:{$user->id}:overview"))->toBeFalse()
+            ->and(Cache::has("dashboard:user:{$user->id}:orders"))->toBeFalse();
+    }
+    expect(Cache::has("dashboard:user:{$unaffectedUser->id}:overview"))->toBeTrue()
+        ->and(Cache::has("dashboard:user:{$unaffectedUser->id}:orders"))->toBeTrue();
 });
 
 test('未过期的证书状态不变', function () {

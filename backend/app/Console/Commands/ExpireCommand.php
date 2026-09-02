@@ -12,7 +12,9 @@ use App\Services\Notification\NotificationCenter;
 use App\Services\Notification\TemplateSelector;
 use App\Services\Order\AutoRenewService;
 use App\Services\Order\StalledRenewalQuery;
+use App\Services\UserDashboardCache;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
 class ExpireCommand extends Command
@@ -45,15 +47,17 @@ class ExpireCommand extends Command
     public function handle(): void
     {
         // 更改所有到期证书的状态（证书到期）
-        Cert::where('status', 'active')
-            ->where('expires_at', '<', now())
-            ->update(['status' => 'expired']);
+        $this->expireCertificates(
+            Cert::where('status', 'active')
+                ->where('expires_at', '<', now())
+        );
 
         // 订单到期时，标记 processing/approving/active 的证书为到期（证书有到期时间时也需同时到期）
-        Cert::whereIn('status', ['processing', 'approving', 'active'])
-            ->whereHas('order', fn ($q) => $q->where('period_till', '<', now()))
-            ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '<', now()))
-            ->update(['status' => 'expired']);
+        $this->expireCertificates(
+            Cert::whereIn('status', ['processing', 'approving', 'active'])
+                ->whereHas('order', fn ($q) => $q->where('period_till', '<', now()))
+                ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '<', now()))
+        );
 
         // ACME 订阅到期：period_till 已过的 active 订阅置 expired（纯本地簿记）。
         // 安全性：不 revoke、不调上游、不动 eab_kid/eab_hmac（certbot 直连 CA directory，不经本系统），
@@ -160,6 +164,20 @@ class ExpireCommand extends Command
         // 清理终态证书的敏感材料：已到期/吊销/取消/被续期重签/失败的 CSR、私钥、证书串
         // 业务已无保留价值，提前清理可缩小备份脱敏成本与泄露面
         $this->purgeTerminalCertMaterial();
+    }
+
+    private function expireCertificates(Builder $query): void
+    {
+        $affectedUserIds = Order::whereIn('id', (clone $query)->select('order_id'))
+            ->distinct()
+            ->pluck('user_id');
+
+        $query->update(['status' => 'expired']);
+
+        // 批量 update 不触发 CertObserver；每条更新路径成功后立即清理，避免后续步骤失败留下旧缓存。
+        foreach ($affectedUserIds as $userId) {
+            UserDashboardCache::forgetForCertificateChange($userId);
+        }
     }
 
     /**

@@ -3,7 +3,9 @@
 namespace App\Providers;
 
 use App\Models\Cert;
+use App\Models\User;
 use App\Observers\CertObserver;
+use App\Observers\UserObserver;
 use App\Services\Binary\BinaryLocator;
 use App\Services\LogBuffer;
 use App\Services\Notification\ChannelManager;
@@ -51,6 +53,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Cert::observe(CertObserver::class);
+        User::observe(UserObserver::class);
 
         // 队列任务执行完毕后刷新日志缓冲区
         Queue::after(function (JobProcessed $event) {

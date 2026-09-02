@@ -4,7 +4,7 @@ namespace App\Observers;
 
 use App\Models\Cert;
 use App\Models\Order;
-use Illuminate\Support\Facades\Cache;
+use App\Services\UserDashboardCache;
 use Illuminate\Support\Facades\DB;
 
 class CertObserver
@@ -16,19 +16,19 @@ class CertObserver
 
     public function updated(Cert $cert): void
     {
-        if ($cert->wasChanged(['status', 'expires_at', 'amount'])) {
-            $this->forgetUserDashboardCache($cert);
-        }
-
         if ($cert->wasChanged('amount')) {
             $this->recalculateOrderAmount($cert);
+        }
+
+        if ($cert->wasChanged(['status', 'expires_at', 'amount'])) {
+            $this->forgetUserDashboardCache($cert);
         }
     }
 
     public function deleted(Cert $cert): void
     {
-        $this->forgetUserDashboardCache($cert);
         $this->recalculateOrderAmount($cert);
+        $this->forgetUserDashboardCache($cert);
     }
 
     private function forgetUserDashboardCache(Cert $cert): void
@@ -46,8 +46,7 @@ class CertObserver
         }
 
         $forget = static function () use ($userId): void {
-            Cache::forget("dashboard:user:$userId:overview");
-            Cache::forget("dashboard:user:$userId:orders");
+            UserDashboardCache::forgetForCertificateChange($userId);
         };
 
         // 先清理当前缓存；事务提交后再清一次，避免提交窗口内旧数据重新写入缓存。
