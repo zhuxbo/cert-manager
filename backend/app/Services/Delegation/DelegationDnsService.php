@@ -65,6 +65,33 @@ class DelegationDnsService
         $this->provider($proxyDomain)->deleteTxt($label);
     }
 
+    /**
+     * 按列表快照中的记录 ID 精确删除；删除异常后以重新枚举确认记录已消失，实现并发幂等。
+     */
+    public function deleteRecords(string $proxyDomain, array $recordIds): void
+    {
+        $provider = $this->provider($proxyDomain);
+
+        foreach (array_values(array_unique($recordIds, SORT_REGULAR)) as $recordId) {
+            try {
+                $provider->deleteRecords([$recordId]);
+            } catch (Throwable $deleteError) {
+                try {
+                    $remainingIds = array_map(
+                        'strval',
+                        array_column($provider->allTxt(), 'id'),
+                    );
+                } catch (Throwable) {
+                    throw $deleteError;
+                }
+
+                if (in_array((string) $recordId, $remainingIds, true)) {
+                    throw $deleteError;
+                }
+            }
+        }
+    }
+
     public function getAllTxtRecords(string $proxyDomain): array
     {
         return $this->provider($proxyDomain)->allTxt();

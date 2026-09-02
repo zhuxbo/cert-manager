@@ -8,17 +8,20 @@ use App\Services\Delegation\CnameDelegationService;
 use App\Services\Delegation\DelegationConfigService;
 use App\Services\Delegation\DelegationDnsService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 use UnexpectedValueException;
 
 class DelegationCleanupCommand extends Command
 {
+    private const int RETENTION_DAYS = 30;
+
     /** @var string */
     protected $signature = 'delegation:cleanup';
 
     /** @var string */
-    protected $description = '清理处理中或待批准订单未使用的委托 DNS 记录';
+    protected $description = '清理超过 30 天且未被在途订单使用的委托 DNS 记录';
 
     /**
      * Execute the console command.
@@ -49,7 +52,7 @@ class DelegationCleanupCommand extends Command
                 }
 
                 $this->error('代理域名未设置，无法执行清理');
-                $cleanedMarkCount = $this->cleanDatabaseMarks([]);
+                $cleanedMarkCount = $this->cleanDatabaseMarks([], [], now()->subDays(self::RETENTION_DAYS)->timestamp);
                 $this->info("清理了 $cleanedMarkCount 个数据库标记");
 
                 return self::SUCCESS;
@@ -66,6 +69,8 @@ class DelegationCleanupCommand extends Command
         }
 
         $deletedLabelsByDomain = [];
+        $listedLabelsByDomain = [];
+        $cutoffTimestamp = now()->subDays(self::RETENTION_DAYS)->timestamp;
 
         foreach (array_keys($configs) as $proxyDomain) {
             $deletedLabels = [];
@@ -74,14 +79,23 @@ class DelegationCleanupCommand extends Command
                 $this->info("委托域名: $proxyDomain");
                 $allTxtRecords = $dnsService->getAllTxtRecords($proxyDomain);
                 $keepLabels = $keepLabelsByDomain[$proxyDomain] ?? [];
+                $listedLabelsByDomain[$proxyDomain] = [];
+                foreach ($allTxtRecords as $record) {
+                    $listedLabelsByDomain[$proxyDomain][$this->normalizeLabel($record['name'] ?? '')] = true;
+                }
 
-                $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels) {
+                $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels, $cutoffTimestamp) {
                     $name = $this->normalizeLabel($record['name'] ?? '');
                     if (preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', $name) !== 1) {
                         return false;
                     }
 
-                    return ! isset($keepLabels[$name]);
+                    $changedAt = $record['changed_at'] ?? null;
+
+                    return ! isset($keepLabels[$name])
+                        && is_int($changedAt)
+                        && $changedAt > 0
+                        && $changedAt < $cutoffTimestamp;
                 });
 
                 $this->info('需要删除的记录数: '.$recordsToDelete->count());
@@ -91,18 +105,24 @@ class DelegationCleanupCommand extends Command
                     continue;
                 }
 
-                $recordCountsByLabel = [];
+                $recordIdsByLabel = [];
                 foreach ($recordsToDelete as $record) {
                     $label = $this->normalizeLabel($record['name'] ?? '');
-                    $recordCountsByLabel[$label] = ($recordCountsByLabel[$label] ?? 0) + 1;
+                    $recordId = $record['id'] ?? null;
+                    if ((! is_int($recordId) && ! is_string($recordId))
+                        || trim((string) $recordId) === '') {
+                        throw new UnexpectedValueException('委托 DNS 记录 ID 无效');
+                    }
+
+                    $recordIdsByLabel[$label][] = $recordId;
                 }
 
-                foreach ($recordCountsByLabel as $label => $recordCount) {
-                    $dnsService->deleteTxtByLabel($proxyDomain, $label);
-                    // 每个 label 完整删除后立即记录；后续 label 失败不能抹掉已确认结果。
+                foreach ($recordIdsByLabel as $label => $recordIds) {
+                    $dnsService->deleteRecords($proxyDomain, $recordIds);
+                    // 每个 label 的过期记录完整删除后立即记录；后续 label 失败不能抹掉已确认结果。
                     $deletedLabelsByDomain[$proxyDomain][$label] = true;
                     $deletedLabels[] = $label;
-                    $deletedRecordCount += $recordCount;
+                    $deletedRecordCount += count($recordIds);
                 }
             } catch (Throwable $e) {
                 $failed = true;
@@ -125,7 +145,11 @@ class DelegationCleanupCommand extends Command
         $cleanedMarkCount = 0;
         try {
             $this->info('正在清理数据库中的标记...');
-            $cleanedMarkCount = $this->cleanDatabaseMarks($deletedLabelsByDomain);
+            $cleanedMarkCount = $this->cleanDatabaseMarks(
+                $deletedLabelsByDomain,
+                $listedLabelsByDomain,
+                $cutoffTimestamp,
+            );
         } catch (Throwable $e) {
             $failed = true;
             $this->error('数据库标记清理失败: '.$e->getMessage());
@@ -204,14 +228,23 @@ class DelegationCleanupCommand extends Command
      * 正整数 ID 对应行已不存在时只清本地标记，不据此猜域或触碰远端 DNS。
      *
      * @param  array<string, array<string, true>>  $deletedLabelsByDomain
+     * @param  array<string, array<string, true>>  $listedLabelsByDomain
      */
-    protected function cleanDatabaseMarks(array $deletedLabelsByDomain): int
-    {
+    protected function cleanDatabaseMarks(
+        array $deletedLabelsByDomain,
+        array $listedLabelsByDomain,
+        int $cutoffTimestamp,
+    ): int {
         $cleanedCount = 0;
 
         Order::with(['latestCert' => fn ($query) => $query->select('id', 'validation')])
             ->whereHas('latestCert', fn ($query) => $query->where('validation', 'like', '%auto_txt_written%'))
-            ->chunkById(200, function ($orders) use ($deletedLabelsByDomain, &$cleanedCount) {
+            ->chunkById(200, function ($orders) use (
+                $deletedLabelsByDomain,
+                $listedLabelsByDomain,
+                $cutoffTimestamp,
+                &$cleanedCount,
+            ) {
                 $delegationIds = [];
                 foreach ($orders as $order) {
                     foreach ($order->latestCert->validation ?? [] as $validation) {
@@ -245,7 +278,9 @@ class DelegationCleanupCommand extends Command
 
                     foreach ($validations as $index => $validation) {
                         $delegationId = $this->positiveDelegationId($validation['delegation_id'] ?? null);
-                        if (($validation['auto_txt_written'] ?? false) !== true || $delegationId === null) {
+                        if (($validation['auto_txt_written'] ?? false) !== true
+                            || $delegationId === null
+                            || ! $this->isExpiredMark($validation, $cutoffTimestamp)) {
                             $updatedValidations[$index] = $validation;
 
                             continue;
@@ -261,9 +296,15 @@ class DelegationCleanupCommand extends Command
                         $deletedLabels = $proxyDomain !== null
                             ? ($deletedLabelsByDomain[$proxyDomain] ?? null)
                             : null;
+                        $listedLabels = $proxyDomain !== null
+                            ? ($listedLabelsByDomain[$proxyDomain] ?? null)
+                            : null;
+                        $wasDeleted = $deletedLabels !== null && isset($deletedLabels[$label]);
+                        $wasConfirmedAbsent = $listedLabels !== null && ! isset($listedLabels[$label]);
 
                         if ($delegation !== null
-                            && ($deletedLabels === null || ! isset($deletedLabels[$label]))) {
+                            && ! $wasDeleted
+                            && ! $wasConfirmedAbsent) {
                             $updatedValidations[$index] = $validation;
 
                             continue;
@@ -297,6 +338,20 @@ class DelegationCleanupCommand extends Command
     private function normalizeLabel(mixed $label): string
     {
         return strtolower((string) $label);
+    }
+
+    private function isExpiredMark(array $validation, int $cutoffTimestamp): bool
+    {
+        $writtenAt = $validation['auto_txt_written_at'] ?? null;
+        if (! is_string($writtenAt) || trim($writtenAt) === '') {
+            return false;
+        }
+
+        try {
+            return Carbon::parse($writtenAt)->timestamp < $cutoffTimestamp;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**

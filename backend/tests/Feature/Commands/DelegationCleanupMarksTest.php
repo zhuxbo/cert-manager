@@ -11,11 +11,7 @@ use Tests\Traits\CreatesTestData;
 
 uses(CreatesTestData::class);
 
-/**
- * F2-3 DelegationCleanup 清理窗口与状态保留集缺陷修复。
- *  缺陷一：cleanDatabaseMarks 只扫 30 天内订单 → >30 天订单 label 被删后标记不清、TXT 永不重写。
- *  缺陷二：keepLabels 仅取 processing、不含 approving → approving 单委托 TXT 被每日误删。
- */
+/** DelegationCleanup 历史标记与状态保留集回归测试。 */
 beforeEach(function () {
     $this->dnsService = Mockery::mock(DelegationDnsService::class);
     app()->instance(DelegationDnsService::class, $this->dnsService);
@@ -53,8 +49,17 @@ function cleanupMarksConfigureDomain(string $domain): void
     Setting::clearGroupCache($group->id);
 }
 
-// 缺陷一：>30 天非活跃订单 label 被删 → 标记被清（修复前 30 天窗口外不扫 = 复现 bug）
-test('>30 天订单 label 落删除集 → auto_txt_written 被清（去 30 天窗口全扫）', function () {
+function cleanupMarksExpiredDnsRecord(string|int $id, string $name): array
+{
+    return [
+        'id' => $id,
+        'name' => $name,
+        'value' => 'expired-token',
+        'changed_at' => now()->subDays(31)->timestamp,
+    ];
+}
+
+test('超过 30 天的 DNS 记录和本地写入标记一起清理', function () {
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, ['zone' => 'oldorder.example.com']);
     $order = $this->createTestOrder($user, $this->createTestProduct());
@@ -65,14 +70,14 @@ test('>30 天订单 label 落删除集 → auto_txt_written 被清（去 30 天�
                 'auto_txt_written' => true, 'auto_txt_written_at' => '2020-01-01 00:00:00'],
         ],
     ]);
-    // 回拨 40 天（>30 天窗口）
+    // 订单本身的创建时间不作为清理边界。
     Cert::where('id', $cert->id)->update(['created_at' => now()->subDays(40)]);
 
-    // 该 label 存在于腾讯云、且订单非 processing/approving → 落删除集
+    // 该 label 的 DNS 记录已超过 30 天，且订单不在 processing/approving 保留集。
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
-        ->andReturn([['id' => 1, 'name' => strtoupper($delegation->label)]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->with('proxy.example.com', $delegation->label)->once();
+        ->andReturn([cleanupMarksExpiredDnsRecord(1, strtoupper($delegation->label))]);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->with('proxy.example.com', [1])->once();
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
@@ -95,10 +100,10 @@ test('approving 单 label 进 keepLabels → 不删除（保留集纳入 approvi
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
-    // 腾讯云仅有该 approving label；修复后进 keepLabels → 无需删除
+    // DNS 中仅有该 approving label；进入 keepLabels 后无需删除。
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
         ->andReturn([['id' => 1, 'name' => $delegation->label]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
+    $this->dnsService->shouldReceive('deleteRecords')->never();
 
     $this->artisan('delegation:cleanup')
         ->expectsOutputToContain('没有需要清理的记录')
@@ -121,7 +126,7 @@ test('processing 单 label 保留、标记不被误清（护栏）', function ()
 
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
         ->andReturn([['id' => 1, 'name' => $delegation->label]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')->never();
+    $this->dnsService->shouldReceive('deleteRecords')->never();
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
@@ -147,12 +152,12 @@ test('cleanDatabaseMarks 批量加载委托消除 N+1 + certs 预加载 select �
         ]);
     }
 
-    // 腾讯云仅 1 条 hex 孤儿 → 触发删除进入 cleanDatabaseMarks（否则 recordsToDelete 空会 early return）
+    // DNS 中仅 1 条过期 hex 孤儿，触发删除并进入 cleanDatabaseMarks。
     $orphanHex = str_repeat('d', 32);
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
-        ->andReturn([['id' => 1, 'name' => $orphanHex]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->with('proxy.example.com', $orphanHex)->once();
+        ->andReturn([cleanupMarksExpiredDnsRecord(1, $orphanHex)]);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->with('proxy.example.com', [1])->once();
 
     $delegationSelects = 0;
     $certPreloadSql = null;
@@ -184,14 +189,16 @@ test('cleanDatabaseMarks LIKE 粗筛 + 批量加载行为等价', function () {
     // A. 孤儿标记（delegation_id 指向不存在）→ 应清
     $orderA = $this->createTestOrder($user, $this->createTestProduct());
     $certA = $this->createTestCert($orderA, ['status' => 'cancelled', 'validation' => [
-        ['domain' => 'a.example.com', 'method' => 'txt', 'delegation_id' => 888888, 'auto_txt_written' => true],
+        ['domain' => 'a.example.com', 'method' => 'txt', 'delegation_id' => 888888,
+            'auto_txt_written' => true, 'auto_txt_written_at' => '2020-01-01 00:00:00'],
     ]]);
 
     // B. 有效标记且 label 在删除集 → 应清
     $delB = $this->createTestDelegation($user, ['zone' => 'b.example.com']);
     $orderB = $this->createTestOrder($user, $this->createTestProduct());
     $certB = $this->createTestCert($orderB, ['status' => 'cancelled', 'validation' => [
-        ['domain' => 'b.example.com', 'method' => 'txt', 'delegation_id' => $delB->id, 'auto_txt_written' => true],
+        ['domain' => 'b.example.com', 'method' => 'txt', 'delegation_id' => $delB->id,
+            'auto_txt_written' => true, 'auto_txt_written_at' => '2020-01-01 00:00:00'],
     ]]);
 
     // C. 有效标记但 label 不在删除集 → 应留
@@ -209,9 +216,9 @@ test('cleanDatabaseMarks LIKE 粗筛 + 批量加载行为等价', function () {
 
     // 腾讯云返回 delB.label（触发删除 + 进入 cleanDatabaseMarks）
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
-        ->andReturn([['id' => 1, 'name' => $delB->label]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->with('proxy.example.com', $delB->label)->once();
+        ->andReturn([cleanupMarksExpiredDnsRecord(1, $delB->label)]);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->with('proxy.example.com', [1])->once();
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
@@ -242,9 +249,9 @@ test('委托已删的孤儿标记只清本地引用且不据此猜测远端归�
     // 注：删除判据仅收委托格式（32/64-hex），生产中孤儿委托 TXT 恒为 hex label，故触发记录用 hex。
     $orphanHexLabel = str_repeat('c', 32);
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
-        ->andReturn([['id' => 1, 'name' => $orphanHexLabel]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->with('proxy.example.com', $orphanHexLabel)->once();
+        ->andReturn([cleanupMarksExpiredDnsRecord(1, $orphanHexLabel)]);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->with('proxy.example.com', [1])->once();
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
@@ -256,7 +263,7 @@ test('委托已删的孤儿标记只清本地引用且不据此猜测远端归�
     ]);
 });
 
-test('正整数 delegation_id 对应行不存在时不猜域不删 DNS 但清除本地标记', function () {
+test('未满 30 天的孤儿标记保持不动', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
     $cert = $this->createTestCert($order, [
@@ -271,7 +278,37 @@ test('正整数 delegation_id 对应行不存在时不猜域不删 DNS 但清除
     ]);
     $this->dnsService->shouldReceive('getAllTxtRecords')
         ->once()->with('proxy.example.com')->andReturn([]);
-    $this->dnsService->shouldNotReceive('deleteTxtByLabel');
+    $this->dnsService->shouldNotReceive('deleteRecords');
+
+    $this->artisan('delegation:cleanup')->assertSuccessful();
+
+    expect($cert->fresh()->validation[0])->toMatchArray([
+        'delegation_id' => 777777,
+        'auto_txt_written' => true,
+        'auto_txt_written_at' => '2026-08-28 03:00:00',
+    ]);
+});
+
+test('其他系统已先删除 DNS 记录时清理超过 30 天的本地标记', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, [
+        'zone' => 'already-cleaned.example.com',
+        'proxy_domain' => 'proxy.example.com',
+    ]);
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $cert = $this->createTestCert($order, [
+        'status' => 'cancelled',
+        'validation' => [[
+            'delegation_id' => $delegation->id,
+            'auto_txt_written' => true,
+            'auto_txt_written_at' => '2020-01-01 00:00:00',
+        ]],
+    ]);
+    $order->update(['latest_cert_id' => $cert->id]);
+
+    $this->dnsService->shouldReceive('getAllTxtRecords')
+        ->once()->with('proxy.example.com')->andReturn([]);
+    $this->dnsService->shouldNotReceive('deleteRecords');
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
@@ -298,7 +335,7 @@ test('同域前一 label 删除成功后一 label 失败时只清已确认成功
         'validation' => [[
             'delegation_id' => $first->id,
             'auto_txt_written' => true,
-            'auto_txt_written_at' => '2026-08-28 04:00:00',
+            'auto_txt_written_at' => '2020-01-01 04:00:00',
         ]],
     ]);
     $secondOrder = $this->createTestOrder($user, $this->createTestProduct());
@@ -307,17 +344,17 @@ test('同域前一 label 删除成功后一 label 失败时只清已确认成功
         'validation' => [[
             'delegation_id' => $second->id,
             'auto_txt_written' => true,
-            'auto_txt_written_at' => '2026-08-28 05:00:00',
+            'auto_txt_written_at' => '2020-01-01 05:00:00',
         ]],
     ]);
     $this->dnsService->shouldReceive('getAllTxtRecords')->once()->with('proxy.example.com')->andReturn([
-        ['id' => 'first-id', 'name' => $first->label],
-        ['id' => 'second-id', 'name' => $second->label],
+        cleanupMarksExpiredDnsRecord('first-id', $first->label),
+        cleanupMarksExpiredDnsRecord('second-id', $second->label),
     ]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->once()->ordered()->with('proxy.example.com', $first->label);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->once()->ordered()->with('proxy.example.com', $second->label)
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->once()->ordered()->with('proxy.example.com', ['first-id']);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->once()->ordered()->with('proxy.example.com', ['second-id'])
         ->andThrow(new RuntimeException('second label failed'));
 
     $this->artisan('delegation:cleanup')->assertExitCode(1);
@@ -329,7 +366,7 @@ test('同域前一 label 删除成功后一 label 失败时只清已确认成功
     ])->and($secondCert->fresh()->validation[0])->toMatchArray([
         'delegation_id' => $second->id,
         'auto_txt_written' => true,
-        'auto_txt_written_at' => '2026-08-28 05:00:00',
+        'auto_txt_written_at' => '2020-01-01 05:00:00',
     ]);
 });
 
@@ -359,7 +396,7 @@ test('部分域失败时仅清成功域精确委托的同名 label 标记', func
             'method' => 'txt',
             'delegation_id' => $oldDelegation->id,
             'auto_txt_written' => true,
-            'auto_txt_written_at' => '2026-08-28 00:00:00',
+            'auto_txt_written_at' => '2020-01-01 00:00:00',
         ]],
     ]);
     $newOrder = $this->createTestOrder($newUser, $this->createTestProduct());
@@ -370,14 +407,14 @@ test('部分域失败时仅清成功域精确委托的同名 label 标记', func
             'method' => 'txt',
             'delegation_id' => $newDelegation->id,
             'auto_txt_written' => true,
-            'auto_txt_written_at' => '2026-08-28 00:00:00',
+            'auto_txt_written_at' => '2020-01-01 00:00:00',
         ]],
     ]);
 
     $this->dnsService->shouldReceive('getAllTxtRecords')->once()->with('proxy.example.com')->andReturn([]);
     $this->dnsService->shouldReceive('getAllTxtRecords')->once()->with('old.example.com')
-        ->andReturn([['id' => 'old-id', 'name' => $sharedLabel]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')->once()->with('old.example.com', $sharedLabel);
+        ->andReturn([cleanupMarksExpiredDnsRecord('old-id', $sharedLabel)]);
+    $this->dnsService->shouldReceive('deleteRecords')->once()->with('old.example.com', ['old-id']);
     $this->dnsService->shouldReceive('getAllTxtRecords')->once()->with('new.example.com')
         ->andThrow(new RuntimeException('新域查询失败'));
 
@@ -407,7 +444,7 @@ test('按冻结目标删除 TXT 后清理对应数据库标记', function () {
             'delegation_id' => $delegation->id,
             'delegation_target' => $delegation->label.'.new.example.com',
             'auto_txt_written' => true,
-            'auto_txt_written_at' => '2026-08-28 06:00:00',
+            'auto_txt_written_at' => '2020-01-01 06:00:00',
         ]],
     ]);
 
@@ -415,9 +452,9 @@ test('按冻结目标删除 TXT 后清理对应数据库标记', function () {
         ->once()->with('proxy.example.com')->andReturn([]);
     $this->dnsService->shouldReceive('getAllTxtRecords')
         ->once()->with('new.example.com')
-        ->andReturn([['id' => 'new-id', 'name' => $delegation->label]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->once()->with('new.example.com', $delegation->label);
+        ->andReturn([cleanupMarksExpiredDnsRecord('new-id', $delegation->label)]);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->once()->with('new.example.com', ['new-id']);
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
@@ -445,9 +482,9 @@ test('非活跃 validation 的非正整数 delegation_id 均保留且不折叠�
     ]);
 
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
-        ->andReturn([['id' => 1, 'name' => $delegation->label]]);
-    $this->dnsService->shouldReceive('deleteTxtByLabel')
-        ->with('proxy.example.com', $delegation->label)->once();
+        ->andReturn([cleanupMarksExpiredDnsRecord(1, $delegation->label)]);
+    $this->dnsService->shouldReceive('deleteRecords')
+        ->with('proxy.example.com', [1])->once();
 
     $this->artisan('delegation:cleanup')->assertSuccessful();
 

@@ -6,6 +6,7 @@ namespace App\Services\Delegation\Dns;
 
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use RuntimeException;
@@ -111,6 +112,7 @@ class CloudflareDnsProvider implements DelegationDnsProvider
                     'id' => $record['id'],
                     'name' => $relativeName,
                     'value' => $record['content'],
+                    'changed_at' => $this->timestamp($record['modified_on'] ?? $record['created_on'] ?? null),
                 ];
             }
 
@@ -202,6 +204,19 @@ class CloudflareDnsProvider implements DelegationDnsProvider
         }
 
         return substr($fqdn, 0, -strlen($suffix));
+    }
+
+    private function timestamp(mixed $value): ?int
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value)->timestamp;
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function requiredString(array $config, string $key): string

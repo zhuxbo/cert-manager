@@ -79,6 +79,7 @@ class AliyunDnsProvider implements DelegationDnsProvider
                 'id' => $record['id'],
                 'name' => $record['name'],
                 'value' => $record['value'],
+                'changed_at' => $record['changed_at'],
             ],
             $this->listTxt(),
         );
@@ -137,6 +138,7 @@ class AliyunDnsProvider implements DelegationDnsProvider
                     'value' => $record['Value'],
                     'status' => $record['Status'],
                     'line' => $record['Line'],
+                    'changed_at' => $this->timestamp($record['CreateTimestamp'] ?? null, $record['UpdateTimestamp'] ?? null),
                 ];
             }
 
@@ -193,7 +195,7 @@ class AliyunDnsProvider implements DelegationDnsProvider
         return $payload;
     }
 
-    /** @return list<array{RecordId: string, RR: string, Type: string, Value: string, Status: string, Line: string}> */
+    /** @return list<array{RecordId: string, RR: string, Type: string, Value: string, Status: string, Line: string, CreateTimestamp?: mixed, UpdateTimestamp?: mixed}> */
     private function validateListResponse(array $payload, int $expectedPage): array
     {
         $records = $payload['DomainRecords']['Record'] ?? null;
@@ -229,5 +231,15 @@ class AliyunDnsProvider implements DelegationDnsProvider
         }
 
         return trim($value);
+    }
+
+    private function timestamp(mixed $createdAt, mixed $updatedAt): ?int
+    {
+        $timestamps = array_filter(
+            [$createdAt, $updatedAt],
+            fn (mixed $value): bool => is_int($value) && $value > 0,
+        );
+
+        return $timestamps === [] ? null : intdiv(max($timestamps), 1000);
     }
 }

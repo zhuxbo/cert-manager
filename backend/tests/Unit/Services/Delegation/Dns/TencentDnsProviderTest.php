@@ -6,6 +6,7 @@ use App\Services\Delegation\Dns\TencentDnsProvider;
 use App\Services\Delegation\Sdk\TencentCloud\TencentCloudTc3Signer;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -99,6 +100,7 @@ test('Tencent provider 使用 TC3 签名分页读取 TXT', function () {
                     'Name' => '@',
                     'Value' => 'apex-value',
                     'Type' => 'TXT',
+                    'UpdatedOn' => '2026-07-02 03:04:05',
                 ]],
             ]))
             : Http::response(tencentResponse([
@@ -108,13 +110,24 @@ test('Tencent provider 使用 TC3 签名分页读取 TXT', function () {
                     'Name' => 'label',
                     'Value' => 'txt-value',
                     'Type' => 'TXT',
+                    'UpdatedOn' => '2026-07-01 01:02:03',
                 ]],
             ]));
     });
 
     expect(tencentProvider()->allTxt())->toBe([
-        ['id' => '101', 'name' => 'label', 'value' => 'txt-value'],
-        ['id' => '202', 'name' => '@', 'value' => 'apex-value'],
+        [
+            'id' => '101',
+            'name' => 'label',
+            'value' => 'txt-value',
+            'changed_at' => Carbon::parse('2026-07-01 01:02:03', config('app.timezone'))->timestamp,
+        ],
+        [
+            'id' => '202',
+            'name' => '@',
+            'value' => 'apex-value',
+            'changed_at' => Carbon::parse('2026-07-02 03:04:05', config('app.timezone'))->timestamp,
+        ],
     ]);
 
     Http::assertSent(function (Request $request): bool {

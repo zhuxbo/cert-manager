@@ -72,7 +72,7 @@ Schedule::command('delegation:cleanup')
     ->withoutOverlapping()
     ->skip($skipWhenFrozen)
     ->name('cleanup-delegation-dns')
-    ->description('清理非processing状态订单的委托DNS记录');
+    ->description('清理超过30天且未被在途订单使用的委托DNS记录');
 
 // CNAME委托健康周巡检 - 每周一 07:00 执行（错开 cleanup 06:00 / expire 09:00 / balance-forecast 周一 09:30）
 // 无 active 证书的失效委托清理；两阶段+熔断防 dnsTools 系统性停摆误删。

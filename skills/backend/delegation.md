@@ -49,7 +49,7 @@ Seeder 首次创建“域名委托”设置组时，按数据库中“证书接�
 
 全局检测按“完整默认域优先，其余完整配置按设置顺序”逐一检测。任一目标命中即更新 `valid=true` 和 `proxy_domain=命中域`；得到权威答案但全部未命中时置 `valid=false` 并保留原 `proxy_domain`；全部渠道不可达时只更新检查时间，不改变有效状态或失败计数。CA 返回 `active` 不能替代 CNAME 检测，因为客户可能直接解析 TXT 绕过委托。
 
-委托体系只承诺单节点部署，不引入命名锁、状态机、revision 或额外表。同一代理域切换 provider 后，域名身份和订单快照不变，后续 TXT 操作按该域当前完整 provider 配置执行。
+委托业务状态只承诺单节点部署，不引入命名锁、状态机、revision 或额外表。同一代理域切换 provider 后，域名身份和订单快照不变，后续 TXT 操作按该域当前完整 provider 配置执行。多个独立部署可以共用同一代理 DNS 域：定时清理以 provider 返回的记录更新时间、精确 RecordId 和删除后复查实现保守且幂等的跨系统清理；业务数据库与委托状态仍不在部署间共享。
 
 ### 验证方法转换
 
@@ -167,9 +167,11 @@ CA active 只更新证书状态，不切换共享委托
 - **按域隔离**：枚举每个完整代理域配置，通过该域自己的 provider 拉取和删除记录。`processing`/`approving` 订单优先按 `validation.delegation_target` 建立 keepLabels；旧数据缺少目标快照时才回落共享 `proxy_domain`。同名 label 不会跨域误保留，单域失败不阻止其他域继续处理。
 - **委托格式白名单（数据破坏防线）**：删除判据在 keepLabels 白名单之上前置「委托格式收敛」——只删 label 形如 **32 或 64 位 hex**（`preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', ...)`，大小写不敏感）的记录。当代 `generateLabel` 恒产 32-hex，64-hex 兼容历史存量。护住代理域下用户自放的 SPF/DKIM/`_dmarc`/apex `@`/站点验证等**非委托 TXT**（含点、下划线或非 hex 长度的名字永不进删除集）。
 - **保留**：`processing`/`approving` 状态订单引用的委托 label，在订单冻结目标所属代理域内保留。
-- **删除**：每个代理域下符合委托格式且不在该域 keepLabels 的 TXT 记录。
-- **删除计数**：成功日志的 `deleted_count` 按初始 DNS inventory 中、所属 label 已完整删除成功的实际 TXT 记录条数累计；同一 label 多条 TXT 按多条计，后续 label 失败不计入。
-- **清理数据库标记**：按同一订单快照域与成功删除 label 精确匹配后，移除 `delegation_id`、`auto_txt_written` 和 `auto_txt_written_at`。委托行不存在时只清本地失效字段，不猜测远端归属。
+- **记录时间**：统一 provider 记录结构包含 `changed_at` Unix 秒时间戳；Tencent 取 `UpdatedOn`，Cloudflare 取 `modified_on`（缺失时回落 `created_on`），Aliyun 取 `CreateTimestamp`/`UpdateTimestamp` 中较晚者。时间缺失、格式无效或非正数时失败关闭，不删除该记录。
+- **删除**：只删除符合委托格式、不在 keepLabels 且 `changed_at` 严格早于当前时间 30 天的记录。按初始 DNS inventory 的精确 RecordId 删除，不按 label 重新枚举，避免同一 label 在清理期间新增的 token 被误删。
+- **跨系统幂等**：每个 RecordId 独立删除；provider 返回删除异常时重新枚举 TXT。如果该 ID 已不存在，视为另一套系统已经完成删除并继续；ID 仍存在或复查失败时保留原异常并使本域清理失败。若本轮成功枚举时某个超过 30 天的本地标记对应 label 已不存在，也视为其他系统先完成清理并清除本地标记；枚举失败的域不据此推断。
+- **删除计数**：成功日志的 `deleted_count` 按初始 DNS inventory 中、所属 label 的过期记录已完整删除或确认不存在的实际 TXT 记录条数累计；同一 label 多条过期 TXT 按多条计，后续 label 失败不计入。
+- **清理数据库标记**：只有 `auto_txt_written_at` 同样超过 30 天，才按订单快照域与成功处理的 label 精确匹配后移除 `delegation_id`、`auto_txt_written` 和 `auto_txt_written_at`。委托行不存在时只清超过 30 天的本地失效字段，不猜测远端归属；缺少或无法解析写入时间的标记保留。
 
 ### 删除代理域设置
 

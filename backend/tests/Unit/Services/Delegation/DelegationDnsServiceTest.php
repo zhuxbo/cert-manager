@@ -103,3 +103,37 @@ test('按域删除 label 下全部 TXT 值', function () {
 
     delegationDnsServiceWith($provider)->deleteTxtByLabel('proxy.example.com', 'abc123hash');
 });
+
+test('按记录 ID 精确删除且成功时不重新枚举', function () {
+    $provider = Mockery::mock(DelegationDnsProvider::class);
+    $provider->shouldReceive('deleteRecords')->once()->with(['r1']);
+    $provider->shouldReceive('deleteRecords')->once()->with(['r2']);
+    $provider->shouldNotReceive('allTxt');
+
+    delegationDnsServiceWith($provider)->deleteRecords('proxy.example.com', ['r1', 'r1', 'r2']);
+});
+
+test('并发方已删除同一记录时重新枚举确认缺失并幂等成功', function () {
+    $provider = Mockery::mock(DelegationDnsProvider::class);
+    $provider->shouldReceive('deleteRecords')
+        ->once()->with(['r1'])
+        ->andThrow(new RuntimeException('record disappeared'));
+    $provider->shouldReceive('allTxt')->once()->andReturn([
+        ['id' => 'r2', 'name' => str_repeat('a', 32), 'value' => 'other', 'changed_at' => 1],
+    ]);
+
+    delegationDnsServiceWith($provider)->deleteRecords('proxy.example.com', ['r1']);
+});
+
+test('删除失败且记录仍存在时保持失败关闭', function () {
+    $provider = Mockery::mock(DelegationDnsProvider::class);
+    $provider->shouldReceive('deleteRecords')
+        ->once()->with(['r1'])
+        ->andThrow(new RuntimeException('permission denied'));
+    $provider->shouldReceive('allTxt')->once()->andReturn([
+        ['id' => 'r1', 'name' => str_repeat('a', 32), 'value' => 'token', 'changed_at' => 1],
+    ]);
+
+    expect(fn () => delegationDnsServiceWith($provider)->deleteRecords('proxy.example.com', ['r1']))
+        ->toThrow(RuntimeException::class, 'permission denied');
+});

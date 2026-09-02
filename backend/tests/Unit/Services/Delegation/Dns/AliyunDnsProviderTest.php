@@ -116,6 +116,8 @@ test('Aliyun provider 分页读取并只返回格式正确的 TXT 记录', funct
                     'Status' => 'Enable',
                     'Line' => 'default',
                     'Locked' => false,
+                    'CreateTimestamp' => 1782864000000,
+                    'UpdateTimestamp' => 1782950400000,
                 ],
             ], 2, 500, 501));
         }
@@ -131,6 +133,8 @@ test('Aliyun provider 分页读取并只返回格式正确的 TXT 记录', funct
                 'Status' => 'Enable',
                 'Line' => 'default',
                 'Locked' => false,
+                'CreateTimestamp' => 1782777600000,
+                'UpdateTimestamp' => 1782864000000,
             ],
             [
                 'RecordId' => '102',
@@ -147,8 +151,8 @@ test('Aliyun provider 分页读取并只返回格式正确的 TXT 记录', funct
     });
 
     expect(aliyunProvider()->allTxt())->toBe([
-        ['id' => '101', 'name' => 'label', 'value' => 'txt-value'],
-        ['id' => '202', 'name' => '@', 'value' => 'apex-value'],
+        ['id' => '101', 'name' => 'label', 'value' => 'txt-value', 'changed_at' => 1782864000],
+        ['id' => '202', 'name' => '@', 'value' => 'apex-value', 'changed_at' => 1782950400],
     ]);
 
     Http::assertSentCount(2);

@@ -6,6 +6,7 @@ namespace App\Services\Delegation\Dns;
 
 use App\Services\Delegation\Sdk\TencentCloud\TencentCloudTc3Signer;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use JsonException;
@@ -101,7 +102,7 @@ class TencentDnsProvider implements DelegationDnsProvider
         }
     }
 
-    /** @return list<array{id: string, name: string, value: string}> */
+    /** @return list<array{id: string, name: string, value: string, changed_at: int|null}> */
     private function listTxt(?string $name = null): array
     {
         $records = [];
@@ -152,6 +153,7 @@ class TencentDnsProvider implements DelegationDnsProvider
                     'id' => (string) $record['RecordId'],
                     'name' => $record['Name'],
                     'value' => $record['Value'],
+                    'changed_at' => $this->timestamp($record['UpdatedOn'] ?? null),
                 ];
             }
 
@@ -236,6 +238,19 @@ class TencentDnsProvider implements DelegationDnsProvider
     {
         return (is_int($recordId) || is_string($recordId))
             && preg_match('/^[1-9][0-9]*$/D', (string) $recordId) === 1;
+    }
+
+    private function timestamp(mixed $value): ?int
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value, config('app.timezone'))->timestamp;
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function requiredString(array $config, string $key): string

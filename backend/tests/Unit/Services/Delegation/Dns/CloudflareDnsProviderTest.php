@@ -100,13 +100,20 @@ test('allTxt 分页查询并只返回域内 TXT 的相对记录名', function ()
                 ['id' => 'r4', 'name' => 'outside.example.net', 'type' => 'TXT', 'content' => 'ignored'],
             ], 2, 2))
             : Http::response(cloudflareListResponse([
-                ['id' => 'r1', 'name' => 'label.proxy.example.com', 'type' => 'TXT', 'content' => 'value'],
+                [
+                    'id' => 'r1',
+                    'name' => 'label.proxy.example.com',
+                    'type' => 'TXT',
+                    'content' => 'value',
+                    'created_on' => '2026-06-01T00:00:00Z',
+                    'modified_on' => '2026-07-01T00:00:00Z',
+                ],
             ], 1, 2));
     });
 
     expect(cloudflareProvider()->allTxt())->toBe([
-        ['id' => 'r1', 'name' => 'label', 'value' => 'value'],
-        ['id' => 'r2', 'name' => '@', 'value' => 'apex'],
+        ['id' => 'r1', 'name' => 'label', 'value' => 'value', 'changed_at' => 1782864000],
+        ['id' => 'r2', 'name' => '@', 'value' => 'apex', 'changed_at' => null],
     ]);
     Http::assertSentCount(2);
 });
