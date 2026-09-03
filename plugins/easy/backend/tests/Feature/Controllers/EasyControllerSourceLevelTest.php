@@ -4,6 +4,7 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\User;
 use App\Services\Notification\NotificationCenter;
+use Database\Seeders\UserLevelSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Plugins\Easy\Controllers\EasyController;
@@ -46,6 +47,7 @@ test('EasyController sourceLevel 未配置或为空时默认 platinum', function
 });
 
 test('sourceLevel 已配置时新建用户使用映射等级', function () {
+    $this->seed(UserLevelSeeder::class);
     Cache::flush();
     $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => 'Site', 'weight' => 0]);
     Setting::updateOrCreate(
@@ -70,6 +72,7 @@ test('sourceLevel 已配置时新建用户使用映射等级', function () {
 });
 
 test('sourceLevel 已配置时已有低等级用户自动提升', function () {
+    $this->seed(UserLevelSeeder::class);
     Cache::flush();
     $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => 'Site', 'weight' => 0]);
     Setting::updateOrCreate(
@@ -99,6 +102,7 @@ test('sourceLevel 已配置时已有低等级用户自动提升', function () {
 });
 
 test('新建用户时派发 user_created 注册邮件（含系统设置 site_url）', function () {
+    $this->seed(UserLevelSeeder::class);
     Cache::flush();
     $group = SettingGroup::firstOrCreate(['name' => 'site'], ['title' => 'Site', 'weight' => 0]);
     Setting::updateOrCreate(
