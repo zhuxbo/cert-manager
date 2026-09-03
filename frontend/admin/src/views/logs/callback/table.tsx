@@ -7,8 +7,6 @@ export const tableColumns: TableColumnList = [
     prop: "id",
     minWidth: 90
   },
-  { label: "模块", prop: "module", minWidth: 100 },
-  { label: "操作", prop: "action", minWidth: 120 },
   {
     headerRenderer: () => (
       <div class="flex flex-row items-center">
@@ -30,6 +28,8 @@ export const tableColumns: TableColumnList = [
     prop: "method",
     minWidth: 140
   },
+  { label: "模块", prop: "module", minWidth: 100 },
+  { label: "动作", prop: "action", minWidth: 120 },
   {
     label: "IP 地址",
     prop: "ip",
