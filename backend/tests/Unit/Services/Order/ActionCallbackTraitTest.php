@@ -4,8 +4,12 @@ use App\Exceptions\ApiResponseException;
 use App\Services\Order\Traits\ActionCallbackTrait;
 use App\Traits\ApiResponse;
 use App\Utils\IpUtil;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -70,6 +74,42 @@ test('isPrivateUrl 域名解析到内网 IP 时拒绝', function () {
     expect(invokeIsPrivateUrl('http://localhost/notify'))->toBeTrue();
 });
 
+test('callback 禁止跟随公网 URL 发出的内网重定向', function () {
+    $mock = new MockHandler([
+        new GuzzleResponse(302, ['Location' => 'http://169.254.169.254/latest/meta-data']),
+        new GuzzleResponse(200, [], 'metadata'),
+    ]);
+    $factory = new class($mock) extends Factory
+    {
+        public function __construct(private readonly MockHandler $testHandler)
+        {
+            parent::__construct();
+        }
+
+        protected function newPendingRequest()
+        {
+            return parent::newPendingRequest()->setHandler($this->testHandler);
+        }
+    };
+    $originalFactory = Http::getFacadeRoot();
+    Http::swap($factory);
+
+    $harness = new class
+    {
+        use ActionCallbackTrait;
+    };
+
+    try {
+        $response = (new ReflectionMethod($harness, 'postCallback'))
+            ->invoke($harness, 'https://8.8.8.8/callback', ['id' => 1]);
+
+        expect($response->status())->toBe(302)
+            ->and($mock->count())->toBe(1);
+    } finally {
+        Http::swap($originalFactory);
+    }
+});
+
 test('IpUtil::isPrivateOrReserved 拒绝私网/保留段 IP', function (string $ip) {
     expect(IpUtil::isPrivateOrReserved($ip))->toBeTrue();
 })->with([
@@ -99,6 +139,7 @@ test('IpUtil::isPrivateOrReserved 放行公网 IP', function (string $ip) {
 ]);
 
 test('callback 临时传输失败转换为固定简洁业务错误', function () {
+    Sleep::fake();
     Http::fake(fn () => throw new ConnectionException('cURL error 35: vendor/path/PendingRequest.php:1822'));
 
     $harness = new class
@@ -115,9 +156,13 @@ test('callback 临时传输失败转换为固定简洁业务错误', function ()
         $exception = $e instanceof ReflectionException ? $e : ($e->getPrevious() ?? $e);
         expect($exception)->toBeInstanceOf(ApiResponseException::class);
         $response = $exception->getApiResponse();
-        expect($response)->toBe(['code' => 0, 'msg' => '回调地址暂时无法连接'])
+        expect($response['code'])->toBe(0)
+            ->and($response['msg'])->toBe('回调地址暂时无法连接')
+            ->and($response['errors']['request_attempts'])->toBe(2)
             ->and(json_encode($response))->not->toContain('cURL')
             ->not->toContain('PendingRequest.php')
             ->not->toContain('trace');
+    } finally {
+        Sleep::fake(false);
     }
 });
