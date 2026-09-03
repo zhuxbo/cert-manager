@@ -131,7 +131,7 @@ class LogOperation
                 $this->logAdminRequest($request, $logData);
             } elseif ($this->handlePluginLog($request, $logData)) {
                 // 插件日志处理器已处理
-            } elseif ($request->is('callback/*')) {
+            } elseif ($request->is(['callback', 'callback/*'])) {
                 $this->logCallbackRequest($logData);
             } else {
                 $this->logUserRequest($request, $logData);

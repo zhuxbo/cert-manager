@@ -5,6 +5,7 @@ use App\Http\Controllers\V2\ApiController;
 use App\Http\Middleware\LogOperation;
 use App\Models\ApiLog;
 use App\Models\CallbackLog;
+use App\Models\UserLog;
 use App\Services\LogBuffer;
 use App\Utils\LogScrubber;
 use App\Utils\UpgradeFreezeLock;
@@ -119,6 +120,24 @@ test('回调请求记录到 CallbackLog 缓冲区', function () {
         ->and($log->url)->toContain('/callback/alipay/notify')
         ->and($log->status)->toBe(1);
 });
+
+test('根回调与默认端点请求均记录到 CallbackLog', function (string $path) {
+    $middleware = new LogOperation;
+    $request = Request::create($path, 'POST', ['id' => 'test-api-id']);
+    $request->setRouteResolver(fn () => null);
+
+    $middleware->handle($request, function () {
+        return new JsonResponse(['code' => 1]);
+    });
+
+    LogBuffer::flush();
+
+    expect(CallbackLog::query()->where('url', 'like', "%{$path}%")->exists())->toBeTrue()
+        ->and(UserLog::query()->where('url', 'like', "%{$path}%")->exists())->toBeFalse();
+})->with([
+    '根回调' => '/callback',
+    '默认端点' => '/callback/default',
+]);
 
 test('API 与 callback 日志记录结构化 controller module 和 action', function () {
     $middleware = new LogOperation;
