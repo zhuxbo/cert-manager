@@ -132,7 +132,7 @@ class NotificationTemplateSeeder extends Seeder implements ProvidesNotificationT
                 'example' => null,
             ],
             // 通用运维/健康告警（admin-only）：SystemAlert 服务经 system_alert code 触发，
-            // E1~E6 监控命令与后续 F/G/H 复用。details 由 SystemAlertNotificationBuilder 过滤，
+            // E1/E3~E5 监控命令与后续 F/G/H 复用。details 由 SystemAlertNotificationBuilder 过滤，
             // 模板一律 Blade {{ }} 转义（禁 {!! !!}），防外部可控文本 XSS 进管理员邮箱。
             [
                 'code' => 'system_alert',

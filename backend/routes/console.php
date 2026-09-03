@@ -206,14 +206,6 @@ Schedule::command('queue:prune-failed', ['--hours' => (int) config('monitoring.f
     ->name('prune-failed-jobs')
     ->description('清理过期 failed_jobs（保留 14 天供排障）');
 
-// E6 卡单聚合告警 - 每天 06:30（processing/approving 分档，只读）
-Schedule::command('schedule:stuck-orders')
-    ->dailyAt('06:30')
-    ->withoutOverlapping()
-    ->skip($skipWhenFrozen)
-    ->name('stuck-orders')
-    ->description('聚合 processing/approving 长期卡单告警（按 validation_type 分档）');
-
 // ============================================================
 // H1 升级看门狗（自愈命令）——与上方所有命令有意不对称：
 //   - evenInMaintenanceMode()：artisan down 期 scheduler 默认跳过事件，自愈命令必须绕过；

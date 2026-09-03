@@ -8,7 +8,7 @@ return [
     |
     | 每条监控命令均可经 enabled 独立开关；告警统一走 SystemAlert（code=system_alert）
     | 的状态指纹去重，dedupe_ttl_hours 契约：必须 ≥ 3× 该命令巡检周期（防 TTL≈周期时
-    | 去重形同虚设）。停用单一 system_alert 模板（status=0）会令 5 条监控同时静默盲，
+    | 去重形同虚设）。停用单一 system_alert 模板（status=0）会令 4 条监控同时静默盲，
     | 这是单 code 复用的固有属性，需知情。
     |
     */
@@ -50,17 +50,5 @@ return [
         'alert_threshold' => (int) env('MONITORING_FAILED_JOBS_ALERT_THRESHOLD', 50),
         'prune_retention_hours' => (int) env('MONITORING_FAILED_JOBS_PRUNE_RETENTION_HOURS', 336),
         'dedupe_ttl_hours' => (int) env('MONITORING_FAILED_JOBS_TTL_HOURS', 72),
-    ],
-
-    // E6 卡单聚合告警（schedule:stuck-orders，周期 1d，周提醒）
-    // stuck_days：按 products.validation_type 分档；null/未知 validation_type 回落最长档
-    'stuck_orders' => [
-        'enabled' => env('MONITORING_STUCK_ORDERS_ENABLED', true),
-        'stuck_days' => [
-            'dv' => (int) env('MONITORING_STUCK_DAYS_DV', 7),
-            'ov' => (int) env('MONITORING_STUCK_DAYS_OV', 14),
-            'ev' => (int) env('MONITORING_STUCK_DAYS_EV', 21),
-        ],
-        'dedupe_ttl_hours' => (int) env('MONITORING_STUCK_ORDERS_TTL_HOURS', 168),
     ],
 ];

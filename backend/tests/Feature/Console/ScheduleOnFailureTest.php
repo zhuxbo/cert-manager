@@ -40,6 +40,10 @@ test('日志与运行时清理错峰且备份仍为 02:00', function () {
         ->and(findScheduledEvent('schedule:backup')?->expression)->toBe('0 2 * * *');
 });
 
+test('processing/approving 不再独立定时告警，取消失败由 cancel task 失败告警承接', function () {
+    expect(findScheduledEvent('schedule:stuck-orders'))->toBeNull();
+});
+
 test('M6：命令成功（exitCode=0）不触发 onFailure 日志', function () {
     $event = findScheduledEvent('schedule:validate');
     expect($event)->not->toBeNull();

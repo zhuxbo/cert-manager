@@ -236,10 +236,10 @@ test('⑨ clearDedupe 后立即可再发', function () {
 
     $svc = app(SystemAlert::class);
 
-    $r1 = $svc->send('stuck_orders', 't', 'm', [], 'stuck_orders', 168, 'stuck');
-    $r2 = $svc->send('stuck_orders', 't', 'm', [], 'stuck_orders', 168, 'stuck');
-    $svc->clearDedupe('stuck_orders');
-    $r3 = $svc->send('stuck_orders', 't', 'm', [], 'stuck_orders', 168, 'stuck');
+    $r1 = $svc->send('test_level', 't', 'm', [], 'test_level', 168, 'fixed');
+    $r2 = $svc->send('test_level', 't', 'm', [], 'test_level', 168, 'fixed');
+    $svc->clearDedupe('test_level');
+    $r3 = $svc->send('test_level', 't', 'm', [], 'test_level', 168, 'fixed');
 
     expect($r1)->toBeTrue()
         ->and($r2)->toBeFalse()
