@@ -82,7 +82,7 @@ function oracleStoreTarget(array $credentials): array
         'status' => 'active',
         'issuer' => 'OCI-TEST-CA',
         'cert' => 'CERTPEM',
-        'private_key' => 'CERT-PRIVATE-KEY',
+        'private_key' => oracleStoreKeypair()[0],
         'fingerprint' => 'OCI-FP-1',
     ]);
     $order->update(['latest_cert_id' => $cert->id]);

@@ -31,6 +31,7 @@ use Plugins\CloudDeploy\Models\CloudDeployLog;
 use Plugins\CloudDeploy\Models\CloudDeployTarget;
 use Plugins\CloudDeploy\Services\RemoteCertStore;
 use Plugins\CloudDeploy\Support\TenantConsistency;
+use Plugins\CloudDeploy\Support\TraditionalPrivateKey;
 use Throwable;
 
 class CloudDeployJob implements ShouldQueue
@@ -160,6 +161,10 @@ class CloudDeployJob implements ShouldQueue
                 return;
             }
 
+            // 对齐 Certimate 的 ACME 签发链路，系统证书统一以传统格式交付：RSA→PKCS#1、EC→SEC1。
+            // 这不是逐云接口的格式声明；仅转换本次副本，解析失败转业务终态且不进入异常重试。
+            $privateKey = TraditionalPrivateKey::convert((string) $cert->private_key);
+
             if ($deliveryMode === CertificateDeliveryMode::RemoteStore) {
                 // 透传 config：region 维度的上传器（SLB）需据 region 构造（endpoint + storeKind/cert_id 编码）
                 $uploader = $deployer instanceof PreparesCertUploaderForJob
@@ -167,7 +172,7 @@ class CloudDeployJob implements ShouldQueue
                     : $deployer->certUploader($config);
                 $remoteCertId = app(RemoteCertStore::class)->ensure(
                     $uploader, $access->id, $target->user_id, $cert->id, (string) $cert->fingerprint,
-                    (string) $cert->cert, (string) $cert->private_key, (string) $chain, $credentials,
+                    (string) $cert->cert, $privateKey, (string) $chain, $credentials,
                 );
                 // Opt-in deployer 仅获 leaf + 中间链做 SAN/资源匹配；私钥仍只进入 uploader。
                 $bindRef = $deployer instanceof ReceivesRemoteCertificateMaterial
@@ -177,7 +182,7 @@ class CloudDeployJob implements ShouldQueue
             } else {
                 $remoteCertId = null;
                 $deployer->bind(
-                    ['cert' => (string) $cert->cert, 'key' => (string) $cert->private_key, 'chain' => (string) $chain],
+                    ['cert' => (string) $cert->cert, 'key' => $privateKey, 'chain' => (string) $chain],
                     $credentials, $config,
                 );
             }

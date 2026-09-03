@@ -103,8 +103,8 @@ abstract class AbstractDeployer implements DeployerInterface
     }
 
     /**
-     * 包裹 SDK 调用：捕获任何 Throwable → 重建干净 RuntimeException（只 code+脱敏 message，
-     * 不挂 previous）。这样 getTraceAsString() 不会带出含 AK/SK/请求体的 SDK 帧或 Guzzle URI。
+     * 包裹 SDK 调用：捕获任何 Throwable，先生成安全文案，再由端点按原始异常的结构化字段判断
+     * 是否为确定性终态。两条分支都不挂 previous，避免 trace 带出 AK/SK、请求体或签名 URI。
      *
      * @template T
      *
@@ -116,8 +116,23 @@ abstract class AbstractDeployer implements DeployerInterface
         try {
             return $fn();
         } catch (Throwable $e) {
-            throw new RuntimeException($this->sanitize($e), 0);
+            $safeMessage = $this->sanitize($e);
+
+            if ($this->isTerminalSdkError($e)) {
+                throw new DeployBusinessException($safeMessage);
+            }
+
+            throw new RuntimeException($safeMessage, 0);
         }
+    }
+
+    /**
+     * 端点级 SDK 终态分类钩子。只检查原始异常的结构化类型、错误码或状态码，不匹配消息文本；
+     * 默认返回 false，保证未显式登记的错误仍按可重试异常处理。
+     */
+    protected function isTerminalSdkError(Throwable $e): bool
+    {
+        return false;
     }
 
     /** 业务错误统一入口（区别于网络/SDK 异常）。 */

@@ -1,6 +1,8 @@
 <?php
 
+use AlibabaCloud\Oss\V2\Exception\ServiceException;
 use AlibabaCloud\Tea\Exception\TeaError;
+use Darabonba\OpenApi\Exceptions\ClientException;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunErrorSanitizer;
 use Plugins\CloudDeploy\Deployers\Contracts\CredentialScrubber;
 use Plugins\CloudDeploy\Deployers\Tencent\TencentErrorSanitizer;
@@ -8,6 +10,32 @@ use TencentCloud\Common\Exception\TencentCloudSDKException;
 use Tests\TestCase;
 
 uses(TestCase::class);
+
+test('阿里错误码提取仅接受各 SDK 的结构化服务端错误', function (Closure $make, ?string $expected) {
+    expect(AliyunErrorSanitizer::errorCode($make()))->toBe($expected);
+})->with([
+    'openapi-core' => [fn () => new ClientException([
+        'statusCode' => 400,
+        'code' => 'InvalidArgument',
+        'message' => 'code: 400, invalid argument',
+        'description' => '',
+        'data' => ['Code' => 'InvalidArgument', 'Message' => 'invalid argument'],
+        'accessDeniedDetail' => [],
+        'requestId' => 'req-openapi',
+    ]), 'InvalidArgument'],
+    'Tea 结构化错误' => [fn () => new TeaError([
+        'code' => 'InvalidArgument',
+        'message' => 'invalid argument',
+        'data' => ['Code' => 'InvalidArgument', 'Message' => 'invalid argument'],
+    ]), 'InvalidArgument'],
+    'OSS 服务端错误' => [fn () => new ServiceException([
+        'status_code' => 403,
+        'code' => 'AccessDenied',
+        'message' => 'permission denied',
+        'request_id' => 'req-oss',
+    ]), 'AccessDenied'],
+    '未知异常' => [fn () => new RuntimeException('private key has to be in PEM format'), null],
+]);
 
 /**
  * 加固 1 — sanitizer 凭证子串兜底扫描（纵深防御）验证：

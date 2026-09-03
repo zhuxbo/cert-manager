@@ -12,6 +12,7 @@ use AlibabaCloud\SDK\FC\V20230330\Models\UpdateCustomDomainRequest;
 use AlibabaCloud\SDK\FC\V20230330\Models\UpdateCustomDomainResponse;
 use AlibabaCloud\Tea\Exception\TeaError;
 use Plugins\CloudDeploy\Deployers\Aliyun\AliyunFcDeployer;
+use Plugins\CloudDeploy\Deployers\Contracts\DeployBusinessException;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -233,6 +234,48 @@ test('bind SDK 抛 TeaError（结构化）时脱敏重抛（含错误码、无 A
         expect($e->getMessage())->not->toContain('AK-LEAK-FC')->not->toContain('SK-LEAK-FC');
         expect($e->getPrevious())->toBeNull();
         expect($e->getTraceAsString())->not->toContain('AK-LEAK-FC')->not->toContain('SK-LEAK-FC');
+    }
+});
+
+test('bind 根据结构化 InvalidArgument 错误码转为业务终态而不依赖消息文本', function () {
+    $fc = Mockery::mock(FC::class);
+    $fc->shouldReceive('getCustomDomain')->once()->andReturn(fcGetResponse('HTTPS', null, null));
+    $fc->shouldReceive('updateCustomDomain')->once()->andThrow(new TeaError([
+        'code' => 'InvalidArgument',
+        'message' => 'code: 400 request id: req-1',
+        'data' => ['Code' => 'InvalidArgument', 'Message' => 'certificate configuration rejected', 'RequestId' => 'req-1'],
+    ]));
+
+    $deployer = aliyunFcDeployerWith(fn () => $fc);
+
+    expect(fn () => $deployer->bind(
+        ['cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'],
+        ['access_key_id' => 'AK', 'access_key_secret' => 'SK'],
+        ['domain' => 'fc.example.com', 'region' => 'cn-hangzhou'],
+    ))->toThrow(DeployBusinessException::class, '[InvalidArgument] certificate configuration rejected');
+});
+
+test('bind 仅有私钥格式文本但无结构化错误码时保持可重试异常', function () {
+    $fc = Mockery::mock(FC::class);
+    $fc->shouldReceive('getCustomDomain')->once()->andThrow(new TeaError(
+        [],
+        "'private key' has to be in PEM format",
+        0,
+    ));
+
+    $deployer = aliyunFcDeployerWith(fn () => $fc);
+
+    try {
+        $deployer->bind(
+            ['cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAINPEM'],
+            ['access_key_id' => 'AK', 'access_key_secret' => 'SK'],
+            ['domain' => 'fc.example.com', 'region' => 'cn-hangzhou'],
+        );
+        expect(false)->toBeTrue('应抛异常');
+    } catch (RuntimeException $e) {
+        expect($e)->not->toBeInstanceOf(DeployBusinessException::class);
+        expect($e->getMessage())->toContain('阿里云调用失败');
+        expect($e->getPrevious())->toBeNull();
     }
 });
 

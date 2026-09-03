@@ -99,6 +99,21 @@ git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer
 
 仅当引入了**新的证书存储空间**（如对接华为 SCM / AWS ACM）才写 `<Provider><Svc>Uploader implements CertUploaderInterface`：`upload($certPem,$keyPem,$chainPem,$credentials): string`（调云证书服务上传 API 返回云端 id）+ `storeKind(): string`（隔离去重键，region 维度返回 `kind:{region}`）。已有 cas/slb/tencent_ssl 三个可直接复用。
 
+### 私钥交付格式
+
+`CloudDeployJob` 在调用 uploader / inline deployer 前，通过 `TraditionalPrivateKey` 把系统证书私钥的交付副本统一规范化为传统 PEM：RSA 使用 PKCS#1（`BEGIN RSA PRIVATE KEY`），ECDSA 使用 SEC1（`BEGIN EC PRIVATE KEY`）。这是系统证书的统一交付基线，不表示每家云服务的官方接口都逐项声明支持这两种编码。
+
+选择统一基线而不维护“部署器 → 私钥格式”映射，是为了对齐 Certimate v0.4.30 的实际处理方式：
+
+- ACME 签发结果在证书来源层统一转换为传统格式，然后保存并交给后续部署器；
+- 用户上传的已有证书只解析私钥并校验证书匹配，原始私钥编码保持不变；
+- 部署请求只传递 `CertificatePEM` / `PrivateKeyPEM`，provider 注册信息和 158 个部署器中均没有 `traditional`、`pkcs1` 或 `pkcs8` 能力标记；
+- AWS ACM 等 PEM 接口直接接收上游私钥；Azure Key Vault、S3、SSH 等需要 PFX/JKS 的路径在各自部署器内重新封装目标容器格式。
+
+因此，不能根据 provider 名称或 PEM 头动态推断目标接口需要哪种编码，也不能从 Certimate 导入一份不存在的格式清单。本插件对系统证书采用与 Certimate ACME 链路相同的传统格式；如果以后有经官方契约或真实请求验证、明确只接受其他编码的具体端点，应在该端点增加有测试覆盖的显式例外，并在本节记录依据，不能通过失败后换格式重试（首次请求可能已经产生云端副作用）。
+
+转换只在内存中进行，不回写 `certs.private_key`。私钥无法解析或算法不支持时，`TraditionalPrivateKey` 必须抛 `DeployBusinessException`，由 `CloudDeployJob` 记录确定性业务终态并停止，不进入队列异常重试。新增端点不得绕过该 Job 边界，也不得在单个 deployer 内无依据地重复转换。
+
 ### Step 4 — 注册
 
 在 `Deployers/registry/<provider>.php` 加一行 `$registry->registerDeployer('<provider>', '<product>', fn () => new <Provider><Product>Deployer);`。新 provider 则先 `$registry->registerProvider(new <Provider>Provider);`，并在 `CloudDeployServiceProvider::register()` 的 `foreach (['aliyun','tencent', ...])` 数组加 provider 名。
@@ -115,7 +130,7 @@ git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer
 
 ## 三、Provider 实现状态总览（已对齐 certimate 149 端点 / 55 provider）
 
-**已对齐 certimate 全部部署端点：149 个已实现（certimate 共 152，ssh/ftp/local 经产品决策不实现，见本节末）。** 下方按 provider 列「SDK/签名 + 关键 API + uploader 策略」作实现参考与新增端点模板；**权威清单以 `Deployers/registry/*.php` 为准**（每个 registry 文件 = 一个 provider 的全部 product 注册）。官方 PHP SDK：aliyun/tencent/aws（v3）/qiniu/baidu/s3(aws S3)；其余 40+ provider 经各自 `<Provider>RestClient` 手写签名（HMAC-SHA256 各家变体 / JWT / OAuth2 / OCI HTTP Signatures / EOP 三级派生 / QY / TC3 等）调 REST，GuzzleHttp 来自主 vendor、零额外 composer（phpseclib 等未引入）。下列条目即便文字描述为「新建」也均**已落地**。
+**已对齐 certimate 全部部署端点：149 个已实现（certimate 共 152，ssh/ftp/local 经产品决策不实现，见本节末）。** 下方按 provider 列「SDK/签名 + 关键 API + uploader 策略」作实现参考与新增端点模板；**权威清单以 `Deployers/registry/*.php` 为准**（每个 registry 文件 = 一个 provider 的全部 product 注册）。官方 PHP SDK：aliyun/tencent/aws（v3）/qiniu/baidu/s3(aws S3)；其余 40+ provider 经各自 `<Provider>RestClient` 手写签名（HMAC-SHA256 各家变体 / JWT / OAuth2 / OCI HTTP Signatures / EOP 三级派生 / QY / TC3 等）调 REST，GuzzleHttp 来自主 vendor，不为单个 provider 另增依赖；插件已锁定的 phpseclib 同时用于签名与私钥格式转换。下列条目即便文字描述为「新建」也均**已落地**。
 
 ### AWS ✅（已实现，8 端点：acm/iam/alb/nlb/clb/cloudfront/amplify/apigateway）
 
@@ -208,6 +223,7 @@ git add plugins/cloud-deploy/backend/composer.{json,lock}   # 仅提交 composer
 - **腾讯子包版本对齐**：腾讯 SDK 拆成多个 `tencentcloud/<product>` 子包，`common` 与各产品包须版本兼容；部分包（如 `tencentcloud/gaap`）在 composer.json **钉死具体版本 `3.0.1291`** 避开破坏性发布，新增腾讯端点时核对子包版本一致。
 - **SDK Client 多为 final，用泛型 mock**：阿里/腾讯 SDK 的 Client 类常 `final`，Mockery 无法直接 partial mock。测试里走 `makeClient` 注入缝返回 `Mockery::mock()`（泛型 mock，按方法名打桩），而非 mock 具体 final 类。
 - **业务错误别进 `guardSdk`**：`guardSdk` 只包真正的 SDK 网络/API 调用。配置缺失、参数校验等业务错误走 `fail()`（抛业务异常，message 可读不脱敏），别塞进 guardSdk——否则会被当 SDK 异常重建成无 previous 的通用 RuntimeException，丢失可读上下文。
+- **上游确定性错误用结构化字段分类**：`guardSdk` 先通过 `sanitize()` 生成安全文案，再调用端点的 `isTerminalSdkError(Throwable)` 钩子；钩子只能检查原始 SDK 异常的类型、结构化错误码或 HTTP 状态，禁止匹配 message 文本。命中后公共边界重建无 previous 的 `DeployBusinessException`，否则仍重建普通 `RuntimeException` 交给队列重试。默认钩子返回 false，新增规则必须限定到具体端点并有正反用例。例如 Aliyun FC 仅把服务端结构化 `InvalidArgument` 判为确定性参数错误；同样文本若没有结构化错误码仍不得终止重试。网络错误、限流、5xx 始终保留重试。
 - **新增 ShouldQueue 别用 `tries=1`**：升级 freeze 中间件 `SkipWhenUpgradeFrozen` 对 Job `release(60)` 会计入 attempts，`tries=1` 被 freeze release 一次即在第二次 pop 被 MaxAttemptsExceeded 误杀、handle 永不执行。编排 Job（`CloudDeployTriggerJob`/`CloudChainBackfillJob`）用 `tries=5` + `maxExceptions=1`（吸收 freeze release，业务异常仍只一次）；`CloudDeployJob` 走 `tries=5`（**不加 maxExceptions**——见下 G2）。守门 `tests/Unit/Jobs/CloudJobsFreezeConfigTest`；机理详见 `skills/backend/upgrade.md` 升级冻结契约。
 - **CloudDeployJob 的 `$timeout=55` × `tries=5`（无 maxExceptions）× 长轮询预算（G2）**：worker `--timeout 60`（`deploy/scripts/bt-install.sh:1143,1234`）经 pcntl SIGALRM handler 优雅退出（非 SIGKILL，依赖 pcntl 扩展，与既有 `--timeout 60` 同前提）；被 alarm 杀的 job 不走 backoff，保持 reserved 至默认 `retry_after=900`（`config/queue.php`）后复投，`failed()` 仅末次 attempt 兑现。Job 设 `$timeout=55`（< 60、< 900）保证优雅退避而非静默 reserved。**长轮询 deployer 超窗改抛 `DeployPollPendingException`（重试通道 + 携 jobId）**，故 tries 3→5 覆盖云端异步落地 + 吸收 freeze release；**不加 maxExceptions**——maxExceptions 会在首个 pending 异常终结重试链（旧 tries=3 成型于「超窗不重试」旧语义，语义已变）。运维约束：`QUEUE_RETRY_AFTER` 必须 > `$timeout`。
 - **长轮询 deployer 分型 + jobId 续查（G2）**：全仓 6 个长轮询 deployer 分两型——**job-id 型 4 个**（Aliyun CAS 托管 / Wangsu CDN Pro / Tencent COS / Tencent ssl-deploy，每次 bind 新建一次性云端任务再轮询它）实现 `ResumesRemoteJob`：bind 短窗首查（`maxPollAttempts` 次）未终态即抛 `DeployPollPendingException`（携 jobId、**必在 guardSdk 之外**），`CloudDeployJob` 把当前任务保存在 target 数据库记录的单槽 `pending_job` 中，有效期 10 天；新版本成功写入该字段后，常规 `cache:clear`/`optimize:clear` 不会丢失它，重试和 sweep-B 先 `resumePoll` 续查**同一** jobId（不重建任务）→ 消除「每 attempt 重建云端任务→旧任务终态永不被观察」的慢性误报。`resumePoll` 再次 pending 会复用 jobId 并续期；`failed()` 重试耗尽和瞬态异常保留有效 pending，resume/bind 成功或业务终态失败清理，内容损坏、证书不匹配、过期或 deployer 不支持续查时先清理再 bind。`force=true` 手动重推遇有效 pending 时**仍走 resumePoll 续查旧任务**——语义等价（云端任务仍在跑，重建只会堆积重复任务），非 bug。**状态轮询型 2 个**（Zenlayer CDN/GA 轮询域名/加速器 configStatus）仅压窗、重试自续观察同一资源收敛，无需 jobId。新增轮询端点按此判据选型（一次性任务 id → job-id 型 + `ResumesRemoteJob`；资源状态轮询 → 压窗即可）。所有轮询循环「末次不 sleep」回收预算。边界：不迁移旧 Cache pending，不覆盖远端任务已创建但数据库写入前崩溃或写失败的恢复，也不把 Cache 锁描述为清缓存期间的并发强保证。

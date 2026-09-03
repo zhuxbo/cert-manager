@@ -374,6 +374,46 @@ beforeEach(function () {
     app()->instance(NotificationCenter::class, Mockery::mock(NotificationCenter::class)->shouldIgnoreMissing());
 });
 
+function jobPkcs8RsaPrivateKey(): string
+{
+    static $privateKey;
+
+    if (! is_string($privateKey)) {
+        $resource = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+        if ($resource === false || ! openssl_pkey_export($resource, $privateKey)) {
+            throw new RuntimeException('测试 RSA 私钥生成失败');
+        }
+    }
+
+    return $privateKey;
+}
+
+function jobPkcs8EcPrivateKey(): string
+{
+    static $privateKey;
+
+    if (! is_string($privateKey)) {
+        $resource = openssl_pkey_new(['curve_name' => 'prime256v1', 'private_key_type' => OPENSSL_KEYTYPE_EC]);
+        if ($resource === false || ! openssl_pkey_export($resource, $privateKey)) {
+            throw new RuntimeException('测试 EC 私钥生成失败');
+        }
+    }
+
+    return $privateKey;
+}
+
+function jobPublicKeyFromPrivate(string $privateKey): string
+{
+    $resource = openssl_pkey_get_private($privateKey);
+    $details = $resource === false ? false : openssl_pkey_get_details($resource);
+
+    if (! is_array($details) || ! is_string($details['key'] ?? null)) {
+        throw new RuntimeException('测试私钥解析失败');
+    }
+
+    return $details['key'];
+}
+
 function makeTargetWithCert(string $provider, string $product, ?string $intermediate = 'CHAIN', array $credentials = ['k' => 'v']): array
 {
     $user = User::factory()->create();
@@ -387,7 +427,7 @@ function makeTargetWithCert(string $provider, string $product, ?string $intermed
     }
     $cert = Cert::factory()->create([
         'order_id' => $order->id, 'status' => 'active', 'issuer' => $issuer,
-        'cert' => 'CERTPEM', 'private_key' => 'KEYPEM', 'fingerprint' => 'FP1',
+        'cert' => 'CERTPEM', 'private_key' => jobPkcs8RsaPrivateKey(), 'fingerprint' => 'FP1',
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
     $target = CloudDeployTarget::create([
@@ -411,7 +451,39 @@ test('内联型直传成功，更新 target + 写 success log + bind 收到 PEM 
     // 内联型：bind 收到 cert/key/chain 三元组，无上传
     expect(CloudDeployJobTestSpy::$uploads)->toBeEmpty();
     expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
-    expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toMatchArray(['cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAIN']);
+    $material = CloudDeployJobTestSpy::$binds[0]['cert'];
+    expect($material)->toMatchArray(['cert' => 'CERTPEM', 'chain' => 'CHAIN']);
+    expect($material['key'])->toStartWith('-----BEGIN RSA PRIVATE KEY-----');
+    expect(jobPublicKeyFromPrivate($material['key']))->toBe(jobPublicKeyFromPrivate(jobPkcs8RsaPrivateKey()));
+    expect($cert->fresh()->private_key)->toStartWith('-----BEGIN PRIVATE KEY-----');
+});
+
+test('EC PKCS#8 私钥在交付前转换为传统 SEC1 格式且密钥不变', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobFakeInlineDeployer());
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $cert->update(['private_key' => jobPkcs8EcPrivateKey(), 'encryption_alg' => 'ecdsa']);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    $material = CloudDeployJobTestSpy::$binds[0]['cert'];
+    expect($material['key'])->toStartWith('-----BEGIN EC PRIVATE KEY-----');
+    expect(jobPublicKeyFromPrivate($material['key']))->toBe(jobPublicKeyFromPrivate(jobPkcs8EcPrivateKey()));
+});
+
+test('非法私钥在调用部署器前转为业务终态且不抛异常', function () {
+    bindFakeRegistry('aliyun', 'cdn', fn () => jobFakeInlineDeployer());
+    [$target, $cert] = makeTargetWithCert('aliyun', 'cdn');
+    $cert->update(['private_key' => 'NOT-A-PRIVATE-KEY']);
+
+    (new CloudDeployJob($target->id, $cert->id, 'auto'))->handle();
+
+    $target->refresh();
+    expect($target->last_status)->toBe('failed');
+    expect($target->last_error)->toBe('证书私钥格式无效，无法部署');
+    expect(CloudDeployLog::where('target_id', $target->id)
+        ->where('error_code', 'business_error')->where('is_final', true)->exists())->toBeTrue();
+    expect(CloudDeployJobTestSpy::$binds)->toBeEmpty();
+    expect(CloudDeployJobTestSpy::$uploads)->toBeEmpty();
 });
 
 test('证书服务型走证书服务，落 remote_cert + bind 收到 remote_cert_id', function () {
@@ -426,6 +498,8 @@ test('证书服务型走证书服务，落 remote_cert + bind 收到 remote_cert
     expect(CloudDeployRemoteCert::where('access_id', $target->access_id)->where('store_kind', 'tencent_ssl')->where('fingerprint', 'FP1')->value('remote_cert_id'))->toBe('cert-t');
     // 上传一次 + bind 收到 id 而非 PEM
     expect(CloudDeployJobTestSpy::$uploads)->toHaveCount(1);
+    expect(CloudDeployJobTestSpy::$uploads[0]['key'])->toStartWith('-----BEGIN RSA PRIVATE KEY-----');
+    expect(jobPublicKeyFromPrivate(CloudDeployJobTestSpy::$uploads[0]['key']))->toBe(jobPublicKeyFromPrivate(jobPkcs8RsaPrivateKey()));
     expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe('cert-t');
 });
 
@@ -439,9 +513,8 @@ test('动态交付模式：APIGW traditional 与腾讯 is_replaced 内联，默�
     expect(CloudDeployJobTestSpy::$binds)->toHaveCount(1);
     if ($expectsInline) {
         expect(CloudDeployJobTestSpy::$uploads)->toBeEmpty();
-        expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe([
-            'cert' => 'CERTPEM', 'key' => 'KEYPEM', 'chain' => 'CHAIN',
-        ]);
+        expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toMatchArray(['cert' => 'CERTPEM', 'chain' => 'CHAIN']);
+        expect(CloudDeployJobTestSpy::$binds[0]['cert']['key'])->toStartWith('-----BEGIN RSA PRIVATE KEY-----');
     } else {
         expect(CloudDeployJobTestSpy::$uploads)->toHaveCount(1);
         expect(CloudDeployJobTestSpy::$binds[0]['cert'])->toBe('remote-dynamic');

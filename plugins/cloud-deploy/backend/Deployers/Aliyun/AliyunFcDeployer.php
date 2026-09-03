@@ -147,6 +147,11 @@ class AliyunFcDeployer extends AbstractDeployer
         return $region === '' ? 'fcv3.cn-hangzhou.aliyuncs.com' : "fcv3.$region.aliyuncs.com";
     }
 
+    protected function isTerminalSdkError(Throwable $e): bool
+    {
+        return AliyunErrorSanitizer::errorCode($e) === 'InvalidArgument';
+    }
+
     protected function sanitize(Throwable $e): string
     {
         return AliyunErrorSanitizer::sanitize($e);

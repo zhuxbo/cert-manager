@@ -36,6 +36,26 @@ use Throwable;
  */
 class AliyunErrorSanitizer
 {
+    /**
+     * 仅提取服务端结构化错误码；网络错误及未知异常返回 null。
+     */
+    public static function errorCode(Throwable $e): ?string
+    {
+        if ($e instanceof AlibabaCloudException) {
+            return is_string($e->code) && $e->code !== '' ? $e->code : null;
+        }
+
+        if ($e instanceof TeaError && is_array($e->data)) {
+            return is_string($e->code) && $e->code !== '' ? $e->code : null;
+        }
+
+        if ($e instanceof OssServiceException) {
+            return $e->getErrorCode() !== '' ? $e->getErrorCode() : null;
+        }
+
+        return null;
+    }
+
     public static function sanitize(Throwable $e): string
     {
         // 兜底凭证扫描（纵深防御）：精确脱敏后再扫一遍 AK/SK/签名/私钥 pattern，威胁模型边界被破时拦截。
