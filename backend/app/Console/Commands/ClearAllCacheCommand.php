@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Upgrade\RuntimeSessionCutover;
 use App\Support\Opcache;
 use App\Support\RuntimeCache;
 use Exception;
@@ -37,6 +38,12 @@ class ClearAllCacheCommand extends Command
      */
     public function handle(): int
     {
+        if (RuntimeSessionCutover::isPending()) {
+            $this->error('会话切库尚未完成，拒绝全量清理旧 JWT 黑名单');
+
+            return CommandAlias::FAILURE;
+        }
+
         $quick = $this->option('quick');
         $clearLogs = $this->option('logs');
         $restartQueue = $this->option('restart-queue');

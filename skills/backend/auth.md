@@ -2,7 +2,7 @@
 
 ## Token 认证体系
 
-JWT 撤销黑名单由 `App\Auth\JwtBlacklistStorage` 显式写入 `runtime` 缓存仓库。普通 `cache:clear` / 管理端“安全清理缓存”不会解除已登出的 token；数据库恢复的运行态重置会清理该黑名单。首次从旧缓存库切换到 `runtime` 时，`2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移会递增全部账号的 `token_version`、清空 refresh token，以确保旧黑名单键不再可读后旧 access token 也无法复活；该升级会要求全部用户和管理员重新登录一次。
+JWT 撤销黑名单由 `App\Auth\JwtBlacklistStorage` 显式写入 `runtime` 缓存仓库。普通 `cache:clear` / 管理端“安全清理缓存”不会解除已登出的 token；数据库恢复的运行态重置会清理该黑名单。首次从旧缓存库切换到 `runtime` 时，`2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移会递增全部账号的 `token_version`、清空 refresh token。该迁移在升级冻结期间通过 `shouldRun=false` 跳过且不记入 migrations，成功收尾后才执行；失败升级不吊销，已记录该迁移的实例后续升级不再吊销。待迁移期间 JWT 同时读取旧黑名单，`cache:clear` 暂缓清理，`cache:clear-all` 拒绝运行，避免旧 token 在升级途中复活。仅首次切库升级完成后要求用户和管理员重新登录一次。
 
 | Token 类型  | 中间件              | 路由前缀               | 用途             |
 | ----------- | ------------------- | ---------------------- | ---------------- |

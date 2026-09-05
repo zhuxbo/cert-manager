@@ -327,6 +327,10 @@ class UpgradeService
             Log::info("升级完成: $currentVersion -> $targetVersion");
             $statusManager->complete($currentVersion, $targetVersion, $structureCheckResult);
 
+            if (Config::get('upgrade.behavior.auto_migrate', true)) {
+                RuntimeSessionCutover::finishCompletedUpgrade(getmypid());
+            }
+
             return [
                 'success' => true,
                 'from_version' => $currentVersion,

@@ -4,6 +4,8 @@
 
 ### 升级冻结契约
 
+首次 runtime 会话切库迁移在 freeze 期间跳过，后台升级写入 completed 后由 `RuntimeSessionCutover` 补执行；旧版后台进程通过该迁移注册的应用终止回调兼容。`upgrade.sh` 在 `up` 成功后按单文件路径补跑同一迁移。迁移记录保证只吊销一次，失败升级和之后的普通升级不吊销；待切库期间保留旧 JWT 黑名单及其缓存，详见认证规范。关闭自动迁移时后台不主动补跑。
+
 Redis 编号由 `RedisDatabaseConfig::preserve()` 读取当前应用已加载的配置（含 config cache），显式追加到本实例 `.env`，幂等且保留属主/权限与 `APP_NAME`；不扫描跨实例占用、不搬迁队列。新版 `UpgradeService` 在 apply 前调用；首次旧版后台进程通过 runtime 切库 migration 在清配置缓存前补调用（旧配置无 runtime store）；`upgrade.sh` 在切码前以旧应用 bootstrap 加载目标包中的同一实现。两库原本相同、编号无效或使用 `REDIS_URL` 时中止，不能套用新默认值掩盖配置问题。首次旧后台升级必须开启自动迁移。
 
 升级期间应用进入只读维护态，避免 in-flight HTTP/Job 半执行：

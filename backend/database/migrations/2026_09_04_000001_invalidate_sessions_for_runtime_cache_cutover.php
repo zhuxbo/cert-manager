@@ -1,6 +1,8 @@
 <?php
 
 use App\Services\Upgrade\RedisDatabaseConfig;
+use App\Services\Upgrade\RuntimeSessionCutover;
+use App\Utils\UpgradeFreezeLock;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -8,6 +10,24 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     private const int MAX_TOKEN_VERSION = 4294967295;
+
+    public function shouldRun(): bool
+    {
+        // 旧版后台进程仍持有旧配置，必须在后续 config:clear 前保留 Redis 编号。
+        if (config('cache.stores.runtime') === null) {
+            RedisDatabaseConfig::preserve();
+        }
+
+        if (! UpgradeFreezeLock::isFrozen()) {
+            return true;
+        }
+
+        // shouldRun=false 不记入 migrations；旧升级器也能在成功退出时补跑本迁移。
+        $pid = getmypid();
+        app()->terminating(static fn () => RuntimeSessionCutover::finishCompletedUpgrade($pid));
+
+        return false;
+    }
 
     /**
      * JWT 黑名单首次从可清理缓存切到 runtime 仓库时，旧库中的键不再可靠读取。

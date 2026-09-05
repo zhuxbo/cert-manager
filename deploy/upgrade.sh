@@ -2522,6 +2522,12 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     # 必须落在 up 与 queue:restart 之间。
     UPGRADE_DONE=1
 
+    # 会话切库只执行一次；冻结期间跳过，服务恢复后才吊销旧登录。
+    local session_cutover_migration="database/migrations/2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover.php"
+    if [ -f "$session_cutover_migration" ]; then
+        "$PHP_CMD" artisan migrate --path="$session_cutover_migration" --force
+    fi
+
     # 14b. 重启队列 worker（让常驻 worker 跑完当前 job 后退出，supervisor 自动拉起新进程加载新代码）
     log_step "重启队列 worker..."
     if "$PHP_CMD" artisan queue:restart >/dev/null 2>&1; then
