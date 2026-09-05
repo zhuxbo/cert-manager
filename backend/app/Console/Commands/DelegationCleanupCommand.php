@@ -15,13 +15,13 @@ use UnexpectedValueException;
 
 class DelegationCleanupCommand extends Command
 {
-    private const int RETENTION_DAYS = 30;
+    private const int RETENTION_DAYS = 14;
 
     /** @var string */
     protected $signature = 'delegation:cleanup';
 
     /** @var string */
-    protected $description = '清理超过 30 天且未被在途订单使用的委托 DNS 记录';
+    protected $description = '清理本系统非处理中及超过 14 天的委托 DNS 记录';
 
     /**
      * Execute the console command.
@@ -59,6 +59,7 @@ class DelegationCleanupCommand extends Command
             }
 
             $keepLabelsByDomain = $this->loadKeepLabelsByDomain();
+            $localLabels = CnameDelegation::pluck('label')->mapWithKeys(fn ($label) => [$this->normalizeLabel($label) => true])->all();
         } catch (Throwable $e) {
             $this->error('清理准备失败: '.$e->getMessage());
             Log::error('委托DNS记录清理准备失败', [
@@ -84,7 +85,7 @@ class DelegationCleanupCommand extends Command
                     $listedLabelsByDomain[$proxyDomain][$this->normalizeLabel($record['name'] ?? '')] = true;
                 }
 
-                $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels, $cutoffTimestamp) {
+                $recordsToDelete = collect($allTxtRecords)->filter(function ($record) use ($keepLabels, $localLabels, $cutoffTimestamp) {
                     $name = $this->normalizeLabel($record['name'] ?? '');
                     if (preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', $name) !== 1) {
                         return false;
@@ -93,9 +94,8 @@ class DelegationCleanupCommand extends Command
                     $changedAt = $record['changed_at'] ?? null;
 
                     return ! isset($keepLabels[$name])
-                        && is_int($changedAt)
-                        && $changedAt > 0
-                        && $changedAt < $cutoffTimestamp;
+                        && (isset($localLabels[$name])
+                            || (is_int($changedAt) && $changedAt > 0 && $changedAt < $cutoffTimestamp));
                 });
 
                 $this->info('需要删除的记录数: '.$recordsToDelete->count());
@@ -119,7 +119,7 @@ class DelegationCleanupCommand extends Command
 
                 foreach ($recordIdsByLabel as $label => $recordIds) {
                     $dnsService->deleteRecords($proxyDomain, $recordIds);
-                    // 每个 label 的过期记录完整删除后立即记录；后续 label 失败不能抹掉已确认结果。
+                    // 每个 label 的候选记录完整删除后立即记录；后续 label 失败不能抹掉已确认结果。
                     $deletedLabelsByDomain[$proxyDomain][$label] = true;
                     $deletedLabels[] = $label;
                     $deletedRecordCount += count($recordIds);
@@ -171,7 +171,7 @@ class DelegationCleanupCommand extends Command
     protected function loadKeepLabelsByDomain(): array
     {
         $orders = Order::with('latestCert')
-            ->whereHas('latestCert', fn ($query) => $query->whereIn('status', ['processing', 'approving']))
+            ->whereHas('latestCert', fn ($query) => $query->where('status', 'processing'))
             ->get();
 
         $delegationIds = [];
@@ -237,7 +237,7 @@ class DelegationCleanupCommand extends Command
     ): int {
         $cleanedCount = 0;
 
-        Order::with(['latestCert' => fn ($query) => $query->select('id', 'validation')])
+        Order::with(['latestCert' => fn ($query) => $query->select('id', 'status', 'validation')])
             ->whereHas('latestCert', fn ($query) => $query->where('validation', 'like', '%auto_txt_written%'))
             ->chunkById(200, function ($orders) use (
                 $deletedLabelsByDomain,
@@ -280,13 +280,18 @@ class DelegationCleanupCommand extends Command
                         $delegationId = $this->positiveDelegationId($validation['delegation_id'] ?? null);
                         if (($validation['auto_txt_written'] ?? false) !== true
                             || $delegationId === null
-                            || ! $this->isExpiredMark($validation, $cutoffTimestamp)) {
+                            || ($cert->status === 'processing' && ! $this->isExpiredMark($validation, $cutoffTimestamp))) {
                             $updatedValidations[$index] = $validation;
 
                             continue;
                         }
 
                         $delegation = $delegationsById->get($delegationId);
+                        if (! $delegation && ! $this->isExpiredMark($validation, $cutoffTimestamp)) {
+                            $updatedValidations[$index] = $validation;
+
+                            continue;
+                        }
                         $proxyDomain = $delegation !== null
                             ? $this->proxyDomainForValidation($delegation, $validation)
                             : null;
@@ -310,10 +315,12 @@ class DelegationCleanupCommand extends Command
                             continue;
                         }
 
+                        if (! $delegation) {
+                            unset($validation['delegation_id']);
+                        }
                         unset(
                             $validation['auto_txt_written'],
                             $validation['auto_txt_written_at'],
-                            $validation['delegation_id'],
                         );
                         $updatedValidations[$index] = $validation;
                         $hasChanges = true;

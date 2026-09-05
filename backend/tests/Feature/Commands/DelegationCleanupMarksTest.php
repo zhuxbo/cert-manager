@@ -55,11 +55,11 @@ function cleanupMarksExpiredDnsRecord(string|int $id, string $name): array
         'id' => $id,
         'name' => $name,
         'value' => 'expired-token',
-        'changed_at' => now()->subDays(31)->timestamp,
+        'changed_at' => now()->subDays(15)->timestamp,
     ];
 }
 
-test('超过 30 天的 DNS 记录和本地写入标记一起清理', function () {
+test('超过 14 天的 DNS 记录和本地写入标记一起清理', function () {
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, ['zone' => 'oldorder.example.com']);
     $order = $this->createTestOrder($user, $this->createTestProduct());
@@ -73,7 +73,7 @@ test('超过 30 天的 DNS 记录和本地写入标记一起清理', function ()
     // 订单本身的创建时间不作为清理边界。
     Cert::where('id', $cert->id)->update(['created_at' => now()->subDays(40)]);
 
-    // 该 label 的 DNS 记录已超过 30 天，且订单不在 processing/approving 保留集。
+    // 该 label 的 DNS 记录已超过 14 天，且订单不在 processing 保留集。
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
         ->andReturn([cleanupMarksExpiredDnsRecord(1, strtoupper($delegation->label))]);
     $this->dnsService->shouldReceive('deleteRecords')
@@ -83,11 +83,11 @@ test('超过 30 天的 DNS 记录和本地写入标记一起清理', function ()
 
     $cert->refresh();
     expect($cert->validation[0])->not->toHaveKey('auto_txt_written')
-        ->and($cert->validation[0])->not->toHaveKey('delegation_id');
+        ->and($cert->validation[0]['delegation_id'])->toBe($delegation->id);
 });
 
-// 缺陷二：approving 单 label 进 keepLabels → 不被删
-test('approving 单 label 进 keepLabels → 不删除（保留集纳入 approving）', function () {
+// 在途只认 processing，approving 本地记录无需等待年龄阈值。
+test('approving 单 label 每日清理且保留委托绑定', function () {
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, ['zone' => 'approving.example.com']);
     $order = $this->createTestOrder($user, $this->createTestProduct());
@@ -100,14 +100,16 @@ test('approving 单 label 进 keepLabels → 不删除（保留集纳入 approvi
     ]);
     $order->update(['latest_cert_id' => $cert->id]);
 
-    // DNS 中仅有该 approving label；进入 keepLabels 后无需删除。
+    // 本系统的非 processing label 即使没有记录时间也可清理。
     $this->dnsService->shouldReceive('getAllTxtRecords')->with('proxy.example.com')
         ->andReturn([['id' => 1, 'name' => $delegation->label]]);
-    $this->dnsService->shouldReceive('deleteRecords')->never();
+    $this->dnsService->shouldReceive('deleteRecords')->once()->with('proxy.example.com', [1]);
 
     $this->artisan('delegation:cleanup')
-        ->expectsOutputToContain('没有需要清理的记录')
         ->assertSuccessful();
+
+    expect($cert->fresh()->validation[0])->not->toHaveKey('auto_txt_written')
+        ->and($cert->fresh()->validation[0]['delegation_id'])->toBe($delegation->id);
 });
 
 // 护栏：processing 单 label 保留、标记不误清
@@ -163,7 +165,8 @@ test('cleanDatabaseMarks 批量加载委托消除 N+1 + certs 预加载 select �
     $certPreloadSql = null;
     DB::listen(function ($q) use (&$delegationSelects, &$certPreloadSql) {
         $sql = strtolower($q->sql);
-        if (str_starts_with($sql, 'select') && str_contains($sql, 'from `cname_delegations`')) {
+        if (str_starts_with($sql, 'select') && str_contains($sql, 'from `cname_delegations`')
+            && ! str_starts_with($sql, 'select `label`')) {
             $delegationSelects++;
         }
         // certs 预加载（独立 select ... from certs where id in (...)），区别于 whereHas 的 exists 相关子查询
@@ -204,7 +207,7 @@ test('cleanDatabaseMarks LIKE 粗筛 + 批量加载行为等价', function () {
     // C. 有效标记但 label 不在删除集 → 应留
     $delC = $this->createTestDelegation($user, ['zone' => 'c.example.com']);
     $orderC = $this->createTestOrder($user, $this->createTestProduct());
-    $certC = $this->createTestCert($orderC, ['status' => 'cancelled', 'validation' => [
+    $certC = $this->createTestCert($orderC, ['status' => 'processing', 'validation' => [
         ['domain' => 'c.example.com', 'method' => 'txt', 'delegation_id' => $delC->id, 'auto_txt_written' => true],
     ]]);
 
@@ -263,7 +266,7 @@ test('委托已删的孤儿标记只清本地引用且不据此猜测远端归�
     ]);
 });
 
-test('未满 30 天的孤儿标记保持不动', function () {
+test('未满 14 天的孤儿标记保持不动', function () {
     $user = $this->createTestUser();
     $order = $this->createTestOrder($user, $this->createTestProduct());
     $cert = $this->createTestCert($order, [
@@ -289,7 +292,7 @@ test('未满 30 天的孤儿标记保持不动', function () {
     ]);
 });
 
-test('其他系统已先删除 DNS 记录时清理超过 30 天的本地标记', function () {
+test('其他系统已先删除 DNS 记录时清理超过 14 天的本地标记', function () {
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, [
         'zone' => 'already-cleaned.example.com',
@@ -313,7 +316,6 @@ test('其他系统已先删除 DNS 记录时清理超过 30 天的本地标记',
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
     expect($cert->fresh()->validation[0])->not->toHaveKeys([
-        'delegation_id',
         'auto_txt_written',
         'auto_txt_written_at',
     ]);
@@ -360,7 +362,6 @@ test('同域前一 label 删除成功后一 label 失败时只清已确认成功
     $this->artisan('delegation:cleanup')->assertExitCode(1);
 
     expect($firstCert->fresh()->validation[0])->not->toHaveKeys([
-        'delegation_id',
         'auto_txt_written',
         'auto_txt_written_at',
     ])->and($secondCert->fresh()->validation[0])->toMatchArray([
@@ -423,7 +424,7 @@ test('部分域失败时仅清成功域精确委托的同名 label 标记', func
     $oldCert->refresh();
     $newCert->refresh();
     expect($oldCert->validation[0])->not->toHaveKey('auto_txt_written')
-        ->and($oldCert->validation[0])->not->toHaveKey('delegation_id')
+        ->and($oldCert->validation[0]['delegation_id'])->toBe($oldDelegation->id)
         ->and($newCert->validation[0]['auto_txt_written'])->toBeTrue()
         ->and($newCert->validation[0]['delegation_id'])->toBe($newDelegation->id);
 });
@@ -459,7 +460,6 @@ test('按冻结目标删除 TXT 后清理对应数据库标记', function () {
     $this->artisan('delegation:cleanup')->assertSuccessful();
 
     expect($cert->fresh()->validation[0])->not->toHaveKeys([
-        'delegation_id',
         'auto_txt_written',
         'auto_txt_written_at',
     ]);

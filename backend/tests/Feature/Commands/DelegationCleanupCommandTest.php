@@ -63,7 +63,7 @@ function cleanupExpiredDnsRecord(string|int $id, string $name, string $value = '
         'id' => $id,
         'name' => $name,
         'value' => $value,
-        'changed_at' => now()->subDays(31)->timestamp,
+        'changed_at' => now()->subDays(15)->timestamp,
     ];
 }
 
@@ -117,7 +117,7 @@ test('64 位 hex 历史委托记录仍被清理', function () {
     $this->artisan('delegation:cleanup')->assertSuccessful();
 });
 
-test('未满 30 天以及缺失或畸形更新时间的委托记录均不删除', function () {
+test('未满 14 天以及缺失或畸形更新时间的委托记录均不删除', function () {
     cleanupConfigureDomain('proxy.example.com');
     $freshLabel = str_repeat('c', 32);
     $unknownLabel = str_repeat('d', 32);
@@ -129,7 +129,7 @@ test('未满 30 天以及缺失或畸形更新时间的委托记录均不删除'
                 'id' => 'fresh-id',
                 'name' => $freshLabel,
                 'value' => 'fresh-token',
-                'changed_at' => now()->subDays(29)->timestamp,
+                'changed_at' => now()->subDays(13)->timestamp,
             ],
             ['id' => 'unknown-id', 'name' => $unknownLabel, 'value' => 'unknown-token', 'changed_at' => null],
             [
@@ -144,7 +144,7 @@ test('未满 30 天以及缺失或畸形更新时间的委托记录均不删除'
     $this->artisan('delegation:cleanup')->assertSuccessful();
 });
 
-test('同一 label 只按记录 ID 删除超过 30 天的旧值', function () {
+test('同一 label 只按记录 ID 删除超过 14 天的旧值', function () {
     cleanupConfigureDomain('proxy.example.com');
     $label = str_repeat('e', 32);
 
@@ -412,4 +412,36 @@ test('只有畸形域配置时失败退出且不访问 DNS', function () {
     $this->dnsService->shouldReceive('deleteRecords')->never();
 
     $this->artisan('delegation:cleanup')->assertExitCode(1);
+});
+
+test('本系统 label 只有 processing 受保护，其他状态当天即清理', function (string $status, bool $keep) {
+    cleanupConfigureDomain('proxy.example.com');
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user);
+    $this->createTestCert($this->createTestOrder($user, $this->createTestProduct()), [
+        'status' => $status,
+        'validation' => [['delegation_id' => $delegation->id]],
+    ]);
+    $this->dnsService->shouldReceive('getAllTxtRecords')->once()->with('proxy.example.com')->andReturn([
+        ['id' => 'fresh-id', 'name' => $delegation->label, 'value' => 'token', 'changed_at' => now()->timestamp],
+    ]);
+    if ($keep) {
+        $this->dnsService->shouldNotReceive('deleteRecords');
+    } else {
+        $this->dnsService->shouldReceive('deleteRecords')->once()->with('proxy.example.com', ['fresh-id']);
+    }
+    $this->artisan('delegation:cleanup')->assertSuccessful();
+})->with([['processing', true], ['active', false], ['cancelled', false], ['approving', false], ['pending', false]]);
+
+test('全域兜底严格超过十四天才删除未知 label', function () {
+    $this->freezeTime();
+    cleanupConfigureDomain('proxy.example.com');
+    $records = [];
+    foreach (['before' => -1, 'boundary' => 0, 'after' => 1] as $id => $seconds) {
+        $records[] = ['id' => $id, 'name' => str_repeat('f', 32), 'value' => $id,
+            'changed_at' => now()->subDays(14)->addSeconds($seconds)->timestamp];
+    }
+    $this->dnsService->shouldReceive('getAllTxtRecords')->once()->with('proxy.example.com')->andReturn($records);
+    $this->dnsService->shouldReceive('deleteRecords')->once()->with('proxy.example.com', ['before']);
+    $this->artisan('delegation:cleanup')->assertSuccessful();
 });

@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Services\Delegation;
 
+use App\Models\Cert;
 use App\Models\CnameDelegation;
 use App\Models\Order;
 use App\Services\Order\Utils\DomainUtil;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * 自动 DCV TXT 写入服务
@@ -23,6 +25,78 @@ class AutoDcvTxtService
     {
         $this->delegationService = new CnameDelegationService;
         $this->dnsService = new DelegationDnsService;
+    }
+
+    /** 同步离开 processing 后，按原证书目标和 TXT 值清理；失败留给每日任务补漏。 */
+    public function cleanupCertificate(Cert $cert): void
+    {
+        try {
+            $validation = $cert->validation ?? [];
+            if (! collect($validation)->contains(fn ($item) => ! empty($item['delegation_id']))) {
+                return;
+            }
+
+            $processing = Cert::where('status', 'processing')->where('validation', 'like', '%delegation_id%')
+                ->pluck('validation')->flatten(1);
+            $delegations = CnameDelegation::whereIn('id', collect($validation)->merge($processing)
+                ->pluck('delegation_id')->filter()->unique())->get()->keyBy('id');
+            $targetFor = function (array $item) use ($delegations): ?string {
+                $delegation = $delegations->get($item['delegation_id'] ?? null);
+                if (! $delegation) {
+                    return null;
+                }
+                $target = $item['delegation_target'] ?? null;
+                $domain = $target === null || $target === ''
+                    ? $delegation->proxy_domain
+                    : $this->delegationService->proxyDomainFromTarget($delegation, $target);
+
+                return $domain ? $delegation->label.'.'.$domain : null;
+            };
+            $recordsByDomain = [];
+            $cleaned = [];
+            foreach ($validation as $item) {
+                $target = $targetFor($item);
+                $value = $item['value'] ?? null;
+                if ($target === null || ! is_string($value) || $value === '') {
+                    continue;
+                }
+                if ($processing->contains(fn ($other) => ($other['value'] ?? null) === $value
+                    && $targetFor($other) === $target)) {
+                    continue;
+                }
+
+                [$label, $domain] = explode('.', $target, 2);
+                try {
+                    $recordsByDomain[$domain] ??= $this->dnsService->getAllTxtRecords($domain);
+                    $ids = collect($recordsByDomain[$domain])->filter(fn ($record) => $record['name'] === $label && $record['value'] === $value)->pluck('id')->all();
+                    $this->dnsService->deleteRecords($domain, $ids);
+                    $cleaned[$target][$value] = true;
+                } catch (Throwable $e) {
+                    Log::error('同步后委托 TXT 清理失败', [
+                        'cert_id' => $cert->id,
+                        'proxy_domain' => $domain,
+                        'exception' => $e::class,
+                    ]);
+                }
+            }
+
+            $current = Cert::select('id', 'validation')->find($cert->id);
+            if ($current && $cleaned !== []) {
+                $items = $current->validation ?? [];
+                foreach ($items as &$item) {
+                    if (isset($cleaned[$targetFor($item) ?? ''][$item['value'] ?? ''])) {
+                        unset($item['auto_txt_written'], $item['auto_txt_written_at']);
+                    }
+                }
+                unset($item);
+                $current->update(['validation' => $items]);
+            }
+        } catch (Throwable $e) {
+            Log::error('同步后委托 TXT 清理失败', [
+                'cert_id' => $cert->id,
+                'exception' => $e::class,
+            ]);
+        }
     }
 
     /**

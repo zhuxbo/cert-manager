@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\CleanupDelegationTxtJob;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Delegation\AutoDcvTxtService;
@@ -873,4 +874,97 @@ test('232 未命中委托 → Log::warning（含 zone 上下文）', function ()
                 && ($context['order_id'] ?? null) === $order->id;
         })
         ->once();
+});
+
+test('清理原证书冻结目标的 TXT 值并保留同名其他值和委托绑定', function () {
+    configureAutoDcvProxyDomain('old.example.com');
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user, ['proxy_domain' => 'proxy.example.com']);
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $cert = $this->createTestCert($order, [
+        'status' => 'active',
+        'validation' => [[
+            'delegation_id' => $delegation->id,
+            'delegation_target' => $delegation->label.'.old.example.com',
+            'value' => 'old-token',
+            'auto_txt_written' => true,
+            'auto_txt_written_at' => now()->toDateTimeString(),
+        ]],
+    ]);
+    $dns = Mockery::mock(DelegationDnsService::class);
+    $dns->shouldReceive('getAllTxtRecords')->twice()->with('old.example.com')->andReturn([
+        ['id' => 'old-id', 'name' => $delegation->label, 'value' => 'old-token'],
+        ['id' => 'new-id', 'name' => $delegation->label, 'value' => 'new-token'],
+    ], [
+        ['id' => 'new-id', 'name' => $delegation->label, 'value' => 'new-token'],
+    ]);
+    $dns->shouldReceive('deleteRecords')->once()->with('old.example.com', ['old-id']);
+    $dns->shouldReceive('deleteRecords')->once()->with('old.example.com', []);
+    (new ReflectionProperty($this->service, 'dnsService'))->setValue($this->service, $dns);
+
+    $this->service->cleanupCertificate($cert);
+    $this->service->cleanupCertificate($cert);
+
+    expect($cert->fresh()->validation[0])->toMatchArray([
+        'delegation_id' => $delegation->id,
+        'delegation_target' => $delegation->label.'.old.example.com',
+        'value' => 'old-token',
+    ])->not->toHaveKeys(['auto_txt_written', 'auto_txt_written_at']);
+});
+
+test('精准清理保留其他 processing 证书引用的相同目标和值', function (string $status, bool $protected) {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user);
+    $validation = [['delegation_id' => $delegation->id, 'value' => 'shared-token', 'auto_txt_written' => true]];
+    $cert = $this->createTestCert($this->createTestOrder($user, $this->createTestProduct()), [
+        'status' => 'active', 'validation' => $validation,
+    ]);
+    $this->createTestCert($this->createTestOrder($user, $this->createTestProduct()), [
+        'status' => $status, 'validation' => $validation,
+    ]);
+    $dns = Mockery::mock(DelegationDnsService::class);
+    if ($protected) {
+        $dns->shouldNotReceive('getAllTxtRecords');
+    } else {
+        $dns->shouldReceive('getAllTxtRecords')->once()->with('proxy.example.com')->andReturn([]);
+        $dns->shouldReceive('deleteRecords')->once()->with('proxy.example.com', []);
+    }
+    (new ReflectionProperty($this->service, 'dnsService'))->setValue($this->service, $dns);
+    $this->service->cleanupCertificate($cert);
+    expect(isset($cert->fresh()->validation[0]['auto_txt_written']))->toBe($protected);
+})->with([['processing', true], ['approving', false]]);
+
+test('精准清理失败保留写入标记且不向同步操作抛异常', function () {
+    $user = $this->createTestUser();
+    $delegation = $this->createTestDelegation($user);
+    $cert = $this->createTestCert($this->createTestOrder($user, $this->createTestProduct()), [
+        'status' => 'cancelled',
+        'validation' => [['delegation_id' => $delegation->id, 'value' => 'token', 'auto_txt_written' => true]],
+    ]);
+    $dns = Mockery::mock(DelegationDnsService::class);
+    $dns->shouldReceive('getAllTxtRecords')->once()->andReturn([
+        ['id' => 'record-id', 'name' => $delegation->label, 'value' => 'token'],
+    ]);
+    $dns->shouldReceive('deleteRecords')->once()->andThrow(new RuntimeException('test failure'));
+    (new ReflectionProperty($this->service, 'dnsService'))->setValue($this->service, $dns);
+    Log::spy();
+
+    $this->service->cleanupCertificate($cert);
+
+    expect($cert->fresh()->validation[0]['auto_txt_written'])->toBeTrue();
+    Log::shouldHaveReceived('error')->withArgs(fn ($message) => $message === '同步后委托 TXT 清理失败')->once();
+});
+
+test('异步清理任务序列化后仍使用入队时的原证书验证快照', function () {
+    $user = $this->createTestUser();
+    $order = $this->createTestOrder($user, $this->createTestProduct());
+    $validation = [['delegation_id' => 123, 'delegation_target' => 'label.old.example.com', 'value' => 'old-token']];
+    $cert = $this->createTestCert($order, ['status' => 'cancelled', 'validation' => $validation]);
+    $payload = serialize(new CleanupDelegationTxtJob($cert->id, $validation));
+    $cert->update(['validation' => [['value' => 'new-token']]]);
+
+    $service = Mockery::mock(AutoDcvTxtService::class);
+    $service->shouldReceive('cleanupCertificate')->once()->withArgs(fn ($snapshot) => $snapshot->id === $cert->id
+        && $snapshot->validation === $validation);
+    unserialize($payload)->handle($service);
 });

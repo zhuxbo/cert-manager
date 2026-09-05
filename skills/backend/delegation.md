@@ -162,16 +162,16 @@ CA active 只更新证书状态，不切换共享委托
 
 ### 委托 DNS 清理
 
-`DelegationCleanupCommand` 每天 06:00 清理无用的委托 TXT 记录：
+清理分为同步触发的异步精准清理和每天 06:00 的 `delegation:cleanup` 补漏，现有 label 生成规则、用户 CNAME 和订单目标快照不变：
 
-- **按域隔离**：枚举每个完整代理域配置，通过该域自己的 provider 拉取和删除记录。`processing`/`approving` 订单优先按 `validation.delegation_target` 建立 keepLabels；旧数据缺少目标快照时才回落共享 `proxy_domain`。同名 label 不会跨域误保留，单域失败不阻止其他域继续处理。
-- **委托格式白名单（数据破坏防线）**：删除判据在 keepLabels 白名单之上前置「委托格式收敛」——只删 label 形如 **32 或 64 位 hex**（`preg_match('/^([0-9a-f]{32}|[0-9a-f]{64})$/i', ...)`，大小写不敏感）的记录。当代 `generateLabel` 恒产 32-hex，64-hex 兼容历史存量。护住代理域下用户自放的 SPF/DKIM/`_dmarc`/apex `@`/站点验证等**非委托 TXT**（含点、下划线或非 hex 长度的名字永不进删除集）。
-- **保留**：`processing`/`approving` 状态订单引用的委托 label，在订单冻结目标所属代理域内保留。
-- **记录时间**：统一 provider 记录结构包含 `changed_at` Unix 秒时间戳；Tencent 取 `UpdatedOn`，Cloudflare 取 `modified_on`（缺失时回落 `created_on`），Aliyun 取 `CreateTimestamp`/`UpdateTimestamp` 中较晚者。时间缺失、格式无效或非正数时失败关闭，不删除该记录。
-- **删除**：只删除符合委托格式、不在 keepLabels 且 `changed_at` 严格早于当前时间 30 天的记录。按初始 DNS inventory 的精确 RecordId 删除，不按 label 重新枚举，避免同一 label 在清理期间新增的 token 被误删。
-- **跨系统幂等**：每个 RecordId 独立删除；provider 返回删除异常时重新枚举 TXT。如果该 ID 已不存在，视为另一套系统已经完成删除并继续；ID 仍存在或复查失败时保留原异常并使本域清理失败。若本轮成功枚举时某个超过 30 天的本地标记对应 label 已不存在，也视为其他系统先完成清理并清除本地标记；枚举失败的域不据此推断。
-- **删除计数**：成功日志的 `deleted_count` 按初始 DNS inventory 中、所属 label 的过期记录已完整删除或确认不存在的实际 TXT 记录条数累计；同一 label 多条过期 TXT 按多条计，后续 label 失败不计入。
-- **清理数据库标记**：只有 `auto_txt_written_at` 同样超过 30 天，才按订单快照域与成功处理的 label 精确匹配后移除 `delegation_id`、`auto_txt_written` 和 `auto_txt_written_at`。委托行不存在时只清超过 30 天的本地失效字段，不猜测远端归属；缺少或无法解析写入时间的标记保留。
+- **异步精准清理**：`Action::sync()` 检测到证书从 `processing` 变为其他状态时，在事务提交后派发 `CleanupDelegationTxtJob` 到 `tasks` 队列，由 worker 调用 `AutoDcvTxtService::cleanupCertificate()`；任务只携带证书 ID 和变化前 validation 数组快照，不序列化 Eloquent 模型，避免消费时重载新值；同步取消自动退款的提前返回分支同样覆盖。使用变化前证书的 `delegation_target + TXT 值` 匹配远端 RecordId，旧数据缺快照才回落共享 `proxy_domain`。仅相同目标及值仍被其他 `processing` 证书使用时保留，同名其他值不删除。删除异常只记录净化日志，不影响已提交的签发或取消，由每日任务补漏。
+- **按域隔离**：枚举每个完整代理域配置，通过该域自己的 provider 拉取和删除记录。只有 `processing` 订单按 `validation.delegation_target` 建立 keepLabels；旧数据缺少目标快照时才回落共享 `proxy_domain`。同名 label 不会跨域误保留，单域失败不阻止其他域继续处理。
+- **委托格式白名单**：每日清理只删 label 为 **32 或 64 位 hex** 的 TXT，保留 SPF/DKIM/`_dmarc`/apex `@` 等非委托记录。
+- **每日本地补漏**：匹配本系统 `cname_delegations.label` 且不在当前域 keepLabels 的记录直接清理，不要求达到年龄阈值；`approving`、`pending`、`cancelling` 等均不属于在途保护状态。
+- **全域 14 天兜底**：其余符合委托格式、不在 keepLabels 的记录，仅在 `changed_at` 严格早于当前时间 14 天时删除。此期限依赖共享域各系统的自动签发周期约定，不能据此推断其他系统的实时状态。
+- **记录时间**：Tencent 取 `UpdatedOn`，Cloudflare 取 `modified_on`（缺失回落 `created_on`），Aliyun 取 `CreateTimestamp`/`UpdateTimestamp` 中较晚者。未知归属记录时间缺失、无效或非正数时不删除。
+- **精确删除与幂等**：按初始 inventory 的 RecordId 删除，不按 label 重新枚举删除。同一 ID 删除异常时复查；已不存在视为成功，仍存在或复查失败保留原异常。每日成功计数按已完整处理 label 的实际 TXT 条数统计，后续失败不抹掉此前成功结果。
+- **本地标记**：删除成功或确认远端已不存在后，清除相应 `auto_txt_written`、`auto_txt_written_at`，保留有效 `delegation_id` 和目标快照。每日非 processing 证书不再受标记年龄限制；processing 的失效写入标记、以及委托行已不存在的孤儿标记仍按 14 天清理，后者同时移除无效 `delegation_id`。枚举失败不推断记录不存在。
 
 ### 删除代理域设置
 

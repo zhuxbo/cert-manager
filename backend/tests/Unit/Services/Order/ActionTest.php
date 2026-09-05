@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Jobs\CleanupDelegationTxtJob;
 use App\Models\Admin;
 use App\Models\Callback;
 use App\Models\Cert;
@@ -14,6 +15,7 @@ use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Services\Delegation\AutoDcvTxtService;
 use App\Services\Delegation\DelegationDnsService;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
@@ -2458,3 +2460,48 @@ test('订单入口重复提交精确返回 10 秒提示', function (string $meth
     'renew' => ['renew', '续费'],
     'reissue' => ['reissue', '重签'],
 ]);
+
+test('sync 离开 processing 提交后清理原证书，状态未变不清理', function (string $from, string $to, bool $cleanup) {
+    Queue::fake();
+    [$order, $cert] = createOrderWithCertForRevoke($from);
+    $validation = [['delegation_id' => 123, 'delegation_target' => 'label.old.example.com', 'value' => 'old-token']];
+    $cert->update(['validation' => $validation]);
+    $api = Mockery::mock(Api::class);
+    $api->shouldReceive('get')->andReturn(['code' => 1, 'data' => ['status' => $to]]);
+    (new ReflectionProperty($this->service, 'api'))->setValue($this->service, $api);
+    $cleaner = Mockery::mock(AutoDcvTxtService::class);
+    $cleaner->shouldNotReceive('cleanupCertificate');
+    $this->app->instance(AutoDcvTxtService::class, $cleaner);
+
+    DB::beginTransaction();
+    $this->service->sync($order->id, true);
+    Queue::assertNotPushed(CleanupDelegationTxtJob::class);
+    DB::commit();
+    if ($cleanup) {
+        Queue::assertPushed(CleanupDelegationTxtJob::class, fn ($job) => $job->certId === $cert->id
+            && $job->validation === $validation && $job->queue === config('queue.names.tasks') && $job->afterCommit);
+        Queue::assertPushed(CleanupDelegationTxtJob::class, 1);
+    } else {
+        Queue::assertNotPushed(CleanupDelegationTxtJob::class);
+    }
+})->with([
+    ['processing', 'active', true],
+    ['processing', 'cancelled', true],
+    ['processing', 'approving', true],
+    ['processing', 'processing', false],
+    ['active', 'active', false],
+]);
+
+test('sync 状态事务回滚不执行委托清理', function () {
+    Queue::fake();
+    [$order] = createOrderWithCertForRevoke('processing');
+    mockSyncReturnsActive();
+    $cleaner = Mockery::mock(AutoDcvTxtService::class);
+    $cleaner->shouldNotReceive('cleanupCertificate');
+    $this->app->instance(AutoDcvTxtService::class, $cleaner);
+
+    DB::beginTransaction();
+    $this->service->sync($order->id, true);
+    DB::rollBack();
+    Queue::assertNotPushed(CleanupDelegationTxtJob::class);
+});

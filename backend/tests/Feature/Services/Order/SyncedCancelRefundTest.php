@@ -1,16 +1,19 @@
 <?php
 
 use App\Exceptions\ApiResponseException;
+use App\Jobs\CleanupDelegationTxtJob;
 use App\Models\Product;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Models\Task;
 use App\Models\Transaction;
+use App\Services\Delegation\AutoDcvTxtService;
 use App\Services\Notification\NotificationCenter;
 use App\Services\Order\Action;
 use App\Services\Order\Api\Api;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
 use Tests\Traits\CreatesTestData;
 
@@ -943,4 +946,25 @@ test('#18 通用写回通知防重：cancelled 落定后再次 force sync 不重
 
     $intents = collect($captured)->filter(fn ($intent) => $intent->code === 'cert_renew_cancelled')->values();
     expect($intents)->toHaveCount(1);
+});
+
+test('同步取消自动退款提前返回分支也在提交后精准清理', function () {
+    Setting::setValue('site', 'autoRefundOnSync', true);
+    $user = $this->createTestUser(['balance' => '100.00']);
+    $order = $this->createTestOrder($user, $this->createTestProduct(), ['amount' => '100.00']);
+    $validation = [['delegation_id' => 123, 'value' => 'original-token']];
+    $cert = $this->createTestCert($order, ['status' => 'processing', 'action' => 'new', 'validation' => $validation]);
+    createOrderTransaction($user->id, $order->id, '-100.00');
+    mockOrderApiGet('cancelled');
+    $cleaner = Mockery::mock(AutoDcvTxtService::class);
+    $cleaner->shouldNotReceive('cleanupCertificate');
+    $this->app->instance(AutoDcvTxtService::class, $cleaner);
+    Queue::fake();
+
+    DB::beginTransaction();
+    syncOrder(app(Action::class), $order->id, true);
+    Queue::assertNotPushed(CleanupDelegationTxtJob::class);
+    DB::commit();
+    Queue::assertPushed(CleanupDelegationTxtJob::class, fn ($job) => $job->certId === $cert->id
+        && $job->validation === $validation && $job->queue === config('queue.names.tasks') && $job->afterCommit);
 });

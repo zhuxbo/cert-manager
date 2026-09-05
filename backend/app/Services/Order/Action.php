@@ -7,6 +7,7 @@ namespace App\Services\Order;
 use App\Exceptions\ApiResponseException;
 use App\Http\Requests\Product\ImportCaProductRequest;
 use App\Http\Requests\Product\UpdateRequest;
+use App\Jobs\CleanupDelegationTxtJob;
 use App\Models\Callback;
 use App\Models\Cert;
 use App\Models\Chain;
@@ -681,6 +682,11 @@ class Action
 
             // 用锁内权威 status 重算状态变化，后续通知/回调/deleteTask 均以此为准
             $hasStatusChanged = isset($data['status']) && $data['status'] !== $lockedStatus;
+            if ($hasStatusChanged && $lockedStatus === 'processing') {
+                $cleanupCert = clone $cert;
+                DB::afterCommit(fn () => CleanupDelegationTxtJob::dispatch($cleanupCert->id, $cleanupCert->validation ?? [])
+                    ->onQueue(config('queue.names.tasks'))->afterCommit());
+            }
 
             // 证书签发后发送通知邮件
             if ($hasStatusChanged
@@ -1476,6 +1482,12 @@ class Action
                 $transaction = OrderUtil::getCancelTransaction($order->toArray());
                 // amount=0 时 Transaction::creating 钩子返回 false 短路，不创建记录
                 Transaction::create($transaction);
+            }
+
+            if ($cert->status === 'processing') {
+                $cleanupCert = clone $cert;
+                DB::afterCommit(fn () => CleanupDelegationTxtJob::dispatch($cleanupCert->id, $cleanupCert->validation ?? [])
+                    ->onQueue(config('queue.names.tasks'))->afterCommit());
             }
 
             // 更新 cert（合并上游数据 + 强制 status=cancelled + cancelled_at）
