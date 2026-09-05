@@ -77,7 +77,7 @@ function syncOrder(Action $action, int $orderId, bool $force = false): void
 function clearSyncDuplicateCache(int $orderId): void
 {
     $key = 'sync_'.md5(json_encode([$orderId]));
-    Cache::forget($key);
+    Cache::store('runtime')->forget($key);
 }
 
 /**

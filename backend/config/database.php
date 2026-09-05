@@ -40,12 +40,13 @@ return [
         ],
 
         'default' => [
-            'url' => env('REDIS_URL'),
+            // Redis URL 的 path/query 会在 Laravel 连接阶段覆盖 database，破坏双库隔离；
+            // 统一使用下面的显式连接字段，数据库编号只由 REDIS_DB 决定。
             'host' => env('REDIS_HOST', '127.0.0.1'),
             'username' => env('REDIS_USERNAME'),
             'password' => env('REDIS_PASSWORD'),
             'port' => env('REDIS_PORT', '6379'),
-            'database' => env('REDIS_DB', '0'),
+            'database' => env('REDIS_DB', '1'),
             // 网络黑洞快速失败：连接超时 + 命令读超时。键名对 phpredis（本仓唯一 client，
             // PhpRedisConnector 把 read_timeout 映射到 OPT_READ_TIMEOUT + connect 第 6 参）。
             // 不加 read_write_timeout —— 那是 Predis 专属键、phpredis 会静默忽略（留着即误导）。
@@ -57,12 +58,12 @@ return [
         ],
 
         'cache' => [
-            'url' => env('REDIS_URL'),
+            // 与 default 对称，不接受 REDIS_URL 隐式覆盖 REDIS_CACHE_DB。
             'host' => env('REDIS_HOST', '127.0.0.1'),
             'username' => env('REDIS_USERNAME'),
             'password' => env('REDIS_PASSWORD'),
             'port' => env('REDIS_PORT', '6379'),
-            'database' => env('REDIS_CACHE_DB', '1'),
+            'database' => env('REDIS_CACHE_DB', '2'),
             // 与 default 对称：连接超时 + 命令读超时（phpredis OPT_READ_TIMEOUT）。
             'timeout' => (float) env('REDIS_TIMEOUT', 5),
             'read_timeout' => (float) env('REDIS_READ_TIMEOUT', 5),

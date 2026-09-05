@@ -142,6 +142,7 @@ _ensure_runtime_directories() {
         "backend/storage/logs"
         "backend/storage/framework"
         "backend/storage/framework/cache/data"
+        "backend/storage/framework/runtime-cache/data"
         "backend/storage/framework/sessions"
         "backend/storage/framework/views"
         "backend/storage/app/public"
@@ -625,6 +626,24 @@ foreach (preg_split("/\r?\n/", $content) as $line) {
 }
 exit(1);
 ' 2>/dev/null
+}
+
+# 用旧应用引导配置，再调用目标包的兼容逻辑；只固定当前系统的 DB，不扫描其它站点。
+_preserve_redis_databases() {
+    local source_backend="$1/backend"
+    local helper="$source_backend/app/Services/Upgrade/RedisDatabaseConfig.php"
+    [ -f "$helper" ] || return 0 # 兼容尚未引入双库配置的历史目标包
+
+    # 中断恢复时旧 vendor 可能缺失，此时使用已经校验过的预拷贝 vendor 引导旧配置。
+    local fallback_vendor="${BUNDLED_VENDOR_STAGE:-$source_backend/vendor}"
+    "$PHP_CMD" -r '
+$autoload = $argv[1]."/vendor/autoload.php";
+require is_file($autoload) ? $autoload : $argv[3]."/autoload.php";
+$app = require $argv[1]."/bootstrap/app.php";
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+require_once $argv[2];
+App\Services\Upgrade\RedisDatabaseConfig::preserve();
+' "$INSTALL_DIR/backend" "$helper" "$fallback_vendor"
 }
 
 # 把 latest/dev 占位符解析成具体版本号（与 install.sh _resolve_version 对齐）
@@ -2022,6 +2041,12 @@ perform_upgrade() {
             log_success "升级包内 Composer 依赖已在安装盘预拷贝并通过完整性校验"
         fi
         bundled_vendor=true
+    fi
+
+    log_step "保留当前 Redis 数据库编号..."
+    if ! _preserve_redis_databases "$src_dir"; then
+        log_error "Redis 配置无法安全保留，已在覆盖代码前中止升级"
+        exit 1
     fi
 
     # 5. 进入维护模式（必须在移动 vendor 之前）

@@ -737,6 +737,40 @@ def command_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_summary(args: argparse.Namespace) -> int:
+    """只读汇总运行事实；不复用旧证据，不把并行等待相加当作总耗时。"""
+    run_dir = Path(args.run_dir).resolve()
+    state = load_state(run_dir)
+    entries = []
+    ledger = run_dir / LEDGER_FILE
+    if ledger.is_file():
+        with ledger.open(encoding="utf-8") as handle:
+            entries = [json.loads(line) for line in handle if line.strip()]
+    registered = [entry for entry in entries if entry.get("registered_gate") is True]
+    current = [entry for entry in registered if entry.get("generation") == state["generation"]]
+    print(f"generation={state['generation']}（历史运行统计，不代表当前源码已通过 verify）")
+    print("门禁 | 结果 | 执行秒 | 等待锁秒 | 本运行累计次数")
+    for entry in current:
+        count = sum(item["name"] == entry["name"] for item in registered)
+        print(
+            f"{entry['name']} | {entry['status']} | "
+            f"{entry.get('execution_seconds', 0):.3f} | "
+            f"{entry.get('lock_wait_seconds', 0):.3f} | {count}"
+        )
+    if current:
+        start = min(dt.datetime.fromisoformat(str(entry["started_at"])) for entry in current)
+        end = max(dt.datetime.fromisoformat(str(entry["ended_at"])) for entry in current)
+        print(f"本代机械门禁时间跨度={(end - start).total_seconds():.3f} 秒（含调度间隔；各项等待不可相加）")
+    totals: dict[str, float] = {}
+    for entry in registered:
+        name = str(entry["name"])
+        totals[name] = totals.get(name, 0) + float(entry.get("execution_seconds", 0))
+    print("累计执行耗时前三项：" + ", ".join(
+        f"{name}={seconds:.3f}s" for name, seconds in sorted(totals.items(), key=lambda item: -item[1])[:3]
+    ))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -785,6 +819,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="绑定 gate 的显式环境变量值，格式 GATE:NAME=value，可重复",
     )
     verify_parser.set_defaults(func=command_verify)
+
+    summary_parser = subparsers.add_parser("summary", help="只读汇总门禁耗时与重复运行次数")
+    summary_parser.add_argument("--run-dir", required=True)
+    summary_parser.set_defaults(func=command_summary)
     return parser
 
 

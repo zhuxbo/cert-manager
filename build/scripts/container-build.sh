@@ -124,6 +124,7 @@ EOF
         "$WORKSPACE_DIR/backend/storage/app/public" \
         "$WORKSPACE_DIR/backend/storage/app/private" \
         "$WORKSPACE_DIR/backend/storage/framework/cache" \
+        "$WORKSPACE_DIR/backend/storage/framework/runtime-cache" \
         "$WORKSPACE_DIR/backend/storage/framework/sessions" \
         "$WORKSPACE_DIR/backend/storage/framework/views" \
         "$WORKSPACE_DIR/backend/storage/logs" \

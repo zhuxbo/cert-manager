@@ -14,6 +14,7 @@ uses(TestCase::class);
 beforeEach(function () {
     config(['cache.default' => 'array']);
     Cache::store('array')->flush();
+    Cache::store('runtime')->flush();
 });
 
 /** 测试宿主：暴露 protected withMutex 供断言 */
@@ -35,7 +36,7 @@ test('抢到锁时执行闭包并返回其结果', function () {
 
 test('同一 key 已被占用时抛 MutationBusyException 且不执行闭包', function () {
     // 用独立 lock 占住同 key（不释放，模拟另一个请求正持锁执行）
-    $held = Cache::lock('order_mutate_1', 60);
+    $held = Cache::store('runtime')->lock('order_mutate_1', 60);
     expect($held->get())->toBeTrue();
 
     $executed = false;
@@ -66,15 +67,15 @@ test('闭包抛异常时也释放锁（finally）', function () {
 });
 
 test('不同 key 互不阻塞', function () {
-    $held = Cache::lock('order_mutate_1', 60);
+    $held = Cache::store('runtime')->lock('order_mutate_1', 60);
     $held->get();
 
     expect((new MutexLockHost)->run('order_mutate_2', fn () => 'ok'))->toBe('ok');
 });
 
 test('Cache 故障时 fail-open 执行闭包（退回 DB 锁串行）', function () {
-    // mock Cache::lock 抛异常模拟 Redis 故障，断言闭包仍执行（不阻塞业务）
-    Cache::shouldReceive('lock')->andThrow(new RuntimeException('redis down'));
+    // mock Cache::store('runtime')->lock 抛异常模拟 Redis 故障，断言闭包仍执行（不阻塞业务）
+    Cache::shouldReceive('store')->with('runtime')->andThrow(new RuntimeException('redis down'));
 
     $result = (new MutexLockHost)->run('order_mutate_1', fn () => 'fail-open');
 
@@ -89,12 +90,13 @@ test('MutationBusyException 携带用户友好文案', function () {
 });
 
 test('file driver（生产默认 CACHE_DRIVER=file）下 withMutex 同样互斥', function () {
-    // 生产 config/cache.php 默认 file，测试环境默认 array；若只测 array 绿、生产 file 实际不锁
+    // 生产 config/cache.php 默认把 runtime 落独立 file store；若只测 array 绿、生产 file 实际不锁
     // 即假绿。Laravel 13 FileStore::add 用 flock(LOCK_EX) 跨进程原子，此处验证 file 也真互斥。
-    config(['cache.default' => 'file']);
+    config(['cache.stores.runtime' => config('cache.stores.file')]);
+    Cache::forgetDriver('runtime');
     $key = uniqid('mutex_file_', true); // 唯一 key 避免 paratest 跨 worker 共享 file cache 残留串扰
 
-    $held = Cache::store('file')->lock($key, 60);
+    $held = Cache::store('runtime')->lock($key, 60);
     expect($held->get())->toBeTrue();
 
     try {

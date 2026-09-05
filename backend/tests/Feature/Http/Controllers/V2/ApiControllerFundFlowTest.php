@@ -34,7 +34,7 @@ uses(CreatesTestData::class);
 
 beforeEach(function () {
     // get/new 内部按 order_id 写 api_get_ 缓存做节流，逐用例清空避免串扰
-    Cache::flush();
+    Cache::store('runtime')->flush();
 });
 
 // ── 辅助函数 ──
@@ -409,7 +409,7 @@ test('get 跨 token 访问他人订单经真实路由：UserScope 出口隔离�
         'private_key' => "-----BEGIN PRIVATE KEY-----\nOWNER_SECRET_KEY\n-----END PRIVATE KEY-----",
         'cert' => "-----BEGIN CERTIFICATE-----\nOWNER_CERT\n-----END CERTIFICATE-----",
     ]);
-    Cache::set('api_get_'.$ownerOrder->id, time(), 120);
+    Cache::store('runtime')->set('api_get_'.$ownerOrder->id, time(), 120);
 
     $response = v2Get($attacker, '/api/v2/get?order_id='.$ownerOrder->id);
 
@@ -429,7 +429,7 @@ test('get 同 token 取回自己订单经真实路由：携带私钥（出口归
         'private_key' => "-----BEGIN PRIVATE KEY-----\nOWNER_SECRET_KEY\n-----END PRIVATE KEY-----",
     ]);
     // active 订单 get 会触发 sync 上游：预置缓存让 get 跳过 sync/pay/commit（与 V1 测试同手法）
-    Cache::set('api_get_'.$ownerOrder->id, time(), 120);
+    Cache::store('runtime')->set('api_get_'.$ownerOrder->id, time(), 120);
 
     $response = v2Get($owner, '/api/v2/get?order_id='.$ownerOrder->id);
 

@@ -105,7 +105,9 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 - 默认使用 `file` 驱动，不强制依赖 Redis
 - 生产环境推荐使用 Redis 提升性能
-- SnowFlake、RateLimiter 通过 `Cache` facade 操作
+- 默认缓存仓库保存设置、仪表盘、查询结果等可重建数据；`runtime` 命名仓库保存 JWT 黑名单、限流/验证码、业务锁、防重键、心跳、告警去重和任务进度等关键状态
+- Redis 模式下默认缓存走 `REDIS_CACHE_DB`，`runtime` 与 Redis 队列走 `REDIS_DB`；两库必须不同，且同一 Redis 实例上的每套 Manager 必须独占这两个 DB。禁止接入会用 path/query 覆盖数据库编号的 `REDIS_URL`，连接统一使用显式 host/port/username/password 字段
+- `cache:clear` / `cache:clear-all` 不清 `runtime`，但 Laravel 自带的队列 pause/restart 与 scheduler mutex 仍在默认缓存，执行两个命令会删除它们；`cache:clear-all` 还会删会话、视图和 Bootstrap 缓存。两者均只能作为明确了解影响的运维命令，不能接到日常后台按钮。管理后台右上角只定向刷新 Setting/PayConfigCache，保留其它默认缓存、队列/调度状态、会话文件和 OPcache；只有数据库恢复冻结流程会显式清理默认与 `runtime` 两个仓库并重建队列暂停状态
 
 ### 日志批量写入
 
@@ -130,19 +132,18 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 `aggregate()` 判定序**固化**：所有 error 分支必须全部先于 degraded 分支 return，否则「心跳缺失→degraded 200」会掩盖真 error（如 db 挂时误判 200）。
 
 - ① db ping 失败 → `error`（503）
-- ② **cache 后端故障** → `error`（503）：`cacheCheck` 只读 `Cache::get('schedule:heartbeat')` 探连通性（redis 宕机时抛）。**必须先于下方 disk/queue/heartbeat**——它们经 `get_system_setting`→`Cache::remember` 读阈值/心跳，cache 故障时会抛，早 return 规避二次抛异常；`heartbeatAge` 的 `Cache::get` 亦 try/catch 返 null（不误判 degraded，因 cache error 已先 return）
+- ② **cache 后端故障** → `error`（503）：`cacheCheck` 同时只读探测默认缓存与 `runtime`（redis 宕机时抛）。**必须先于下方 disk/queue/heartbeat**——阈值经 `get_system_setting`→`Cache::remember` 读取，心跳经 `runtime` 读取；任一后端故障都先结构化返回 error，避免二次异常冒泡
 - ③ `disk_free_gb` < `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）
 - ④ freeze=false 时：`queue_lag` 超阈 → error；心跳**存在且过旧**（stale，> `health.heartbeat_stale_seconds` 默认 300）→ `error`（503，死 scheduler）
-- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度 / `cache:clear` 清键，后台显示“需要关注”）
+- ⑤ 心跳**缺失**（null）→ `degraded`（**200**）——排在全部 error 之后（新装机未跑调度，后台显示“需要关注”）
 - ⑥ 其他 → `ok`（200）
 - **freeze 期**：`queue_lag` 与心跳 stale 均不参与 503（worker/scheduler 已按升级流程停止），避免升级窗误报（双保险：console.php 侧心跳不挂 skip、health 侧 freeze 期不评估 stale）；**cache 后端故障不受 freeze 豁免**（cache 是独立于升级流程的基础设施）
 
 ### schedule:heartbeat（M1，第二个有意 freeze 存活者）
 
-`HeartbeatCommand` 每分钟 `Cache::forever('schedule:heartbeat', now()->timestamp)`。调度接线与 `upgrade:watchdog` 同款**有意不对称**：`->everyMinute()->evenInMaintenanceMode()` 且**不挂** `->skip($skipWhenFrozen)`——挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。`ScheduleFreezeSkipTest` 对 heartbeat/watchdog 断言 `filtersPass=true`。
+`HeartbeatCommand` 每分钟把 `schedule:heartbeat` 写入 `runtime` 仓库。调度接线与 `upgrade:watchdog` 同款**有意不对称**：`->everyMinute()->evenInMaintenanceMode()` 且**不挂** `->skip($skipWhenFrozen)`——挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。`ScheduleFreezeSkipTest` 对 heartbeat/watchdog 断言 `filtersPass=true`。
 
 - **用 forever 无 TTL 是刻意选型**：死 scheduler 留旧时间戳 → age 超阈 → stale 503（正确检出）；带 TTL 则键到期消失 → 缺失 → degraded 200，把死 scheduler 误判「未装机」。
-- **访问时检测边界**（文档化于 deploy-ops.md）：「已死 scheduler + 之后 `cache:clear`」→ 键缺失 → degraded 200，后台健康度显示黄色“需要关注”，不主动发信。
 
 ### queueLag 队列语义（M2）
 

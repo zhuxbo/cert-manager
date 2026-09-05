@@ -25,6 +25,7 @@ make_valid_packages() {
         "$STAGE/full/backend/storage/app/private" \
         "$STAGE/full/backend/storage/app/public" \
         "$STAGE/full/backend/storage/framework/cache/data" \
+        "$STAGE/full/backend/storage/framework/runtime-cache/data" \
         "$STAGE/full/backend/storage/framework/sessions" \
         "$STAGE/full/backend/storage/framework/views" \
         "$STAGE/full/backend/storage/logs" \
@@ -140,6 +141,7 @@ for required_dir in \
     backend/storage/app/public \
     backend/storage/framework \
     backend/storage/framework/cache/data \
+    backend/storage/framework/runtime-cache/data \
     backend/storage/framework/sessions \
     backend/storage/framework/views \
     backend/storage/logs \

@@ -329,12 +329,12 @@ class BackupService
 
     public function setJobProgress(string $token, array $payload): void
     {
-        Cache::put(self::JOB_CACHE_PREFIX.$token, $payload, self::JOB_CACHE_TTL);
+        Cache::store('runtime')->put(self::JOB_CACHE_PREFIX.$token, $payload, self::JOB_CACHE_TTL);
     }
 
     public function getJobProgress(string $token): ?array
     {
-        return Cache::get(self::JOB_CACHE_PREFIX.$token);
+        return Cache::store('runtime')->get(self::JOB_CACHE_PREFIX.$token);
     }
 
     // ----- 下载 token -----
@@ -349,7 +349,7 @@ class BackupService
         }
 
         $token = Str::random(40);
-        Cache::put(self::DOWNLOAD_TOKEN_PREFIX.$token, [
+        Cache::store('runtime')->put(self::DOWNLOAD_TOKEN_PREFIX.$token, [
             'backup_id' => $backupId,
             'admin_id' => $adminId,
             'issued_at' => time(),
@@ -365,11 +365,11 @@ class BackupService
     public function consumeDownloadToken(string $token): ?string
     {
         $key = self::DOWNLOAD_TOKEN_PREFIX.$token;
-        $payload = Cache::get($key);
+        $payload = Cache::store('runtime')->get($key);
         if (! is_array($payload) || empty($payload['backup_id'])) {
             return null;
         }
-        Cache::forget($key);
+        Cache::store('runtime')->forget($key);
 
         return (string) $payload['backup_id'];
     }

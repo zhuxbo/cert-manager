@@ -84,6 +84,38 @@ test('返回成功退出码并清理缓存文件', function () {
     expect(File::exists(base_path('storage/framework/views/.gitignore')))->toBeTrue();
 });
 
+test('清理普通缓存时保留关键运行状态', function () {
+    Cache::put('disposable-cache-sentinel', 'stale', 600);
+    Cache::store('runtime')->put('runtime-state-sentinel', 'critical', 600);
+
+    $this->artisan('cache:clear-all --quick --without-composer')->assertSuccessful();
+
+    expect(Cache::get('disposable-cache-sentinel'))->toBeNull()
+        ->and(Cache::store('runtime')->get('runtime-state-sentinel'))->toBe('critical');
+});
+
+test('Redis 运行态库与缓存库相同时拒绝清理', function () {
+    config([
+        'cache.default' => 'redis',
+        'cache.stores.runtime.driver' => 'redis',
+        'cache.stores.runtime.connection' => 'default',
+        'database.redis.default.database' => '03',
+        'database.redis.cache.database' => '3',
+    ]);
+
+    $this->artisan('cache:clear-all --quick --without-composer')
+        ->expectsOutputToContain('默认缓存与 runtime 关键运行状态未隔离')
+        ->assertFailed();
+});
+
+test('默认缓存直接指向 runtime 时拒绝清理', function () {
+    config(['cache.default' => 'runtime']);
+
+    $this->artisan('cache:clear-all --quick --without-composer')
+        ->expectsOutputToContain('默认缓存与 runtime 关键运行状态未隔离')
+        ->assertFailed();
+});
+
 // OPcache 段：命令行清的是自己的字节码缓存，够不到 PHP-FPM。
 // 「成功」只在 FPM 里才是真成功，CLI 必须显式告知，否则是假成功信号。
 
@@ -140,8 +172,8 @@ test('详细模式说明跳过原因', function () {
         ->assertSuccessful();
 });
 
-// 后台按钮（SettingController::clearAllCache）丢弃命令输出并无条件返回成功，
-// 失败只有落 error_logs 才对管理员/运维可见。
+// OPcache 失败不阻断应用缓存清理，命令仍成功；后台按钮丢弃命令输出，
+// 因此该类失败只有落 error_logs 才对管理员/运维可见。
 
 test('opcache 清理失败落 error_logs', function () {
     bindFakeOpcache(['status' => Opcache::FAILED, 'reason' => 'reset_returned_false']);

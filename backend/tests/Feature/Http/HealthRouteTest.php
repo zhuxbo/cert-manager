@@ -28,12 +28,12 @@ beforeEach(function () {
     UpgradeFreezeLock::unfreeze();
     // 显式清心跳键：保证「缺失」前提确定性。HeartbeatCommandTest 真跑命令写 Cache::forever 键，
     // 同进程串跑时 array cache 跨用例存活会污染此文件的缺失前提 → flaky。
-    Cache::forget('schedule:heartbeat');
+    Cache::store('runtime')->forget('schedule:heartbeat');
 });
 
 afterEach(function () {
     UpgradeFreezeLock::unfreeze();
-    Cache::forget('schedule:heartbeat');
+    Cache::store('runtime')->forget('schedule:heartbeat');
 });
 
 /**
@@ -577,9 +577,15 @@ test('cache 探针故障时 status=error 503（cache error 先于 degraded，不
 test('cache 后端崩溃时 /api/health 返回结构化 503 而非白屏 500', function () {
     // 不 bind controller，走真实探针；swap 一个所有操作抛异常的 cache（模拟 redis 全故障）。
     // heartbeatAge/cacheCheck 的 Cache::get 抛异常必须被降级为结构化输出，而非冒泡成 500。
+    $originalCache = Cache::getFacadeRoot();
     Cache::swap(throwingCacheRepository());
 
-    $response = $this->getJson('/api/health');
+    try {
+        $response = $this->getJson('/api/health');
+    } finally {
+        // runtime 是命名 store，须恢复 CacheManager；裸 Repository 没有 store() 方法。
+        Cache::swap($originalCache);
+    }
 
     $response->assertStatus(503);
     $response->assertJsonStructure([
@@ -596,5 +602,4 @@ test('cache 后端崩溃时 /api/health 返回结构化 503 而非白屏 500', f
     expect($response->json('status'))->toBe('error')
         ->and($response->json('checks.cache.ok'))->toBeFalse();
 
-    restoreArrayCache();
 });

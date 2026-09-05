@@ -144,9 +144,9 @@ class RateLimiter
         $prevKey = "$key:".($currentWindow - 1);
 
         // 当前窗口计数器，TTL 设为 2 个窗口确保上一窗口数据可用
-        Cache::add($currentKey, 0, $window * 2);
-        $currentCount = Cache::increment($currentKey);
-        $prevCount = (int) Cache::get($prevKey, 0);
+        Cache::store('runtime')->add($currentKey, 0, $window * 2);
+        $currentCount = Cache::store('runtime')->increment($currentKey);
+        $prevCount = (int) Cache::store('runtime')->get($prevKey, 0);
 
         $estimated = $prevCount * $prevWeight + $currentCount;
 

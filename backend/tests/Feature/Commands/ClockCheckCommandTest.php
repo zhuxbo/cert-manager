@@ -23,7 +23,7 @@ function clockSetupAdmin(): void
     );
     Setting::clearGroupCache($group->id);
     Admin::factory()->create(['email' => 'ops@corp.example']);
-    Cache::flush();
+    Cache::store('runtime')->flush();
 }
 
 function clockCaptureCenter(): object
@@ -68,7 +68,7 @@ beforeEach(function () {
 });
 
 test('① 两源 Date 与本地一致 → 无告警 + 清键', function () {
-    Cache::put('system_alert:clock', 'stale', now()->addHours(6));
+    Cache::store('runtime')->put('system_alert:clock', 'stale', now()->addHours(6));
     Http::fake([
         '*clock-a.test*' => clockResponse(5),
         '*clock-b.test*' => clockResponse(-3),
@@ -78,7 +78,7 @@ test('① 两源 Date 与本地一致 → 无告警 + 清键', function () {
     $this->artisan('schedule:clock-check')->assertSuccessful();
 
     expect($state->count)->toBe(0)
-        ->and(Cache::has('system_alert:clock'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:clock'))->toBeFalse();
 });
 
 test('② 两源一致偏差 >120s 同号 → 告警', function () {

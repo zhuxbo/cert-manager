@@ -22,7 +22,7 @@ function failedJobsSetupAdmin(): void
     );
     Setting::clearGroupCache($group->id);
     Admin::factory()->create(['email' => 'ops@corp.example']);
-    Cache::flush();
+    Cache::store('runtime')->flush();
 }
 
 function failedJobsCaptureCenter(): object
@@ -69,14 +69,14 @@ beforeEach(function () {
 });
 
 test('① 窗口内新增 ≤ 阈值 → 无告警 + 清键', function () {
-    Cache::put('system_alert:failed_jobs', 'stale', now()->addHours(72));
+    Cache::store('runtime')->put('system_alert:failed_jobs', 'stale', now()->addHours(72));
     insertFailedJobs(3, 1); // 窗口内 3 条 = 阈值，不超
     $state = failedJobsCaptureCenter();
 
     $this->artisan('schedule:failed-jobs-check')->assertSuccessful();
 
     expect($state->count)->toBe(0)
-        ->and(Cache::has('system_alert:failed_jobs'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:failed_jobs'))->toBeFalse();
 });
 
 test('② 窗口内新增 > 阈值 → 告警', function () {
@@ -120,7 +120,7 @@ test('⑤ 恢复后清键、再超阈立即发', function () {
     // 窗口滑过（把行改到窗口外）→ 计数归零 → 清键
     DB::table('failed_jobs')->update(['failed_at' => now()->subHours(48)]);
     $this->artisan('schedule:failed-jobs-check')->assertSuccessful();
-    expect(Cache::has('system_alert:failed_jobs'))->toBeFalse();
+    expect(Cache::store('runtime')->has('system_alert:failed_jobs'))->toBeFalse();
 
     // 再次窗口内超阈 → 立即发（键已清）
     insertFailedJobs(4, 1);

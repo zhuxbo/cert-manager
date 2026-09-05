@@ -217,6 +217,7 @@ storage/upgrades/
 storage/backups/
 storage/logs/*.log
 storage/framework/cache/*
+storage/framework/runtime-cache/*
 EOF
         elif [ "$pkg_type" = "upgrade" ]; then
             cat >>"$output_file" <<EOF
@@ -342,6 +343,7 @@ runtime_rel_dirs=(
     "backend/storage/logs"
     "backend/storage/framework"
     "backend/storage/framework/cache/data"
+    "backend/storage/framework/runtime-cache/data"
     "backend/storage/framework/sessions"
     "backend/storage/framework/views"
     "backend/storage/app/public"

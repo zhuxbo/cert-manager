@@ -114,21 +114,23 @@ test('clearRuntimeState 先清全部目标队列，再清缓存、重建暂停�
 
     Queue::connection('restore_database')->pushOn('priority', new ProbeTriesFiveNoMaxJob);
     Queue::connection('restore_database')->pushOn('default', new ProbeTriesFiveNoMaxJob);
-    Cache::forever('runtime-sentinel', 'stale');
-    Cache::forever('restore-progress', ['stage' => 'before-flush']);
+    Cache::forever('cache-sentinel', 'stale');
+    Cache::store('runtime')->forever('runtime-sentinel', 'stale');
+    Cache::store('runtime')->forever('restore-progress', ['stage' => 'before-flush']);
 
     $manager->clearRuntimeState(function () {
         expect(Queue::connection('restore_database')->size('priority'))->toBe(0)
             ->and(Queue::connection('restore_database')->size('default'))->toBe(0)
-            ->and(Cache::get('runtime-sentinel'))->toBeNull()
-            ->and(Cache::get('restore-progress'))->toBeNull()
+            ->and(Cache::get('cache-sentinel'))->toBeNull()
+            ->and(Cache::store('runtime')->get('runtime-sentinel'))->toBeNull()
+            ->and(Cache::store('runtime')->get('restore-progress'))->toBeNull()
             ->and(Queue::isPaused('restore_database', 'priority'))->toBeTrue()
             ->and(Queue::isPaused('restore_database', 'default'))->toBeTrue();
 
-        Cache::forever('restore-progress', ['stage' => 'runtime_cleanup']);
+        Cache::store('runtime')->forever('restore-progress', ['stage' => 'runtime_cleanup']);
     });
 
-    expect(Cache::get('restore-progress'))->toBe(['stage' => 'runtime_cleanup'])
+    expect(Cache::store('runtime')->get('restore-progress'))->toBe(['stage' => 'runtime_cleanup'])
         ->and(UpgradeFreezeLock::isFrozen())->toBeTrue()
         ->and(app()->isDownForMaintenance())->toBeTrue();
 });

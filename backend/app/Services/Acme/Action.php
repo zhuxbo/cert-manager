@@ -538,7 +538,7 @@ class Action
         // 原子占位：10 秒内不重复向上请求（Cache::add SETNX 防并发同一 acme 击穿重复调上游）。
         // 放在 find/api_id 校验之后、上游调用之前：acme 不存在/未提交始终走 error，不会因占位变 success
         $cacheKey = "acme_sync_$acmeId";
-        if (! Cache::add($cacheKey, time(), 10)) {
+        if (! Cache::store('runtime')->add($cacheKey, time(), 10)) {
             if ($force) {
                 return;
             }
@@ -640,7 +640,7 @@ class Action
                 return (string) ($acme->product->ca ?? '');
             }); // runTaskMutationTransaction 统一 attempts=3：与 Order sync 对齐；上游 get 在事务外，重试只重跑锁+写回，不重复调上游
         } catch (\Throwable $e) {
-            Cache::forget($cacheKey);
+            Cache::store('runtime')->forget($cacheKey);
             throw $e;
         }
 

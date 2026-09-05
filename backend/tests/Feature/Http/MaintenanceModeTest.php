@@ -223,7 +223,7 @@ test('freeze / unfreeze 路由在 admin 中间件下，无 admin token 拒绝访
 
 test('restore 冻结期间仅精确 GET 状态路径和合法 token 放行', function () {
     $token = str_repeat('a', 32);
-    Cache::put(BackupService::JOB_CACHE_PREFIX.$token, [
+    Cache::store('runtime')->put(BackupService::JOB_CACHE_PREFIX.$token, [
         'status' => 'running',
         'stage' => 'import',
         'message' => '正在恢复数据库',
@@ -241,7 +241,7 @@ test('restore 冻结期间仅精确 GET 状态路径和合法 token 放行', fun
 });
 
 test('restore 冻结期间未知但格式合法的状态 token 返回 404', function () {
-    Cache::forget(BackupService::JOB_CACHE_PREFIX.str_repeat('b', 32));
+    Cache::store('runtime')->forget(BackupService::JOB_CACHE_PREFIX.str_repeat('b', 32));
     UpgradeFreezeLock::freezeRestore('database restore');
 
     $this->getJson('/api/admin/database/jobs/'.str_repeat('b', 32))->assertNotFound();
@@ -249,7 +249,7 @@ test('restore 冻结期间未知但格式合法的状态 token 返回 404', func
 
 test('restore 冻结期间 HEAD 状态请求仍被维护模式阻断', function () {
     $token = str_repeat('d', 32);
-    Cache::put(BackupService::JOB_CACHE_PREFIX.$token, ['status' => 'running'], 600);
+    Cache::store('runtime')->put(BackupService::JOB_CACHE_PREFIX.$token, ['status' => 'running'], 600);
     UpgradeFreezeLock::freezeRestore('database restore');
 
     $this->call('HEAD', '/api/admin/database/jobs/'.$token)->assertStatus(503);

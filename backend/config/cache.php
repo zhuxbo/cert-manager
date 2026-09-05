@@ -2,6 +2,28 @@
 
 use Illuminate\Support\Str;
 
+$cacheDriver = env('CACHE_DRIVER', 'file');
+$runtimeDriver = $cacheDriver === 'redis' || env('QUEUE_CONNECTION', 'database') === 'redis'
+    ? 'redis'
+    : $cacheDriver;
+
+$runtimeStore = match ($runtimeDriver) {
+    'redis' => [
+        'driver' => 'redis',
+        'connection' => 'default',
+        'lock_connection' => 'default',
+    ],
+    'array' => [
+        'driver' => 'array',
+        'serialize' => false,
+    ],
+    default => [
+        'driver' => 'file',
+        'path' => storage_path('framework/runtime-cache/data'),
+        'lock_path' => storage_path('framework/runtime-cache/data'),
+    ],
+};
+
 return [
 
     /*
@@ -50,7 +72,13 @@ return [
             'lock_connection' => 'default',
         ],
 
+        // 关键运行状态与可清理缓存隔离；Redis 模式使用 REDIS_DB。
+        'runtime' => $runtimeStore,
+
     ],
+
+    // 登录与验证码限流属于安全状态，不应被普通缓存清理重置。
+    'limiter' => 'runtime',
 
     /*
     |--------------------------------------------------------------------------

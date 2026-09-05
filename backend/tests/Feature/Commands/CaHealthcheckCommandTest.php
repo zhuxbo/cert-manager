@@ -21,7 +21,7 @@ function caHealthSetupAdmin(): void
     );
     Setting::clearGroupCache($group->id);
     Admin::factory()->create(['email' => 'ops@corp.example']);
-    Cache::flush();
+    Cache::store('runtime')->flush();
 }
 
 /** 绑定捕获型 NotificationCenter，返回可读 count/captured 的状态对象 */
@@ -59,14 +59,14 @@ beforeEach(function () {
 
 test('① code=1 健康 → 无告警且去重键被清', function () {
     // 先占一个去重键，验证健康分支会清它
-    Cache::put('system_alert:ca_credentials', 'stale', now()->addHours(24));
+    Cache::store('runtime')->put('system_alert:ca_credentials', 'stale', now()->addHours(24));
     caHealthFakeSdk(['code' => 1, 'data' => []]);
     $state = caHealthCaptureCenter();
 
     $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
 
     expect($state->count)->toBe(0)
-        ->and(Cache::has('system_alert:ca_credentials'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:ca_credentials'))->toBeFalse();
 });
 
 test('② 401 主信号 → 告警', function () {
@@ -96,7 +96,7 @@ test('④ 未配置态（Api url or token is not set）→ 不告警', function 
     $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
 
     expect($state->count)->toBe(0)
-        ->and(Cache::has('system_alert:ca_credentials'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:ca_credentials'))->toBeFalse();
 });
 
 test('⑤ 连接超时（连通性维度）→ 不告警', function () {
@@ -153,7 +153,7 @@ test('⑨ 连通性失败 <N 次不告警（计数累加），第 N 次达阈值
     $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
     $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
     expect($state->count)->toBe(0)
-        ->and((int) Cache::get('ca_healthcheck:connectivity_fails'))->toBe(2);
+        ->and((int) Cache::store('runtime')->get('ca_healthcheck:connectivity_fails'))->toBe(2);
 
     // 第 3 次达阈值 → 告警（category=ca_connectivity，details.consecutive=3）
     $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
@@ -181,23 +181,23 @@ test('⑩ 固定指纹 ca_outage：达阈值后连续失败不重复告警（con
 
 test('⑪ 成功 → 连通性计数清零 + 清连通性去重键 + 清凭证去重键', function () {
     // 先占连通性计数 + 两类去重键
-    Cache::forever('ca_healthcheck:connectivity_fails', 2);
-    Cache::put('system_alert:ca_connectivity', 'ca_outage', now()->addHours(6));
-    Cache::put('system_alert:ca_credentials', 'stale', now()->addHours(24));
+    Cache::store('runtime')->forever('ca_healthcheck:connectivity_fails', 2);
+    Cache::store('runtime')->put('system_alert:ca_connectivity', 'ca_outage', now()->addHours(6));
+    Cache::store('runtime')->put('system_alert:ca_credentials', 'stale', now()->addHours(24));
     caHealthFakeSdk(['code' => 1, 'data' => []]);
     $state = caHealthCaptureCenter();
 
     $this->artisan('schedule:ca-healthcheck')->assertSuccessful();
 
     expect($state->count)->toBe(0)
-        ->and(Cache::has('ca_healthcheck:connectivity_fails'))->toBeFalse()
-        ->and(Cache::has('system_alert:ca_connectivity'))->toBeFalse()
-        ->and(Cache::has('system_alert:ca_credentials'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('ca_healthcheck:connectivity_fails'))->toBeFalse()
+        ->and(Cache::store('runtime')->has('system_alert:ca_connectivity'))->toBeFalse()
+        ->and(Cache::store('runtime')->has('system_alert:ca_credentials'))->toBeFalse();
 });
 
 test('⑫ 鉴权失败 → 连通性计数重置（上游可达），凭证告警照旧', function () {
     // 上游先前连通性失败累计 2 次；现返回鉴权错误（上游可达）
-    Cache::forever('ca_healthcheck:connectivity_fails', 2);
+    Cache::store('runtime')->forever('ca_healthcheck:connectivity_fails', 2);
     caHealthFakeSdk(['code' => 0, 'msg' => 'Http status code 401']);
     $state = caHealthCaptureCenter();
 
@@ -206,7 +206,7 @@ test('⑫ 鉴权失败 → 连通性计数重置（上游可达），凭证告�
     expect($state->count)->toBe(1)
         ->and($state->captured->context['category'])->toBe('ca_credentials')
         // 上游可达 → 连通性计数被重置，避免「上游回来但坏 token」残留混叠
-        ->and(Cache::has('ca_healthcheck:connectivity_fails'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('ca_healthcheck:connectivity_fails'))->toBeFalse();
 });
 
 test('⑬ 连通性告警 details 键名避 denylist 且值全标量（Builder 掩码护栏）', function () {
@@ -222,7 +222,7 @@ test('⑬ 连通性告警 details 键名避 denylist 且值全标量（Builder �
 });
 
 test('⑭ 未配置态不动连通性计数（新装/测试实例未填上游）', function () {
-    Cache::forever('ca_healthcheck:connectivity_fails', 1);
+    Cache::store('runtime')->forever('ca_healthcheck:connectivity_fails', 1);
     caHealthFakeSdk(['code' => 0, 'msg' => 'Api url or token is not set']);
     $state = caHealthCaptureCenter();
 
@@ -230,5 +230,5 @@ test('⑭ 未配置态不动连通性计数（新装/测试实例未填上游）
 
     expect($state->count)->toBe(0)
         // 未配置态既不告警也不动计数（既不累加也不重置）
-        ->and((int) Cache::get('ca_healthcheck:connectivity_fails'))->toBe(1);
+        ->and((int) Cache::store('runtime')->get('ca_healthcheck:connectivity_fails'))->toBe(1);
 });

@@ -9,6 +9,7 @@ use App\Services\Delegation\AutoDcvTxtService;
 use App\Services\Delegation\CnameDelegationService;
 use App\Services\Order\Action;
 use App\Services\Order\Utils\VerifyUtil;
+use App\Support\RuntimeCache;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
@@ -66,7 +67,7 @@ class ValidateCommand extends Command
      */
     public function handle(): void
     {
-        $this->lock = Cache::lock(self::LOCK_KEY, self::LOCK_TTL);
+        $this->lock = RuntimeCache::lock(self::LOCK_KEY, self::LOCK_TTL);
 
         if (! $this->lock->get()) {
             return; // 已有实例在跑
@@ -170,7 +171,7 @@ class ValidateCommand extends Command
                             $action->createTask($order->id, 'revalidate');
                             $this->info("订单 #$order->id: 验证成功，已创建提交CA验证的任务");
                             // code=1（含本地兜底命中）→ 清 order 级 infra-down 计数
-                            Cache::forget("validate:dnstools_down:{$order->id}");
+                            Cache::store('runtime')->forget("validate:dnstools_down:{$order->id}");
                         } else {
                             // 验证失败
                             $errorMsg = $verified['msg'] ?: '验证失败';
@@ -181,7 +182,7 @@ class ValidateCommand extends Command
                                 $this->accumulateDnsToolsDownSyncNet($order->id, $action);
                             } else {
                                 // dnsTools 有应答但校验失败（DNS 未就绪，正常）→ 清 order 级计数
-                                Cache::forget("validate:dnstools_down:{$order->id}");
+                                Cache::store('runtime')->forget("validate:dnstools_down:{$order->id}");
                             }
                         }
                     } else {
@@ -213,15 +214,15 @@ class ValidateCommand extends Command
     private function accumulateDnsToolsDownSyncNet(int $orderId, Action $action): void
     {
         $key = "validate:dnstools_down:{$orderId}";
-        Cache::add($key, 0, now()->addHours(48));
-        $count = (int) Cache::increment($key);
+        Cache::store('runtime')->add($key, 0, now()->addHours(48));
+        $count = (int) Cache::store('runtime')->increment($key);
         $threshold = (int) config('validation.dnstools_down_sync_threshold', 3);
 
         if ($count >= $threshold) {
             // createTask 内建去重（同 order+action+executing 跳过），不堆叠 sync
             $action->createTask($orderId, 'sync');
             $this->warn("订单 #{$orderId}: dnsTools 连续 {$count} 次全挂且本地不可判定，已建 sync 安全网");
-            Cache::forget($key);
+            Cache::store('runtime')->forget($key);
         }
     }
 

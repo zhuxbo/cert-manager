@@ -31,7 +31,7 @@ test('updatePassword 成功后派发 security 通知（event=登录密码已修�
 
 test('resetPassword 对已注册邮箱成功后派发 security 通知（event 含重置）', function () {
     $user = User::factory()->create(['email' => 'r@example.com']);
-    Cache::put('verify_code_reset_r@example.com', '123456', 600);
+    Cache::store('runtime')->put('verify_code_reset_r@example.com', '123456', 600);
 
     $this->mock(NotificationCenter::class, function ($mock) use ($user) {
         $mock->shouldReceive('dispatch')->once()->withArgs(
@@ -51,7 +51,7 @@ test('resetPassword 对已注册邮箱成功后派发 security 通知（event �
 });
 
 test('resetPassword 对未注册邮箱不派通知，但仍返回成功（账号枚举防护）', function () {
-    Cache::put('verify_code_reset_ghost@example.com', '123456', 600);
+    Cache::store('runtime')->put('verify_code_reset_ghost@example.com', '123456', 600);
 
     $this->mock(NotificationCenter::class, function ($mock) {
         $mock->shouldNotReceive('dispatch');

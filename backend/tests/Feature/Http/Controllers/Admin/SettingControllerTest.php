@@ -6,8 +6,12 @@ use App\Models\CnameDelegation;
 use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Delegation\DelegationConfigService;
+use Illuminate\Console\Scheduling\CacheEventMutex;
+use Illuminate\Console\Scheduling\Event;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Tests\Traits\ActsAsAdmin;
 
@@ -413,6 +417,69 @@ test('管理员可以清除设置缓存', function () {
     $response = $this->actingAsAdmin($this->admin)->postJson('/api/admin/setting/clear-cache');
 
     $response->assertOk()->assertJson(['code' => 1]);
+});
+
+test('管理后台安全刷新设置缓存并保留框架运行状态', function () {
+    $viewFile = storage_path('framework/views/pest-safe-clear.view.php');
+    $sessionFile = storage_path('framework/sessions/pest-safe-clear.session');
+    File::ensureDirectoryExists(dirname($viewFile));
+    File::ensureDirectoryExists(dirname($sessionFile));
+    File::put($viewFile, 'view');
+    File::put($sessionFile, 'session');
+
+    $group = SettingGroup::factory()->create(['name' => 'safe-clear']);
+    Cache::put("setting:group:{$group->id}", ['stale' => true], 600);
+    Cache::put('admin-safe-clear-unregistered', 'preserved', 600);
+    Cache::store('runtime')->put('admin-safe-clear-runtime', 'critical', 600);
+    Cache::forever('illuminate:queue:restart', 1234567890);
+
+    $queue = app('queue');
+    $queue->pause('database', 'safe-clear');
+
+    $mutex = app(CacheEventMutex::class);
+    $event = (new Event($mutex, 'php artisan inspire'))
+        ->name('pest-safe-clear-scheduler')
+        ->withoutOverlapping();
+    expect($mutex->create($event))->toBeTrue();
+
+    try {
+        $this->actingAsAdmin($this->admin)
+            ->postJson('/api/admin/setting/clear-all-cache')
+            ->assertOk()
+            ->assertJson(['code' => 1]);
+
+        expect(Cache::get("setting:group:{$group->id}"))->toBeNull()
+            ->and(Cache::get('admin-safe-clear-unregistered'))->toBe('preserved')
+            ->and(Cache::store('runtime')->get('admin-safe-clear-runtime'))->toBe('critical')
+            ->and(Cache::get('illuminate:queue:restart'))->toBe(1234567890)
+            ->and($queue->isPaused('database', 'safe-clear'))->toBeTrue()
+            ->and($mutex->exists($event))->toBeTrue()
+            ->and(File::exists($viewFile))->toBeTrue()
+            ->and(File::exists($sessionFile))->toBeTrue();
+    } finally {
+        $queue->resume('database', 'safe-clear');
+        Cache::forget('illuminate:queue:restart');
+        Cache::forget('admin-safe-clear-unregistered');
+        Cache::store('runtime')->forget('admin-safe-clear-runtime');
+        $mutex->forget($event);
+        File::delete([$viewFile, $sessionFile]);
+    }
+});
+
+test('管理后台安全刷新在默认缓存指向 runtime 时也不删除其它键', function () {
+    config(['cache.default' => 'runtime']);
+    Cache::store('runtime')->put('safe-clear-overlap-critical', 'preserved', 600);
+
+    try {
+        $this->actingAsAdmin($this->admin)
+            ->postJson('/api/admin/setting/clear-all-cache')
+            ->assertOk()
+            ->assertJson(['code' => 1]);
+
+        expect(Cache::store('runtime')->get('safe-clear-overlap-critical'))->toBe('preserved');
+    } finally {
+        Cache::store('runtime')->forget('safe-clear-overlap-critical');
+    }
 });
 
 test('未认证用户无法访问设置管理', function () {

@@ -1753,7 +1753,7 @@ test('checkDuplicate 原子占位：首次放行 0，同参数重复返回剩余
 
     // 首次抢占成功 → 放行（0）
     expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBe(0);
-    // 同参数重复 → Cache::add 失败 → 返回剩余秒数（>0 拒绝重复）
+    // 同参数重复 → Cache::store('runtime')->add 失败 → 返回剩余秒数（>0 拒绝重复）
     expect($method->invoke($this->service, 'atomicDupTest', ['p1'], 10))->toBeGreaterThan(0);
     // 不同参数 → 独立 cacheKey 放行（0）
     expect($method->invoke($this->service, 'atomicDupTest', ['p2'], 10))->toBe(0);
@@ -2441,7 +2441,7 @@ test('new/reissue checkDuplicate 保留：同参 10s 内二次提交报参数重
 
 test('订单入口重复提交精确返回 10 秒提示', function (string $method, string $actionLabel) {
     $params = ['duplicate-probe' => $method];
-    Cache::put($method.'_'.md5(json_encode([$params])), time(), 10);
+    Cache::store('runtime')->put($method.'_'.md5(json_encode([$params])), time(), 10);
 
     try {
         $this->service->{$method}($params);

@@ -108,6 +108,41 @@ class DeriveScopeMutationTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("无效 mutation FQCN", result.stderr)
 
+    def test_runtime_store_locks_and_deduplication_trigger_concurrency_review(self) -> None:
+        path = self.repo / "backend/app/NewState.php"
+        for statement in (
+            "Cache::store('runtime')->lock('key', 10);",
+            "Cache::store('runtime')->add('key', 1, 10);",
+            "RuntimeCache::lock('key', 10);",
+            "MutexLock::withLock('key', fn () => true);",
+        ):
+            with self.subTest(statement=statement):
+                path.write_text("<?php\n" + statement + "\n", encoding="utf-8")
+                result = self.run_scope()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("| 节流 / 防重 / 并发事务（Cache::add / 锁 / TaskJob / 死锁） | 是 |", result.stdout)
+
+    def test_runtime_store_read_does_not_trigger_concurrency_review(self) -> None:
+        path = self.repo / "backend/app/NewState.php"
+        path.write_text("<?php\nCache::store('runtime')->get('key');\n", encoding="utf-8")
+        result = self.run_scope()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("| 节流 / 防重 / 并发事务（Cache::add / 锁 / TaskJob / 死锁） | 否 |", result.stdout)
+
+    def test_backend_upgrade_path_triggers_deployment_checks(self) -> None:
+        path = self.repo / "backend/app/Services/Upgrade/Config.php"
+        path.parent.mkdir(parents=True)
+        path.write_text("<?php\n", encoding="utf-8")
+        result = self.run_scope()
+        self.assertIn("| deploy/ 升级脚本 / 后台升级目录同步 | 是 |", result.stdout)
+        self.assertIn("DOCS_ONLY=no", result.stdout)
+
+    def test_untracked_code_prevents_documentation_downgrade(self) -> None:
+        (self.repo / "README.md").write_text("changed\n", encoding="utf-8")
+        self.assertIn("DOCS_ONLY=yes", self.run_scope().stdout)
+        (self.repo / "new.php").write_text("<?php\n", encoding="utf-8")
+        self.assertIn("DOCS_ONLY=no", self.run_scope().stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

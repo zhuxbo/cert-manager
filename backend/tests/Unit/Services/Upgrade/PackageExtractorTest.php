@@ -307,6 +307,7 @@ test('applyBackendUpgrade 同步后补齐核心运行目录且保留 storage 数
             "$installDir/storage/logs",
             "$installDir/storage/framework",
             "$installDir/storage/framework/cache/data",
+            "$installDir/storage/framework/runtime-cache/data",
             "$installDir/storage/framework/sessions",
             "$installDir/storage/framework/views",
             "$installDir/storage/app/public",

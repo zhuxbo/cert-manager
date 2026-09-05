@@ -286,7 +286,7 @@ class AutoRenewCommand extends Command
             }
 
             // 余额充足：清除欠费去重键，恢复后再欠费立即告警（不等 TTL），闭合「充值→又欠费」序列
-            Cache::forget("auto_renew_balance_notified:{$user->id}");
+            Cache::store('runtime')->forget("auto_renew_balance_notified:{$user->id}");
         }
 
         // 从原订单提取参数
@@ -418,14 +418,14 @@ class AutoRenewCommand extends Command
 
         // 到期前最后窗口豁免去重必发（node-1 语义 [now, now+1]），刷键防同轮其他单叠发
         if ($this->isFinalExpireNotifyNode($order->latestCert->expires_at)) {
-            Cache::put($key, true, $ttl);
+            Cache::store('runtime')->put($key, true, $ttl);
             $this->dispatchAutoRenewFailed($order, $action, $reason);
 
             return;
         }
 
         // 常规节奏：per-user 每 N 天一封（Cache::add 原子占位，抢不到即近期已发过）
-        if (! Cache::add($key, true, $ttl)) {
+        if (! Cache::store('runtime')->add($key, true, $ttl)) {
             return;
         }
 

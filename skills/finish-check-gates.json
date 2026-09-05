@@ -49,6 +49,7 @@
         "-m",
         "unittest",
         "skills/scripts/tests/test_finish_check_exec.py",
+        "skills/scripts/tests/test_finish_check_files.py",
         "skills/scripts/tests/test_derive_scope_mutation.py",
         "skills/scripts/tests/test_mutation_shards.py",
         "skills/scripts/tests/test_mutate_targets.py",
@@ -145,20 +146,13 @@
       "locks": ["package:shared"]
     },
     "script-checks": {
-      "command": [
-        "bash",
-        "-lc",
-        "set -euo pipefail\ngit diff --check\nbash -n backend/scripts/test-mutate.sh build/release.sh plugins/release-plugin.sh skills/scripts/check-review-checklist-staleness.sh skills/scripts/derive-scope.sh skills/scripts/run-isolated-mutation.sh\nshfmt -d -i 4 -ci backend/scripts/test-mutate.sh build/release.sh plugins/release-plugin.sh skills/scripts/check-review-checklist-staleness.sh skills/scripts/derive-scope.sh skills/scripts/run-isolated-mutation.sh\nfrontend/admin/node_modules/.bin/prettier --check skills/finish-check.md skills/review-checklist.md skills/backend/core.md skills/ops/build-release.md skills/remote-release.md\nPYTHONPYCACHEPREFIX=/tmp/ssl-manager-finish-check-pycache python3 -m py_compile skills/scripts/finish-check-exec.py skills/scripts/mutation-shards.py skills/scripts/tests/test_derive_scope_mutation.py skills/scripts/tests/test_finish_check_exec.py skills/scripts/tests/test_mutation_shards.py skills/scripts/tests/test_mutate_targets.py skills/scripts/tests/test_release_plugin_isolation.py skills/scripts/tests/test_release_mutation_guard.py\npython3 -m json.tool skills/finish-check-gates.json >/dev/null\npython3 -m json.tool skills/mutation-shards.json >/dev/null"
-      ],
+      "command": ["python3", "skills/scripts/finish-check-files.py", "check"],
       "locks": []
     },
     "mutation": {
       "command": ["python3", "skills/scripts/mutation-shards.py", "run"],
       "locks": ["backend-runtime:exclusive", "db:exclusive"],
-      "allowed_env": [
-        "MUTATE_TARGET_CLASSES",
-        "MUTATION_KEEP_WORKSPACE"
-      ]
+      "allowed_env": ["MUTATE_TARGET_CLASSES", "MUTATION_KEEP_WORKSPACE"]
     }
   }
 }

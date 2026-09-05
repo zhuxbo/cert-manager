@@ -36,5 +36,5 @@ if command -v php >/dev/null 2>&1 && [[ -f backend/vendor/autoload.php ]]; then
     exit $?
 fi
 
-echo "SKIP: 需要 Compose app 容器运行（make up），或宿主具备 php + backend/vendor" >&2
-exit 0
+echo "FAIL: 需要 Compose app 容器运行（make up），或宿主具备 php + backend/vendor；孤儿夹具检查未执行" >&2
+exit 1

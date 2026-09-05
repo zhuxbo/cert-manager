@@ -14,11 +14,11 @@ function clearLoginRateLimitState(string $key): void
 {
     RateLimiter::clear($key);
     RateLimiter::clear($key.':lockout');
-    Cache::forget($key.'_locked');
+    Cache::store('runtime')->forget($key.'_locked');
 }
 
 beforeEach(function () {
-    Cache::flush();
+    Cache::store('runtime')->flush();
 });
 
 // ==========================================
@@ -86,7 +86,7 @@ test('LoginRateLimiter 超过限制抛出异常', function () {
 })->throws(ApiResponseException::class);
 
 test('LoginRateLimiter 被锁定账号抛出异常', function () {
-    Cache::put('admin:testuser_locked', true, now()->addHours(24));
+    Cache::store('runtime')->put('admin:testuser_locked', true, now()->addHours(24));
 
     $middleware = new LoginRateLimiter;
     $request = Request::create('/api/admin/login', 'POST', ['account' => 'testuser', 'password' => 'pass']);
@@ -133,7 +133,7 @@ test('LoginRateLimiter 跨窗口累计失败达到阈值后锁定账号', functi
         }, 'admin');
     }
     expect((int) RateLimiter::attempts($lockoutKey))->toBe(2)
-        ->and(Cache::has($key.'_locked'))->toBeFalse();
+        ->and(Cache::store('runtime')->has($key.'_locked'))->toBeFalse();
 
     // 模拟限流窗口过期（仅清除短期计数器，保留锁定计数器）
     RateLimiter::clear($key);
@@ -144,7 +144,7 @@ test('LoginRateLimiter 跨窗口累计失败达到阈值后锁定账号', functi
         return new JsonResponse(['code' => 0, 'msg' => '密码错误']);
     }, 'admin');
     expect((int) RateLimiter::attempts($lockoutKey))->toBe(3)
-        ->and(Cache::has($key.'_locked'))->toBeFalse();
+        ->and(Cache::store('runtime')->has($key.'_locked'))->toBeFalse();
 
     // 第 4 次真实失败 → 锁定（抛出 ApiResponseException）
     try {
@@ -154,7 +154,7 @@ test('LoginRateLimiter 跨窗口累计失败达到阈值后锁定账号', functi
         }, 'admin');
     } catch (ApiResponseException) {
     }
-    expect(Cache::has($key.'_locked'))->toBeTrue()
+    expect(Cache::store('runtime')->has($key.'_locked'))->toBeTrue()
         ->and((int) RateLimiter::attempts($key))->toBe(0)
         ->and((int) RateLimiter::attempts($lockoutKey))->toBe(0);
 });
@@ -187,7 +187,7 @@ test('LoginRateLimiter 超过限制后持续被拦截', function () {
 });
 
 test('LoginRateLimiter 锁定后即使密码正确也无法登录', function () {
-    Cache::put('admin:lockeduser_locked', true, now()->addHours(24));
+    Cache::store('runtime')->put('admin:lockeduser_locked', true, now()->addHours(24));
 
     $middleware = new LoginRateLimiter;
     $request = Request::create('/api/admin/login', 'POST', ['account' => 'lockeduser', 'password' => 'correct']);
@@ -216,7 +216,7 @@ test('LoginRateLimiter 成功登录清除锁定标记和计数器', function () 
 
     expect((int) RateLimiter::attempts($key))->toBe(0)
         ->and((int) RateLimiter::attempts($lockoutKey))->toBe(0)
-        ->and(Cache::has($key.'_locked'))->toBeFalse();
+        ->and(Cache::store('runtime')->has($key.'_locked'))->toBeFalse();
 });
 
 // ==========================================
@@ -282,7 +282,7 @@ test('LoginRateLimiter 自定义锁定阈值跨窗口累积触发锁定', functi
     } catch (ApiResponseException) {
     }
 
-    expect(Cache::has($key.'_locked'))->toBeTrue();
+    expect(Cache::store('runtime')->has($key.'_locked'))->toBeTrue();
 });
 
 test('LoginRateLimiter 频率限制不影响不同账号', function () {

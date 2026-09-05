@@ -22,6 +22,7 @@ function paymentSetupAdmin(): void
     Setting::clearGroupCache($group->id);
     Admin::factory()->create(['email' => 'ops@corp.example']);
     Cache::flush();
+    Cache::store('runtime')->flush();
 }
 
 function paymentCaptureCenter(): object
@@ -127,14 +128,14 @@ test('① 未配置渠道（无 app_id/mch_id）→ 无告警', function () {
 });
 
 test('② 证书远期 → 无告警 + 清键', function () {
-    Cache::put('system_alert:payment_health', 'stale', now()->addHours(168));
+    Cache::store('runtime')->put('system_alert:payment_health', 'stale', now()->addHours(168));
     setPaymentGroup('alipay', healthyAlipay());
     $state = paymentCaptureCenter();
 
     $this->artisan('schedule:payment-health')->assertSuccessful();
 
     expect($state->count)->toBe(0)
-        ->and(Cache::has('system_alert:payment_health'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:payment_health'))->toBeFalse();
 });
 
 test('③ 证书 <30 天 → 告警（含字段名，不含 PEM）', function () {
@@ -259,7 +260,7 @@ test('⑧ 恢复后清键、再异常立即发', function () {
     // 恢复（换远期证书）→ 清键
     setPaymentGroup('alipay', ['certPublicKeyRSA2' => makePayCert(400)]);
     $this->artisan('schedule:payment-health')->assertSuccessful();
-    expect(Cache::has('system_alert:payment_health'))->toBeFalse();
+    expect(Cache::store('runtime')->has('system_alert:payment_health'))->toBeFalse();
 
     // 再异常 → 立即发
     setPaymentGroup('alipay', ['certPublicKeyRSA2' => makePayCert(10)]);

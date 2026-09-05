@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Utils;
 
+use App\Support\RuntimeCache;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
 use InvalidArgumentException;
@@ -58,7 +59,7 @@ class SnowFlake
     protected static function acquireLock(int $timeoutSeconds = 1, int $retryCount = 10, int $retryDelayUs = 50000): bool
     {
         for ($i = 0; $i < $retryCount; $i++) {
-            $lock = Cache::lock(self::$lockKey, $timeoutSeconds);
+            $lock = RuntimeCache::lock(self::$lockKey, $timeoutSeconds);
             if ($lock->get()) {
                 self::$currentLock = $lock;
 
@@ -86,8 +87,8 @@ class SnowFlake
      */
     public static function initState(): void
     {
-        if (! Cache::has(self::$stateKey)) {
-            Cache::forever(self::$stateKey, ['last' => 0, 'count' => 0]);
+        if (! Cache::store('runtime')->has(self::$stateKey)) {
+            Cache::store('runtime')->forever(self::$stateKey, ['last' => 0, 'count' => 0]);
         }
     }
 
@@ -113,7 +114,7 @@ class SnowFlake
             $currentTime = (int) floor(microtime(true) * 1000);
             $offsetTime = $currentTime - self::EPOCH;
 
-            $state = Cache::get(self::$stateKey, ['last' => 0, 'count' => 0]);
+            $state = Cache::store('runtime')->get(self::$stateKey, ['last' => 0, 'count' => 0]);
             $last = (int) $state['last'];
             $count = (int) $state['count'];
 
@@ -148,7 +149,7 @@ class SnowFlake
             $id = bindec($binaryStr);
 
             // 更新状态
-            Cache::forever(self::$stateKey, [
+            Cache::store('runtime')->forever(self::$stateKey, [
                 'last' => $offsetTime,
                 'count' => $count,
             ]);

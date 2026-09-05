@@ -11,11 +11,11 @@
 #   [路径] 行6  AppServiceProvider 连接/时区注入        ^backend/app/Providers/AppServiceProvider\.php$
 #   [路径] 行7  frontend/shared                         ^frontend/shared/
 #   [路径] 行8  plugins/                                ^plugins/
-#   [路径] 行9  deploy/ 升级脚本                        ^deploy/
+#   [路径] 行9  deploy/ 与后台升级服务                   ^deploy/|^backend/app/Services/Upgrade/
 #   [路径] 行10 tests/ 文件本身                         ^backend/tests/|^plugins/.*/tests/
 #   [人工] 行11 安全面（鉴权/下载/解压/CORS/公开端点）  仅提示：routes/|Middleware/|Controller 改动 + 新增 public function
 #   [内容] 行12 外部命令调用                            exec\(|proc_open|shell_exec
-#   [内容] 行13 节流/防重/并发事务                      Cache::add|lockForUpdate|TaskJob::dispatch|Cache::lock
+#   [内容] 行13 节流/防重/并发事务                      Cache/命名 store/RuntimeCache/MutexLock、行锁、TaskJob
 #   [内容] 行14 catch ApiResponseException              ApiResponseException
 #   [内容] 行15 通知模板                                NotificationTemplate|NotificationCenter
 #   [人工] 行16 删除审核（§1.5）                        仅提示：- 删除行含 class/function/Schema::drop 或 config 键
@@ -31,6 +31,8 @@
 #   --base <ref>                    git diff <ref>（对历史 ref 推导/自测，如 --base origin/main）
 #   --mutation-target-class <FQCN>  plan 明确要求的额外 mutation 目标，可重复
 set -uo pipefail
+
+FILES_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/finish-check-files.py"
 
 usage() {
     cat <<'EOF'
@@ -99,17 +101,11 @@ fi
 
 # ---------- 收集 diff ----------
 if [[ -n "$BASE_REF" ]]; then
-    CHANGED_FILES="$(git diff "$BASE_REF" --name-only | sort -u)"
+    CHANGED_FILES="$(python3 "$FILES_SCRIPT" list --base "$BASE_REF")" || exit 1
     RAW_DIFF="$(git diff "$BASE_REF" -U0 --no-color)"
     DIFF_DESC="git diff $BASE_REF"
 else
-    CHANGED_FILES="$(
-        {
-            git diff HEAD --name-only
-            git diff --cached --name-only
-            git ls-files --others --exclude-standard
-        } | sort -u
-    )"
+    CHANGED_FILES="$(python3 "$FILES_SCRIPT" list)" || exit 1
     RAW_DIFF="$(
         git diff HEAD -U0 --no-color
         git diff --cached -U0 --no-color
@@ -235,11 +231,11 @@ ROW_PAT=(
     '^backend/app/Providers/AppServiceProvider\.php$'
     '^frontend/shared/'
     '^plugins/'
-    '^deploy/'
+    '^deploy/|^backend/app/Services/Upgrade/'
     '^backend/tests/|^plugins/.*/tests/'
     ''
     'exec\(|proc_open|shell_exec'
-    'Cache::add|lockForUpdate|TaskJob::dispatch|Cache::lock'
+    'Cache::add|lockForUpdate|TaskJob::dispatch|Cache::lock|Cache::store\([^)]*\)[[:space:]]*->(add|lock)\(|RuntimeCache::lock|MutexLock::'
     'ApiResponseException'
     'NotificationTemplate|NotificationCenter'
     ''
@@ -391,6 +387,11 @@ echo "## §1 范围表（skills/scripts/derive-scope.sh 推导）"
 echo ""
 echo "tree: $(git rev-parse --short HEAD) dirty: $(git status --porcelain | wc -l | tr -d ' ') files"
 echo "diff 基准: ${DIFF_DESC}；变更文件 ${FILE_COUNT} 个"
+if [[ "$FILE_COUNT" -gt 0 ]] && ! grep -qvE '\.md$' <<<"$CHANGED_FILES"; then
+    echo "DOCS_ONLY=yes"
+else
+    echo "DOCS_ONLY=no"
+fi
 if [[ "$FILE_COUNT" -eq 0 ]]; then
     echo "注意: diff 为空（无改动文件），全部判否属预期"
 fi

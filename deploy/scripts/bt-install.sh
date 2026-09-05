@@ -774,6 +774,7 @@ set_permissions() {
         "backend/storage/logs"
         "backend/storage/framework"
         "backend/storage/framework/cache/data"
+        "backend/storage/framework/runtime-cache/data"
         "backend/storage/framework/sessions"
         "backend/storage/framework/views"
         "backend/storage/app/public"
@@ -994,6 +995,217 @@ _set_env_var() {
     fi
 }
 
+# 将纯十进制字符串规范化到指定上限，先按长度/字典序判断，避免 Bash 整数溢出。
+_normalize_decimal_in_range() {
+    local value="$1"
+    local maximum="$2"
+
+    printf '%s' "$value" | grep -qE '^[0-9]+$' || return 1
+    value=$(printf '%s' "$value" | sed -E 's/^0+//')
+    value="${value:-0}"
+
+    if [ "${#value}" -gt "${#maximum}" ] ||
+        { [ "${#value}" -eq "${#maximum}" ] && [[ "$value" > "$maximum" ]]; }; then
+        return 1
+    fi
+
+    printf '%s' "$value"
+}
+
+# 读取用于区分 Redis 实例的连接端点；认证账号不改变同一实例内共享的 logical DB 空间。
+_read_env_redis_endpoint() {
+    local file="$1"
+    local line host port url
+
+    # 旧版 REDIS_URL 可覆盖 host/port/DB；无法仅凭显式字段判定占用时拒绝分配。
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?([\"']?REDIS_URL[\"']?)[[:space:]]*=" "$file" 2>/dev/null | tail -n1 || true)
+    url=$(printf '%s' "$line" | sed -E "s/^[[:space:]]*(export[[:space:]]+)?([\"']?REDIS_URL[\"']?)[[:space:]]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//")
+    case "$url" in
+        '' | '""' | "''") ;;
+        *) return 2 ;;
+    esac
+
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?([\"']?REDIS_HOST[\"']?)[[:space:]]*=" "$file" 2>/dev/null | tail -n1 || true)
+    if [ -n "$line" ]; then
+        host=$(printf '%s' "$line" | sed -E "s/^[[:space:]]*(export[[:space:]]+)?([\"']?REDIS_HOST[\"']?)[[:space:]]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^\"([^\"]+)\"$/\1/; s/^'([^']+)'$/\1/")
+        if ! printf '%s' "$host" | grep -qE '^[[:alnum:]_.:/+%@-]+$'; then
+            return 2
+        fi
+        host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+        [ "$host" != "localhost" ] || host="127.0.0.1"
+    else
+        host="127.0.0.1"
+    fi
+
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?([\"']?REDIS_PORT[\"']?)[[:space:]]*=" "$file" 2>/dev/null | tail -n1 || true)
+    if [ -n "$line" ]; then
+        port=$(printf '%s' "$line" | sed -E "s/^[[:space:]]*(export[[:space:]]+)?([\"']?REDIS_PORT[\"']?)[[:space:]]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^\"([0-9]+)\"$/\1/; s/^'([0-9]+)'$/\1/")
+        if ! port=$(_normalize_decimal_in_range "$port" 65535) || [ "$port" = "0" ]; then
+            return 2
+        fi
+    else
+        port="6379"
+    fi
+
+    printf '%s|%s' "$host" "$port"
+}
+
+# 按 phpdotenv 允许的语法读取 Redis DB：支持 export、键值两侧空白、单双引号和行尾注释。
+_read_env_redis_db() {
+    local file="$1"
+    local key="$2"
+    local line value
+
+    # phpdotenv 同名键以后出现的值为准，扫描时保持同一覆盖语义。
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?([\"']?${key}[\"']?)[[:space:]]*=" "$file" 2>/dev/null | tail -n1 || true)
+    [ -n "$line" ] || return 1
+
+    value=$(printf '%s' "$line" | sed -E "s/^[[:space:]]*(export[[:space:]]+)?([\"']?${key}[\"']?)[[:space:]]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^\"([0-9]+)\"$/\1/; s/^'([0-9]+)'$/\1/")
+    value=$(_normalize_decimal_in_range "$value" 15) || return 2
+    printf '%s' "$value"
+}
+
+REDIS_DB_ALLOCATION_LOCK_DIR=""
+REDIS_DB_ALLOCATION_LOCK_METHOD=""
+
+# 生产环境使用 flock，进程异常退出时内核会自动释放；非 Linux 检查环境回落到原子目录锁。
+_acquire_redis_db_allocation_lock() {
+    local sites_root="$1"
+    local attempts=0 max_attempts=300 lock_file
+
+    lock_file="$sites_root/.ssl-manager-redis-db.lock"
+    if command -v flock >/dev/null 2>&1; then
+        if ! exec 9>"$lock_file"; then
+            log_error "无法打开 Redis DB 分配锁：$lock_file"
+            return 1
+        fi
+        if ! flock -w 30 9; then
+            exec 9>&-
+            log_error "等待 Redis DB 分配锁超时，请确认没有其它安装进程"
+            return 1
+        fi
+        REDIS_DB_ALLOCATION_LOCK_METHOD="flock"
+        return 0
+    fi
+
+    REDIS_DB_ALLOCATION_LOCK_DIR="${lock_file}.d"
+    while ! mkdir "$REDIS_DB_ALLOCATION_LOCK_DIR" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge "$max_attempts" ]; then
+            log_error "等待 Redis DB 分配锁超时，请确认没有其它安装进程并检查 $REDIS_DB_ALLOCATION_LOCK_DIR"
+            return 1
+        fi
+        sleep 0.1
+    done
+    REDIS_DB_ALLOCATION_LOCK_METHOD="mkdir"
+}
+
+_release_redis_db_allocation_lock() {
+    if [ "$REDIS_DB_ALLOCATION_LOCK_METHOD" = "flock" ]; then
+        flock -u 9
+        exec 9>&-
+    elif [ "$REDIS_DB_ALLOCATION_LOCK_METHOD" = "mkdir" ]; then
+        if ! rmdir "$REDIS_DB_ALLOCATION_LOCK_DIR" 2>/dev/null; then
+            log_error "无法释放 Redis DB 分配锁：$REDIS_DB_ALLOCATION_LOCK_DIR"
+            return 1
+        fi
+    fi
+
+    REDIS_DB_ALLOCATION_LOCK_DIR=""
+    REDIS_DB_ALLOCATION_LOCK_METHOD=""
+}
+
+# 为同机 Manager 分配一对独占 Redis logical DB：运行状态库 + 可清理缓存库。
+# 从 1 开始，保留 DB 0 给其它应用；按 Redis 默认 16 个 logical DB 的范围分配。
+allocate_redis_databases() {
+    local sites_root="${MANAGER_SITES_ROOT:-/www/wwwroot}"
+    local target_env="${1:-}"
+    local used=" " target_endpoint other_env other_endpoint runtime_db cache_db read_status candidate
+
+    if [ -n "$target_env" ] && [ ! -f "$target_env" ]; then
+        log_error "待写入的 .env 不存在：$target_env"
+        return 1
+    fi
+    if [ -n "$target_env" ]; then
+        if ! target_endpoint=$(_read_env_redis_endpoint "$target_env"); then
+            log_error "待安装站点的 Redis 连接配置无法识别（不支持非空 REDIS_URL），无法安全分配 Redis DB"
+            return 1
+        fi
+    else
+        target_endpoint="127.0.0.1|6379"
+    fi
+    if ! _acquire_redis_db_allocation_lock "$sites_root"; then
+        return 1
+    fi
+
+    for other_env in "$sites_root"/*/backend/.env; do
+        if [ ! -f "$other_env" ] || [ "$other_env" = "$INSTALL_DIR/backend/.env" ]; then
+            continue
+        fi
+
+        if other_endpoint=$(_read_env_redis_endpoint "$other_env"); then
+            [ "$other_endpoint" = "$target_endpoint" ] || continue
+        else
+            log_error "现有站点 $other_env 的 Redis 连接配置无法识别（不支持非空 REDIS_URL），无法安全分配 Redis DB"
+            _release_redis_db_allocation_lock || true
+            return 1
+        fi
+
+        if runtime_db=$(_read_env_redis_db "$other_env" "REDIS_DB"); then
+            :
+        else
+            read_status=$?
+            if [ "$read_status" -eq 1 ]; then
+                runtime_db=1
+            else
+                log_error "现有站点 $other_env 的 REDIS_DB 不是可识别的整数，无法安全分配 Redis DB"
+                _release_redis_db_allocation_lock || true
+                return 1
+            fi
+        fi
+        if cache_db=$(_read_env_redis_db "$other_env" "REDIS_CACHE_DB"); then
+            :
+        else
+            read_status=$?
+            if [ "$read_status" -eq 1 ]; then
+                cache_db=2
+            else
+                log_error "现有站点 $other_env 的 REDIS_CACHE_DB 不是可识别的整数，无法安全分配 Redis DB"
+                _release_redis_db_allocation_lock || true
+                return 1
+            fi
+        fi
+
+        used="$used$runtime_db $cache_db "
+    done
+
+    for candidate in 1 3 5 7 9 11 13; do
+        if ! printf '%s' "$used" | grep -q " $candidate " &&
+            ! printf '%s' "$used" | grep -q " $((candidate + 1)) "; then
+            REDIS_DB_ALLOCATED="$candidate"
+            REDIS_CACHE_DB_ALLOCATED="$((candidate + 1))"
+
+            if [ -n "$target_env" ]; then
+                if ! _set_env_var "$target_env" "REDIS_DB" "$REDIS_DB_ALLOCATED" ||
+                    ! _set_env_var "$target_env" "REDIS_CACHE_DB" "$REDIS_CACHE_DB_ALLOCATED"; then
+                    log_error "Redis DB 分配结果写入失败：$target_env"
+                    _release_redis_db_allocation_lock || true
+                    return 1
+                fi
+            fi
+
+            if ! _release_redis_db_allocation_lock; then
+                return 1
+            fi
+            return 0
+        fi
+    done
+
+    log_error "Redis logical DB 1-14 已无可用双库组合，请为该站点配置独立 Redis 实例"
+    _release_redis_db_allocation_lock || true
+    return 1
+}
+
 # 按数据库版本选择最优 collation（恢复旧 install.php 的版本自动切换逻辑，整合安装后曾遗漏）
 # MySQL 8.0+ → utf8mb4_0900_ai_ci；MySQL 5.7 → utf8mb4_unicode_520_ci；
 # MariaDB（不支持 0900 系列）→ utf8mb4_unicode_ci；连不上/无客户端时回落全版本通用的 unicode_ci
@@ -1042,26 +1254,9 @@ generate_env_file() {
     # JWT_SECRET：admin/user/api token 签发；空值会导致 login 500（tymon/jwt-auth 报 "Secret is not set"）
     jwt_secret="$(openssl rand -base64 64 | tr -d '\n')"
 
-    # APP_NAME 默认走 .env.example 的 ssl；扫 /www/wwwroot/* 已有站点，
-    # 仅在 ssl 被占用时追加序号（ssl1/ssl2/...）避免缓存前缀冲突
-    local taken=""
-    for other_env in /www/wwwroot/*/backend/.env; do
-        if [ -f "$other_env" ] && [ "$other_env" != "$env_file" ]; then
-            local n
-            n=$(grep -E '^APP_NAME=' "$other_env" 2>/dev/null | head -n1 | sed -E 's/^APP_NAME=//; s/^"//; s/"$//')
-            if [ -n "$n" ]; then
-                taken="$taken $n "
-            fi
-        fi
-    done
-    if echo "$taken" | grep -q ' ssl '; then
-        local i=1
-        while echo "$taken" | grep -q " ssl$i "; do
-            i=$((i + 1))
-        done
-        _set_env_var "$env_file" "APP_NAME" "ssl$i"
-        log_info "检测到同机器已有站点 — APP_NAME 设为 ssl$i 避免缓存前缀冲突"
-    fi
+    allocate_redis_databases "$env_file"
+    log_info "Redis DB 已分配：运行状态=${REDIS_DB_ALLOCATED}，可清理缓存=$REDIS_CACHE_DB_ALLOCATED"
+
     _set_env_var "$env_file" "APP_ENV" "production"
     _set_env_var "$env_file" "APP_DEBUG" "false"
     _set_env_var "$env_file" "APP_KEY" "$app_key"

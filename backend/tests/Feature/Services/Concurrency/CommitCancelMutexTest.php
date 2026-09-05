@@ -16,7 +16,7 @@ beforeEach(function () {
 
 test('互斥锁被占用时立即抛 MutationBusyException（抢锁早于查 DB/上游）', function (string $actionClass, string $method, string $keyPrefix) {
     $id = 999999;
-    expect(Cache::lock("{$keyPrefix}{$id}", 60)->get())->toBeTrue();
+    expect(Cache::store('runtime')->lock("{$keyPrefix}{$id}", 60)->get())->toBeTrue();
 
     expect(fn () => app($actionClass)->$method($id))
         ->toThrow(MutationBusyException::class);
@@ -30,7 +30,7 @@ test('互斥锁被占用时立即抛 MutationBusyException（抢锁早于查 DB/
 ]);
 
 test('不同订单 id 的互斥锁互不阻塞', function () {
-    expect(Cache::lock('order_mutate_111', 60)->get())->toBeTrue();
+    expect(Cache::store('runtime')->lock('order_mutate_111', 60)->get())->toBeTrue();
 
     // 占了 111，对 222 的 commit 不应抛 MutationBusyException（会因订单不存在抛别的）
     expect(fn () => app(OrderAction::class)->commit(222))

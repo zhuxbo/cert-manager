@@ -21,6 +21,7 @@ class PackageExtractor
         'backend/storage/logs',
         'backend/storage/framework',
         'backend/storage/framework/cache/data',
+        'backend/storage/framework/runtime-cache/data',
         'backend/storage/framework/sessions',
         'backend/storage/framework/views',
         'backend/storage/app/public',

@@ -302,7 +302,7 @@ class ApiController extends Controller
         $cacheKey = 'api_get_'.$order_id;
         // 原子占位：Cache::add（SETNX）保证并发下只放一个请求进 sync/pay/commit，防击穿重复调上游。
         // 保守 10s 占位；末尾按最终状态刷新滑动窗口（签发 120s / 其他 10s）
-        if (Cache::add($cacheKey, time(), 10)) {
+        if (Cache::store('runtime')->add($cacheKey, time(), 10)) {
             // 待验证、待审批、已签发的订单同步（同步失败不影响返回已有数据）
             if (in_array($order->latestCert->status, ['processing', 'approving', 'active'])) {
                 // suppressCallback=true：下游主动 pull，get 末尾已重新查询并同步返回新状态，无需再异步回调（避免冗余触发）
@@ -339,7 +339,7 @@ class ApiController extends Controller
 
         // 更新缓存时间
         $cacheTime = $order->latestCert->status === 'active' ? 120 : 10;
-        Cache::set($cacheKey, time(), $cacheTime);
+        Cache::store('runtime')->set($cacheKey, time(), $cacheTime);
 
         // 未支付 和 待提交 的订单状态改为处理中再返回
         if (in_array($order->latestCert->status, ['unpaid', 'pending'])) {

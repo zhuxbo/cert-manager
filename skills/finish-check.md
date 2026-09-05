@@ -4,7 +4,7 @@
 
 > 范围：仅 MySQL + 宝塔部署。
 
-**S 档降级（仅纯文档改动）**：`git diff HEAD --name-only && git diff --cached --name-only` 合并后 `grep -vE '\.md$'` 为空 → 跳过 §2、§3（保留 §3.2 对改动 md 跑 prettier）、§4；§8 降为 1 轮且 reviewer 模板"必须实际跑"第 1-4 项免除（第 5 项改为核对文档与代码一致性）。其余一切改动维持全量流程。
+**S 档降级（仅纯文档改动）**：以 `derive-scope.sh` 的 `DOCS_ONLY=yes` 为准（非空变更清单全部为 `.md`，包含暂存、工作区和未跟踪文件）→ 跳过 §2、§3（保留 §3.2）、§4；§8 只核对文档与对应代码一致性，免除不适用的运行测试。不因文档降级跳过真实语义缺陷；若需要修复仍遵守 §8 的复验和轮次上限。非文档变更按 §1 的实际影响范围执行，纯前端改动不强制跑后端门禁。
 
 ---
 
@@ -12,7 +12,11 @@
 
 finish-check 的并行单位是**有明确输入和资源锁的只读门禁**，不是任意命令。所有会写源码的动作（ESLint/Prettier/Stylelint `--fix`/`--write`、shfmt `-w`、Pint 修复）必须在冻结前串行完成；冻结后只能跑 check/test/build/package。任何命令改变源码，执行器会把该结果标记为 stale，退出码 86。
 
-先建立本次运行目录并冻结源码：
+本流程是日常完成检查，不等于在本地重跑全部 CI 矩阵。后端优先使用仓库 Docker：默认环境跑主测试，命中 §2.4 时补 MySQL 5.7；当前 CI 另覆盖 PHP 8.3/8.4 × MySQL 5.7 与 PHP 8.4/8.5 × MySQL 8.4，矩阵以 `.github/workflows/ci.yml` 为准。涉及 PHP 版本语法或扩展兼容时补相应环境验证，并明确本地实际覆盖组合。
+
+**执行顺序**：先按 §1 确定必跑 gate，再冻结；先完成适用的 `script-checks`、`pint`、`phpstan`、`frontend-lint`、`agent-guards`，失败即修复并重新冻结，避免耗时测试排完后才发现格式或静态错误。随后启动测试、构建与打包；无共享资源的 gate 可并行，`package-invariants` 必须在本轮 `main-package` 成功后运行。Reviewer 可以提前阅读已冻结源码，与耗时门禁重叠；签字前必须核验相关门禁和当前 fingerprint。
+
+首次冻结前完成 §5 要求的新增文件暂存；暂存区变化也会改变 fingerprint，不要留到门禁完成后再处理。然后建立本次运行目录并冻结源码：
 
 ```bash
 FINISH_RUN=".superpowers/finish-check-runs/$(date +%Y%m%d-%H%M)-<简短主题>"
@@ -74,7 +78,7 @@ survivor 默认全部计入未杀死，不自动猜测“等价变异”。处�
 
 1. 当前 generation 的 build/package/mutation/test/review 证据全部保留在账本中，但不再有效；
 2. 修复与格式化完成后重新执行 `freeze`，generation 自动递增；
-3. 按变更的输入依赖重跑门禁；打包始终依赖全部发布源，源码变更后一律重跑；
+3. 重新推导范围并重跑该范围全部必需的注册 gate。当前执行器不支持跨 generation 复用 gate PASS；只有 mutation 内部按依赖指纹复用分片缓存。不得用“文件看起来无关”引用旧代证据；打包依赖全部发布源；
 4. 声明完成前用 `verify` 明确列出本次范围要求的全部 gate 名，旧 generation 的 PASS 不会被接受：
 
 ```bash
@@ -105,6 +109,8 @@ bash skills/scripts/derive-scope.sh   # 机器推导范围表，贴实际输出
 确认本次改动涉及的目录（backend / frontend/admin / frontend/user / frontend/shared / plugins / deploy / build / .github）和敏感路径（migrations / 资金路径 / 索引 / 部署脚本 / 打包与 CI）。变更范围决定后面要重点跑哪些测试。
 
 **结构化范围产出**（后续阶段判定依据，必须在 finish-check 总结里贴 `derive-scope.sh` 实际输出）：
+
+范围推导和文件格式检查共用 `skills/scripts/finish-check-files.py`：默认合并 HEAD diff、暂存 diff 和未跟踪未忽略文件；删除项参与范围判断，格式检查跳过已不存在的文件。显式 `--base` 保持对应 Git diff 范围，不把未跟踪文件混入历史比较。临时诊断可用 `list --null` 安全取得带空格的文件名；禁止另外用不完整的 `git diff --name-only` 判断文档降级。
 
 | 维度                                                                           | 本次涉及？ | 触发后续什么                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -185,26 +191,26 @@ bash skills/scripts/derive-scope.sh   # 机器推导范围表，贴实际输出
 ### 2.1 代码格式化
 
 ```bash
-cd backend && ./vendor/bin/pint --test
+docker compose exec -T app ./vendor/bin/pint --test
 ```
 
-有问题则 `./vendor/bin/pint` 修复。
+有问题则在 freeze 前通过 Docker 对改动文件运行 Pint 修复。
 
 ### 2.2 PHPStan 静态分析
 
 ```bash
-cd backend && ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G
+docker compose exec -T app ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G
 ```
 
-**0 errors 才算通过**。本次 diff 引入的告警必须修；历史遗留也建议顺手修，避免错误集累积。
+**0 errors 才算通过**。本次 diff 引入的告警必须修；历史遗留只在阻碍当前验收时处理，其他问题记录，不扩展本轮改动。
 
 ### 2.3 测试 — 本地 mysql paratest
 
 ```bash
-cd backend && php artisan test --parallel
+make test
 ```
 
-> 默认走 `.env.testing` 的 mysql；本地 MySQL 偶发 "server has gone away" / "Connection refused"（资源压力间歇性闪断 / paratest 连接占满）时，**最多重跑 2 次**。第 3 次仍失败 → 当真实回归处理，必须排查根因，禁止"重试到通过"。
+> `make test` 显式指定隔离测试库，本地不裸跑宿主 PHP；MySQL 偶发 "server has gone away" / "Connection refused"（资源压力间歇性闪断 / paratest 连接占满）时，**最多重跑 2 次**。第 3 次仍失败 → 当真实回归处理，必须排查根因，禁止"重试到通过"。
 >
 > **重跑只赦免基础设施闪断，不赦免测试本身的不确定性**：若失败与断言/数据相关（非连接闪断），是 flaky bug，按 `review-checklist.md` 反模式 14 排查根因（faker 随机数据撞校验 / paratest 共享 storage 跨 worker 误删 / `time()` 时钟不可控 / tearDown 吞 rollback / Pest skip eager 求值），禁止靠重跑掩盖。新增或改测试时主动收敛这四类不确定源，并防伪绿（反模式 15：只断 `assertOk`、安全 provider 方向反置、`markTestSkipped` 吞 bug）。
 
@@ -229,7 +235,7 @@ cd backend && php artisan test --parallel
 - 原生 SQL（`DB::raw`/`whereRaw`/`DB::statement`）
 - AppServiceProvider 连接/时区注入
 
-> 本地 MySQL 一般是 8.x（你本地用 8.4），跑过 ≠ 5.7 兼容（项目声明最小版本）。CI 用 mysql:5.7，本地先验避免 PR 红 CI。
+> 本地 MySQL 一般是 8.x，跑过不等于 5.7 兼容；CI 同时覆盖 5.7 与 8.4，本地按本节条件验证 5.7。
 
 **固定入口**（复用 Compose app 容器，在同一 Docker 网络启动隔离的 MySQL 5.7；固定测试库
 `ssl_manager_test` 与 5.7 兼容 collation，自动等待、迁移、测试和清理）：
@@ -297,7 +303,7 @@ pnpm lint:check
 ### 3.2 Markdown 格式化（本次改动的 md）
 
 ```bash
-git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --check
+python3 skills/scripts/finish-check-files.py check --kind markdown
 ```
 
 Prettier 原生支持 markdown（无需额外插件）。`.prettierrc.js` 在仓库根，`prettier` 装在 `frontend/admin/`。
@@ -321,7 +327,7 @@ command -v shfmt && shfmt --version
 `shfmt` 就位后跑：
 
 ```bash
-git diff --name-only | grep "\.sh$" | xargs shfmt -i 4 -ci -d
+python3 skills/scripts/finish-check-files.py check --kind shell
 ```
 
 [`shfmt`](https://github.com/mvdan/sh) 是 shell 脚本事实标准格式化工具（Go 实现），统一缩进、对齐、case 模式空格。
@@ -424,7 +430,7 @@ make test ARGS="tests/Feature/Database/TaskIndexFinalStateTest.php"
 >
 > 改 `detect-orphans.php` 时注意两个已踩过的坑：`Str::evaluable()` 返回值**自带** `__pest_evaluable_` 前缀（剥掉再比对会把全部 fixture 误判成孤儿）；`it('foo')` 的方法名是 `it foo` 的 evaluable 而非 `foo`（不补 `it ` 前缀会把所有 `it()` 用例误判）。改完务必做正向验证——伪造「测试不存在」「测试类文件不存在」「名字改一个字」三类探针 fixture，确认都被检出且退出码为 1，再删除探针。
 >
-> **输出 `SKIP:` 即门禁未真正执行**（Compose app 未运行且宿主无 php+vendor），此时退出码仍是 0、不会拦住流程。看到 SKIP 必须 `make up` 后重跑，不得当作通过——本节其余检查同样依赖容器，容器本就该是起着的。
+> Compose app 未运行且宿主无 php+vendor 时，孤儿夹具检查返回非零并明确报错；启动已有环境后重跑。检查未执行不能记作通过。
 
 ---
 
@@ -493,10 +499,10 @@ loop:
      grep -Fn "REVIEW_PASS:" <round 文件> 或 grep -Fn "REVIEW_FAIL:" <round 文件>，
      并确认报告含 "## 证据回执" 固定段（grep -F "证据回执"，缺失视同 REVIEW_FAIL 退回重派）
   ③ 主智能体读 reviewer 报告
-     ├─ Critical / High：必须修 → 修完跳回 §2/§3（只对改动文件）→ 重新执行 §8
+     ├─ Critical / High：必须修 → 按 §0 重新冻结并重跑当前范围必需 gate → 重新执行 §8
      │   └─ 修复是否生效由下一轮 reviewer 复验判定（"已修待复验"），主智能体的"已修"标注不构成验证
      ├─ Medium：报告给用户决议（当场修 / follow-up issue / 接受）—— 主智能体不擅自处理
-     │   └─ 用户选"当场修"：视同 Critical/High 处理（修完跳回 §2/§3 → 重新执行 §8；修完后主智能体必须把此项加入下一轮 reviewer prompt 的"上一轮 medium 用户决议为'当场修'的项"字段，避免下轮重复报告）
+     │   └─ 用户选"当场修"：视同 Critical/High 处理（修完按 §0 重新冻结、验证 → 重新执行 §8；修完后主智能体必须把此项加入下一轮 reviewer prompt 的"上一轮 medium 用户决议为'当场修'的项"字段，避免下轮重复报告）
      └─ Low / Nit：默认 follow-up，不阻塞
   ④ round 文件 grep 命中 `REVIEW_PASS:`，且 finish-check 执行器确认本轮证据属于当前
      generation/fingerprint → 退出循环
@@ -515,7 +521,7 @@ loop:
 
 ### 8.2 Reviewer Subagent 调用方式
 
-用 Claude Code 的 Agent tool 派出独立子对话（默认通用 reviewer，不指定 subagent_type）：
+使用当前工具原生的子智能体能力派出独立 reviewer。Codex 使用 `collaboration.spawn_agent`；Claude Code 使用 Agent tool（默认通用 reviewer，不指定 subagent_type），例如：
 
 ```
 Agent({
@@ -524,7 +530,7 @@ Agent({
 })
 ```
 
-若环境已注册专用 reviewer 类型（如 `feature-dev:code-reviewer`，查 installed plugins / agents 确认）则可优先指定 `subagent_type` 使用；未确认已注册时不要先试——必失败的派发只会留下"降级当异常"的即兴空间。最终报告引用 REVIEW_PASS 签字行处须同行注明本轮实际使用的 subagent_type（通用则写 general-purpose）。
+若环境已注册专用 reviewer 类型则可使用；未确认时使用原生通用子智能体，不尝试不存在的类型。最终报告注明实际派发方式及类型（如 Codex 通用子智能体 / Claude general-purpose）。子智能体不可用时明确报告缺少独立审核能力，不以主智能体自签代替。
 
 **Prompt 模板的单一来源**：`skills/review-checklist.md` 中 "Reviewer Subagent 任务模板" 章节是唯一权威。本文件不内嵌模板内容，避免漂移。主智能体派 reviewer 前先读该章节，按模板填空（改动范围 / 已知 review 历史 / 主要功能背景）。
 
@@ -553,4 +559,23 @@ Agent({
 
 ---
 
-逐项检查完毕、阶段 8 的落盘 round 文件被主智能体 `grep -F "REVIEW_PASS:"` 命中并在总结中引用"文件路径 + 命中行"后，输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。**签字行随 commit body 要点或 PR body 落库**（`.github/workflows/review-pass-gate.yml` 在 PR→main 时校验双通道任一命中；防无声遗忘而非伪造）。
+## 9. 日常演进与耗时复盘
+
+每次 finish-check 都检查本次系统变化是否使范围规则、运行入口、资源锁或清单失效；有事实依据的局部维护属于完成检查的常规工作。优先在首次 freeze 前处理已知问题，不要求每次新增规则。
+
+```bash
+python3 skills/scripts/finish-check-exec.py summary --run-dir "$FINISH_RUN"
+```
+
+该命令只读汇总当前代的执行/等待时间、累计执行次数与耗时前三项，不执行测试，也不代替 `verify`；并行 gate 的等待时间不能相加当作总耗时。结合已有 ledger 和当前 diff，按以下边界演进：
+
+- **可直接维护**：真实新路径/新写法导致漏检；已删除功能留下失效检查；实际误报；文档与现行命令、CI 或配置不符；同代同输入的重复机械验证。修改对应单一来源，避免在主文档复制领域细节。
+- **验证改进本身**：规则修改补能证明“应命中、应放行”的定向测试；跳过/失败语义改动验证非零退出；涉及范围/执行器时跑 `executor-tests`。不得为提速降低安全、资金、迁移或并发验证要求，不豁免失败、取消资源锁或伪造证据。
+- **控制规模**：每次最多一批主动优化，不规定必须优化的数量；额外抽象、跨代证据复用、运行环境隔离或大幅扩测，只在当前运行目录记录依据、预计收益与验证条件，作为后续建议。已经 freeze 后发现的纯提速机会留到下一次开发阶段，不为它单独触发整轮重跑；真实漏检或假绿必须当轮处理。
+- **证据仍要有效**：任何已冻结源码/规则修改都需重新 freeze、跑完当前范围 gate，并由独立 reviewer 复核；不能因为是“自优化”就沿用旧 PASS。通过后停止，不递归审查优化流程本身。
+
+最终摘要增加一行“流程演进：已修正…… / 无需更新 / 后续建议……”，重要提速结论引用实际执行与等待数据；没有测量就不承诺节省比例。过程记录留在本次运行目录，不新增入库说明文档，不修改个人记忆或全局规则。
+
+---
+
+逐项检查完毕、阶段 8 的落盘 round 文件被主智能体 `grep -F "REVIEW_PASS:"` 命中并在总结中引用"文件路径 + 命中行"，且完成 §9 复盘后，输出结果摘要和风险列表，等待用户确认"提交"再执行 git commit。**签字行随 commit body 要点或 PR body 落库**（`.github/workflows/review-pass-gate.yml` 在 PR→main 时校验双通道任一命中；防无声遗忘而非伪造）。

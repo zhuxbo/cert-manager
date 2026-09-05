@@ -17,6 +17,7 @@
         "backend/tests/Feature/Commands/UserDataCommandTest.php",
         "backend/tests/Feature/Http/Controllers/Admin/DashboardControllerTest.php",
         "backend/tests/Feature/Http/Controllers/Admin/FundControllerTest.php",
+        "backend/tests/Feature/Http/Controllers/User/DashboardControllerTest.php",
         "backend/tests/Feature/Http/Controllers/User/FundControllerTest.php",
         "backend/tests/Feature/Http/Controllers/User/TopUpControllerTest.php"
       ]

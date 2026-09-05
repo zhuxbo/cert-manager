@@ -57,7 +57,7 @@ class VerifyCodeHelper
 
         if ($result['code'] === 1) {
             // 保存验证码到缓存，并重置失败计数
-            Cache::put($codeKey, $code, $codeExpire);
+            Cache::store('runtime')->put($codeKey, $code, $codeExpire);
             self::resetFailCount($mobile, $type);
             self::markSent($mobile);
 
@@ -129,7 +129,7 @@ class VerifyCodeHelper
             $mail->Body = $content;
 
             // 先写缓存后发送：发送失败则回滚缓存，避免占用冷却/计数却没真正发出
-            Cache::put($codeKey, $code, $codeExpire);
+            Cache::store('runtime')->put($codeKey, $code, $codeExpire);
 
             $mail->send();
 
@@ -143,7 +143,7 @@ class VerifyCodeHelper
             ];
         } catch (Throwable $e) {
             // 发送失败，回滚验证码缓存 + 释放冷却占位（允许立即重试）
-            Cache::forget($codeKey);
+            Cache::store('runtime')->forget($codeKey);
             self::releaseSendCooldown($email);
 
             // 记录异常
@@ -192,7 +192,7 @@ class VerifyCodeHelper
         $cacheKey = self::CODE_PREFIX.$type.'_'.$target;
         $failKey = self::FAIL_PREFIX.$type.'_'.$target;
 
-        $savedCode = Cache::get($cacheKey);
+        $savedCode = Cache::store('runtime')->get($cacheKey);
 
         // 无有效验证码（未发送 / 已过期 / 已被失败次数作废）一律失败，且不再累计
         if (! $savedCode) {
@@ -202,8 +202,8 @@ class VerifyCodeHelper
         // 使用 hash_equals 防时序侧信道；$code 来自用户输入需转字符串
         if (hash_equals((string) $savedCode, (string) $code)) {
             if ($autoDelete) {
-                Cache::forget($cacheKey);
-                Cache::forget($failKey);
+                Cache::store('runtime')->forget($cacheKey);
+                Cache::store('runtime')->forget($failKey);
             }
 
             return true;
@@ -211,12 +211,12 @@ class VerifyCodeHelper
 
         // 校验失败累计；达到阈值作废该验证码，攻击者无法继续猜测
         $codeExpire = (int) (get_system_setting('sms', 'expire') ?? 600);
-        Cache::add($failKey, 0, $codeExpire);
-        $attempts = (int) Cache::increment($failKey);
+        Cache::store('runtime')->add($failKey, 0, $codeExpire);
+        $attempts = (int) Cache::store('runtime')->increment($failKey);
 
         if ($attempts >= self::MAX_FAIL_ATTEMPTS) {
-            Cache::forget($cacheKey);
-            Cache::forget($failKey);
+            Cache::store('runtime')->forget($cacheKey);
+            Cache::store('runtime')->forget($failKey);
         }
 
         return false;
@@ -235,7 +235,7 @@ class VerifyCodeHelper
 
         // 原子占位冷却：Cache::add（SETNX）失败 = 冷却期内已有请求占位，
         // 防并发同一 target 在 has 判断 + put 写入之间的窗口击穿冷却重复发送
-        if (! Cache::add($cooldownKey, 1, self::SEND_COOLDOWN_SECONDS)) {
+        if (! Cache::store('runtime')->add($cooldownKey, 1, self::SEND_COOLDOWN_SECONDS)) {
             return [
                 'code' => 0,
                 'msg' => '验证码发送过于频繁，请稍后再试',
@@ -243,7 +243,7 @@ class VerifyCodeHelper
         }
 
         // 每日上限（冷却已串行化同一 target，此处计数无并发竞争）
-        if ((int) Cache::get($dailyKey, 0) >= self::DAILY_SEND_LIMIT) {
+        if ((int) Cache::store('runtime')->get($dailyKey, 0) >= self::DAILY_SEND_LIMIT) {
             // 释放刚抢占的冷却位：今日额度用尽不应再额外卡 60s
             self::releaseSendCooldown($target);
 
@@ -266,11 +266,11 @@ class VerifyCodeHelper
         $cooldownKey = self::COOLDOWN_PREFIX.$target;
         $dailyKey = self::DAILY_PREFIX.$target.'_'.date('Ymd');
 
-        Cache::put($cooldownKey, 1, self::SEND_COOLDOWN_SECONDS);
+        Cache::store('runtime')->put($cooldownKey, 1, self::SEND_COOLDOWN_SECONDS);
 
         // 当日计数：TTL 到当日 23:59:59，跨天自动重置
-        Cache::add($dailyKey, 0, now()->endOfDay());
-        Cache::increment($dailyKey);
+        Cache::store('runtime')->add($dailyKey, 0, now()->endOfDay());
+        Cache::store('runtime')->increment($dailyKey);
     }
 
     /**
@@ -280,7 +280,7 @@ class VerifyCodeHelper
      */
     protected static function releaseSendCooldown(string $target): void
     {
-        Cache::forget(self::COOLDOWN_PREFIX.$target);
+        Cache::store('runtime')->forget(self::COOLDOWN_PREFIX.$target);
     }
 
     /**
@@ -290,7 +290,7 @@ class VerifyCodeHelper
      */
     protected static function resetFailCount(string $target, string $type): void
     {
-        Cache::forget(self::FAIL_PREFIX.$type.'_'.$target);
+        Cache::store('runtime')->forget(self::FAIL_PREFIX.$type.'_'.$target);
     }
 
     /**

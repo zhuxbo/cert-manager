@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { useNav } from "@/layout/hooks/useNav";
 import { message } from "@shared/utils";
 import { ElMessageBox } from "element-plus";
-import { clearAllCache } from "@/api/setting";
+import { refreshSettingCacheSafely } from "@/api/setting";
 import LayNavMix from "../lay-sidebar/NavMix.vue";
 import LaySidebarBreadCrumb from "../lay-sidebar/components/SidebarBreadCrumb.vue";
 import LaySidebarTopCollapse from "../lay-sidebar/components/SidebarTopCollapse.vue";
@@ -21,15 +21,19 @@ const clearingCache = ref(false);
 
 function handleClearCache() {
   if (clearingCache.value) return;
-  ElMessageBox.confirm("确认清除所有系统缓存？", "确认", {
-    type: "warning",
-    confirmButtonText: "确认清除",
-    cancelButtonText: "取消"
-  }).then(() => {
+  ElMessageBox.confirm(
+    "确认刷新系统设置缓存？队列、调度器、登录会话、限流和任务锁等运行状态不会被清除。",
+    "安全刷新设置缓存",
+    {
+      type: "warning",
+      confirmButtonText: "确认清理",
+      cancelButtonText: "取消"
+    }
+  ).then(() => {
     clearingCache.value = true;
-    clearAllCache()
+    refreshSettingCacheSafely()
       .then(() => {
-        message("系统缓存已清除", { type: "success" });
+        message("系统设置缓存已安全刷新", { type: "success" });
       })
       .catch(() => {
         message("缓存清除失败", { type: "error" });
@@ -72,7 +76,7 @@ function handleClearCache() {
       </a>
       <span
         class="cache-icon navbar-bg-hover"
-        title="清空系统缓存"
+        title="安全刷新系统设置缓存"
         @click="handleClearCache"
       >
         <IconifyIconOffline

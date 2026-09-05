@@ -166,6 +166,7 @@ for required in \
     full/backend/storage/app/public/ \
     full/backend/storage/framework/ \
     full/backend/storage/framework/cache/data/ \
+    full/backend/storage/framework/runtime-cache/data/ \
     full/backend/storage/framework/sessions/ \
     full/backend/storage/framework/views/ \
     full/backend/storage/logs/ \

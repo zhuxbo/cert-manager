@@ -1,5 +1,6 @@
 <?php
 
+use App\Auth\JwtBlacklistStorage;
 use Tymon\JWTAuth\Providers\Auth\Illuminate;
 use Tymon\JWTAuth\Providers\JWT\Lcobucci;
 use Tymon\JWTAuth\Providers\JWT\Provider;
@@ -291,7 +292,7 @@ return [
         |
         */
 
-        'storage' => Tymon\JWTAuth\Providers\Storage\Illuminate::class,
+        'storage' => JwtBlacklistStorage::class,
 
     ],
 

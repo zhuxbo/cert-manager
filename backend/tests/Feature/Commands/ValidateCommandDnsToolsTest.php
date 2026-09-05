@@ -28,7 +28,7 @@ function setupDnsTools(): void
         ['type' => 'array', 'value' => ['http://dnstool1.test'], 'weight' => 0]
     );
     Setting::clearGroupCache($group->id);
-    Cache::flush();
+    Cache::store('runtime')->flush();
 }
 
 /** dnsTools 全连接异常 */
@@ -129,7 +129,7 @@ test('dnsTools 未配置且本地未命中 → 不按节点故障累计 sync 安
     $dnsTools->value = [];
     $dnsTools->save();
     Setting::clearGroupCache($siteGroup->id);
-    Cache::flush();
+    Cache::store('runtime')->flush();
     Http::preventStrayRequests();
 
     $resolver = Mockery::mock(DnsResolver::class);
@@ -144,7 +144,7 @@ test('dnsTools 未配置且本地未命中 → 不按节点故障累计 sync 安
     }
 
     expect(Task::where('order_id', $order->id)->where('action', 'sync')->exists())->toBeFalse()
-        ->and(Cache::has("validate:dnstools_down:{$order->id}"))->toBeFalse();
+        ->and(Cache::store('runtime')->has("validate:dnstools_down:{$order->id}"))->toBeFalse();
     Http::assertNothingSent();
 });
 

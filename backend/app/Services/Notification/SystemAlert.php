@@ -66,7 +66,7 @@ class SystemAlert
             $fingerprintValue = $fingerprint
                 ?? sha1((string) json_encode([$category, $title, $message, $details]));
 
-            if (Cache::get(self::CACHE_PREFIX.$dedupeKey) === $fingerprintValue) {
+            if (Cache::store('runtime')->get(self::CACHE_PREFIX.$dedupeKey) === $fingerprintValue) {
                 return false;
             }
         }
@@ -115,7 +115,7 @@ class SystemAlert
         if ($useDedupe) {
             $key = self::CACHE_PREFIX.$dedupeKey;
             DB::afterCommit(
-                fn () => Cache::put($key, $fingerprintValue, now()->addHours($dedupeTtlHours))
+                fn () => Cache::store('runtime')->put($key, $fingerprintValue, now()->addHours($dedupeTtlHours))
             );
         }
 
@@ -131,6 +131,6 @@ class SystemAlert
             return;
         }
 
-        Cache::forget(self::CACHE_PREFIX.$dedupeKey);
+        Cache::store('runtime')->forget(self::CACHE_PREFIX.$dedupeKey);
     }
 }

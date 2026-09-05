@@ -1164,7 +1164,7 @@ test('sync 10秒内缓存不重复请求', function () {
     ]);
 
     // 设置缓存模拟已请求
-    Cache::set("acme_sync_$acme->id", time(), 10);
+    Cache::store('runtime')->set("acme_sync_$acme->id", time(), 10);
 
     // force=true 时静默返回
     $this->service->sync($acme->id, true);
@@ -1234,7 +1234,7 @@ test('sync 终态守卫：本地 cancelled 不被上游滞后 active 复活', fu
     expect($cancelTx)->not->toBeNull();
 
     // 上游滞后返回 active，绕过 10s 缓存（cancel 已写过），sync 应拒绝把 cancelled 改回 active
-    Cache::forget("acme_sync_$acme->id");
+    Cache::store('runtime')->forget("acme_sync_$acme->id");
     Http::fake([
         'fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'active']]),
     ]);
@@ -1247,7 +1247,7 @@ test('sync 终态守卫：本地 cancelled 不被上游滞后 active 复活', fu
 });
 
 test('sync 上游失败回滚防抖占位，重试能再次调用上游', function () {
-    // #19：占位 Cache::add 在上游调用之前；上游失败时占位若不回滚，10s 内重试会命中占位
+    // #19：占位 Cache::store('runtime')->add 在上游调用之前；上游失败时占位若不回滚，10s 内重试会命中占位
     // 直接返回 success（把失败伪装成成功）。修复后失败应回滚占位，下次重试真正重调上游。
     $user = $this->createTestUser(['balance' => '500.00']);
     $product = $this->createTestProduct(['product_type' => Product::TYPE_ACME, 'source' => 'default']);
@@ -1271,7 +1271,7 @@ test('sync 上游失败回滚防抖占位，重试能再次调用上游', functi
     expectApiError(fn () => $this->service->sync($acme->id), '上游同步失败');
 
     // 占位已被回滚：缓存键不应存在
-    expect(Cache::has("acme_sync_$acme->id"))->toBeFalse();
+    expect(Cache::store('runtime')->has("acme_sync_$acme->id"))->toBeFalse();
 
     // 第二次：占位已清，上游恢复后重试应真正重调上游并写回状态
     expectApiSuccess(fn () => $this->service->sync($acme->id));
@@ -2287,7 +2287,7 @@ test('T7：已退款的 cancelling 单再 sync → 预检跳过退款、只补�
     $acme->update(['status' => Acme::STATUS_CANCELLING]);
 
     // 再 sync cancelled：预检 alreadyRefunded=true → 跳过退款，只补终态删任务
-    Cache::forget("acme_sync_$acme->id");
+    Cache::store('runtime')->forget("acme_sync_$acme->id");
     Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
     $this->service->sync($acme->id, true);
 
@@ -2340,7 +2340,7 @@ test('T7 K6：并发 cancel 已退款置 cancelled → sync 上游终态不双�
     expect(Transaction::where('transaction_id', $acme->id)->where('type', Transaction::TYPE_ACME_CANCEL)->count())->toBe(1);
 
     // sync 上游 cancelled：本地已 cancelled（localTerminal）→ T7 判据 status===cancelling 不命中 → 不双退不复活
-    Cache::forget("acme_sync_$acme->id");
+    Cache::store('runtime')->forget("acme_sync_$acme->id");
     Http::fake(['fake-gateway.test/*' => Http::response(['code' => 1, 'data' => ['status' => 'cancelled']])]);
     $this->service->sync($acme->id, true);
 

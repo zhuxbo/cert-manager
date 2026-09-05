@@ -90,13 +90,13 @@ class CaHealthcheckCommand extends Command
     /**
      * 连通性失败处理：累计计数，达阈值发 SystemAlert（固定指纹 ca_outage 防计数 churn 击穿去重）。
      *
-     * 阈值 3×15min=45min 滤上游滚动重启瞬断；TTL 6h ≥ 3×45min 契约。计数用 Cache::forever
-     * 跨 cron 周期累计（cache:clear 清计数 = 延迟一周期非永久静默，M1 心跳仍可反映调度状态）。
+     * 阈值 3×15min=45min 滤上游滚动重启瞬断；TTL 6h ≥ 3×45min 契约。计数写入 runtime store
+     * 跨 cron 周期累计，普通 cache:clear 不重置连续失败窗口。
      */
     private function handleConnectivityFailure(string $msg): void
     {
-        $fails = (int) Cache::get(self::CONNECTIVITY_FAILS_KEY, 0) + 1;
-        Cache::forever(self::CONNECTIVITY_FAILS_KEY, $fails);
+        $fails = (int) Cache::store('runtime')->get(self::CONNECTIVITY_FAILS_KEY, 0) + 1;
+        Cache::store('runtime')->forever(self::CONNECTIVITY_FAILS_KEY, $fails);
 
         $threshold = (int) config('monitoring.ca_healthcheck.connectivity_threshold', 3);
         if ($fails < $threshold) {
@@ -122,7 +122,7 @@ class CaHealthcheckCommand extends Command
      */
     private function resetConnectivity(): void
     {
-        Cache::forget(self::CONNECTIVITY_FAILS_KEY);
+        Cache::store('runtime')->forget(self::CONNECTIVITY_FAILS_KEY);
         app(SystemAlert::class)->clearDedupe(self::CONNECTIVITY_DEDUPE_KEY);
     }
 

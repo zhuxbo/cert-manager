@@ -117,8 +117,8 @@ export function clearCache(): Promise<BaseResponse> {
   return http.request<BaseResponse>("post", "/setting/clear-cache");
 }
 
-// 清除系统全部缓存
-export function clearAllCache(): Promise<BaseResponse> {
+// 安全刷新系统设置缓存（保留队列、调度、运行状态和会话）
+export function refreshSettingCacheSafely(): Promise<BaseResponse> {
   return http.request<BaseResponse>("post", "/setting/clear-all-cache");
 }
 

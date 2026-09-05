@@ -119,6 +119,7 @@ mkdir -p \
     "$WORKSPACE/backend/scripts" \
     "$WORKSPACE/backend/storage/app/private" \
     "$WORKSPACE/backend/storage/databak" \
+    "$WORKSPACE/backend/storage/framework/runtime-cache/data" \
     "$WORKSPACE/backend/storage/framework/views" \
     "$WORKSPACE/backend/storage/pay" \
     "$WORKSPACE/backend/tests" \
@@ -141,6 +142,7 @@ touch \
     "$WORKSPACE/backend/scripts/write-composer-lock-marker.php" \
     "$WORKSPACE/backend/storage/app/private/customer.txt" \
     "$WORKSPACE/backend/storage/databak/backup.sql.gz" \
+    "$WORKSPACE/backend/storage/framework/runtime-cache/data/runtime-key" \
     "$WORKSPACE/backend/storage/framework/views/compiled.php" \
     "$WORKSPACE/backend/storage/pay/private.pem" \
     "$WORKSPACE/backend/tests/ExampleTest.php" \
@@ -209,6 +211,7 @@ for forbidden in \
     backend/scripts/test-mutate.sh \
     backend/storage/app/private/customer.txt \
     backend/storage/databak/backup.sql.gz \
+    backend/storage/framework/runtime-cache/data/runtime-key \
     backend/storage/databak/stale.sql.gz \
     backend/storage/framework/views/compiled.php \
     backend/storage/pay/private.pem \
@@ -229,6 +232,7 @@ for required in \
     backend/storage/app/public \
     backend/storage/app/private \
     backend/storage/framework/cache \
+    backend/storage/framework/runtime-cache \
     backend/storage/framework/sessions \
     backend/storage/framework/views \
     backend/storage/logs \

@@ -382,6 +382,7 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - 本轮报告写入：<由主智能体填 `.superpowers/reviews/<本次 run 目录>/round-<N>.md` 的路径；reviewer 必须把完整报告原样写入该文件，最终回复正文 = 同一报告>
 - finish-check 运行目录：<由主智能体填 `.superpowers/finish-check-runs/<本次 run>/`；reviewer 实跑命令须通过 `skills/scripts/finish-check-exec.py run` 写入同一账本>
 - 当前 generation / fingerprint：<由主智能体从运行目录 `state.json` 填；报告签字前再次核对，漂移即本轮无效>
+- 本轮必需门禁与有效证据：<按范围列 gate 与显式环境值，供 reviewer 通过执行器 verify 独立核验；尚在运行的门禁注明待完成，不能提前签字>
 - 相关 plan 文档（无则填'无'）：<由主智能体填 `.superpowers/plans/<filename>.md` 的相对路径；reviewer 可选阅读以理解设计决策；本次改动确实无 plan 时显式填"无"，需补充上下文可附若干 commit SHA 供 reviewer 用 `git show` 翻历史。**收到"无"时 reviewer 必须反核**：跑 `ls .superpowers/plans/ .superpowers/*.md` 按本次 diff 涉及的模块/功能名匹配；发现疑似候选先打开核对内容——若 plan 描述的正是本次 diff 的改动（而非历史已完成功能的旧 plan），报 high（设计期清单被绕过）；报告留一行痕迹：`ls plans → 无匹配项` 或 `匹配到 <file>，核对为历史旧 plan，不对应本次 diff`>
 - 相关 spec/brainstorm 文档（如果有）：<由主智能体填 `.superpowers/specs/<filename>.md` 的路径；同上>
 
@@ -398,14 +399,16 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 - 反模式 2 + 15 特别强调：对任何"声称有鉴权/签名/限流/回调校验"的防御机制，必须**实际制造一次绕过请求**（无 token 的 signed 请求 / 169.254 下载 / 改密后用旧 token）确认真被拦——静态读到"加了防御代码"≠ 生效；测试只断 `assertOk` / 把应拒输入放进放行集 = 伪绿。这是上一批 `76a2f58` 三处"半修"的根因，命中报 high
 - 反模式 21 特别强调：改了 migrations / 数据库结构 → 不能只信 CI 绿 / migration 入表，必须**实跑 `migrate` 再 `db:structure --check`** 验证索引/列确已生效（`SHOW INDEX WHERE ?` 静默失败曾让索引"看似升级实则没建"）
 
-## 必须实际跑(不只是静态推理!)
-以下命令必须通过 `python3 skills/scripts/finish-check-exec.py run --run-dir <finish-check 运行目录> --name reviewer-rN-<gate> [资源锁] -- <命令>` 执行并写入账本。Pint、PHPStan、Laravel 测试和运行时失败场景加 `--lock backend-runtime:exclusive`；数据库命令再加 `--lock db:exclusive`。mutation 运行期间只允许源码阅读与其重叠，PHP 命令等待锁，不得靠人工约定并行。
+## 必须核验证据与实际运行
+先按 diff 确认适用项，不对纯前端/文档/工具脚本改动强制跑后端检查。已完成的同 generation/fingerprint 注册门禁，通过执行器 `verify --require <gate>`（有显式环境时同时传 `--expect-env`）核验，可用于第 1-4 项；记录所用 gate/日志及 verify 结果，不能仅转述主智能体“已通过”。缺少有效证据才运行对应 gate。Reviewer 仍须独立阅读调用链并验证第 5 项失败场景；已有同输入全量测试完整覆盖的定向测试不重复运行，特殊环境或待修问题的复现不属于重复项。
 
-0. **实跑"改动范围"给出的 diff 命令获取全文 patch**(非 --stat)，每条发现须引用 diff 中的具体 hunk(文件:行)；若按所给范围取不到全文 → 最后一行输出 `REVIEW_FAIL: diff 不可获取，无法审查`
-1. `cd backend && ./vendor/bin/pint --test`(PHP 格式)
-2. `cd backend && ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G`(静态分析)
-3. `bash -n` 改过的 .sh 文件 + `shfmt -d` 看格式
-4. `cd backend && php artisan test --filter=<改动相关>`(改动涉及的测试集)
+新增诊断通过 `python3 skills/scripts/finish-check-exec.py run --run-dir <finish-check 运行目录> --name reviewer-rN-<gate> [资源锁] -- <命令>` 记账。Pint、PHPStan、Laravel 测试和运行时失败场景加 `--lock backend-runtime:exclusive`；数据库命令再加 `--lock db:exclusive`。本地 PHP 一律优先 Docker，禁止先试宿主命令再临时回退。源码阅读可与耗时门禁重叠，签字前等待所需门禁完成并核验证据。
+
+0. **实跑"改动范围"给出的 diff 命令获取全文 patch**(非 --stat)，默认工作区范围还须读取统一清单中的未跟踪源码全文；每条发现引用具体文件/行。若取不到完整改动 → 最后一行输出 `REVIEW_FAIL: diff 不可获取，无法审查`
+1. PHP 格式：核验 `pint` gate；无有效证据时 `docker compose exec -T app ./vendor/bin/pint --test`。
+2. 静态分析：核验 `phpstan` gate；无有效证据时 `docker compose exec -T app ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G`。
+3. Shell/Markdown/Python/JSON：核验 `script-checks` gate；范围来自统一清单，不使用固定文件列表。
+4. 相关测试：核验相应测试 gate 和实际覆盖范围；需要额外 PHP 场景时 `docker compose exec -T -e DB_DATABASE=ssl_manager_test app php artisan test --filter=<改动相关>`。纯前端或工具改动采用对应测试入口；文档不强制运行测试。
 5. **至少 1 个失败场景 / 绕过请求模拟**(关键 — 静态推理 ≠ 实际验证):
    - 删一个新引入的配置文件 / 给个非法输入 / mock 命令失败
    - 安全机制必做:发一次**绕过请求**(无 token 的 signed 请求 / 169.254 下载 / 改密后用旧 token / 免登录端点超频)看是否真被拦
@@ -421,8 +424,8 @@ CI / `migrate` 显示成功,但生产实际没生效,是最难发现的一类:
 
 ## 证据回执（签字前必附 — 固定段标题，主智能体 grep 核验）
 
-报告倒数第二段必须是 `## 证据回执` 固定标题段，逐行列出"必须实际跑"各项的执行凭据：
-- 第 0-4 项各一行：`<命令> → 退出码 N`
+报告倒数第二段必须是 `## 证据回执` 固定标题段，逐行列出"必须核验证据与实际运行"各项的执行凭据：
+- 第 0-4 项各一行：`<命令> → 退出码 N` 或 `<gate/日志> → 当前代 verify 通过`；不适用项写明范围理由
 - 第 5 项一行：`发了什么绕过请求 → 响应码/是否被拦`
 - 第 6 项一行：`抽查了哪 3-5 个复选框 → 各自结论`
 - plan 反核一行（plan 字段为"无"时）：`ls plans → 无匹配项` 或核对结论

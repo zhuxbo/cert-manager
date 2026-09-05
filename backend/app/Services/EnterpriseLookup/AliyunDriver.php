@@ -95,11 +95,11 @@ class AliyunDriver implements LookupInterface
         $key = "enterprise:daily:$today";
         $ttl = max(60, now()->diffInSeconds(now()->endOfDay(), false));
 
-        Cache::add($key, 0, $ttl);
-        $count = Cache::increment($key);
+        Cache::store('runtime')->add($key, 0, $ttl);
+        $count = Cache::store('runtime')->increment($key);
 
         if ($count > $limit) {
-            Cache::decrement($key);
+            Cache::store('runtime')->decrement($key);
             throw new LookupException("今日工商查询额度已用完（上限 $limit 次）", 429);
         }
     }

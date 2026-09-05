@@ -150,7 +150,7 @@ test('V1 获取订单', function () {
     $order->update(['latest_cert_id' => $cert->id]);
 
     // 预设缓存跳过 sync/pay/commit 调用（避免调用上游 API）
-    Cache::set('api_get_'.$order->id, time(), 120);
+    Cache::store('runtime')->set('api_get_'.$order->id, time(), 120);
 
     $this->withHeaders($headers)
         ->postJson('/api/V1/get', ['oid' => $order->id])

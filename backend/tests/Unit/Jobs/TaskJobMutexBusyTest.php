@@ -13,7 +13,7 @@ use Tests\Traits\CreatesTestData;
 // MutationBusyException 独立类型不被 causedByConcurrencyError 识别，故需 TaskJob 内外层显式纳入。
 uses(TestCase::class, CreatesTestData::class, RefreshDatabase::class)->group('database');
 
-beforeEach(fn () => Cache::flush());
+beforeEach(fn () => Cache::store('runtime')->flush());
 
 test('commit 抢不到 order 互斥锁未达上限：release 错峰、不标 failed、task 保持 executing', function () {
     $user = $this->createTestUser();
@@ -22,7 +22,7 @@ test('commit 抢不到 order 互斥锁未达上限：release 错峰、不标 fai
     $this->createTestCert($order, ['action' => 'new', 'status' => 'pending']);
 
     // 模拟另一请求正持有该订单互斥锁 → TaskJob 内的 commit 抢不到 → MutationBusyException
-    expect(Cache::lock("order_mutate_{$order->id}", 60)->get())->toBeTrue();
+    expect(Cache::store('runtime')->lock("order_mutate_{$order->id}", 60)->get())->toBeTrue();
 
     $task = Task::factory()->create([
         'order_id' => $order->id,
@@ -49,7 +49,7 @@ test('commit 抢不到 order 互斥锁达 tries 上限：冒泡交 worker failJo
     $order = $this->createTestOrder($user, $product);
     $this->createTestCert($order, ['action' => 'new', 'status' => 'pending']);
 
-    expect(Cache::lock("order_mutate_{$order->id}", 60)->get())->toBeTrue();
+    expect(Cache::store('runtime')->lock("order_mutate_{$order->id}", 60)->get())->toBeTrue();
 
     $task = Task::factory()->create([
         'order_id' => $order->id,

@@ -106,7 +106,7 @@ test('⑧ 无任何 Admin → send 返回 false 且去重键未被占（建 Admi
     $sent = $svc->send('clock', 't', 'm', [], 'clock', 6, 'clock_skew');
 
     expect($sent)->toBeFalse()
-        ->and(Cache::has('system_alert:clock'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:clock'))->toBeFalse();
 
     // 建 Admin 后同 key 立即可发（键未被占用）
     Admin::factory()->create(['email' => 'admin@corp.example']);
@@ -130,10 +130,10 @@ test('⑧ dispatch 抛异常 → send 返回 false 且去重键未被占', funct
     $sent = $svc->send('payment_health', 't', 'm', [], 'payment_health', 168);
 
     expect($sent)->toBeFalse()
-        ->and(Cache::has('system_alert:payment_health'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:payment_health'))->toBeFalse();
 });
 
-// ⑧-r3 置键事务安全：Cache::put 经 DB::afterCommit 包裹
+// ⑧-r3 置键事务安全：Cache::store('runtime')->put 经 DB::afterCommit 包裹
 test('⑧-r3 事务内 send 后回滚 → 去重键不落，同 key 立即可再发', function () {
     Admin::factory()->create(['email' => 'admin@corp.example']);
     setAdminEmailSetting('admin@corp.example');
@@ -148,7 +148,7 @@ test('⑧-r3 事务内 send 后回滚 → 去重键不落，同 key 立即可再
     // 事务回滚：afterCommit 的 NotificationJob 被 Laravel 丢弃（告警丢失），
     // 置键若同步执行则「键已占 + 没发」= 整 TTL 静默——必须随回滚一并丢弃
     expect($sent)->toBeTrue()
-        ->and(Cache::has('system_alert:tx_rollback'))->toBeFalse();
+        ->and(Cache::store('runtime')->has('system_alert:tx_rollback'))->toBeFalse();
 
     // 键未落 → 同 key 立即可再发
     $again = $svc->send('tx_rollback', 't', 'm', [], 'tx_rollback', 24);
@@ -166,11 +166,11 @@ test('⑧-r3 事务内 send 后提交 → 去重键落地，去重生效', funct
     DB::beginTransaction();
     $sent = $svc->send('tx_commit', 't', 'm', [], 'tx_commit', 24);
     // 提交前键不落（afterCommit 延迟到提交）
-    expect(Cache::has('system_alert:tx_commit'))->toBeFalse();
+    expect(Cache::store('runtime')->has('system_alert:tx_commit'))->toBeFalse();
     DB::commit();
 
     expect($sent)->toBeTrue()
-        ->and(Cache::has('system_alert:tx_commit'))->toBeTrue();
+        ->and(Cache::store('runtime')->has('system_alert:tx_commit'))->toBeTrue();
 
     // 提交后同 key 同内容再发 → 去重
     $again = $svc->send('tx_commit', 't', 'm', [], 'tx_commit', 24);

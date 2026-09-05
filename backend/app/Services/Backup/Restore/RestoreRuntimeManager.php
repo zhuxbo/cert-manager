@@ -52,6 +52,9 @@ final class RestoreRuntimeManager
             if (! Cache::flush()) {
                 throw new RuntimeException('应用缓存清理失败');
             }
+            if (! Cache::store('runtime')->flush()) {
+                throw new RuntimeException('关键运行状态清理失败');
+            }
 
             $this->pauseQueues();
             $republishProgress();

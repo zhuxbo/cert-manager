@@ -131,6 +131,23 @@ class FinishCheckExecTest(unittest.TestCase):
         )
         return json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
 
+    def test_summary_reports_timings_without_executing_or_authorizing_gates(self) -> None:
+        self.freeze()
+        empty = self.command("summary", "--run-dir", str(self.run_dir))
+        self.assertEqual(0, empty.returncode, empty.stderr)
+        self.run_gate("stable", check=True)
+        self.run_gate("stable", check=True)
+        ledger = self.run_dir / "ledger.jsonl"
+        before = ledger.read_bytes()
+        result = self.command("summary", "--run-dir", str(self.run_dir))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("stable | passed", result.stdout)
+        self.assertIn("本运行累计次数", result.stdout)
+        self.assertIn("等待不可相加", result.stdout)
+        self.assertNotIn("VERIFY_OK", result.stdout)
+        self.assertNotIn("test ! -f", result.stdout)
+        self.assertEqual(before, ledger.read_bytes())
+
     def run_gate(
         self,
         name: str,

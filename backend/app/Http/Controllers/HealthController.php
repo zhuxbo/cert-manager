@@ -47,7 +47,7 @@ class HealthController extends Controller
      *
      * HTTP 状态码：error → 503；ok / degraded → 200。
      * - error（db 挂 / cache 后端故障 / 磁盘不足 / queue_lag 超阈 / 心跳过旧 stale）→ 503。
-     * - degraded（心跳键缺失：新装机未跑调度 / cache:clear 清键）→ 200（不 503，避免误报）。
+     * - degraded（心跳键缺失：新装机尚未运行调度）→ 200（不 503，避免误报）。
      * freeze 期间 queue_lag_seconds 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止）。
      */
     public function index(): JsonResponse
@@ -65,7 +65,7 @@ class HealthController extends Controller
         $status = $this->aggregate($checks, $freeze);
         $checkStatuses = $this->checkStatuses($checks, $freeze);
         // 仅 error → 503；degraded（心跳缺失）与 ok 均 200：
-        // 新装机/cache:clear 后心跳键尚未播种，判 degraded 而非 stale 503，便于后台准确展示状态。
+        // 新装机心跳键尚未播种时判 degraded，而非 stale 503，便于后台准确展示状态。
         $httpStatus = $status === 'error'
             ? Response::HTTP_SERVICE_UNAVAILABLE
             : Response::HTTP_OK;
@@ -147,8 +147,8 @@ class HealthController extends Controller
     /**
      * Cache 后端探活
      *
-     * 心跳年龄（heartbeatAge）与 health 阈值（aggregate/queueThreshold 经 get_system_setting →
-     * Cache::remember）均依赖 Cache（driver=redis 时）。Cache 后端故障绝不能让 /api/health 白屏
+     * 心跳年龄（heartbeatAge）依赖 runtime store，health 阈值（aggregate/queueThreshold 经
+     * get_system_setting → Cache::remember）依赖默认缓存。任一后端故障都不能让 /api/health 白屏
      * 500 丢弃结构化输出——须显式探活并结构化上报 error（503）。用只读 get 探连通性（不写键，
      * 避免后台刷新或外部监控访问时频繁写 cache）；不抛异常，失败 ok=false。
      *
@@ -158,6 +158,7 @@ class HealthController extends Controller
     {
         try {
             Cache::get('schedule:heartbeat');
+            Cache::store('runtime')->get('schedule:heartbeat');
 
             return ['ok' => true];
         } catch (Throwable) {
@@ -240,8 +241,8 @@ class HealthController extends Controller
     /**
      * 调度器心跳年龄（秒）
      *
-     * schedule:heartbeat 命令每分钟 Cache::forever('schedule:heartbeat', now()->timestamp)。
-     * - 键缺失（null）→ 返回 null：新装机未跑过调度 / cache:clear 清键，aggregate 判 degraded 非 stale。
+     * schedule:heartbeat 命令每分钟写 runtime store。
+     * - 键缺失（null）→ 返回 null：新装机未跑过调度，aggregate 判 degraded 非 stale。
      * - 键存在 → time() - 存储时间戳（下限 0，防时钟回拨出负值）。
      *
      * 用 forever 无 TTL 是刻意选型：死 scheduler 留旧时间戳 → age 超阈 → stale 503（正确）；
@@ -250,7 +251,7 @@ class HealthController extends Controller
     protected function heartbeatAge(): ?int
     {
         try {
-            $stored = Cache::get('schedule:heartbeat');
+            $stored = Cache::store('runtime')->get('schedule:heartbeat');
         } catch (Throwable) {
             // Cache 后端故障：cacheCheck 已判 error（503），此处返 null 不参与 degraded
             // （aggregate 的 cache error 分支先于 degraded return，故不会被误判 degraded 200）。

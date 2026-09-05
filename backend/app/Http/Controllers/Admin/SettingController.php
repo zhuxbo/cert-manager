@@ -12,7 +12,6 @@ use App\Models\SettingGroup;
 use App\Services\Delegation\DelegationDomainRetirementService;
 use App\Services\Payment\PayConfigCache;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 
@@ -214,12 +213,16 @@ class SettingController extends BaseController
     }
 
     /**
-     * 清除系统全部缓存
+     * 安全刷新系统设置缓存。
+     *
+     * 只删除 Setting/PayConfigCache 明确登记的键与支付证书副本；不执行
+     * cache:clear，因此保留队列 pause/restart、scheduler mutex、runtime 与会话。
+     * 路由名保留 clear-all-cache 以兼容已发布的管理端。
      */
     public function clearAllCache(): void
     {
         try {
-            Artisan::call('cache:clear-all', ['--quick' => true, '--without-composer' => true]);
+            Setting::clearAllCache();
         } catch (Throwable) {
             $this->error('缓存清除失败');
         }

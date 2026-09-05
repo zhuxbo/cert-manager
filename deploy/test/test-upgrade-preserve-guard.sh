@@ -666,6 +666,7 @@ test_a13() {
         backend/storage/logs
         backend/storage/framework
         backend/storage/framework/cache/data
+        backend/storage/framework/runtime-cache/data
         backend/storage/framework/sessions
         backend/storage/framework/views
         backend/storage/app/public
@@ -1110,7 +1111,7 @@ while IFS= read -r rel_path; do
     grep -qF "full/$rel_path/" "$PACKAGE_AUDITOR" || runtime_contract_ok=0
 done <"$runtime_contract_tmp/upgrade"
 
-if [ "$runtime_contract_ok" -eq 1 ] && [ "$(wc -l <"$runtime_contract_tmp/upgrade" | tr -d ' ')" -eq 10 ]; then
+if [ "$runtime_contract_ok" -eq 1 ] && [ "$(wc -l <"$runtime_contract_tmp/upgrade" | tr -d ' ')" -eq 11 ]; then
     pass "C 安装、Shell 升级、后台升级、完整包与审计的核心运行目录集合等价"
 else
     fail "C 核心运行目录跨生产路径或制包审计发生漂移"

@@ -539,7 +539,7 @@ class Action
         } catch (Throwable $e) {
             $response = $e instanceof ApiResponseException ? $e->getApiResponse() : null;
             if (($response['code'] ?? 0) !== 1) {
-                Cache::forget($cacheKey);
+                Cache::store('runtime')->forget($cacheKey);
             }
 
             throw $e;

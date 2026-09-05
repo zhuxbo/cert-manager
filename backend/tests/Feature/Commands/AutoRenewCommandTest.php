@@ -441,7 +441,7 @@ function makeBalanceShortOrder(object $test, $expiresAt, ?User $user = null): ar
 }
 
 test('A2：余额不足 + 非节点日 → 仍发（脱离节点 gate，独立去重键首发）', function () {
-    // 现状（节点 gate）非节点日不发；A2 改独立去重后首发（Cache::add 成功）→ 本用例改前红
+    // 现状（节点 gate）非节点日不发；A2 改独立去重后首发（Cache::store('runtime')->add 成功）→ 本用例改前红
     [$user] = makeBalanceShortOrder($this, now()->addDays(5)); // 非节点（节点 14/7/3/1）
     $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
@@ -498,7 +498,7 @@ test('A2：final-window（到期≤1天）即使去重键存续也豁免必发�
     $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
     // 预置去重键（模拟 day-12 已发过）——final-window 应豁免、仍发
-    Cache::put("auto_renew_balance_notified:{$user->id}", true, now()->addDays(3));
+    Cache::store('runtime')->put("auto_renew_balance_notified:{$user->id}", true, now()->addDays(3));
 
     $this->notificationCenter->shouldReceive('dispatch')->once()
         ->with(Mockery::on(fn ($intent) => $intent->code === 'auto_renew_failed'
@@ -530,8 +530,8 @@ test('A2：余额充足（续费成功路径）清除欠费去重键 → 恢复�
 
     // 预置欠费去重键（模拟之前欠费发过信）
     $key = "auto_renew_balance_notified:{$user->id}";
-    Cache::put($key, true, now()->addDays(3));
-    expect(Cache::has($key))->toBeTrue();
+    Cache::store('runtime')->put($key, true, now()->addDays(3));
+    expect(Cache::store('runtime')->has($key))->toBeTrue();
 
     $this->autoRenewService->shouldReceive('checkDelegationValidity')->andReturn(true);
 
@@ -547,7 +547,7 @@ test('A2：余额充足（续费成功路径）清除欠费去重键 → 恢复�
     $this->artisan('schedule:auto-renew')->assertSuccessful();
 
     // 余额充足 → 健康分支清键；恢复后再欠费立即发（键已清）
-    expect(Cache::has($key))->toBeFalse();
+    expect(Cache::store('runtime')->has($key))->toBeFalse();
 });
 
 test('A2 护栏：委托失败仍受节点 gate（非节点日不发，只改余额分支）', function () {

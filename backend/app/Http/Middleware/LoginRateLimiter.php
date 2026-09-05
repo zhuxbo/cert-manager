@@ -32,7 +32,7 @@ class LoginRateLimiter
         $limiterConfig = $this->getLimiterConfig($guard);
 
         // 检查该账号是否被锁定
-        if (Cache::has($key.'_locked')) {
+        if (Cache::store('runtime')->has($key.'_locked')) {
             $this->error('您的账号已被锁定，请联系管理员或稍后再试');
         }
 
@@ -62,7 +62,7 @@ class LoginRateLimiter
             // 登录成功，重置 RateLimiter 计数器 和 Cache 锁定标记 (如果存在)
             RateLimiter::clear($key);
             RateLimiter::clear($lockoutCounterKey);
-            Cache::forget($key.'_locked');
+            Cache::store('runtime')->forget($key.'_locked');
         } elseif ($code === 0) {
             // 登录失败，增加计数器（仅业务逻辑错误，验证错误等不计入）
             RateLimiter::hit($key, $decayMinutes * 60);
@@ -71,7 +71,7 @@ class LoginRateLimiter
             $attempts = (int) RateLimiter::attempts($lockoutCounterKey);
             // 如果失败次数累计达到锁定阈值，锁定账号
             if ($attempts >= $lockoutAttempts) {
-                Cache::put($key.'_locked', true, now()->addMinutes($lockoutMinutes));
+                Cache::store('runtime')->put($key.'_locked', true, now()->addMinutes($lockoutMinutes));
                 // 锁定后清理计数器，避免解锁后继承旧失败次数
                 RateLimiter::clear($key);
                 RateLimiter::clear($lockoutCounterKey);

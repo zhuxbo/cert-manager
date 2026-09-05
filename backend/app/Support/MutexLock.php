@@ -7,7 +7,6 @@ namespace App\Support;
 use App\Bootstrap\ApiExceptions;
 use App\Exceptions\MutationBusyException;
 use Closure;
-use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
@@ -26,7 +25,7 @@ trait MutexLock
     protected function withMutex(string $key, Closure $callback, int $ttl = 60): mixed
     {
         try {
-            $lock = Cache::lock($key, $ttl);
+            $lock = RuntimeCache::lock($key, $ttl);
             $acquired = $lock->get();
         } catch (Throwable $e) {
             // Cache 故障 fail-open：与 ActionTrait::checkDuplicate 同向，放行不阻塞业务

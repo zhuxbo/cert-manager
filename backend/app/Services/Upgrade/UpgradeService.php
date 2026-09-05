@@ -202,6 +202,7 @@ class UpgradeService
 
             // 步骤 7: 应用升级
             $statusManager->startStep('apply');
+            RedisDatabaseConfig::preserve();
             $this->packageExtractor->applyUpgrade($extractedPath);
             $statusManager->completeStep('apply');
 

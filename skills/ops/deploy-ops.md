@@ -80,9 +80,12 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 
 ### 脚本自动处理
 
-- **运行目录与权限**：安装器在 Composer 前主动创建 `bootstrap/cache`、`storage/{logs,framework/cache/data,framework/sessions,framework/views,app/public,app/private}`、`backups/upgrades`，再执行 `chown -R www:www $INSTALL_DIR`（宝塔 Web 用户为 `www`，非 `www-data`）及相应 `775`，并以 `www` 身份逐项验写。`upgrade.sh` 在备份/down/freeze 前和代码替换后各自愈一次；后台升级同步 bootstrap 后同样补齐。任一核心目录不可写都必须中止，不能继续进入 Composer/Artisan。
+- **运行目录与权限**：安装器在 Composer 前主动创建 `bootstrap/cache`、`storage/{logs,framework/cache/data,framework/runtime-cache/data,framework/sessions,framework/views,app/public,app/private}`、`backups/upgrades`，再执行 `chown -R www:www $INSTALL_DIR`（宝塔 Web 用户为 `www`，非 `www-data`）及相应 `775`，并以 `www` 身份逐项验写。`upgrade.sh` 在备份/down/freeze 前和代码替换后各自愈一次；后台升级同步 bootstrap 后同样补齐。任一核心目录不可写都必须中止，不能继续进入 Composer/Artisan。
 - **Nginx 占位符**：替换 `$INSTALL_DIR/nginx/*.conf` 和 `frontend/web/*.conf` 中的 `__PROJECT_ROOT__`
 - **version.json**：注入 `release_url` 和 `network` 字段
+- **Redis DB 分配**：安装器保持 `APP_NAME` 不变，按 phpdotenv 覆盖语义扫描同机 Manager 的 `.env`，对归一化后 `REDIS_HOST + REDIS_PORT` 相同的 Redis 实例从 DB 1 起分配独占的 `REDIS_DB`（关键运行状态/队列）与 `REDIS_CACHE_DB`（应用缓存）二元组；同实例配置无法静态确定时失败关闭，不同实例互不占用编号；默认 16 DB 最多自动分配 7 套，耗尽时需改用独立 Redis 实例。系统不接入会用 path/query 覆盖编号的 `REDIS_URL`；扫描到旧站点或目标站点的非空 `REDIS_URL` 时拒绝自动分配，须先转换为显式连接配置及实际 DB 编号
+- **首次运行态分库**：`2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移会递增全部用户/管理员的 `token_version` 并清空 refresh token，防止旧 `REDIS_CACHE_DB` 中的 JWT 黑名单失效后已登出 token 复活。升级后全部账号需重新登录一次
+- **管理端安全刷新**：右上角按钮只定向失效 Setting/PayConfigCache 已登记的键与支付证书副本，不执行 `cache:clear`；队列 pause/restart、scheduler mutex、`runtime`、其它默认缓存、编译视图、会话文件、OPcache 和 Composer 缓存均保留
 
 ### 手工配置步骤（仅自动化失败时）
 
@@ -124,14 +127,12 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 `GET /api/health`（无鉴权、命名空间无关、不受维护模式拦截）返回 `status` 与 `checks`：
 
 - `db`：连接探活失败 → `error`（503）。
-- `cache`：后端探活（只读 `Cache::get`）失败 → `error`（503，redis 宕机）。排在 db 之后、其余维度之前——disk/queue/heartbeat 阈值经 `Cache::remember` 读取，cache 故障时先 return 规避二次抛异常，避免整个 `/api/health` 变非结构化 500。
+- `cache`：同时只读探测默认缓存与 `runtime`，任一失败 → `error`（503，redis 宕机）。排在 db 之后、其余维度之前，避免整个 `/api/health` 变非结构化 500。
 - `disk_free_gb`：低于 `health.disk_free_threshold_gb`（默认 1.0）→ `error`（503）。
 - `queue_lag_seconds`：redis 驱动=各队列就绪深度 + **已到期**延时之和（阈 `health.queue_depth_threshold`，默认 500 条）；database 驱动=积压秒数（阈 `health.queue_lag_threshold`，默认 600 秒）。超阈 → `error`（503）。
-- `heartbeat_age_seconds`：`schedule:heartbeat` 每分钟写 `Cache::forever`；**过旧**（> `health.heartbeat_stale_seconds`，默认 300）→ `error`（503，死 scheduler）；**缺失**（null）→ `degraded`（**200**，新装机未跑调度 / `cache:clear` 清键，不误报）。
+- `heartbeat_age_seconds`：`schedule:heartbeat` 每分钟写入 `runtime`；**过旧**（> `health.heartbeat_stale_seconds`，默认 300）→ `error`（503，死 scheduler）；**缺失**（null）→ `degraded`（**200**，新装机未跑调度）。普通 `cache:clear` 不删除心跳。
 - `check_statuses`：逐项返回 `ok/degraded/error` 供后台用绿/黄/红着色；`queue_lag_unit` 明确队列值单位（database=`seconds`、redis=`jobs`）。后台只消费服务端判定，不自行复制健康阈值。
 - **freeze 期**（升级冻结）：`queue_lag` 与心跳 stale 均不参与 503 判定（worker/scheduler 已按升级流程停止），避免升级窗误报。
-
-**已知边界**：「scheduler 已死 + 之后 `cache:clear`」会使心跳键缺失，健康接口返回 `degraded` 200；管理后台显示黄色“需要关注”，不会主动发信。这是低频后台系统采用访问时检测的明确取舍。
 
 ### 外部站点监控（可选）
 

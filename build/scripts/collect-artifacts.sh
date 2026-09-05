@@ -189,6 +189,7 @@ EOF
             "$PRODUCTION_DIR/backend/storage/app/public" \
             "$PRODUCTION_DIR/backend/storage/app/private" \
             "$PRODUCTION_DIR/backend/storage/framework/cache" \
+            "$PRODUCTION_DIR/backend/storage/framework/runtime-cache" \
             "$PRODUCTION_DIR/backend/storage/framework/sessions" \
             "$PRODUCTION_DIR/backend/storage/framework/views" \
             "$PRODUCTION_DIR/backend/storage/logs" \

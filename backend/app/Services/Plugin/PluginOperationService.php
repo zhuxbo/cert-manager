@@ -3,9 +3,9 @@
 namespace App\Services\Plugin;
 
 use App\Models\PluginOperation;
+use App\Support\RuntimeCache;
 use Closure;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
@@ -372,7 +372,7 @@ class PluginOperationService
             throw new RuntimeException('插件任务尚未超时，不能标记失败');
         }
 
-        $lock = Cache::lock($this->lockKey($operation->plugin_name), 1);
+        $lock = RuntimeCache::lock($this->lockKey($operation->plugin_name), 1);
         if (! $lock->get()) {
             throw new RuntimeException('插件任务仍可能在执行，请稍后再试');
         }
@@ -409,7 +409,7 @@ class PluginOperationService
 
     public function withPluginMutex(string $pluginName, Closure $callback, ?int $ttl = null): mixed
     {
-        $lock = Cache::lock($this->lockKey($pluginName), $ttl ?? $this->lockTtl());
+        $lock = RuntimeCache::lock($this->lockKey($pluginName), $ttl ?? $this->lockTtl());
         if (! $lock->get()) {
             throw new RuntimeException("插件 $pluginName 已有操作正在执行，请稍后再试");
         }
@@ -423,7 +423,7 @@ class PluginOperationService
 
     public function lockExists(string $pluginName): bool
     {
-        $lock = Cache::lock($this->lockKey($pluginName), 1);
+        $lock = RuntimeCache::lock($this->lockKey($pluginName), 1);
         if (! $lock->get()) {
             return true;
         }

@@ -22,7 +22,7 @@ Artisan::command('inspire', function () {
 
 // SSL证书管理系统定时任务调度
 // 证书验证任务 - 每分钟执行（生产由 1 分钟 cron 调 schedule:run，sub-minute 不会触发；如需 30 秒需改用常驻 schedule:work）
-// 互斥由 ValidateCommand 内部 Cache::add + Cache::put 心跳续期实现（支持长任务，不在此处加 withoutOverlapping）
+// 互斥由 ValidateCommand 内部 RuntimeCache::lock 实现（支持长任务，不在此处加 withoutOverlapping）
 Schedule::command('schedule:validate')
     ->everyMinute()
     ->skip($skipWhenFrozen)
@@ -222,7 +222,7 @@ Schedule::command('upgrade:watchdog')
 // M1 调度器心跳（P0-4.1）——继 watchdog 后第二个有意 freeze 存活者：
 //   - evenInMaintenanceMode()：与 watchdog 同款，freeze/down 全窗跳动，unfreeze 后即新鲜；
 //   - **不挂** ->skip($skipWhenFrozen)：挂了则 freeze 期心跳停，后台健康度会误报 scheduler 异常。
-// 写 Cache::forever('schedule:heartbeat')，供 /api/health 判活；health 侧 freeze 期不评估 stale（双保险）。
+// 写 runtime store 的 schedule:heartbeat，供 /api/health 判活；health 侧 freeze 期不评估 stale（双保险）。
 // ============================================================
 Schedule::command('schedule:heartbeat')
     ->everyMinute()

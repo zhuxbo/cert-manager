@@ -93,11 +93,18 @@ REDIS_PASSWORD=
 
 # 启用 Redis 缓存
 CACHE_DRIVER=redis
-REDIS_CACHE_DB=1
+REDIS_DB=1
+REDIS_CACHE_DB=2
 
 # 启用 Redis 队列（需要运行 queue:work）
 QUEUE_CONNECTION=redis
 ```
+
+`REDIS_DB` 保存队列、JWT 黑名单、业务锁、限流和任务进度等关键运行状态；`REDIS_CACHE_DB` 保存可重建的应用缓存，以及 Laravel 自带的队列 pause/restart 和 scheduler mutex。两者必须不同。同一 Redis 实例部署多套 Manager 时，每套必须独占两个 DB，不能与其它 Manager 复用。不要使用 `REDIS_URL`：Laravel 会让其中的 path/query 覆盖数据库编号，从而破坏双库隔离；连接信息统一使用上面的显式字段。
+
+管理后台右上角的按钮只定向刷新系统设置与支付配置缓存，不执行全库 `cache:clear`，也不清理队列/调度状态、JWT 黑名单、限流、任务锁、会话文件、编译视图或 OPcache。首次升级到运行态分库版本时，数据库迁移会一次性吊销存量用户和管理员会话，需要重新登录。
+
+后台与脚本升级会将当前实例实际生效的 Redis DB 编号显式保存到 `.env`，包括旧默认 `0/1`；不会自动改成新安装默认 `1/2`，也不修改 `APP_NAME` 或检查其他实例占用。原本两库相同或仍使用 `REDIS_URL` 时需先调整配置再升级；不要直接更换仍有待处理任务的队列 DB。首次从旧版后台升级依赖自动迁移完成此兼容处理，请保持 `UPGRADE_AUTO_MIGRATE` 开启。
 
 **注意**：启用 Redis 队列后，需要运行队列处理进程：
 
