@@ -2,11 +2,13 @@
 
 ## 升级系统
 
+后台升级的 `applyUpgrade()` 合并包内版本配置时保留当前版本号；由 `UpgradeService` 在清理临时文件、退出维护、补跑会话迁移和最终清理后执行 `update_version`，避免 apply、迁移或清理失败时提前显示目标版本。`upgrade.sh` 同样保留原版本文件至成功收尾（含恢复服务后的会话迁移），合并 `release_url`/`network` 后在安装目录内原子替换；发布版本文件失败仍返回非零。后台与 Shell 在发布前清除旧版本配置缓存、发布后尽力重建，重建失败回落直接加载文件，不将已完成升级改判失败。此约定依赖执行升级的代码已包含修复，不能自动纠正历史失败留下的版本号。
+
 ### 升级冻结契约
 
-首次 runtime 黑名单切库迁移在 freeze 期间跳过，后台升级写入 completed 后由 `RuntimeSessionCutover` 补执行；旧版后台进程通过该迁移注册的应用终止回调兼容。`upgrade.sh` 在 `up` 成功后按单文件路径补跑同一迁移。补跑时复用 HTTP 启动独占锁排空在途请求，复制旧 JWT 黑名单并保留过期时间，不吊销有效会话；失败保留旧库及清理保护以便重试。迁移名保留兼容已发布版本，已执行的实例后续不重跑。关闭自动迁移时后台不主动补跑。详见认证规范。
+首次 runtime 黑名单切库迁移在 freeze 期间跳过，新版后台升级在恢复服务后、发布版本号前按单文件路径补执行；旧版后台进程通过该迁移注册的应用终止回调兼容。`upgrade.sh` 在 `up` 成功后按单文件路径补跑同一迁移。补跑时复用 HTTP 启动独占锁排空在途请求，复制旧 JWT 黑名单并保留过期时间，不吊销有效会话；失败保留旧库及清理保护以便重试。迁移名保留兼容已发布版本，已执行的实例后续不重跑。关闭自动迁移时后台不主动补跑。详见认证规范。
 
-Redis 编号由 `RedisDatabaseConfig::preserve()` 读取当前应用已加载的配置（含 config cache），显式追加到本实例 `.env`，幂等且保留属主/权限与 `APP_NAME`；不扫描跨实例占用、不搬迁队列。新版 `UpgradeService` 在 apply 前调用；首次旧版后台进程通过 runtime 切库 migration 在清配置缓存前补调用（旧配置无 runtime store）；`upgrade.sh` 在切码前以旧应用 bootstrap 加载目标包中的同一实现。两库原本相同、编号无效或使用 `REDIS_URL` 时中止，不能套用新默认值掩盖配置问题。首次旧后台升级必须开启自动迁移。
+Redis 编号由 `RedisDatabaseConfig::preserve()` 读取当前应用已加载的配置（含 config cache），显式追加到本实例 `.env`，幂等且保留属主/权限与 `APP_NAME`；不扫描跨实例占用、不搬迁队列。新版 `UpgradeService` 在 apply 前调用；首次旧版后台进程通过 runtime 切库 migration 在清配置缓存前补调用（旧配置无 runtime store）；`upgrade.sh` 在切码前以旧应用 bootstrap 加载目标包中的同一实现，显式允许临时保留同库；按原流程完成 JWT 黑名单迁移后，仅当当前两库相同才扫描 `MANAGER_SITES_ROOT`（默认 `/www/wwwroot`）下其他实例，避开同一 Redis 端点已配置的编号并以独立连接 DBSIZE 确认候选库为空，从 1-15 分配一个 cache DB。分配与 `.env` 写入共用安装器 flock；仅调整当前 `REDIS_CACHE_DB`，不改运行库、APP_NAME、其他实例及既有业务数据。分库后先清除旧配置缓存，再向旧默认缓存库发送变化的 worker 重启信号，使旧进程退出后读取新配置；失败恢复原编号以支持重试。两个编号不同即保持原样，不处理跨实例编号共享。后台升级仍拒绝同库；编号无效、非空 `REDIS_URL`、扫描/探测失败或无空闲编号时中止。首次旧后台升级必须开启自动迁移。
 
 升级期间应用进入只读维护态，避免 in-flight HTTP/Job 半执行：
 
@@ -94,7 +96,7 @@ Redis 编号由 `RedisDatabaseConfig::preserve()` 读取当前应用已加载的
 - **后端 web 入口（管理后台触发）**：`UpgradeService::performUpgradeWithStatus()` 的 `check_environment` 步骤（extract 之后、apply 之前）。不通过抛 `PhpEnvironmentException`，catch 块把 `details` 写入 `status.json.error_details`，前端 ElDialog 弹窗展示
 - **cron/supervisor PHP 路径**：upgrade.sh 升级末尾调 `update_jobs_php_path`，扫 `bt_list_crontab_all` + `bt_list_supervisor_all` 中含 `/www/server/php/XX/bin/php`（或裸 `php` token）与当前 `$PHP_CMD` 不一致的项。对 install.sh 自管（cron 含 `$INSTALL_DIR/backend/artisan schedule:run`；supervisor 含 `artisan queue:work` 且 path=`$INSTALL_DIR/backend`）且类型内唯一的项，自动覆盖更新（cron 走"先删后加 + 失败用原 body 回滚"三段语义；supervisor 走 `bt_add_supervisor_process` 自带 Remove+Add，失败也回滚）。不满足"自管+唯一"的项保留列表 + 手工提示
 - **cron 日志策略**：`schedule:run` 只在 PHP 路径不一致时修复，保留原命令主体和日志策略；新安装不重定向输出，由宝塔面板保存任务日志。
-- **升级末尾 PHP-FPM reload**：upgrade.sh 完成最终权限修正后、仍处于 freeze + 维护态时显式调 `bt_reload_php_fpm`，成功或完成非阻断处置后才依次 `upgrade:unfreeze`、`artisan up`、`queue:restart`，避免恢复流量后旧 worker 与新代码竞争。
+- **升级末尾 PHP-FPM reload**：upgrade.sh 完成最终权限修正后、仍处于 freeze + 维护态时显式调 `bt_reload_php_fpm`，成功或完成非阻断处置后才依次 `upgrade:unfreeze`、`artisan up`、`queue:restart`，避免恢复流量后旧 worker 与新代码竞争。版本与最终配置缓存生成后，再重载一次当前 PHP-FPM，确保关闭 OPcache 时间戳检查时也采用新配置。
   - **通道优先级 `/etc/init.d/php-fpm-XX reload` > `systemctl reload` > 宝塔 API**（`_bt_php_fpm_send_reload`）。init 脚本是单次 `kill -USR2 $(cat php-fpm.pid)`，退出码可信且**不需要 BT API key**——这条也是 reload 不再被 key 门控的原因：过去 key 取不到就整段跳过 reload，`opcache.validate_timestamps=0` 的机器升级后会持续跑旧代码。宝塔 API 排最后：实测面板 `class/system.py::ServiceAdmin` 执行完 init 脚本后并不看其退出码，而是轮询 `check_service_status` → `public.is_php_fpm_process_exists` → `is_process_exists_by_exe`（psutil 遍历 `/proc/*/exe`），判否时**再补发最多 6 次 `systemctl reload`**、返回失败前还重复执行一次原命令，故「只发一次 reload」在 API 通道上不成立，额外重载会在等待窗口内反复翻新 worker 代际。
   - **成败只认本机可观测证据，不采信宝塔自陈的 `status`**：线上实测出现过 reload 已生效（旧 worker 代际已退、master 在、健康入口经 FPM 返回本项目 JSON）而宝塔仍返回 `{"status": false, "msg": "php-fpm-XX服务启动失败"}`。该消息在面板里只有 `class/system.py:1281` 一处，其前置条件是 `check_service_status`（→ `public.is_php_fpm_process_exists` → `is_process_exists_by_exe` → psutil 先 `pids()` 取快照、再逐个 `Process(pid).exe()`，取不到即 `except: continue`）判否。**根因**：宝塔的 php-fpm 以 `--daemonize` 启动，reload 时 master 按原始 argv `execvp` 自身后**再 fork 脱离**，于是每次 reload 都换一个新 master PID（实测 FPM 日志 `fpm is running, pid` 663089 → 663093 → 663096 …）；psutil 的快照-再查询之间正好存在「旧 master 已消失、新 master 未进快照」的窗口，命中即判否。该窗口宽度与机器相关：**实测某台约 10 次点重载有一半失败，另一些机器 10/10 正常**。它还会自我放大——一旦判否，面板补发最多 6 次 `systemctl reload`，每次再制造同一窗口。故宝塔的 `status` 不能充当成败权威（面板 UI 手工重载同样会偶发显示失败，与实际结果无关）。
   - 成功判据：①reload 已成功发出；②**master 已换代**（强因果，见下）**或** reload 前记录的旧 worker 代际全部退出，且 master 存在；③reload 后本站 `/api/health` 经 Nginx → FPM Socket → 新 worker → Laravel 返回本项目 JSON。**③ 取不到站点域名时跳过并降级告警，不据此判失败**——那是「测不了」而非「测失败」，据此判失败会把一次真实成功的 reload 拖满 timeout 再误报，而此时站点仍停在维护态。

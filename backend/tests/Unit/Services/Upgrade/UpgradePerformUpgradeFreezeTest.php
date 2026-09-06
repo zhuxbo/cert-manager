@@ -26,7 +26,7 @@ uses(TestCase::class);
  */
 
 /** 全部依赖 mock 成功跑到 apply；applyUpgrade 行为由调用方注入（成功回调 / 抛异常） */
-function h2MakeService(Closure $applyBehavior, bool|array $bundledVendor = false, bool $composerFails = false): UpgradeService
+function h2MakeService(Closure $applyBehavior, bool|array $bundledVendor = false, bool $composerFails = false, ?string $versionPath = null): UpgradeService
 {
     $tmp = sys_get_temp_dir();
 
@@ -35,7 +35,7 @@ function h2MakeService(Closure $applyBehavior, bool|array $bundledVendor = false
     $versionManager->shouldReceive('getChannel')->andReturn('main');
     $versionManager->shouldReceive('isUpgradeAllowed')->andReturn(true);
     $versionManager->shouldReceive('checkPhpVersion')->andReturn(true);
-    $versionManager->shouldReceive('getVersionPath')->andReturn($tmp.'/h2_version_'.uniqid().'.json');
+    $versionManager->shouldReceive('getVersionPath')->andReturn($versionPath ?? $tmp.'/h2_version_'.uniqid().'.json');
 
     $releaseClient = Mockery::mock(ReleaseClient::class);
     $releaseClient->shouldReceive('getLatestRelease')->andReturn(['version' => 'v1.1.0']);
@@ -340,3 +340,102 @@ test('H2-C rollback 清除滞留 freeze（防御性清理，rollback 自身不 f
     expect($result['success'])->toBeTrue()
         ->and(UpgradeFreezeLock::isFrozen())->toBeFalse();
 });
+
+test('退出维护失败保留原版本，成功后才更新版本号', function (bool $failUp) {
+    $versionPath = sys_get_temp_dir().'/upgrade_version_'.uniqid().'.json';
+    File::put($versionPath, json_encode(['version' => 'v1.0.0']));
+    Artisan::shouldReceive('call')->andReturnUsing(function ($command) use ($failUp, $versionPath) {
+        if ($command === 'up') {
+            expect(json_decode(File::get($versionPath), true)['version'])->toBe('v1.0.0');
+            if ($failUp) {
+                throw new RuntimeException('maintenance off failed');
+            }
+        }
+
+        return 0;
+    });
+    try {
+        $service = h2MakeService(fn () => true, bundledVendor: true, versionPath: $versionPath);
+        $sm = new UpgradeStatusManager;
+        $sm->start('v1.1.0');
+        $result = $service->performUpgradeWithStatus('latest', $sm);
+        expect($result['success'])->toBe(! $failUp)
+            ->and(json_decode(File::get($versionPath), true)['version'])->toBe($failUp ? 'v1.0.0' : 'v1.1.0');
+    } finally {
+        File::delete($versionPath);
+    }
+})->with([false, true]);
+
+test('会话补迁移或配置清理失败时不发布版本号', function (string $failure) {
+    Config::set('upgrade.behavior.auto_migrate', true);
+    $versionPath = sys_get_temp_dir().'/upgrade_finalize_'.uniqid().'.json';
+    File::put($versionPath, json_encode(['version' => 'v1.0.0']));
+    $failedAt = null;
+    Artisan::shouldReceive('output')->andReturn('injected failure');
+    Artisan::shouldReceive('call')->andReturnUsing(function ($command, $params = []) use ($failure, $versionPath, &$failedAt) {
+        $isCutover = $command === 'migrate' && isset($params['--path']);
+        if ($isCutover || $command === 'config:clear') {
+            expect(json_decode(File::get($versionPath), true)['version'])->toBe('v1.0.0')
+                ->and((new UpgradeStatusManager)->get()['status'])->toBe('running');
+        }
+        if (($failure === 'cutover' && $isCutover) || $failure === $command) {
+            $failedAt = $failure;
+
+            return 17;
+        }
+
+        return 0;
+    });
+    try {
+        $service = h2MakeService(fn () => true, bundledVendor: true, versionPath: $versionPath);
+        $sm = new UpgradeStatusManager;
+        $sm->start('v1.1.0');
+        $result = $service->performUpgradeWithStatus('latest', $sm);
+        expect($result['success'])->toBeFalse()
+            ->and($failedAt)->toBe($failure)
+            ->and($sm->get()['status'])->toBe('failed')
+            ->and(json_decode(File::get($versionPath), true)['version'])->toBe('v1.0.0');
+    } finally {
+        File::delete($versionPath);
+    }
+})->with(['cutover', 'config:clear']);
+
+test('版本发布先清旧缓存，再重建新版本缓存，重建失败不改判失败', function (bool $failRebuild) {
+    Config::set('upgrade.behavior.clear_cache', true);
+    $versionPath = sys_get_temp_dir().'/upgrade_cache_version_'.uniqid().'.json';
+    $cachePath = $versionPath.'.cache';
+    File::put($versionPath, json_encode(['version' => 'v1.0.0']));
+    File::put($cachePath, 'v1.0.0');
+    Artisan::shouldReceive('call')->once()->with('config:clear')->andReturnUsing(function () use ($cachePath, $versionPath) {
+        expect(json_decode(File::get($versionPath), true)['version'])->toBe('v1.0.0');
+        File::delete($cachePath);
+
+        return 0;
+    });
+    $versionManager = Mockery::mock(VersionManager::class);
+    $versionManager->shouldReceive('getVersionPath')->andReturn($versionPath);
+    $service = Mockery::mock(UpgradeService::class)->makePartial()->shouldAllowMockingProtectedMethods();
+    (new ReflectionProperty(UpgradeService::class, 'versionManager'))->setValue($service, $versionManager);
+    $service->shouldReceive('runArtisanInSubprocess')->once()->with('config:cache')->andReturnUsing(function () use ($versionPath, $cachePath, $failRebuild) {
+        expect($cachePath)->not->toBeFile();
+        $version = json_decode(File::get($versionPath), true)['version'];
+        expect($version)->toBe('v1.1.0');
+        if (! $failRebuild) {
+            File::put($cachePath, $version);
+        }
+
+        return ['exit_code' => $failRebuild ? 17 : 0, 'output' => 'cache rebuild'];
+    });
+    try {
+        (new ReflectionMethod(UpgradeService::class, 'updateEnvVersion'))->invoke($service, 'v1.1.0');
+        expect(json_decode(File::get($versionPath), true)['version'])->toBe('v1.1.0')
+            ->and(config('version.version'))->toBe('v1.1.0');
+        if ($failRebuild) {
+            expect($cachePath)->not->toBeFile();
+        } else {
+            expect(File::get($cachePath))->toBe('v1.1.0');
+        }
+    } finally {
+        File::delete([$versionPath, $cachePath]);
+    }
+})->with([false, true]);

@@ -45,21 +45,16 @@ file_put_contents($backend."/bootstrap/app.php", str_replace("CONFIG_PLACEHOLDER
     BUNDLED_VENDOR_STAGE="$ROOT/backend/vendor"
     status=0
     _preserve_redis_databases "$ROOT" >"$WRAPPER_DIR/output" 2>&1 || status=$?
-    if [ "$runtime" = "$cache" ]; then
-        [ "$status" -ne 0 ]
-        ! grep -q '^REDIS_DB=' "$INSTALL_DIR/backend/.env"
-    else
-        if [ "$status" -ne 0 ]; then
-            cat "$WRAPPER_DIR/output"
-            exit 1
-        fi
-        grep -qx "REDIS_DB=$runtime" "$INSTALL_DIR/backend/.env"
-        grep -qx "REDIS_CACHE_DB=$cache" "$INSTALL_DIR/backend/.env"
-        _preserve_redis_databases "$ROOT"
-        [ "$(grep -c '^REDIS_DB=' "$INSTALL_DIR/backend/.env")" -eq 1 ]
+    if [ "$status" -ne 0 ]; then
+        cat "$WRAPPER_DIR/output"
+        exit 1
     fi
+    grep -qx "REDIS_DB=$runtime" "$INSTALL_DIR/backend/.env"
+    grep -qx "REDIS_CACHE_DB=$cache" "$INSTALL_DIR/backend/.env"
+    _preserve_redis_databases "$ROOT"
+    [ "$(grep -c '^REDIS_DB=' "$INSTALL_DIR/backend/.env")" -eq 1 ]
     grep -qx 'APP_NAME=original_manager' "$INSTALL_DIR/backend/.env"
-    echo "PASS: 保留旧编号 ${runtime}/${cache}（同库拒绝、重复幂等、APP_NAME 保持）"
+    echo "PASS: 保留旧编号 ${runtime}/${cache}（迁移前保留同库、重复幂等、APP_NAME 保持）"
 done
 
 # 固定真实调用位置：兼容失败必须在旧代码覆盖前退出。
@@ -68,4 +63,13 @@ awk '
     guard && !stops && /exit 1/ { stops=NR }
     /# 6. 提取需要保留的文件/ { copy=NR }
     END { exit !(guard && stops && copy && guard < stops && stops < copy) }
+' "$ROOT/deploy/upgrade.sh"
+
+# 不能提前切 cache DB，否则现有 JWT 迁移将读不到旧黑名单。
+awk '
+    /artisan migrate --path=/ { migration=NR }
+    /^    _separate_redis_cache_database$/ { split_line=NR }
+    /artisan config:clear/ { clear=NR }
+    /if .*artisan queue:restart/ { restart=NR }
+    END { exit !(migration && split_line && clear && migration < split_line && split_line < clear && split_line < restart) }
 ' "$ROOT/deploy/upgrade.sh"

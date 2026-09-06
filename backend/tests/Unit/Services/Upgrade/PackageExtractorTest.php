@@ -993,3 +993,37 @@ function createValidPackageDir(string $testDir): string
 
     return $packageDir;
 }
+
+test('apply 保留当前版本号，缓存清理失败也不提前发布目标版本', function (bool $failCleanup) {
+    $installDir = "$this->testDir/version_install";
+    File::ensureDirectoryExists("$installDir/backend");
+    File::put("$installDir/version.json", json_encode([
+        'version' => '0.6.9-beta.18', 'release_url' => 'https://custom.example', 'network' => 'cn',
+    ]));
+    $packageDir = createValidPackageDir($this->testDir);
+    $originalBase = base_path();
+    app()->setBasePath("$installDir/backend");
+
+    try {
+        $extractor = Mockery::mock(PackageExtractor::class)->makePartial()->shouldAllowMockingProtectedMethods();
+        $extractor->shouldReceive('checkWritableBeforeApply')->andReturnNull();
+        $extractor->shouldReceive('applyBackendUpgrade')->andReturnNull();
+        $extractor->shouldReceive('findFrontendDir')->andReturnNull();
+        $extractor->shouldReceive('findNginxDir')->andReturnNull();
+        $extractor->shouldReceive('cleanupCacheFiles')->andReturnUsing(function () use ($failCleanup) {
+            if ($failCleanup) {
+                throw new RuntimeException('cleanup interrupted');
+            }
+        });
+        if ($failCleanup) {
+            expect(fn () => $extractor->applyUpgrade($packageDir))->toThrow(RuntimeException::class, 'cleanup interrupted');
+        } else {
+            expect($extractor->applyUpgrade($packageDir))->toBeTrue();
+        }
+        expect(json_decode(File::get("$installDir/version.json"), true))->toMatchArray([
+            'version' => '0.6.9-beta.18', 'release_url' => 'https://custom.example', 'network' => 'cn',
+        ]);
+    } finally {
+        app()->setBasePath($originalBase);
+    }
+})->with([false, true]);

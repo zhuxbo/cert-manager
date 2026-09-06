@@ -712,3 +712,6 @@ jobs:
 
       - name: upgrade 入口残留升级状态处置演练
         run: bash deploy/test/test-upgrade-stale-status.sh
+
+      - name: 升级版本号延后发布回归
+        run: bash deploy/test/test-upgrade-version.sh
