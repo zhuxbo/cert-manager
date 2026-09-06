@@ -84,7 +84,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 - **Nginx 占位符**：替换 `$INSTALL_DIR/nginx/*.conf` 和 `frontend/web/*.conf` 中的 `__PROJECT_ROOT__`
 - **version.json**：注入 `release_url` 和 `network` 字段
 - **Redis DB 分配**：安装器保持 `APP_NAME` 不变，按 phpdotenv 覆盖语义扫描同机 Manager 的 `.env`，对归一化后 `REDIS_HOST + REDIS_PORT` 相同的 Redis 实例从 DB 1 起分配独占的 `REDIS_DB`（关键运行状态/队列）与 `REDIS_CACHE_DB`（应用缓存）二元组；同实例配置无法静态确定时失败关闭，不同实例互不占用编号；默认 16 DB 最多自动分配 7 套，耗尽时需改用独立 Redis 实例。系统不接入会用 path/query 覆盖编号的 `REDIS_URL`；扫描到旧站点或目标站点的非空 `REDIS_URL` 时拒绝自动分配，须先转换为显式连接配置及实际 DB 编号
-- **首次运行态分库**：`2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移会递增全部用户/管理员的 `token_version` 并清空 refresh token，防止旧 `REDIS_CACHE_DB` 中的 JWT 黑名单失效后已登出 token 复活。升级后全部账号需重新登录一次
+- **首次运行态分库**：沿用 `2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移名，成功收尾后复用 HTTP 启动独占锁复制旧 JWT 黑名单及其过期时间，保留有效会话。搬迁完成前双读旧库并阻止缓存清理；失败保留旧数据供重试。已执行旧版吊销迁移的实例不重跑，也不恢复此前失效的会话。
 - **管理端安全刷新**：右上角按钮只定向失效 Setting/PayConfigCache 已登记的键与支付证书副本，不执行 `cache:clear`；队列 pause/restart、scheduler mutex、`runtime`、其它默认缓存、编译视图、会话文件、OPcache 和 Composer 缓存均保留
 
 ### 手工配置步骤（仅自动化失败时）

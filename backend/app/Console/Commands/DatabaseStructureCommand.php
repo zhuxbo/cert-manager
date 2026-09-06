@@ -677,6 +677,17 @@ class DatabaseStructureCommand extends Command
             }
         }
 
+        foreach ($diff['table_differences'] as $tableName => $tableDiff) {
+            foreach ($tableDiff['modified_foreign_keys'] ?? [] as $fkName => $fkDiff) {
+                if (! $hasModify) {
+                    $hasModify = true;
+                    $this->warn('[WARNING]  需手动处理（MODIFY）:');
+                }
+                $description = $this->structureService->describeForeignKeyDifferences($fkDiff['standard'], $fkDiff['current']);
+                $this->line("  - 外键 <comment>$tableName.$fkName</comment>: $description");
+            }
+        }
+
         if ($hasModify) {
             $this->newLine();
         }
@@ -845,6 +856,19 @@ class DatabaseStructureCommand extends Command
                     $diffDesc = $this->structureService->describeIndexDifferences($indexDiff['standard'], $indexDiff['current']);
                     $this->line("$tableName.$indexName: $diffDesc");
                 }
+            }
+        }
+
+        foreach ($diff['table_differences'] ?? [] as $tableName => $tableDiff) {
+            foreach ($tableDiff['modified_foreign_keys'] ?? [] as $fkName => $fkDiff) {
+                if (! $hasManual) {
+                    $this->newLine();
+                    $this->warn('以下项目需要手动处理:');
+                    $this->newLine();
+                    $hasManual = true;
+                }
+                $description = $this->structureService->describeForeignKeyDifferences($fkDiff['standard'], $fkDiff['current']);
+                $this->line("外键修改（MODIFY）: $tableName.$fkName: $description");
             }
         }
 

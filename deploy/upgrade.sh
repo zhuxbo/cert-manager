@@ -2522,7 +2522,7 @@ file_put_contents($path, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLAS
     # 必须落在 up 与 queue:restart 之间。
     UPGRADE_DONE=1
 
-    # 会话切库只执行一次；冻结期间跳过，服务恢复后才吊销旧登录。
+    # 会话切库只执行一次；冻结期间跳过，服务恢复后搬迁旧黑名单并保留有效登录。
     local session_cutover_migration="database/migrations/2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover.php"
     if [ -f "$session_cutover_migration" ]; then
         "$PHP_CMD" artisan migrate --path="$session_cutover_migration" --force

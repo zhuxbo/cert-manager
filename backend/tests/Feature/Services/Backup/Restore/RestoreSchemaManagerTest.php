@@ -20,7 +20,7 @@ afterEach(function (): void {
     @unlink(storage_path('restores/'.TASK7_TOKEN.'.json'));
 });
 
-it('跨进程续接外键转换并以一条 RENAME 完成切换和精确回滚', function (): void {
+it('跨进程续接外键转换并以一条 RENAME 完成切换和精确回滚', function (string $action): void {
     DB::statement('CREATE TABLE `task7_parent` (`id` bigint unsigned NOT NULL, `label` varchar(32) NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB');
     DB::statement('CREATE TABLE `task7_child` (`id` bigint unsigned NOT NULL, `parent_id` bigint unsigned NOT NULL, PRIMARY KEY (`id`), KEY `parent_idx` (`parent_id`), CONSTRAINT `task7_child_parent_current` FOREIGN KEY (`parent_id`) REFERENCES `task7_parent` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE) ENGINE=InnoDB');
     DB::statement('CREATE TABLE `__rst_a1b2c3d4e5f6_task7_parent` LIKE `task7_parent`');
@@ -38,8 +38,8 @@ it('跨进程续接外键转换并以一条 RENAME 完成切换和精确回滚',
         'table' => 'task7_child',
         'columns' => ['parent_id'],
         'references' => ['table' => 'task7_parent', 'columns' => ['id']],
-        'on_delete' => 'RESTRICT',
-        'on_update' => 'CASCADE',
+        'on_delete' => $action,
+        'on_update' => $action,
     ];
     $schema = ['tables' => [
         'task7_parent' => task7BusinessSchema(false),
@@ -53,10 +53,25 @@ it('跨进程续接外键转换并以一条 RENAME 完成切换和精确回滚',
         ['task7_child_parent_canonical' => $foreignKey],
         ['task7_activity_logs'],
     );
+    // MySQL 5.7 的 INPLACE ADD 会规范化 RESTRICT；以直接 DDL 为引擎基线。
+    $expectedRules = task7InplaceRuleBaseline($action, $action);
+    $rollbackRules = task7InplaceRuleBaseline('RESTRICT', 'CASCADE');
+    $foreignKeyStatements = [];
+    DB::listen(function ($query) use (&$foreignKeyStatements): void {
+        if (preg_match('/ADD CONSTRAINT `([^`]+)`/', $query->sql, $matches)) {
+            $foreignKeyStatements[$matches[1]] = $query->sql;
+        }
+    });
     $manager = app(RestoreSchemaManager::class);
 
     $manager->prepareEmptyRuntimeShadows($context);
     $manager->prepareCanonicalForeignKeys($context);
+
+    $rules = DB::selectOne("SELECT DELETE_RULE, UPDATE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'task7_child_parent_canonical'");
+    expect($foreignKeyStatements['task7_child_parent_canonical'])->toContain("ON DELETE $action ON UPDATE $action")
+        ->and($rules->DELETE_RULE)->toBe($expectedRules->DELETE_RULE)
+        ->and($rules->UPDATE_RULE)->toBe($expectedRules->UPDATE_RULE)
+        ->and(app(RestoreForeignKeyPlanStore::class)->load($context)['task7_child_parent_current']['on_delete'])->toBe('RESTRICT');
 
     $shadowFk = task7ForeignKey('__rst_a1b2c3d4e5f6_task7_child');
     expect($shadowFk)->not->toBeNull()
@@ -89,10 +104,12 @@ it('跨进程续接外键转换并以一条 RENAME 完成切换和精确回滚',
         ->and($queries)->toHaveCount(1)
         ->and(DB::table('task7_parent')->value('label'))->toBe('active')
         ->and(DB::table('task7_runtime')->value('payload'))->toBe('discard')
+        ->and($foreignKeyStatements['task7_child_parent_current'])->toContain('ON DELETE RESTRICT ON UPDATE CASCADE')
+        ->and(DB::selectOne("SELECT DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'task7_child_parent_current'")->DELETE_RULE)->toBe($rollbackRules->DELETE_RULE)
         ->and(task7ForeignKey('task7_child')->CONSTRAINT_NAME)->toBe('task7_child_parent_current')
         ->and(task7ForeignKey('task7_child')->REFERENCED_TABLE_NAME)->toBe('task7_parent')
         ->and(DB::table('task7_activity_logs')->value('message'))->toBe('keep');
-});
+})->with(['RESTRICT', 'NO ACTION']);
 
 it('rename 前失败时从持久计划恢复 active 外键并允许丢弃 staged 表', function (): void {
     DB::statement('CREATE TABLE `task7_parent` (`id` bigint unsigned NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB');
@@ -565,4 +582,18 @@ function task7Column(string $type, bool $nullable, mixed $default, string $extra
         'comment' => '',
         'generation_expression' => '',
     ];
+}
+
+function task7InplaceRuleBaseline(string $onDelete, string $onUpdate): object
+{
+    DB::statement('CREATE TABLE `__rst_a1b2c3d4e5f6_task7_unrelated` (`id` bigint unsigned PRIMARY KEY, `parent_id` bigint unsigned, KEY (`parent_id`)) ENGINE=InnoDB');
+    try {
+        DB::statement('SET FOREIGN_KEY_CHECKS=0');
+        DB::statement("ALTER TABLE `__rst_a1b2c3d4e5f6_task7_unrelated` ADD CONSTRAINT `task7_rule_baseline` FOREIGN KEY (`parent_id`) REFERENCES `task7_parent` (`id`) ON DELETE $onDelete ON UPDATE $onUpdate, ALGORITHM=INPLACE, LOCK=NONE");
+
+        return DB::selectOne("SELECT DELETE_RULE, UPDATE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'task7_rule_baseline'");
+    } finally {
+        DB::statement('DROP TABLE `__rst_a1b2c3d4e5f6_task7_unrelated`');
+        DB::statement('SET FOREIGN_KEY_CHECKS=1');
+    }
 }

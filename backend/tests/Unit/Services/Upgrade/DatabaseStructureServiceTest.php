@@ -1,9 +1,13 @@
 <?php
 
+use App\Console\Commands\DatabaseStructureCommand;
 use App\Services\Upgrade\DatabaseStructureService;
+use Illuminate\Console\OutputStyle;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -833,3 +837,48 @@ test('semantic comparison does not overwrite duplicate foreign key column indexe
         ->and($diff['table_differences']['orders']['extra_indexes'])
         ->toHaveKeys(['implicit_new', 'duplicate_user_id']);
 });
+
+test('InnoDB 外键限制规则按等价语义比较且保留其他引擎差异', function (string $engine, string $field, string $currentAction, bool $hasDiff) {
+    $standard = ['tables' => ['users' => [
+        'engine' => $engine,
+        'columns' => [], 'indexes' => [],
+        'foreign_keys' => ['users_level_code_foreign' => [
+            'columns' => ['level_code'],
+            'references' => ['table' => 'user_levels', 'columns' => ['code']],
+            'on_delete' => 'RESTRICT', 'on_update' => 'RESTRICT',
+        ]],
+    ]]];
+    $current = $standard;
+    $current['tables']['users']['foreign_keys']['users_level_code_foreign'][$field] = $currentAction;
+    expect(! empty($this->service->compareStructures($standard, $current)['table_differences']))->toBe($hasDiff);
+    expect(! empty($this->service->compareStructures($current, $standard)['table_differences']))->toBe($hasDiff);
+})->with([
+    ['InnoDB', 'on_delete', 'NO ACTION', false],
+    ['InnoDB', 'on_update', 'NO ACTION', false],
+    ['InnoDB', 'on_delete', 'CASCADE', true],
+    ['InnoDB', 'on_update', 'SET NULL', true],
+    ['NDB', 'on_delete', 'NO ACTION', true],
+]);
+
+test('命令行检测和修复报告均展示真实外键修改', function (string $method) {
+    $standard = [
+        'columns' => ['level_code'],
+        'references' => ['table' => 'user_levels', 'columns' => ['code']],
+        'on_delete' => 'RESTRICT', 'on_update' => 'NO ACTION',
+    ];
+    $current = $standard;
+    $current['on_delete'] = 'CASCADE';
+    $diff = ['missing_tables' => [], 'extra_tables' => [], 'table_differences' => [
+        'users' => ['modified_foreign_keys' => [
+            'users_level_code_foreign' => ['standard' => $standard, 'current' => $current],
+        ]],
+    ]];
+    $command = new DatabaseStructureCommand($this->service);
+    $output = new BufferedOutput;
+    $command->setOutput(new OutputStyle(
+        new ArrayInput([]), $output,
+    ));
+    (new ReflectionMethod($command, $method))->invoke($command, $diff);
+    expect($output->fetch())->toContain('users.users_level_code_foreign')
+        ->toContain('ON DELETE CASCADE')->toContain('ON DELETE RESTRICT');
+})->with(['displayDiffReport', 'displayManualActions']);

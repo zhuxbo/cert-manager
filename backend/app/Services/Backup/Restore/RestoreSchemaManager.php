@@ -110,7 +110,7 @@ final class RestoreSchemaManager
         $shadowTables = $this->mappedNames($context, $context->shadowTableMap);
         $actualShadow = $this->foreignKeysForOwners($shadowTables);
         foreach ($actualShadow as $name => $foreignKey) {
-            if (! isset($expectedShadow[$name]) || $foreignKey !== $expectedShadow[$name]) {
+            if (! isset($expectedShadow[$name]) || $this->comparableForeignKey($foreignKey) !== $this->comparableForeignKey($expectedShadow[$name])) {
                 throw new RuntimeException('影子表包含错误或非预期外键');
             }
         }
@@ -673,8 +673,8 @@ final class RestoreSchemaManager
             foreach ([$table, $name, $referencedTable, $column, $referencedColumn] as $identifier) {
                 $this->assertIdentifier($identifier);
             }
-            $onDelete = $this->canonicalReferentialAction((string) $row->DELETE_RULE);
-            $onUpdate = $this->canonicalReferentialAction((string) $row->UPDATE_RULE);
+            $onDelete = $this->validatedReferentialAction((string) $row->DELETE_RULE);
+            $onUpdate = $this->validatedReferentialAction((string) $row->UPDATE_RULE);
 
             if (! isset($foreignKeys[$name])) {
                 $foreignKeys[$name] = [
@@ -724,8 +724,8 @@ final class RestoreSchemaManager
                 }
                 $this->assertIdentifier($column);
             }
-            $onDelete = $this->canonicalReferentialAction((string) ($definition['on_delete'] ?? ''));
-            $onUpdate = $this->canonicalReferentialAction((string) ($definition['on_update'] ?? ''));
+            $onDelete = $this->validatedReferentialAction((string) ($definition['on_delete'] ?? ''));
+            $onUpdate = $this->validatedReferentialAction((string) ($definition['on_update'] ?? ''));
 
             $owner = $shadow ? ($context->shadowTableMap[$table] ?? null) : $table;
             $parent = $shadow ? ($context->shadowTableMap[$referencedTable] ?? null) : $referencedTable;
@@ -781,12 +781,24 @@ final class RestoreSchemaManager
         }
     }
 
-    private function canonicalReferentialAction(string $action): string
+    private function validatedReferentialAction(string $action): string
     {
         $action = strtoupper($action);
         $this->assertReferentialAction($action);
 
-        return $action === 'RESTRICT' ? 'NO ACTION' : $action;
+        return $action;
+    }
+
+    /** @param array<string, mixed> $foreignKey @return array<string, mixed> */
+    private function comparableForeignKey(array $foreignKey): array
+    {
+        // 等价归一化只用于校验，恢复和补偿 SQL 保留原规则。
+        foreach (['on_delete', 'on_update'] as $field) {
+            $action = $this->validatedReferentialAction($foreignKey[$field]);
+            $foreignKey[$field] = $action === 'RESTRICT' ? 'NO ACTION' : $action;
+        }
+
+        return $foreignKey;
     }
 
     /** @param array<string, mixed> $foreignKey */
@@ -820,7 +832,7 @@ final class RestoreSchemaManager
     private function assertForeignKeySubset(array $expected, array $actual, string $location): void
     {
         foreach ($actual as $name => $foreignKey) {
-            if (! isset($expected[$name]) || $expected[$name] !== $foreignKey) {
+            if (! isset($expected[$name]) || $this->comparableForeignKey($expected[$name]) !== $this->comparableForeignKey($foreignKey)) {
                 throw new RuntimeException("$location 外键集合与恢复计划不一致");
             }
         }
@@ -914,7 +926,7 @@ final class RestoreSchemaManager
      */
     private function assertExactForeignKeys(array $expected, array $actual, string $location): void
     {
-        if ($expected !== $actual) {
+        if (array_map($this->comparableForeignKey(...), $expected) !== array_map($this->comparableForeignKey(...), $actual)) {
             throw new RuntimeException("$location 外键集合与恢复计划不一致");
         }
     }

@@ -546,17 +546,13 @@ test('sync 自动退款精确落账、回调并只清理指定任务', function 
         ->and(Task::where('order_id', $order->id)->orderBy('action')->pluck('action')->all())->toBe(['callback']);
 });
 
-test('updateDCV 重复提交返回包含精确剩余秒数的错误', function () {
-    Carbon::setTestNow('2026-07-31 12:00:00');
-    [$order] = orderMutationFixture('unpaid', [], [
-        'alternative_names' => 'example.test',
-        'csr' => 'unused-csr',
-    ]);
+test('updateDCV 将防抖剩余秒数原样返回错误响应', function () {
+    $action = Mockery::mock(Action::class)->makePartial()->shouldAllowMockingProtectedMethods();
+    $action->shouldReceive('checkDuplicate')->once()->with('updateDCV', [123])->andReturn(37);
 
-    orderMutationSuccess(fn () => $this->orderMutationAction->updateDCV($order->id, 'txt'));
     orderMutationError(
-        fn () => $this->orderMutationAction->updateDCV($order->id, 'txt'),
-        '请在 60 秒后再提交修改',
+        fn () => $action->updateDCV(123, 'txt'),
+        '请在 37 秒后再提交修改',
     );
 });
 

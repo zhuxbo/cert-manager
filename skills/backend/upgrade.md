@@ -4,7 +4,7 @@
 
 ### 升级冻结契约
 
-首次 runtime 会话切库迁移在 freeze 期间跳过，后台升级写入 completed 后由 `RuntimeSessionCutover` 补执行；旧版后台进程通过该迁移注册的应用终止回调兼容。`upgrade.sh` 在 `up` 成功后按单文件路径补跑同一迁移。迁移记录保证只吊销一次，失败升级和之后的普通升级不吊销；待切库期间保留旧 JWT 黑名单及其缓存，详见认证规范。关闭自动迁移时后台不主动补跑。
+首次 runtime 黑名单切库迁移在 freeze 期间跳过，后台升级写入 completed 后由 `RuntimeSessionCutover` 补执行；旧版后台进程通过该迁移注册的应用终止回调兼容。`upgrade.sh` 在 `up` 成功后按单文件路径补跑同一迁移。补跑时复用 HTTP 启动独占锁排空在途请求，复制旧 JWT 黑名单并保留过期时间，不吊销有效会话；失败保留旧库及清理保护以便重试。迁移名保留兼容已发布版本，已执行的实例后续不重跑。关闭自动迁移时后台不主动补跑。详见认证规范。
 
 Redis 编号由 `RedisDatabaseConfig::preserve()` 读取当前应用已加载的配置（含 config cache），显式追加到本实例 `.env`，幂等且保留属主/权限与 `APP_NAME`；不扫描跨实例占用、不搬迁队列。新版 `UpgradeService` 在 apply 前调用；首次旧版后台进程通过 runtime 切库 migration 在清配置缓存前补调用（旧配置无 runtime store）；`upgrade.sh` 在切码前以旧应用 bootstrap 加载目标包中的同一实现。两库原本相同、编号无效或使用 `REDIS_URL` 时中止，不能套用新默认值掩盖配置问题。首次旧后台升级必须开启自动迁移。
 
@@ -113,6 +113,7 @@ Redis 编号由 `RedisDatabaseConfig::preserve()` 读取当前应用已加载的
 升级后自动校验数据库结构与标准 `structure.json` 是否一致。
 
 - 升级校验只比较核心结构语义；插件等额外表属于信息项，不作为删除建议，也不阻断仅新增结构的自动修复。
+- InnoDB 外键的 `RESTRICT` / `NO ACTION` 仅在比较时按等价规则处理；备份恢复、回滚补偿及持久外键计划保留来源规则，不将归一化值写回数据库。MySQL 5.7 的 INPLACE ADD 仍可能由引擎将 `RESTRICT` 规范化为 `NO ACTION`，验证须同时检查发出的 SQL 和同版本直接 DDL 基线，不要求元数据文本跨版本一致。`db:structure --check` 和 `--fix` 的手动提示均显示已有外键修改的当前定义与标准定义。
 - 备份侧 `<backup>.schema.json` 使用独立的恢复比较入口；备份显式记录字符集、生成列表达式时才比较这些扩展元数据，旧备份缺少字段时保持可恢复。
 
 #### 平台设置升级顺序

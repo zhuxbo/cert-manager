@@ -396,7 +396,12 @@ class DatabaseStructureService
         foreach ($standard['foreign_keys'] as $fkName => $fkDef) {
             if (! isset($current['foreign_keys'][$fkName])) {
                 $diff['missing_foreign_keys'][$fkName] = $fkDef;
-            } elseif ($this->isForeignKeyDifferent($fkDef, $current['foreign_keys'][$fkName])) {
+            } elseif ($this->isForeignKeyDifferent(
+                $fkDef,
+                $current['foreign_keys'][$fkName],
+                strcasecmp($standard['engine'] ?? '', 'InnoDB') === 0
+                    && strcasecmp($current['engine'] ?? '', 'InnoDB') === 0,
+            )) {
                 $diff['modified_foreign_keys'][$fkName] = [
                     'standard' => $fkDef,
                     'current' => $current['foreign_keys'][$fkName],
@@ -542,13 +547,37 @@ class DatabaseStructureService
         return false;
     }
 
-    protected function isForeignKeyDifferent(array $standard, array $current): bool
+    protected function isForeignKeyDifferent(array $standard, array $current, bool $innodb = false): bool
     {
+        if ($innodb) {
+            foreach (['on_delete', 'on_update'] as $field) {
+                $standard[$field] = $standard[$field] === 'RESTRICT' ? 'NO ACTION' : $standard[$field];
+                $current[$field] = $current[$field] === 'RESTRICT' ? 'NO ACTION' : $current[$field];
+            }
+        }
+
         return $standard['columns'] !== $current['columns'] ||
             $standard['references']['table'] !== $current['references']['table'] ||
             $standard['references']['columns'] !== $current['references']['columns'] ||
             $standard['on_delete'] !== $current['on_delete'] ||
             $standard['on_update'] !== $current['on_update'];
+    }
+
+    /**
+     * 描述外键定义差异（当前值 => 标准值）。
+     */
+    public function describeForeignKeyDifferences(array $standard, array $current): string
+    {
+        $describe = static fn (array $fk): string => sprintf(
+            '(%s) REFERENCES %s (%s) ON DELETE %s ON UPDATE %s',
+            implode(', ', $fk['columns']),
+            $fk['references']['table'],
+            implode(', ', $fk['references']['columns']),
+            $fk['on_delete'],
+            $fk['on_update'],
+        );
+
+        return $describe($current).' => '.$describe($standard);
     }
 
     protected function columnValue(array $column, string $key, mixed $default = null): mixed

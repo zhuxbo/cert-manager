@@ -2,7 +2,7 @@
 
 ## Token 认证体系
 
-JWT 撤销黑名单由 `App\Auth\JwtBlacklistStorage` 显式写入 `runtime` 缓存仓库。普通 `cache:clear` / 管理端“安全清理缓存”不会解除已登出的 token；数据库恢复的运行态重置会清理该黑名单。首次从旧缓存库切换到 `runtime` 时，`2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移会递增全部账号的 `token_version`、清空 refresh token。该迁移在升级冻结期间通过 `shouldRun=false` 跳过且不记入 migrations，成功收尾后才执行；失败升级不吊销，已记录该迁移的实例后续升级不再吊销。待迁移期间 JWT 同时读取旧黑名单，`cache:clear` 暂缓清理，`cache:clear-all` 拒绝运行，避免旧 token 在升级途中复活。仅首次切库升级完成后要求用户和管理员重新登录一次。
+JWT 撤销黑名单由 `App\Auth\JwtBlacklistStorage` 显式写入 `runtime` 缓存仓库。普通 `cache:clear` / 管理端“安全清理缓存”不会解除已登出的 token；数据库恢复的运行态重置会清理该黑名单。首次切库沿用 `2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移名以兼容已发布版本，但改为复制旧黑名单，不再递增 token_version 或删除 refresh token。冻结期间跳过，成功收尾后在 HTTP 启动独占锁内搬迁；Redis 按 JWT 标签复制并保留到期时间，文件缓存按原 SHA1 搬至 runtime 的 legacy-jwt-file 键。待迁移期间双读旧黑名单、阻止旧缓存清理；复制失败不记迁移完成，保留旧数据供重试。已执行旧吊销迁移的实例不重复执行，也不恢复此前失效的会话。
 
 | Token 类型  | 中间件              | 路由前缀               | 用途             |
 | ----------- | ------------------- | ---------------------- | ---------------- |

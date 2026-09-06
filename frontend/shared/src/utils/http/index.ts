@@ -47,11 +47,8 @@ class PureHttp {
     this.httpInterceptorsResponse();
   }
 
-  /** `token`过期后，暂存待执行的请求 */
-  private static requests: Array<(token: string) => void> = [];
-
-  /** 防止重复刷新`token` */
-  private static isRefreshing = false;
+  /** 并发请求共享刷新结果，失败时也必须结束等待。 */
+  private static refreshPromise: Promise<string> | null = null;
 
   /** 初始化配置对象 */
   private static initConfig: PureHttpRequestConfig = {};
@@ -59,14 +56,26 @@ class PureHttp {
   /** 保存当前`Axios`实例对象 */
   private static axiosInstance: AxiosInstance = Axios.create(defaultConfig);
 
-  /** 重连原始请求 */
-  private static retryOriginalRequest(config: PureHttpRequestConfig) {
-    return new Promise(resolve => {
-      PureHttp.requests.push((token: string) => {
-        config.headers!["Authorization"] = formatToken(token);
-        resolve(config);
-      });
-    });
+  private static refreshAccessToken(refreshToken?: string): Promise<string> {
+    if (!PureHttp.refreshPromise) {
+      PureHttp.refreshPromise = Promise.resolve()
+        .then(() => {
+          if (!storeHooks || !refreshToken) {
+            throw new Error("登录凭证已失效");
+          }
+          return storeHooks.refreshToken({ refresh_token: refreshToken });
+        })
+        .then(res => res.data.access_token)
+        .catch(error => {
+          NProgress.done();
+          storeHooks?.logout();
+          throw error;
+        })
+        .finally(() => {
+          PureHttp.refreshPromise = null;
+        });
+    }
+    return PureHttp.refreshPromise;
   }
 
   /** 请求拦截 */
@@ -123,66 +132,23 @@ class PureHttp {
         }
         /** 请求白名单，放置一些不需要`token`的接口 */
         const whiteList = ["/refresh-token", "/login"];
-        return whiteList.some(url => config.url!.endsWith(url))
-          ? config
-          : new Promise(resolve => {
-              const data = getToken();
-              if (data) {
-                const now = new Date().getTime();
-                const expiresTime = (() => {
-                  if (typeof data.expires_in === "number") {
-                    return data.expires_in;
-                  }
-                  // 尝试转换为数字
-                  const timestamp = Number(data.expires_in);
-                  // 如果是有效的时间戳数字
-                  if (!isNaN(timestamp) && timestamp > 0) {
-                    return timestamp;
-                  }
-                  // 否则当作 ISO 时间字符串处理
-                  return new Date(
-                    data.expires_in as unknown as string
-                  ).getTime();
-                })();
-                const expired = expiresTime - now <= 0;
-                if (expired) {
-                  if (!PureHttp.isRefreshing) {
-                    PureHttp.isRefreshing = true;
-                    // token过期刷新
-                    if (storeHooks) {
-                      storeHooks
-                        .refreshToken({ refresh_token: data.refresh_token })
-                        .then(res => {
-                          const token = res.data.access_token;
-                          config.headers!["Authorization"] = formatToken(token);
-                          PureHttp.requests.forEach(cb => cb(token));
-                          PureHttp.requests = [];
-                        })
-                        .catch(() => {
-                          // 刷新失败，清空请求队列并退出登录
-                          if (storeHooks) storeHooks.logout();
-                          PureHttp.requests = [];
-                        })
-                        .finally(() => {
-                          PureHttp.isRefreshing = false;
-                        });
-                    } else {
-                      // storeHooks 未初始化，重置状态避免死锁
-                      PureHttp.isRefreshing = false;
-                      PureHttp.requests = [];
-                    }
-                  }
-                  resolve(PureHttp.retryOriginalRequest(config));
-                } else {
-                  config.headers!["Authorization"] = formatToken(
-                    data.access_token
-                  );
-                  resolve(config);
-                }
-              } else {
-                resolve(config);
-              }
-            });
+        if (whiteList.some(url => config.url!.endsWith(url))) return config;
+        const data = getToken();
+        if (data) {
+          const now = new Date().getTime();
+          const expiresTime = (() => {
+            if (typeof data.expires_in === "number") return data.expires_in;
+            const timestamp = Number(data.expires_in);
+            if (!isNaN(timestamp) && timestamp > 0) return timestamp;
+            return new Date(data.expires_in as unknown as string).getTime();
+          })();
+          const token =
+            expiresTime - now <= 0
+              ? await PureHttp.refreshAccessToken(data.refresh_token)
+              : data.access_token;
+          config.headers!["Authorization"] = formatToken(token);
+        }
+        return config;
       },
       error => {
         return Promise.reject(error);
@@ -224,7 +190,7 @@ class PureHttp {
           const requestUrl: string = originalRequest?.url || "";
           // 若是刷新接口本身返回401，直接登出，避免循环
           if (requestUrl.endsWith("/refresh-token")) {
-            if (storeHooks) storeHooks.logout();
+            if (!PureHttp.refreshPromise) storeHooks?.logout();
             NProgress.done();
             return Promise.reject(error);
           }
@@ -237,36 +203,10 @@ class PureHttp {
           }
           originalRequest._retry = true;
 
-          // 统一通过队列 + isRefreshing 处理401刷新
-          if (!PureHttp.isRefreshing) {
-            PureHttp.isRefreshing = true;
-            const tokenData = getToken();
-            if (tokenData?.refresh_token && storeHooks) {
-              storeHooks
-                .refreshToken({ refresh_token: tokenData.refresh_token })
-                .then(res => {
-                  const token = res.data.access_token;
-                  PureHttp.requests.forEach(cb => cb(token));
-                  PureHttp.requests = [];
-                })
-                .catch(() => {
-                  if (storeHooks) storeHooks.logout();
-                  PureHttp.requests = [];
-                })
-                .finally(() => {
-                  PureHttp.isRefreshing = false;
-                });
-            } else {
-              if (storeHooks) storeHooks.logout();
-              NProgress.done();
-              return Promise.reject(error);
-            }
-          }
-
-          // 等待刷新完成后重放原请求
-          return PureHttp.retryOriginalRequest(originalRequest).then(
-            (config: PureHttpRequestConfig) => {
-              return PureHttp.axiosInstance.request(config);
+          return PureHttp.refreshAccessToken(getToken()?.refresh_token).then(
+            token => {
+              originalRequest.headers["Authorization"] = formatToken(token);
+              return PureHttp.axiosInstance.request(originalRequest);
             }
           );
         } else {

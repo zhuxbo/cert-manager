@@ -3,7 +3,6 @@
 use App\Services\Upgrade\RedisDatabaseConfig;
 use Dotenv\Dotenv;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -86,10 +85,9 @@ test('未启用 Redis 不改 env', function () {
 test('首次旧后台进程通过迁移保存仍在内存中的原编号', function () {
     File::put(app()->environmentFilePath(), "APP_NAME=original_manager\nREDIS_CACHE_DB=1\n");
     config(['cache.stores.runtime' => null]);
-    Schema::shouldReceive('hasTable')->with('users')->once()->andReturnFalse();
 
     $migration = require database_path('migrations/2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover.php');
-    $migration->up();
+    $migration->shouldRun();
 
     expect(Dotenv::parse(File::get(app()->environmentFilePath())))->toMatchArray(['REDIS_DB' => '0', 'REDIS_CACHE_DB' => '1']);
 });
