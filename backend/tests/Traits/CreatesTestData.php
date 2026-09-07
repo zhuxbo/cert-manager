@@ -144,7 +144,7 @@ trait CreatesTestData
         );
 
         Setting::updateOrCreate(
-            ['group_id' => $group->id, 'key' => 'defaultDomain'],
+            ['group_id' => $group->id, 'key' => 'delegationDomain'],
             [
                 'type' => 'string',
                 'options' => null,

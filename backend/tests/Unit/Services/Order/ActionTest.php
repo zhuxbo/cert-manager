@@ -2066,7 +2066,7 @@ function prepareSwitchedDelegationForAction(Order $sourceOrder, Cert $sourceCert
     );
     Setting::create([
         'group_id' => $group->id,
-        'key' => 'defaultDomain',
+        'key' => 'delegationDomain',
         'type' => 'string',
         'value' => 'proxy.example.com',
     ]);
@@ -2104,7 +2104,7 @@ function prepareSwitchedDelegationForAction(Order $sourceOrder, Cert $sourceCert
             'apiToken' => 'new-api-token',
         ],
     ]);
-    Setting::setValue('delegation', 'defaultDomain', 'new.example.net');
+    Setting::setValue('delegation', 'delegationDomain', 'new.example.net');
 
     return $delegation;
 }

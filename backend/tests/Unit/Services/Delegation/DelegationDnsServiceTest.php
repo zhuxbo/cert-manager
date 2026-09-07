@@ -2,25 +2,31 @@
 
 declare(strict_types=1);
 
+use App\Models\Setting;
+use App\Models\SettingGroup;
 use App\Services\Delegation\DelegationConfigService;
 use App\Services\Delegation\DelegationDnsService;
 use App\Services\Delegation\Dns\DelegationDnsProvider;
 use App\Services\Delegation\Dns\DelegationDnsProviderFactory;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
-uses(TestCase::class);
+uses(TestCase::class, RefreshDatabase::class);
 
 beforeEach(function () {
-    Cache::put('setting:group_name:delegation', [
-        'proxyExampleCom' => [
+    $group = SettingGroup::factory()->create(['name' => 'delegation']);
+    Setting::create([
+        'group_id' => $group->id,
+        'key' => 'cloudflare',
+        'type' => 'array',
+        'value' => [
             'provider' => 'cloudflare',
             'domain' => 'proxy.example.com',
             'zoneId' => 'zone-id',
             'apiToken' => 'never-log-api-token',
         ],
-    ], 60);
+    ]);
 });
 
 afterEach(function () {

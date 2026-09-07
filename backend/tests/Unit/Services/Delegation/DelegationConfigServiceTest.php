@@ -68,7 +68,7 @@ test('拒绝 ASCII 总长或单标签超过 DNS 上限的委托域', function (s
 ]);
 
 test('返回默认代理域及对应 provider 配置', function () {
-    delegationConfigSetting('defaultDomain', 'proxy.example.com', 'string');
+    delegationConfigSetting('delegationDomain', 'proxy.example.com', 'string');
     delegationConfigSetting('proxyExampleCom', [
         'domain' => 'proxy.example.com',
         'provider' => 'cloudflare',
@@ -121,19 +121,19 @@ test('缺失默认域或域名配置时返回空值', function () {
 });
 
 test('不完整的 provider 示例和任意草稿均不参与运行配置', function () {
-    delegationConfigSetting('tencentExample', [
+    delegationConfigSetting('tencent', [
         'domain' => '',
         'provider' => 'tencent',
         'secretId' => '',
         'secretKey' => '',
     ]);
-    delegationConfigSetting('cloudflareExample', [
+    delegationConfigSetting('cloudflare', [
         'domain' => '',
         'provider' => 'cloudflare',
         'zoneId' => '',
         'apiToken' => '',
     ]);
-    delegationConfigSetting('aliyunExample', [
+    delegationConfigSetting('aliyun', [
         'domain' => '',
         'provider' => 'aliyun',
         'accessKeyId' => '',
@@ -169,7 +169,7 @@ test('拒绝嵌入域名与请求域名不一致的配置', function () {
 });
 
 test('拒绝与域名派生键冲突的配置', function () {
-    delegationConfigSetting('defaultDomain', 'proxy.example.com', 'string');
+    delegationConfigSetting('delegationDomain', 'proxy.example.com', 'string');
     delegationConfigSetting('proxyExampleCom', [
         'domain' => 'proxy-example.com',
         'provider' => 'cloudflare',
@@ -231,7 +231,7 @@ test('拒绝超过 settings 键长度上限的域名', function () {
 });
 
 test('报告畸形域配置且不在摘要中暴露凭据', function () {
-    delegationConfigSetting('defaultDomain', 'proxy.example.com', 'string');
+    delegationConfigSetting('delegationDomain', 'proxy.example.com', 'string');
     delegationConfigSetting('missingDomain', [
         'provider' => 'cloudflare',
         'apiToken' => 'missing-domain-secret',
@@ -258,12 +258,12 @@ test('报告畸形域配置且不在摘要中暴露凭据', function () {
     expect($service->all())->toBe([])
         ->and($invalid)->toEqual([
             'missingDomain' => '缺少有效 domain',
-            'mismatchedKey' => 'domain 与设置键不匹配',
+            'mismatchedKey' => 'provider 或凭据无效',
             'emptyDomain' => '缺少有效 domain',
-            'overlongDomain' => 'domain 派生设置键超过 100 个字符',
+            'overlongDomain' => 'provider 或凭据无效',
         ])
         ->and(json_encode($invalid))->not->toContain('secret')
-        ->and($invalid)->not->toHaveKey('defaultDomain');
+        ->and($invalid)->not->toHaveKey('delegationDomain');
 });
 
 test('invalidSettings 报告 delegation 组的 wrong type 和非数组值', function () {
@@ -277,4 +277,35 @@ test('invalidSettings 报告 delegation 组的 wrong type 和非数组值', func
 
     expect(app(DelegationConfigService::class)->invalidSettings())
         ->toHaveKeys(['wrongTypeExampleCom', 'brokenArrayExampleCom']);
+});
+
+test('固定设置键按 domain 读取且与枚举使用相同的重复域规则', function () {
+    $config = [
+        'domain' => 'PROXY.EXAMPLE.COM.',
+        'provider' => 'cloudflare',
+        'zoneId' => 'first-zone',
+        'apiToken' => 'first-token',
+    ];
+    delegationConfigSetting('cloudflare', $config);
+    delegationConfigSetting('anotherConfig', array_replace($config, [
+        'domain' => 'proxy.example.com',
+        'zoneId' => 'second-zone',
+    ]));
+
+    $service = app(DelegationConfigService::class);
+    expect($service->get('proxy.example.com')['zoneId'])->toBe('first-zone')
+        ->and($service->all()['proxy.example.com'])->toBe($service->get('proxy.example.com'))
+        ->and($service->invalidSettings())->toBe(['anotherConfig' => 'domain 配置重复']);
+});
+
+test('固定设置键支持 DNS 长度合法但无法派生短键的域名', function () {
+    $domain = implode('.', array_fill(0, 51, 'ab')).'.com';
+    delegationConfigSetting('tencent', [
+        'domain' => $domain,
+        'provider' => 'tencent',
+        'secretId' => 'test-id',
+        'secretKey' => 'test-key',
+    ]);
+
+    expect(app(DelegationConfigService::class)->get($domain)['domain'])->toBe($domain);
 });

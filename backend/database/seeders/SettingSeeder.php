@@ -43,6 +43,7 @@ class SettingSeeder extends Seeder
         }
 
         $this->positionNewDelegationGroupAfterCa($groups);
+        $this->migrateDefaultDomainKey($groups['delegation']);
 
         // 升级时先导入旧静态配置，再由下方默认值补齐其余缺失项。
         // 已有非空设置不覆盖，保证 Seeder 可幂等重跑。
@@ -117,7 +118,7 @@ class SettingSeeder extends Seeder
                 ['key' => 'all', 'type' => 'array', 'options' => null, 'is_multiple' => 0, 'value' => $this->brandLabels($this->defaultAdminBrands()), 'description' => '全部品牌', 'weight' => 3],
             ],
             'delegation' => [
-                ['key' => 'defaultDomain', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '默认代理域名', 'weight' => 1],
+                ['key' => 'delegationDomain', 'type' => 'string', 'options' => null, 'is_multiple' => 0, 'value' => '', 'description' => '默认代理域名', 'weight' => 1],
             ],
         ];
 
@@ -208,6 +209,40 @@ class SettingSeeder extends Seeder
         });
     }
 
+    private function migrateDefaultDomainKey(SettingGroup $group): void
+    {
+        DB::transaction(function () use ($group): void {
+            $target = Setting::where('group_id', $group->id)->where('key', 'delegationDomain')->first();
+            // 旧版域名派生键可能占用新保留键，先保留配置并腾出键名。
+            if ($target?->type === 'array') {
+                $key = 'delegationProvider'.$target->id;
+                $suffix = 0;
+                while (Setting::where('group_id', $group->id)->where('key', $key)->exists()) {
+                    $key = 'delegationProvider'.$target->id.'_'.++$suffix;
+                }
+                $target->update(['key' => $key]);
+                $target = null;
+            }
+
+            $legacy = Setting::where('group_id', $group->id)
+                ->where('key', 'defaultDomain')->where('type', 'string')->first();
+            if (! $legacy) {
+                return;
+            }
+
+            if (! $target) {
+                $legacy->update(['key' => 'delegationDomain']);
+
+                return;
+            }
+
+            if ($target->value === null || (is_string($target->value) && trim($target->value) === '')) {
+                $target->update(['value' => $legacy->value]);
+            }
+            $legacy->delete();
+        });
+    }
+
     private function migrateLegacyDelegation(SettingGroup $siteGroup, SettingGroup $delegationGroup): void
     {
         $legacy = Setting::where('group_id', $siteGroup->id)->where('key', 'delegation')->first();
@@ -227,15 +262,15 @@ class SettingSeeder extends Seeder
             return;
         }
 
-        DB::transaction(function () use ($legacy, $legacyConfig, $legacyDomain, $delegationGroup, $configService): void {
+        DB::transaction(function () use ($legacy, $legacyConfig, $legacyDomain, $delegationGroup): void {
             $defaultDomain = Setting::where('group_id', $delegationGroup->id)
-                ->where('key', 'defaultDomain')
+                ->where('key', 'delegationDomain')
                 ->firstOrFail();
             $defaultDomain->update(['value' => $legacyDomain]);
 
             Setting::create([
                 'group_id' => $delegationGroup->id,
-                'key' => $configService->keyForDomain($legacyDomain),
+                'key' => 'tencent',
                 'type' => 'array',
                 'options' => null,
                 'is_multiple' => false,
@@ -258,19 +293,19 @@ class SettingSeeder extends Seeder
     {
         $examples = [
             'tencent' => [
-                'key' => 'tencentExample',
+                'key' => 'tencent',
                 'value' => ['domain' => '', 'provider' => 'tencent', 'secretId' => '', 'secretKey' => ''],
                 'description' => '腾讯云委托配置',
                 'weight' => 2,
             ],
             'cloudflare' => [
-                'key' => 'cloudflareExample',
+                'key' => 'cloudflare',
                 'value' => ['domain' => '', 'provider' => 'cloudflare', 'zoneId' => '', 'apiToken' => ''],
                 'description' => 'Cloudflare 委托配置',
                 'weight' => 3,
             ],
             'aliyun' => [
-                'key' => 'aliyunExample',
+                'key' => 'aliyun',
                 'value' => ['domain' => '', 'provider' => 'aliyun', 'accessKeyId' => '', 'accessKeySecret' => ''],
                 'description' => '阿里云委托配置',
                 'weight' => 4,

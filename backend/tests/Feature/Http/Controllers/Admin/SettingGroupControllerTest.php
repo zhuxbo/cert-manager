@@ -23,7 +23,7 @@ function protectedDelegationGroup(): SettingGroup
     ]);
     Setting::create([
         'group_id' => $group->id,
-        'key' => 'defaultDomain',
+        'key' => 'delegationDomain',
         'type' => 'string',
         'value' => 'proxy.example.com',
     ]);
@@ -33,7 +33,7 @@ function protectedDelegationGroup(): SettingGroup
 
 test('核心 delegation 设置组不可改名且缓存仍指向原组', function () {
     $group = protectedDelegationGroup();
-    expect(Setting::getValue('delegation', 'defaultDomain'))->toBe('proxy.example.com');
+    expect(Setting::getValue('delegation', 'delegationDomain'))->toBe('proxy.example.com');
 
     $this->actingAsAdmin($this->admin)
         ->putJson("/api/admin/setting-group/{$group->id}", [
@@ -45,12 +45,12 @@ test('核心 delegation 设置组不可改名且缓存仍指向原组', function
         ->assertJson(['code' => 0, 'msg' => '核心 delegation 设置组不能改名']);
 
     expect($group->fresh()->name)->toBe('delegation')
-        ->and(Setting::getValue('delegation', 'defaultDomain'))->toBe('proxy.example.com');
+        ->and(Setting::getValue('delegation', 'delegationDomain'))->toBe('proxy.example.com');
 });
 
 test('核心 delegation 设置组不可单删且缓存和设置项均保留', function () {
     $group = protectedDelegationGroup();
-    expect(Setting::getValue('delegation', 'defaultDomain'))->toBe('proxy.example.com');
+    expect(Setting::getValue('delegation', 'delegationDomain'))->toBe('proxy.example.com');
 
     $this->actingAsAdmin($this->admin)
         ->deleteJson("/api/admin/setting-group/{$group->id}")
@@ -59,7 +59,7 @@ test('核心 delegation 设置组不可单删且缓存和设置项均保留', fu
 
     expect($group->fresh())->not->toBeNull()
         ->and($group->settings()->count())->toBe(1)
-        ->and(Setting::getValue('delegation', 'defaultDomain'))->toBe('proxy.example.com');
+        ->and(Setting::getValue('delegation', 'delegationDomain'))->toBe('proxy.example.com');
 });
 
 test('批删包含核心 delegation 设置组时整批失败且其他组也保留', function () {

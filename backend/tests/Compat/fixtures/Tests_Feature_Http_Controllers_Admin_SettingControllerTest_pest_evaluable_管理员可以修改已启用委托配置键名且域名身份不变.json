@@ -1,0 +1,22 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingControllerTest::__pest_evaluable_管理员可以修改已启用委托配置键名且域名身份不变",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/setting/{id}",
+            "request_keys": [
+                "group_id",
+                "is_multiple",
+                "key",
+                "options",
+                "type",
+                "value"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

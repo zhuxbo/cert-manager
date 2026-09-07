@@ -46,7 +46,7 @@ function retirementSetDefaultDomain(string $domain): Setting
 {
     return Setting::create([
         'group_id' => retirementGroup()->id,
-        'key' => 'defaultDomain',
+        'key' => 'delegationDomain',
         'type' => 'string',
         'value' => $domain,
         'weight' => 2,
@@ -103,7 +103,7 @@ test('批量删除先对全部设置做检查', function () {
 test('Seeder provider 示例可作为普通设置删除', function () {
     $setting = Setting::create([
         'group_id' => retirementGroup()->id,
-        'key' => 'tencentExample',
+        'key' => 'tencent',
         'type' => 'array',
         'value' => [
             'domain' => '',
@@ -149,8 +149,8 @@ test('delegation 组畸形配置删除时失败关闭', function (string $key, s
 })->with([
     'wrong type' => ['wrongTypeExampleCom', 'string', 'wrong-type.example.com'],
     '缺 domain' => ['missingDomain', 'array', ['provider' => 'cloudflare']],
-    'key domain 不匹配' => ['wrongKey', 'array', [
-        'domain' => 'mismatch.example.com',
+    'domain 格式无效' => ['wrongKey', 'array', [
+        'domain' => 'invalid..example.com',
         'provider' => 'cloudflare',
         'zoneId' => 'zone-id',
         'apiToken' => 'api-token',
@@ -160,7 +160,7 @@ test('delegation 组畸形配置删除时失败关闭', function (string $key, s
 test('未启用 provider 示例可改为域名派生 key 并补全配置', function () {
     $setting = Setting::create([
         'group_id' => retirementGroup()->id,
-        'key' => 'cloudflareExample',
+        'key' => 'cloudflare',
         'type' => 'array',
         'value' => [
             'domain' => '',

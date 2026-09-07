@@ -25,7 +25,7 @@ function configureCnameDelegationProxyDomain(string $domain): void
     );
 
     Setting::firstOrCreate(
-        ['group_id' => $group->id, 'key' => 'defaultDomain'],
+        ['group_id' => $group->id, 'key' => 'delegationDomain'],
         [
             'type' => 'string',
             'options' => null,
@@ -52,7 +52,7 @@ function configureCnameDelegationProxyDomain(string $domain): void
             'weight' => 2,
         ],
     );
-    Setting::setValue('delegation', 'defaultDomain', $domain);
+    Setting::setValue('delegation', 'delegationDomain', $domain);
 }
 
 beforeEach(function () {
@@ -105,7 +105,7 @@ test('automatic create or get keeps the existing proxy domain after default swit
 
 test('create or get rejects a missing default proxy domain', function () {
     $user = $this->createTestUser();
-    Setting::setValue('delegation', 'defaultDomain', '');
+    Setting::setValue('delegation', 'delegationDomain', '');
 
     expect(fn () => $this->service->createOrGet($user->id, 'example.com', '_dnsauth'))
         ->toThrow(RuntimeException::class, '默认委托代理域未配置或配置无效');
@@ -113,7 +113,7 @@ test('create or get rejects a missing default proxy domain', function () {
 
 test('create or get rejects an unconfigured default proxy domain', function () {
     $user = $this->createTestUser();
-    Setting::setValue('delegation', 'defaultDomain', 'missing.example.com');
+    Setting::setValue('delegation', 'delegationDomain', 'missing.example.com');
 
     expect(fn () => $this->service->createOrGet($user->id, 'example.com', '_dnsauth'))
         ->toThrow(RuntimeException::class, '默认委托代理域未配置或配置无效');
@@ -418,7 +418,7 @@ test('check and update validity unreachable 冻结 fail_count（不误计数）'
 
 test('check and update validity falls back from default to another complete delegation domain', function () {
     configureCnameDelegationProxyDomain('old.example.net');
-    Setting::setValue('delegation', 'defaultDomain', 'proxy.example.com');
+    Setting::setValue('delegation', 'delegationDomain', 'proxy.example.com');
 
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, [
@@ -443,7 +443,7 @@ test('check and update validity falls back from default to another complete dele
 
 test('check and update validity prefers the complete default domain when multiple targets resolve', function () {
     configureCnameDelegationProxyDomain('old.example.net');
-    Setting::setValue('delegation', 'defaultDomain', 'proxy.example.com');
+    Setting::setValue('delegation', 'delegationDomain', 'proxy.example.com');
 
     $user = $this->createTestUser();
     $delegation = $this->createTestDelegation($user, [

@@ -91,28 +91,28 @@ dataset('core_seeders', [
                 ->and((int) $delegationGroup?->weight)->toBe(3)
                 ->and((int) SettingGroup::where('name', 'ca')->value('weight'))->toBe(2)
                 ->and((int) SettingGroup::where('name', 'callback')->value('weight'))->toBe(4)
-                ->and(Setting::getValue('delegation', 'defaultDomain'))->toBe('')
-                ->and(Setting::getValue('delegation', 'tencentExample'))->toBe([
+                ->and(Setting::getValue('delegation', 'delegationDomain'))->toBe('')
+                ->and(Setting::getValue('delegation', 'tencent'))->toBe([
                     'domain' => '',
                     'provider' => 'tencent',
                     'secretId' => '',
                     'secretKey' => '',
                 ])
-                ->and(Setting::getValue('delegation', 'cloudflareExample'))->toBe([
+                ->and(Setting::getValue('delegation', 'cloudflare'))->toBe([
                     'domain' => '',
                     'provider' => 'cloudflare',
                     'zoneId' => '',
                     'apiToken' => '',
                 ])
-                ->and(Setting::getValue('delegation', 'aliyunExample'))->toBe([
+                ->and(Setting::getValue('delegation', 'aliyun'))->toBe([
                     'domain' => '',
                     'provider' => 'aliyun',
                     'accessKeyId' => '',
                     'accessKeySecret' => '',
                 ])
-                ->and($delegationGroup?->settings()->where('key', 'tencentExample')->value('description'))->toBe('腾讯云委托配置')
-                ->and($delegationGroup?->settings()->where('key', 'cloudflareExample')->value('description'))->toBe('Cloudflare 委托配置')
-                ->and($delegationGroup?->settings()->where('key', 'aliyunExample')->value('description'))->toBe('阿里云委托配置')
+                ->and($delegationGroup?->settings()->where('key', 'tencent')->value('description'))->toBe('腾讯云委托配置')
+                ->and($delegationGroup?->settings()->where('key', 'cloudflare')->value('description'))->toBe('Cloudflare 委托配置')
+                ->and($delegationGroup?->settings()->where('key', 'aliyun')->value('description'))->toBe('阿里云委托配置')
                 ->and(app(DelegationConfigService::class)->all())->toBe([])
                 ->and(app(DelegationConfigService::class)->invalidSettings())->toBe([]);
             $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
@@ -220,14 +220,13 @@ dataset('core_seeders', [
             expect($delegationGroup?->title)->toBe('域名委托')
                 ->and((int) $delegationGroup?->weight)->toBe(3)
                 ->and((int) SettingGroup::where('name', 'callback')->value('weight'))->toBe(4)
-                ->and(Setting::getValue('delegation', 'defaultDomain'))->toBe('legacy.zone');
-            expect(Setting::getValue('delegation', 'legacyZone'))->toBe([
+                ->and(Setting::getValue('delegation', 'delegationDomain'))->toBe('legacy.zone');
+            expect(Setting::getValue('delegation', 'tencent'))->toBe([
                 'domain' => 'legacy.zone',
                 'provider' => 'tencent',
                 'secretId' => 'legacy-id',
                 'secretKey' => 'legacy-key',
-            ])
-                ->and(Setting::getValue('delegation', 'tencentExample'))->toBeNull();
+            ]);
             $dnsTools = Setting::where('group_id', $siteGroup->id)->where('key', 'dnsTools')->first();
             expect($dnsTools?->value)->toBe(['custom' => 'https://dns.example.com']);
             $autoRefundOnSync = Setting::where('group_id', $siteGroup->id)->where('key', 'autoRefundOnSync')->first();
@@ -252,13 +251,13 @@ dataset('core_seeders', [
                 'site_legacy_delegation_count' => $siteGroup
                     ? Setting::where('group_id', $siteGroup->id)->where('key', 'delegation')->count()
                     : 0,
-                'delegation_default_domain' => Setting::getValue('delegation', 'defaultDomain'),
+                'delegation_default_domain' => Setting::getValue('delegation', 'delegationDomain'),
                 'delegation_legacy_config' => $delegationGroup
-                    ? Setting::getValue('delegation', 'legacyZone')
+                    ? Setting::getValue('delegation', 'tencent')
                     : null,
                 'delegation_examples' => $delegationGroup
                     ? $delegationGroup->settings()
-                        ->whereIn('key', ['tencentExample', 'cloudflareExample', 'aliyunExample'])
+                        ->whereIn('key', ['tencent', 'cloudflare', 'aliyun'])
                         ->orderBy('key')
                         ->pluck('value', 'key')
                         ->all()
@@ -368,7 +367,7 @@ test('SettingSeeder 幂等补齐 provider 示例且不覆盖已有示例', funct
     ];
     Setting::create([
         'group_id' => $group->id,
-        'key' => 'tencentExample',
+        'key' => 'tencent',
         'type' => 'array',
         'value' => $customTencent,
         'description' => '已有腾讯示例',
@@ -381,22 +380,22 @@ test('SettingSeeder 幂等补齐 provider 示例且不覆盖已有示例', funct
     $group->refresh();
     expect($group->title)->toBe('域名委托')
         ->and((int) $group->weight)->toBe(3)
-        ->and(Setting::getValue('delegation', 'tencentExample'))->toBe($customTencent)
-        ->and(Setting::getValue('delegation', 'cloudflareExample'))->toBe([
+        ->and(Setting::getValue('delegation', 'tencent'))->toBe($customTencent)
+        ->and(Setting::getValue('delegation', 'cloudflare'))->toBe([
             'domain' => '',
             'provider' => 'cloudflare',
             'zoneId' => '',
             'apiToken' => '',
         ])
-        ->and(Setting::getValue('delegation', 'aliyunExample'))->toBe([
+        ->and(Setting::getValue('delegation', 'aliyun'))->toBe([
             'domain' => '',
             'provider' => 'aliyun',
             'accessKeyId' => '',
             'accessKeySecret' => '',
         ])
-        ->and($group->settings()->where('key', 'tencentExample')->count())->toBe(1)
-        ->and($group->settings()->where('key', 'cloudflareExample')->count())->toBe(1)
-        ->and($group->settings()->where('key', 'aliyunExample')->count())->toBe(1)
+        ->and($group->settings()->where('key', 'tencent')->count())->toBe(1)
+        ->and($group->settings()->where('key', 'cloudflare')->count())->toBe(1)
+        ->and($group->settings()->where('key', 'aliyun')->count())->toBe(1)
         ->and(app(DelegationConfigService::class)->all())->toBe([])
         ->and(app(DelegationConfigService::class)->invalidSettings())->toBe([]);
 });
@@ -425,10 +424,10 @@ test('SettingSeeder 对已有域配置的 provider 不再添加示例', function
     $this->seed(SettingSeeder::class);
     $this->seed(SettingSeeder::class);
 
-    expect(Setting::getValue('delegation', 'tencentExample'))->toBeArray()
-        ->and(Setting::getValue('delegation', 'cloudflareExample'))->toBeNull()
-        ->and(Setting::getValue('delegation', 'aliyunExample'))->toBeArray()
-        ->and($group->settings()->where('key', 'cloudflareExample')->exists())->toBeFalse();
+    expect(Setting::getValue('delegation', 'tencent'))->toBeArray()
+        ->and(Setting::getValue('delegation', 'cloudflare'))->toBeNull()
+        ->and(Setting::getValue('delegation', 'aliyun'))->toBeArray()
+        ->and($group->settings()->where('key', 'cloudflare')->exists())->toBeFalse();
 });
 
 test('SettingSeeder 按现有 ca 权重插入 delegation 且重跑不覆盖人工排序', function () {

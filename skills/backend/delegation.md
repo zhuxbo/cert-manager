@@ -31,18 +31,18 @@
 
 委托配置使用独立的 `delegation` 设置组，配置项平铺存储：
 
-- `defaultDomain` 是手工新订单及新建委托记录初始指引使用的代理域名。
-- 每个代理域有一个 `array` 类型设置，域名先按项目 IDNA 规则转为 ASCII，再转小写、去末尾点并校验 DNS 总长/label，key 由该 ASCII 域将点号替换为下划线后转 camelCase 得到；例如 `proxy.example.com` 对应 `proxyExampleCom`。Unicode 与等价 Punycode 必须归一为同一域和同一 key。value 必须内含与 key 一致的 `domain`，provider 字段和凭据直接平铺在同一数组内。
+- `delegationDomain` 是手工新订单及新建委托记录初始指引使用的代理域名。
+- 每个代理域有一个 `array` 类型设置，key 仅作为设置项标识，不参与域名匹配，可以保留或修改配置键名，但不能占用默认域的保留键名。value 内的 `domain` 是域名身份，先按项目 IDNA 规则转为 ASCII，再转小写、去末尾点并校验 DNS 总长/label；Unicode 与等价 Punycode 归一为同一域。provider 字段和凭据直接平铺在同一数组内。
 - Tencent 配置形如 `{domain, provider: "tencent", secretId, secretKey}`；Cloudflare 配置形如 `{domain, provider: "cloudflare", zoneId, apiToken}`；Aliyun 配置形如 `{domain, provider: "aliyun", accessKeyId, accessKeySecret}`。`DelegationDnsProviderFactory` 按 `provider` 路由，三者都通过统一的 TXT upsert、枚举和删除接口工作。Cloudflare 直接调用必要 HTTP 接口；Tencent 只保留一个 TC3 签名器并直接调用 DNSPod 的 `DescribeRecordList`、`CreateTXTRecord`、`DeleteRecord`，请求不携带 DNSPod 不需要的 Region；Aliyun 只保留一个 AliDNS RPC HMAC-SHA1 签名器并调用 `DescribeDomainRecords`、`AddDomainRecord`、`DeleteDomainRecord`，不得引入三家完整 SDK。
-- 只有 domain、provider 和该 provider 必填凭据全部有效，且设置 key 与 domain 派生 key 一致的配置才进入运行时。`domain` 为空的数组项视为未启用草稿，既不进入运行配置也不作为畸形配置告警；已经填写 domain 但凭据不完整的项仍排除运行时，并由配置诊断报告错误。
+- 只有 domain、provider 和该 provider 必填凭据全部有效的配置才进入运行时；单域读取和全域枚举统一按规范化 domain 匹配。重复域按设置 ID 保留首个完整配置，后续重复项由配置诊断报告错误。`domain` 为空的数组项视为未启用草稿，既不进入运行配置也不作为畸形配置告警；已经填写 domain 但凭据不完整的项仍排除运行时，并由配置诊断报告错误。
 
-Seeder 首次创建“域名委托”设置组时，按数据库中“证书接口”组的当前权重插入其后；目标权重被占用时才将该位置及其后的组整体后移。后续重跑不修改任何已有设置组权重，保留管理员排序。Seeder 并幂等创建空的 `defaultDomain`；完成旧配置迁移后，再为尚无非空域配置的 provider 补充对应的 `tencentExample`、`cloudflareExample`、`aliyunExample` 空凭据示例。已有 provider 配置即使凭据尚未补全，也不再添加同 provider 示例；已有示例不覆盖、不自动删除。示例是普通可编辑草稿：填写 domain 和凭据时，应同时把 key 改为该域名派生的小驼峰 key，完整后即可进入运行时。升级迁移只处理旧版 `site.delegation` 腾讯云单项设置，将其转换为 Tencent 域配置，并只回填 `proxy_domain` 为空的历史委托；已有的非空绑定不会被覆盖。旧配置凭据不完整时仍按原值迁移为草稿，由运行配置解析统一排除。
+Seeder 首次创建“域名委托”设置组时，按数据库中“证书接口”组的当前权重插入其后；目标权重被占用时才将该位置及其后的组整体后移。后续重跑不修改任何已有设置组权重，保留管理员排序。Seeder 并幂等创建空的 `delegationDomain`；完成旧配置迁移后，再为尚无非空域配置的 provider 补充对应的 `tencent`、`cloudflare`、`aliyun` 空凭据示例。已有 provider 配置即使凭据尚未补全，也不再添加同 provider 示例；已有示例不覆盖、不自动删除。示例是普通可编辑草稿：保留原 key，只填写 domain 和凭据，完整后即可进入运行时；再将 `delegationDomain` 填为要使用的域名。Seeder 补齐默认值前，若存在 string 类型的 `defaultDomain` 则原地改名为 `delegationDomain`，保留值、排序和描述；新旧键并存时仅回填空的新值，保留已有非空新值并删除旧键，通常不迁移 provider 键名；旧 array 配置若占用了新保留键 `delegationDomain`，先原地改为未占用的 `delegationProvider<ID>`（冲突时追加数字后缀），保留 ID、内容和排序，再迁移默认项。array 类型的 `defaultDomain` 是普通 provider 配置，不作为旧默认项迁移。原版单域迁移处理 `site.delegation` 腾讯云单项设置，将其转换为 `tencent` 域配置并设置 `delegationDomain`，并只回填 `proxy_domain` 为空的历史委托；已有的非空绑定不会被覆盖。旧配置凭据不完整时仍按原值迁移为草稿，由运行配置解析统一排除。
 
 ### 逻辑委托、订单快照与 provider 切换
 
 `CnameDelegation` 以 `(user_id, zone, prefix)` 标识逻辑委托，`validation.delegation_id` 持久化引用该记录。`proxy_domain` 表示最近一次全局 CNAME 检测实际命中的代理域；`validation.delegation_target` 则是某张证书使用的不可变 TXT 目标快照。两者职责不同：后续全局检测可以校正共享记录，但不得改写旧订单快照。
 
-- 手工 web/admin 新建、续费、重签一律冻结当前完整 `defaultDomain`；`updateDCV(delegation)` 也把现有订单切换到当前默认域。两者都不直接修改共享 `proxy_domain`。
+- 手工 web/admin 新建、续费、重签一律冻结当前完整 `delegationDomain`；`updateDCV(delegation)` 也把现有订单切换到当前默认域。两者都不直接修改共享 `proxy_domain`。
 - 手工 revalidate 只清验证状态和 `auto_txt_written` 后，向原 `delegation_target` 幂等重写；不切换目标。后台定时 revalidate 不换目标，也不清写入标记。
 - auto/deploy 续费或重签先从源证书 validation 取得精确 `delegation_id`，全局检测该逻辑委托，再以其检测结果生成新订单快照。旧数据缺少有效 ID 时才按 CA 规则回落查找或创建。
 - V1/V2 API 不支持 delegation 验证方式，也不接收或下传本地委托字段。
@@ -145,7 +145,7 @@ const getDisplayMethod = dcv => {
 ```
 手工创建/续费/重签（validation_method=delegation）
     ↓
-使用当前 defaultDomain 生成 validation.delegation_target 快照
+使用当前 delegationDomain 生成 validation.delegation_target 快照
     → 立即向该目标写 TXT
     → 不修改共享 proxy_domain
     ↓
@@ -175,9 +175,9 @@ CA active 只更新证书状态，不切换共享委托
 
 ### 删除代理域设置
 
-删除操作沿用通用设置界面，不增加“下岗”按钮。`defaultDomain` 设置本身和当前默认域配置不可删除；其他域只执行一次索引计数：`CnameDelegation::where('proxy_domain', $domain)->count()`。计数大于零时提示“仍有 N 条委托记录使用该委托域”，等周巡检清理无引用记录后再删除。删除路径不扫描证书 validation JSON、不清远端 TXT、不迁移委托记录。批量删除先检查全部目标，避免部分删除。
+删除操作沿用通用设置界面，不增加“下岗”按钮。`delegationDomain` 设置本身和当前默认域配置不可删除；其他域只执行一次索引计数：`CnameDelegation::where('proxy_domain', $domain)->count()`。计数大于零时提示“仍有 N 条委托记录使用该委托域”，等周巡检清理无引用记录后再删除。删除路径不扫描证书 validation JSON、不清远端 TXT、不迁移委托记录。批量删除先检查全部目标，避免部分删除。
 
-`delegation` 核心设置组不可改名或删除；空 domain 示例可直接删除，畸形域配置失败关闭。已启用域不能原地改名，但可以在保持域名身份的前提下切换 provider 和凭据。
+`delegation` 核心设置组不可改名或删除；空 domain 示例可直接删除，畸形域配置失败关闭。已启用域不能原地改名，但可以在保持域名身份的前提下切换 provider 和凭据。设置接口将委托更新、删除校验的 `DomainException` 转为普通业务错误（HTTP 200、`code=0`、具体 `msg`），由前端显示错误提示，不写异常日志；其他系统异常仍按原流程记录。
 
 ### 委托健康周巡检（`delegation:check`）
 

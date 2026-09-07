@@ -1,0 +1,43 @@
+{
+    "test": "P\\Tests\\Feature\\Http\\Controllers\\Admin\\SettingControllerTest::__pest_evaluable_管理员保留示例键名即可启用委托域并继续维护凭据",
+    "version": "1.0.0",
+    "calls": [
+        {
+            "method": "DELETE",
+            "uri_pattern": "/api/admin/setting/{id}",
+            "request_keys": null,
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer",
+                "msg": "string"
+            }
+        },
+        {
+            "method": "PATCH",
+            "uri_pattern": "/api/admin/setting/batch-update",
+            "request_keys": [
+                "settings"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        },
+        {
+            "method": "PUT",
+            "uri_pattern": "/api/admin/setting/{id}",
+            "request_keys": [
+                "group_id",
+                "is_multiple",
+                "key",
+                "options",
+                "type",
+                "value"
+            ],
+            "response_status": "2xx",
+            "response_schema": {
+                "code": "integer"
+            }
+        }
+    ]
+}

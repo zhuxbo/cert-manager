@@ -66,7 +66,7 @@ test('重验证控制器清标记后通过绑定域的当前 Cloudflare 配置�
     configureRevalidateProxyDomain('cloudflare', 'new.example.net');
     $group = SettingGroup::where('name', 'delegation')->firstOrFail();
     Setting::updateOrCreate(
-        ['group_id' => $group->id, 'key' => 'defaultDomain'],
+        ['group_id' => $group->id, 'key' => 'delegationDomain'],
         ['type' => 'string', 'value' => 'new.example.net'],
     );
 

@@ -60,25 +60,25 @@ final class DelegationDomainRetirementService
             throw new DomainException('委托设置标识不能直接修改');
         }
 
-        if ($setting->key === 'defaultDomain') {
+        if ($this->isDefaultDomainSetting($setting)) {
             if ($key !== $setting->key) {
-                throw new DomainException('委托设置标识不能直接修改');
+                throw new DomainException('默认委托域设置键名不能修改');
             }
 
             return;
+        }
+
+        if ($key === 'delegationDomain') {
+            throw new DomainException('委托域配置不能使用默认域设置键名');
         }
 
         if ($this->isBlankDomainDraft($setting)) {
             return;
         }
 
-        if ($key !== $setting->key) {
-            throw new DomainException('委托设置标识不能直接修改');
-        }
-
-        $currentDomain = $this->domainIdentity($setting->key, $setting->type, $setting->value);
+        $currentDomain = $this->domainIdentity($setting->type, $setting->value);
         $nextValue = array_key_exists('value', $attributes) ? $attributes['value'] : $setting->value;
-        $nextDomain = $this->domainIdentity($key, $type, $nextValue);
+        $nextDomain = $this->domainIdentity($type, $nextValue);
 
         if ($nextDomain !== $currentDomain) {
             throw new DomainException('委托域不能直接改名，请新增新域后删除旧域');
@@ -108,7 +108,7 @@ final class DelegationDomainRetirementService
 
     private function isDefaultDomainSetting(Setting $setting): bool
     {
-        return $setting->key === 'defaultDomain'
+        return $setting->key === 'delegationDomain'
             && $setting->group()->where('name', 'delegation')->exists();
     }
 
@@ -121,7 +121,7 @@ final class DelegationDomainRetirementService
             return null;
         }
 
-        return $this->domainIdentity($setting->key, $setting->type, $setting->value);
+        return $this->domainIdentity($setting->type, $setting->value);
     }
 
     private function isBlankDomainDraft(Setting $setting): bool
@@ -135,7 +135,7 @@ final class DelegationDomainRetirementService
             && trim($value['domain']) === '';
     }
 
-    private function domainIdentity(string $key, string $type, mixed $value): string
+    private function domainIdentity(string $type, mixed $value): string
     {
         if ($type !== 'array' || ! is_array($value) || ! isset($value['domain']) || ! is_string($value['domain'])) {
             throw new DomainException('委托域配置无效，已拒绝更新');
@@ -143,8 +143,8 @@ final class DelegationDomainRetirementService
 
         try {
             $domain = $this->configs->normalizeDomain($value['domain']);
-            if ($domain === '' || $this->configs->keyForDomain($domain) !== $key) {
-                throw new InvalidArgumentException('domain 与设置键不匹配');
+            if ($domain === '') {
+                throw new InvalidArgumentException('缺少有效 domain');
             }
         } catch (InvalidArgumentException $e) {
             throw new DomainException('委托域配置无效，已拒绝更新', previous: $e);

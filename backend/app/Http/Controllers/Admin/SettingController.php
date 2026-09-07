@@ -11,6 +11,7 @@ use App\Models\Setting;
 use App\Models\SettingGroup;
 use App\Services\Delegation\DelegationDomainRetirementService;
 use App\Services\Payment\PayConfigCache;
+use DomainException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
@@ -123,9 +124,13 @@ class SettingController extends BaseController
                 continue;
             }
 
-            $this->domainRetirement->assertUpdatePreservesIdentity($setting, [
-                'value' => $settingData['value'],
-            ]);
+            try {
+                $this->domainRetirement->assertUpdatePreservesIdentity($setting, [
+                    'value' => $settingData['value'],
+                ]);
+            } catch (DomainException $e) {
+                $this->error($e->getMessage());
+            }
             $updates[] = [$setting, $settingData['value']];
         }
 
@@ -149,7 +154,11 @@ class SettingController extends BaseController
         }
 
         $attributes = $request->validated();
-        $this->domainRetirement->assertUpdatePreservesIdentity($setting, $attributes);
+        try {
+            $this->domainRetirement->assertUpdatePreservesIdentity($setting, $attributes);
+        } catch (DomainException $e) {
+            $this->error($e->getMessage());
+        }
         $setting->fill($attributes);
         $setting->save();
 
@@ -166,7 +175,11 @@ class SettingController extends BaseController
             $this->error('设置不存在');
         }
 
-        $this->domainRetirement->retire($setting);
+        try {
+            $this->domainRetirement->retire($setting);
+        } catch (DomainException $e) {
+            $this->error($e->getMessage());
+        }
         $this->success();
     }
 
@@ -182,7 +195,11 @@ class SettingController extends BaseController
             $this->error('设置不存在');
         }
 
-        $this->domainRetirement->retireMany($settings);
+        try {
+            $this->domainRetirement->retireMany($settings);
+        } catch (DomainException $e) {
+            $this->error($e->getMessage());
+        }
         $this->success();
     }
 

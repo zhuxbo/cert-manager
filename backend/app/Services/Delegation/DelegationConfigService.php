@@ -49,7 +49,7 @@ final class DelegationConfigService
 
     public function defaultDomain(): string
     {
-        $domain = Setting::getValue('delegation', 'defaultDomain');
+        $domain = Setting::getValue('delegation', 'delegationDomain');
 
         return is_string($domain) ? $this->normalizeDomain($domain) : '';
     }
@@ -62,25 +62,7 @@ final class DelegationConfigService
             return [];
         }
 
-        $config = Setting::getValue('delegation', $this->keyForDomain($normalizedDomain));
-        if (! is_array($config) || ! isset($config['domain']) || ! is_string($config['domain'])) {
-            return [];
-        }
-
-        try {
-            if ($this->normalizeDomain($config['domain']) !== $normalizedDomain) {
-                return [];
-            }
-        } catch (InvalidArgumentException) {
-            return [];
-        }
-
-        if (! $this->hasRequiredProviderCredentials($config)) {
-            return [];
-        }
-        $config['domain'] = $normalizedDomain;
-
-        return $config;
+        return $this->all()[$normalizedDomain] ?? [];
     }
 
     /**
@@ -105,9 +87,6 @@ final class DelegationConfigService
         $domain = $this->normalizeDomain($config['domain']);
         if ($domain === '') {
             throw new InvalidArgumentException('缺少有效 domain');
-        }
-        if ($setting->key !== $this->keyForDomain($domain)) {
-            throw new InvalidArgumentException('domain 与设置键不匹配');
         }
         if (! $this->hasRequiredProviderCredentials($config)) {
             throw new InvalidArgumentException('provider 或凭据无效');
@@ -138,7 +117,7 @@ final class DelegationConfigService
     {
         $settings = Setting::query()
             ->whereHas('group', fn ($query) => $query->where('name', 'delegation'))
-            ->where('key', '!=', 'defaultDomain')
+            ->where('key', '!=', 'delegationDomain')
             ->orderBy('id')
             ->get();
 
@@ -153,9 +132,7 @@ final class DelegationConfigService
             try {
                 $domain = $this->domainForSetting($setting);
             } catch (InvalidArgumentException $e) {
-                $invalid[$key] = str_contains($e->getMessage(), '设置键不能超过')
-                    ? 'domain 派生设置键超过 100 个字符'
-                    : $e->getMessage();
+                $invalid[$key] = $e->getMessage();
 
                 continue;
             }
