@@ -98,3 +98,24 @@ test('dry run 使用相同谓词但不删除', function () {
 
     expect(DB::table('api_logs')->where('id', $id)->exists())->toBeTrue();
 });
+
+test('历史日志只按 URL 路径中的完整动作清理，不误命中域名或查询参数', function (string $url, bool $retained) {
+    $ids = [];
+    foreach (['api_logs', 'error_logs'] as $table) {
+        $ids[$table] = insertCoreLog($table, [
+            'action' => null, 'url' => $url, 'created_at' => now()->subDays(10),
+        ]);
+    }
+    $this->artisan('logs:purge')->assertSuccessful();
+    foreach ($ids as $table => $id) {
+        expect(DB::table($table)->where('id', $id)->exists())->toBe($retained);
+    }
+})->with([
+    '域名' => ['https://getcert.example.com/api/v2/new', true],
+    '相似动作' => ['/api/v2/get-settings', true],
+    '查询参数' => ['/api/v2/new?return=/get', true],
+    '中间路径' => ['/api/get/new', true],
+    '完整 URL 查询动作' => ['https://manager.example.com/api/v2/get?order_id=1', false],
+    '相对路径' => ['/api/v2/get', false],
+    '动作后数字参数' => ['/api/order/revalidate/1', false],
+]);

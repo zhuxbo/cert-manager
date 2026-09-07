@@ -83,6 +83,14 @@ final class AtomicRestoreFailureHarness
         $this->record('preflight.assert');
     }
 
+    public function load(RestoreContext $context): array
+    {
+        $this->remember($context);
+        $this->record('plan.load');
+
+        return [];
+    }
+
     public function acquire(int $waitSeconds = 0): bool
     {
         $this->record('mutex.acquire');

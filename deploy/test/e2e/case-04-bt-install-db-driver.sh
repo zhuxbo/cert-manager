@@ -121,15 +121,11 @@ else
 fi
 
 SET_ENV_BODY=$(awk '/^_set_env_var\(\) \{/,/^}/' "$BT_INSTALL")
-ACQUIRE_REDIS_LOCK_BODY=$(awk '/^_acquire_redis_db_allocation_lock\(\) \{/,/^}/' "$BT_INSTALL")
-RELEASE_REDIS_LOCK_BODY=$(awk '/^_release_redis_db_allocation_lock\(\) \{/,/^}/' "$BT_INSTALL")
 READ_REDIS_ENDPOINT_BODY=$(awk '/^_read_env_redis_endpoint\(\) \{/,/^}/' "$BT_INSTALL")
 READ_REDIS_DB_BODY=$(awk '/^_read_env_redis_db\(\) \{/,/^}/' "$BT_INSTALL")
 NORMALIZE_DECIMAL_BODY=$(awk '/^_normalize_decimal_in_range\(\) \{/,/^}/' "$BT_INSTALL")
 ALLOC_BODY=$(awk '/^allocate_redis_databases\(\) \{/,/^}/' "$BT_INSTALL")
 eval "$SET_ENV_BODY"
-eval "$ACQUIRE_REDIS_LOCK_BODY"
-eval "$RELEASE_REDIS_LOCK_BODY"
 eval "$NORMALIZE_DECIMAL_BODY"
 eval "$READ_REDIS_ENDPOINT_BODY"
 eval "$READ_REDIS_DB_BODY"
@@ -238,7 +234,7 @@ printf 'REDIS_URL=redis://127.0.0.1:6379/1\nREDIS_URL="" # disabled\nREDIS_DB=7\
 if (MANAGER_SITES_ROOT="$URL_SITES_ROOT" INSTALL_DIR="$URL_INSTALL_DIR" allocate_redis_databases "$URL_INSTALL_DIR/backend/.env" >/dev/null 2>&1); then
     e2e_pass "最后一个 REDIS_URL 为空时允许按显式连接分配"
 else
-    e2e_fail "空 REDIS_URL 被误拒绝或上次拒绝未释放分配锁"
+    e2e_fail "空 REDIS_URL 被误拒绝"
 fi
 printf 'REDIS_URL=redis://127.0.0.1:6379/1\n' >"$URL_INSTALL_DIR/backend/.env"
 if (MANAGER_SITES_ROOT="$URL_SITES_ROOT" INSTALL_DIR="$URL_INSTALL_DIR" allocate_redis_databases "$URL_INSTALL_DIR/backend/.env" >/dev/null 2>&1); then
@@ -258,50 +254,32 @@ else
     e2e_pass "Redis logical DB 1-14 耗尽时拒绝安装"
 fi
 
-CONCURRENT_SITES_ROOT="$E2E_TMPDIR/concurrent-sites"
-CONCURRENT_A="$CONCURRENT_SITES_ROOT/manager-a"
-CONCURRENT_B="$CONCURRENT_SITES_ROOT/manager-b"
-mkdir -p "$CONCURRENT_A/backend" "$CONCURRENT_B/backend"
-cp "$E2E_REPO_ROOT/backend/.env.example" "$CONCURRENT_A/backend/.env"
-cp "$E2E_REPO_ROOT/backend/.env.example" "$CONCURRENT_B/backend/.env"
-CONCURRENT_START="$E2E_TMPDIR/concurrent-start"
-
-concurrent_allocate() {
-    local install_dir="$1"
-    (
-        while [ ! -f "$CONCURRENT_START" ]; do
-            sleep 0.01
-        done
-        MANAGER_SITES_ROOT="$CONCURRENT_SITES_ROOT"
-        INSTALL_DIR="$install_dir"
-        allocate_redis_databases "$install_dir/backend/.env"
-    )
-}
-
-concurrent_allocate "$CONCURRENT_A" &
-concurrent_pid_a=$!
-concurrent_allocate "$CONCURRENT_B" &
-concurrent_pid_b=$!
-touch "$CONCURRENT_START"
-concurrent_status=0
-wait "$concurrent_pid_a" || concurrent_status=1
-wait "$concurrent_pid_b" || concurrent_status=1
-concurrent_a_runtime=$(_read_env_redis_db "$CONCURRENT_A/backend/.env" "REDIS_DB" 2>/dev/null || true)
-concurrent_a_cache=$(_read_env_redis_db "$CONCURRENT_A/backend/.env" "REDIS_CACHE_DB" 2>/dev/null || true)
-concurrent_b_runtime=$(_read_env_redis_db "$CONCURRENT_B/backend/.env" "REDIS_DB" 2>/dev/null || true)
-concurrent_b_cache=$(_read_env_redis_db "$CONCURRENT_B/backend/.env" "REDIS_CACHE_DB" 2>/dev/null || true)
-if [ "$concurrent_status" -eq 0 ] &&
-    [ -n "$concurrent_a_runtime" ] && [ -n "$concurrent_a_cache" ] &&
-    [ -n "$concurrent_b_runtime" ] && [ -n "$concurrent_b_cache" ] &&
-    [ "$concurrent_a_runtime" != "$concurrent_a_cache" ] &&
-    [ "$concurrent_a_runtime" != "$concurrent_b_runtime" ] &&
-    [ "$concurrent_a_runtime" != "$concurrent_b_cache" ] &&
-    [ "$concurrent_a_cache" != "$concurrent_b_runtime" ] &&
-    [ "$concurrent_a_cache" != "$concurrent_b_cache" ] &&
-    [ "$concurrent_b_runtime" != "$concurrent_b_cache" ]; then
-    e2e_pass "并发安装原子分配且持久化两组互不重叠的 Redis DB"
+SEQUENTIAL_SITES_ROOT="$E2E_TMPDIR/sequential-sites"
+SEQUENTIAL_A="$SEQUENTIAL_SITES_ROOT/manager-a"
+SEQUENTIAL_B="$SEQUENTIAL_SITES_ROOT/manager-b"
+mkdir -p "$SEQUENTIAL_A/backend" "$SEQUENTIAL_B/backend"
+cp "$E2E_REPO_ROOT/backend/.env.example" "$SEQUENTIAL_A/backend/.env"
+cp "$E2E_REPO_ROOT/backend/.env.example" "$SEQUENTIAL_B/backend/.env"
+sequential_status=0
+for install_dir in "$SEQUENTIAL_A" "$SEQUENTIAL_B"; do
+    (MANAGER_SITES_ROOT="$SEQUENTIAL_SITES_ROOT" INSTALL_DIR="$install_dir" allocate_redis_databases "$install_dir/backend/.env") || sequential_status=1
+done
+sequential_a_runtime=$(_read_env_redis_db "$SEQUENTIAL_A/backend/.env" "REDIS_DB" 2>/dev/null || true)
+sequential_a_cache=$(_read_env_redis_db "$SEQUENTIAL_A/backend/.env" "REDIS_CACHE_DB" 2>/dev/null || true)
+sequential_b_runtime=$(_read_env_redis_db "$SEQUENTIAL_B/backend/.env" "REDIS_DB" 2>/dev/null || true)
+sequential_b_cache=$(_read_env_redis_db "$SEQUENTIAL_B/backend/.env" "REDIS_CACHE_DB" 2>/dev/null || true)
+if [ "$sequential_status" -eq 0 ] &&
+    [ -n "$sequential_a_runtime" ] && [ -n "$sequential_a_cache" ] &&
+    [ -n "$sequential_b_runtime" ] && [ -n "$sequential_b_cache" ] &&
+    [ "$sequential_a_runtime" != "$sequential_a_cache" ] &&
+    [ "$sequential_a_runtime" != "$sequential_b_runtime" ] &&
+    [ "$sequential_a_runtime" != "$sequential_b_cache" ] &&
+    [ "$sequential_a_cache" != "$sequential_b_runtime" ] &&
+    [ "$sequential_a_cache" != "$sequential_b_cache" ] &&
+    [ "$sequential_b_runtime" != "$sequential_b_cache" ]; then
+    e2e_pass "顺序安装分配且持久化两组互不重叠的 Redis DB"
 else
-    e2e_fail "并发 Redis DB 分配冲突：A=$concurrent_a_runtime/$concurrent_a_cache B=$concurrent_b_runtime/$concurrent_b_cache"
+    e2e_fail "顺序 Redis DB 分配冲突：A=$sequential_a_runtime/$sequential_a_cache B=$sequential_b_runtime/$sequential_b_cache"
 fi
 
 mkdir -p "$MANAGER_SITES_ROOT/unsupported/backend"

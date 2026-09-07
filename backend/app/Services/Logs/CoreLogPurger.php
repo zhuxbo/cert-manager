@@ -127,7 +127,10 @@ final class CoreLogPurger
         $query->whereNull('action')->where(function (Builder $paths) use ($actions) {
             foreach ($actions as $action) {
                 foreach ($this->historicalPaths($action) as $path) {
-                    $paths->orWhere('url', 'like', '%/'.$path.'%');
+                    // 只匹配路径末尾动作（可带数字 ID），不把域名或查询参数当作动作。
+                    $paths->orWhere('url', 'regexp',
+                        '^(https?://[^/?#]+)?/([^/?#]+/)*'.preg_quote($path, '~').'(/[0-9,]+)?/?([?#]|$)'
+                    );
                 }
             }
         });

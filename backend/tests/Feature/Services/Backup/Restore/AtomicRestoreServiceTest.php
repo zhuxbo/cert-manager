@@ -7,6 +7,7 @@ use App\Services\Backup\DatabaseOperationMutex;
 use App\Services\Backup\MysqlToolchainChecker;
 use App\Services\Backup\NativeProcessPipeline;
 use App\Services\Backup\Restore\AtomicRestoreService;
+use App\Services\Backup\Restore\RestoreForeignKeyPlanStore;
 use App\Services\Backup\Restore\RestorePreflight;
 use App\Services\Backup\Restore\RestoreRequest;
 use App\Services\Backup\Restore\RestoreRuntimeManager;
@@ -20,6 +21,7 @@ beforeEach(function () {
     $this->restoreFake = new AtomicRestoreFailureHarness;
     foreach ([
         RestorePreflight::class,
+        RestoreForeignKeyPlanStore::class,
         DatabaseOperationMutex::class,
         RestoreStateInspector::class,
         MysqlToolchainChecker::class,

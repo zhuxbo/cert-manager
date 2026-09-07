@@ -84,6 +84,7 @@ exec, shell_exec, pcntl_signal, pcntl_alarm, pcntl_async_signals
 - **Nginx 占位符**：替换 `$INSTALL_DIR/nginx/*.conf` 和 `frontend/web/*.conf` 中的 `__PROJECT_ROOT__`
 - **version.json**：注入 `release_url` 和 `network` 字段
 - **Redis DB 分配**：安装器保持 `APP_NAME` 不变，按 phpdotenv 覆盖语义扫描同机 Manager 的 `.env`，对归一化后 `REDIS_HOST + REDIS_PORT` 相同的 Redis 实例从 DB 1 起分配独占的 `REDIS_DB`（关键运行状态/队列）与 `REDIS_CACHE_DB`（应用缓存）二元组；同实例配置无法静态确定时失败关闭，不同实例互不占用编号；默认 16 DB 最多自动分配 7 套，耗尽时需改用独立 Redis 实例。系统不接入会用 path/query 覆盖编号的 `REDIS_URL`；扫描到旧站点或目标站点的非空 `REDIS_URL` 时拒绝自动分配，须先转换为显式连接配置及实际 DB 编号
+- **同机安装与升级边界**：暂不支持并行执行。Redis 自动分库保留已有站点编号和目标库占用检查，不依赖全站锁文件；旧 `.ssl-manager-redis-db.lock` 文件不再使用，无需由后台修改权限或删除。
 - **首次运行态分库**：沿用 `2026_09_04_000001_invalidate_sessions_for_runtime_cache_cutover` 迁移名，成功收尾后复用 HTTP 启动独占锁复制旧 JWT 黑名单及其过期时间，保留有效会话。搬迁完成前双读旧库并阻止缓存清理；失败保留旧数据供重试。已执行旧版吊销迁移的实例不重跑，也不恢复此前失效的会话。
 - **管理端安全刷新**：右上角按钮只定向失效 Setting/PayConfigCache 已登记的键与支付证书副本，不执行 `cache:clear`；队列 pause/restart、scheduler mutex、`runtime`、其它默认缓存、编译视图、会话文件、OPcache 和 Composer 缓存均保留
 
@@ -366,6 +367,8 @@ php artisan database:restore backup_20260101_120000 --allow-schema-difference
 ```
 
 恢复在目标库内流式导入影子表，再用一条 `RENAME TABLE` 同批切换全部业务表和需清空的运行时表，不创建第二数据库连接、临时数据库或永久状态表，也不落完整解压 SQL。`*_logs`（包括插件日志）保留目标库现状；队列、缓存、会话、刷新令牌和域名验证运行时表切换为空表。换表前失败保持原 active；换表后校验失败执行完整反向切换；新 active 已验证但 cleanup 失败时保持冻结并保留 old 表，修复原因后重跑同一命令续接。不要用 `gunzip | mysql` 绕过预检、生成列改写、日志保留和原子切换。
+
+已接受的暂存风险（2026-09-07）：数据库恢复目前不排空已经进入的 HTTP 请求；旧请求可能跨越换表继续写入恢复后的库。本轮暂不修改该机制，执行恢复前需停止业务流量并等待在途请求结束。
 
 ## 升级注意事项
 

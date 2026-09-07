@@ -131,7 +131,4 @@ test('同库自动分配无法取得空闲编号时保留 env 原文', function 
     }
     expect(fn () => RedisDatabaseConfig::preserve(true, $this->redisUpgradeDirectory))->toThrow(RuntimeException::class);
     expect(File::get(app()->environmentFilePath()))->toBe($content);
-    $lock = fopen($this->redisUpgradeDirectory.'/.ssl-manager-redis-db.lock', 'c');
-    expect(flock($lock, LOCK_EX | LOCK_NB))->toBeTrue();
-    fclose($lock);
 })->with(['full', 'select', 'dbsize']);

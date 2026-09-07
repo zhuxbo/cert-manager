@@ -1065,56 +1065,6 @@ _read_env_redis_db() {
     printf '%s' "$value"
 }
 
-REDIS_DB_ALLOCATION_LOCK_DIR=""
-REDIS_DB_ALLOCATION_LOCK_METHOD=""
-
-# 生产环境使用 flock，进程异常退出时内核会自动释放；非 Linux 检查环境回落到原子目录锁。
-_acquire_redis_db_allocation_lock() {
-    local sites_root="$1"
-    local attempts=0 max_attempts=300 lock_file
-
-    lock_file="$sites_root/.ssl-manager-redis-db.lock"
-    if command -v flock >/dev/null 2>&1; then
-        if ! exec 9>"$lock_file"; then
-            log_error "无法打开 Redis DB 分配锁：$lock_file"
-            return 1
-        fi
-        if ! flock -w 30 9; then
-            exec 9>&-
-            log_error "等待 Redis DB 分配锁超时，请确认没有其它安装进程"
-            return 1
-        fi
-        REDIS_DB_ALLOCATION_LOCK_METHOD="flock"
-        return 0
-    fi
-
-    REDIS_DB_ALLOCATION_LOCK_DIR="${lock_file}.d"
-    while ! mkdir "$REDIS_DB_ALLOCATION_LOCK_DIR" 2>/dev/null; do
-        attempts=$((attempts + 1))
-        if [ "$attempts" -ge "$max_attempts" ]; then
-            log_error "等待 Redis DB 分配锁超时，请确认没有其它安装进程并检查 $REDIS_DB_ALLOCATION_LOCK_DIR"
-            return 1
-        fi
-        sleep 0.1
-    done
-    REDIS_DB_ALLOCATION_LOCK_METHOD="mkdir"
-}
-
-_release_redis_db_allocation_lock() {
-    if [ "$REDIS_DB_ALLOCATION_LOCK_METHOD" = "flock" ]; then
-        flock -u 9
-        exec 9>&-
-    elif [ "$REDIS_DB_ALLOCATION_LOCK_METHOD" = "mkdir" ]; then
-        if ! rmdir "$REDIS_DB_ALLOCATION_LOCK_DIR" 2>/dev/null; then
-            log_error "无法释放 Redis DB 分配锁：$REDIS_DB_ALLOCATION_LOCK_DIR"
-            return 1
-        fi
-    fi
-
-    REDIS_DB_ALLOCATION_LOCK_DIR=""
-    REDIS_DB_ALLOCATION_LOCK_METHOD=""
-}
-
 # 为同机 Manager 分配一对独占 Redis logical DB：运行状态库 + 可清理缓存库。
 # 从 1 开始，保留 DB 0 给其它应用；按 Redis 默认 16 个 logical DB 的范围分配。
 allocate_redis_databases() {
@@ -1134,9 +1084,6 @@ allocate_redis_databases() {
     else
         target_endpoint="127.0.0.1|6379"
     fi
-    if ! _acquire_redis_db_allocation_lock "$sites_root"; then
-        return 1
-    fi
 
     for other_env in "$sites_root"/*/backend/.env; do
         if [ ! -f "$other_env" ] || [ "$other_env" = "$INSTALL_DIR/backend/.env" ]; then
@@ -1147,7 +1094,6 @@ allocate_redis_databases() {
             [ "$other_endpoint" = "$target_endpoint" ] || continue
         else
             log_error "现有站点 $other_env 的 Redis 连接配置无法识别（不支持非空 REDIS_URL），无法安全分配 Redis DB"
-            _release_redis_db_allocation_lock || true
             return 1
         fi
 
@@ -1159,7 +1105,6 @@ allocate_redis_databases() {
                 runtime_db=1
             else
                 log_error "现有站点 $other_env 的 REDIS_DB 不是可识别的整数，无法安全分配 Redis DB"
-                _release_redis_db_allocation_lock || true
                 return 1
             fi
         fi
@@ -1171,7 +1116,6 @@ allocate_redis_databases() {
                 cache_db=2
             else
                 log_error "现有站点 $other_env 的 REDIS_CACHE_DB 不是可识别的整数，无法安全分配 Redis DB"
-                _release_redis_db_allocation_lock || true
                 return 1
             fi
         fi
@@ -1189,20 +1133,15 @@ allocate_redis_databases() {
                 if ! _set_env_var "$target_env" "REDIS_DB" "$REDIS_DB_ALLOCATED" ||
                     ! _set_env_var "$target_env" "REDIS_CACHE_DB" "$REDIS_CACHE_DB_ALLOCATED"; then
                     log_error "Redis DB 分配结果写入失败：$target_env"
-                    _release_redis_db_allocation_lock || true
                     return 1
                 fi
             fi
 
-            if ! _release_redis_db_allocation_lock; then
-                return 1
-            fi
             return 0
         fi
     done
 
     log_error "Redis logical DB 1-14 已无可用双库组合，请为该站点配置独立 Redis 实例"
-    _release_redis_db_allocation_lock || true
     return 1
 }
 

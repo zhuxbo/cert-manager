@@ -183,8 +183,6 @@ final class RestorePreflight
             );
         }
 
-        $this->inspectForeignKeys($current, $context, $report);
-
         try {
             $state = $this->stateInspector->inspect($context);
             $report['state'] = $state;
@@ -199,6 +197,8 @@ final class RestorePreflight
         } catch (Throwable $e) {
             $this->addBlocker($report, 'restore_state_unavailable', $this->safeMessage($e->getMessage()));
         }
+
+        $this->inspectForeignKeys($current, $context, $report);
 
         $report['space'] = $this->spaceFacts($schema, $metadata, $current, $context->sourceTables);
 
@@ -652,7 +652,13 @@ final class RestorePreflight
                         "当前物理外键跨越恢复表范围: $table.$name -> $referenced",
                     );
                 }
-                if (! $ownerInSwap && isset($desiredNames[$name])) {
+                $state = $report['state'] ?? [];
+                $recognizedShadow = in_array($state['state'] ?? null, [
+                    RestoreState::ActiveForeignKeysRemoved->value, RestoreState::ShadowForeignKeysReady->value,
+                ], true)
+                    && ($state['shadow_foreign_keys'][$name]['table'] ?? null) === $table
+                    && ! in_array($name, $state['unexpected_shadow_foreign_keys'] ?? [], true);
+                if (! $ownerInSwap && isset($desiredNames[$name]) && ! $recognizedShadow) {
                     $this->addBlocker(
                         $report,
                         'foreign_key_name_conflict',

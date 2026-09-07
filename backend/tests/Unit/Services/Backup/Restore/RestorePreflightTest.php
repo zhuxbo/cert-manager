@@ -3,6 +3,7 @@
 use App\Services\Backup\BackupArtifactInspector;
 use App\Services\Backup\BackupService;
 use App\Services\Backup\MysqlToolchainChecker;
+use App\Services\Backup\Restore\AtomicRestoreService;
 use App\Services\Backup\Restore\RestoreContext;
 use App\Services\Backup\Restore\RestorePreflight;
 use App\Services\Backup\Restore\RestoreRequest;
@@ -681,3 +682,51 @@ test('assertRunnable 对未知确认项即使 allowSchemaDifference 也 fail clo
         new RestoreRequest($request->backupId, true, $request->actor),
     ))->toThrow(RuntimeException::class, '不可绕过');
 });
+
+test('中断现场仅放行已识别的合法影子外键', function (string $scenario, bool $accepted) {
+    $token = 'abcdef123456';
+    $artifact = taskSixArtifactSchema(withOrders: true);
+    if ($scenario === 'partial') {
+        $artifact['tables']['orders']['foreign_keys']['orders_user_second_fk'] = $artifact['tables']['orders']['foreign_keys']['orders_user_fk'];
+    }
+    $current = taskSixCurrentSchema(withOrders: true);
+    $current['tables']['orders']['foreign_keys'] = [];
+    foreach (['users', 'orders', 'jobs'] as $table) {
+        $current['tables']["__rst_{$token}_{$table}"] = $artifact['tables'][$table];
+        $current['tables']["__rst_{$token}_{$table}"]['foreign_keys'] = [];
+    }
+    $foreignKey = $artifact['tables']['orders']['foreign_keys']['orders_user_fk'];
+    $foreignKey['references']['table'] = "__rst_{$token}_users";
+    if ($scenario === 'wrong_definition') {
+        $foreignKey['on_delete'] = 'RESTRICT';
+    }
+    $current['tables']["__rst_{$token}_orders"]['foreign_keys']['orders_user_fk'] = $foreignKey;
+    if ($scenario === 'broken_namespace') {
+        $current['tables']['__rst_invalid_users'] = taskSixTable(['id' => taskSixColumn()]);
+    }
+    [$preflight, $request] = taskSixPreflight($this, [
+        'schema' => $artifact, 'current' => $current, 'included' => ['users', 'orders'],
+        'sql' => taskSixDump(['users', 'orders']),
+        'allow_schema_difference' => true,
+        'state_foreign_keys' => [(object) [
+            'CONSTRAINT_NAME' => 'orders_user_fk', 'TABLE_NAME' => "__rst_{$token}_orders",
+            'COLUMN_NAME' => 'user_id', 'REFERENCED_TABLE_NAME' => "__rst_{$token}_users",
+            'REFERENCED_COLUMN_NAME' => 'id', 'UPDATE_RULE' => 'RESTRICT',
+            'DELETE_RULE' => $foreignKey['on_delete'],
+        ]],
+    ]);
+    $report = $preflight->inspect($request);
+    expect(in_array('foreign_key_name_conflict', taskSixBlockerCodes($report), true))->toBe(! $accepted);
+    if ($accepted) {
+        expect($report['state']['state'])->toBe($scenario === 'partial' ? 'active_foreign_keys_removed' : 'shadow_foreign_keys_ready');
+        $method = new ReflectionMethod(AtomicRestoreService::class, 'continuationReport');
+        $continued = $method->invoke(new AtomicRestoreService, $report);
+        $preflight->assertRunnable($continued, $request);
+        expect($continued['hard_blockers'])->toBe([]);
+    }
+})->with([
+    'ready' => ['ready', true],
+    'partial' => ['partial', true],
+    'wrong definition' => ['wrong_definition', false],
+    'broken namespace' => ['broken_namespace', false],
+]);

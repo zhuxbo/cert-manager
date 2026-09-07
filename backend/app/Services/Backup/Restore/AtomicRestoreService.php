@@ -74,6 +74,10 @@ final class AtomicRestoreService
         $stateFacts = $stateInspector->inspect($context);
         $state = $this->state($stateFacts);
         $context = $this->bindObservedToken($context, $stateFacts, $state);
+        if ($state === RestoreState::ActiveWithOld) {
+            // 续接只能收尾同一备份；不匹配时保留 active、old 和恢复计划。
+            app(RestoreForeignKeyPlanStore::class)->load($context);
+        }
 
         $toolchain = app(MysqlToolchainChecker::class)->inspect(requireMysql: true, requireMysqldump: false);
         if (! $toolchain['supported'] || $toolchain['mysql'] === null) {

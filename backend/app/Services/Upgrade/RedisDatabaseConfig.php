@@ -34,12 +34,10 @@ final class RedisDatabaseConfig
                 ? self::databaseNumber($env[$key], $key) : $current[$key];
         }
 
-        $allocationLock = null;
         $bootstrapLock = null;
         try {
             if ($databases['REDIS_DB'] === $databases['REDIS_CACHE_DB']) {
                 $sitesRoot ??= getenv('MANAGER_SITES_ROOT') ?: '/www/wwwroot';
-                $allocationLock = self::allocationLock($sitesRoot);
                 $databases['REDIS_CACHE_DB'] = self::availableCacheDatabase($sitesRoot, $databases['REDIS_DB']);
             }
             if ($databases !== $current) {
@@ -61,10 +59,6 @@ final class RedisDatabaseConfig
             }
         } finally {
             ApplicationBootstrapLock::release($bootstrapLock);
-            if (is_resource($allocationLock)) {
-                flock($allocationLock, LOCK_UN);
-                fclose($allocationLock);
-            }
         }
     }
 
@@ -126,25 +120,6 @@ final class RedisDatabaseConfig
     public static function separateCacheDatabase(string $sitesRoot): void
     {
         self::preserve(false, $sitesRoot);
-    }
-
-    /** @return resource */
-    private static function allocationLock(string $sitesRoot)
-    {
-        $lock = fopen($sitesRoot.'/.ssl-manager-redis-db.lock', 'c');
-        if ($lock === false) {
-            throw new RuntimeException('无法打开 Redis DB 分配锁');
-        }
-        $deadline = microtime(true) + 30;
-        while (! flock($lock, LOCK_EX | LOCK_NB)) {
-            if (microtime(true) >= $deadline) {
-                fclose($lock);
-                throw new RuntimeException('等待 Redis DB 分配锁超时');
-            }
-            usleep(100000);
-        }
-
-        return $lock;
     }
 
     private static function availableCacheDatabase(string $sitesRoot, string $runtime): string
