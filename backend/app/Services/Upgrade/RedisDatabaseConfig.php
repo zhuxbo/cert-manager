@@ -3,6 +3,8 @@
 namespace App\Services\Upgrade;
 
 use Dotenv\Dotenv;
+use Dotenv\Parser\Lines;
+use Dotenv\Parser\Parser;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
@@ -43,20 +45,40 @@ final class RedisDatabaseConfig
             throw new RuntimeException('当前 REDIS_DB 与 REDIS_CACHE_DB 相同，请先分开配置并处理现有队列，再重试升级');
         }
 
-        $lines = [];
-        foreach ($databases as $key => $value) {
-            if (($env[$key] ?? null) !== $value) {
-                $lines[] = "$key=$value";
+        // 使用 dotenv 的逻辑行，避免误改其他多行值中看似 Redis 配置的文本。
+        $newline = str_contains($content, "\r\n") ? "\r\n" : "\n";
+        $normalized = str_replace("\r\n", "\n", $content);
+        $updated = '';
+        $offset = 0;
+        $seen = [];
+        foreach (Lines::process(explode("\n", $normalized)) as $raw) {
+            $entry = (new Parser)->parse($raw)[0];
+            $pattern = str_replace("\n", '\r?\n', preg_quote($raw, '/'));
+            if (! preg_match('/^'.$pattern.'(?=\r?$)/m', $content, $match, PREG_OFFSET_CAPTURE, $offset)) {
+                throw new RuntimeException('无法定位 Redis 配置，已中止升级');
+            }
+            $position = $match[0][1];
+            $updated .= substr($content, $offset, $position - $offset);
+            $offset = $position + strlen($match[0][0]);
+            $key = $entry->getName();
+            if (! isset($databases[$key])) {
+                $updated .= $match[0][0];
+            } elseif (! isset($seen[$key])) {
+                $updated .= "$key={$databases[$key]}";
+                $seen[$key] = true;
+            } elseif (preg_match('/\G(?:\r\n|\n)/', $content, $ending, 0, $offset)) {
+                $offset += strlen($ending[0]);
             }
         }
-        if ($lines === []) {
+        $updated .= substr($content, $offset);
+        foreach (array_diff_key($databases, $seen) as $key => $value) {
+            $updated .= ($updated === '' || str_ends_with($updated, "\n") ? '' : $newline)."$key=$value$newline";
+        }
+        if ($updated === $content) {
             return;
         }
-
-        // phpdotenv 以后出现的赋值为准；追加保留其它配置、文件属主与权限，重复执行不再追加。
-        $newline = str_contains($content, "\r\n") ? "\r\n" : "\n";
-        $suffix = (str_ends_with($content, "\n") ? '' : $newline).implode($newline, $lines).$newline;
-        if (File::append($path, $suffix, true) !== strlen($suffix)) {
+        // 原文件内写入以保留属主和权限；已有键原位更新，只追加缺失键。
+        if (File::put($path, $updated, true) !== strlen($updated)) {
             throw new RuntimeException('保存当前 Redis 数据库编号失败，已中止升级');
         }
     }

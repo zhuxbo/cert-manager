@@ -637,12 +637,29 @@ _preserve_redis_databases() {
     # 中断恢复时旧 vendor 可能缺失，此时使用已经校验过的预拷贝 vendor 引导旧配置。
     local fallback_vendor="${BUNDLED_VENDOR_STAGE:-$source_backend/vendor}"
     "$PHP_CMD" -r '
-$autoload = $argv[1]."/vendor/autoload.php";
-require is_file($autoload) ? $autoload : $argv[3]."/autoload.php";
-$app = require $argv[1]."/bootstrap/app.php";
-$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-require_once $argv[2];
-App\Services\Upgrade\RedisDatabaseConfig::preserve(true);
+    $autoload = $argv[1]."/vendor/autoload.php";
+    require is_file($autoload) ? $autoload : $argv[3]."/autoload.php";
+    $app = require $argv[1]."/bootstrap/app.php";
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+    require_once $argv[2];
+    $enabled = config("cache.default") === "redis" || config("queue.default") === "redis";
+    $before = $enabled ? Dotenv\Dotenv::parse(file_get_contents($app->environmentFilePath())) : [];
+    App\Services\Upgrade\RedisDatabaseConfig::preserve(true);
+    if (!$enabled) {
+        echo "\033[0;34m[INFO] 缓存和队列未启用 Redis，跳过数据库编号保留\033[0m\n";
+    } else {
+        foreach (["REDIS_DB" => "default", "REDIS_CACHE_DB" => "cache"] as $key => $connection) {
+            $value = (string) (int) config("database.redis.$connection.database");
+            if (isset($before[$key]) && $before[$key] !== $value) {
+                $previous = preg_match("/^\d+$/D", $before[$key]) ? $before[$key] : "非整数值";
+                echo "\033[0;33m[WARN] $key 的 .env 值（{$previous}）与已加载配置不同，采用实际运行编号 {$value}（可能来自配置缓存），避免切换现有运行数据\033[0m\n";
+            }
+            echo "\033[0;34m[INFO] 升级前保留 $key={$value}\033[0m\n";
+        }
+        if ((int) config("database.redis.default.database") === (int) config("database.redis.cache.database")) {
+            echo "\033[0;34m[INFO] 当前两库相同，暂时保留旧编号；会话迁移完成后自动分库，请以升级末尾的最终编号为准\033[0m\n";
+        }
+    }
 ' "$INSTALL_DIR/backend" "$helper" "$fallback_vendor"
 }
 
@@ -651,12 +668,25 @@ _separate_redis_cache_database() {
     local helper="$INSTALL_DIR/backend/app/Services/Upgrade/RedisDatabaseConfig.php"
     [ -f "$helper" ] || return 0
     "$PHP_CMD" -r '
-require $argv[1]."/vendor/autoload.php";
-$app = require $argv[1]."/bootstrap/app.php";
-$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-if (method_exists(App\Services\Upgrade\RedisDatabaseConfig::class, "separateCacheDatabase")) {
-    App\Services\Upgrade\RedisDatabaseConfig::separateCacheDatabase($argv[2]);
-}
+    require $argv[1]."/vendor/autoload.php";
+    $app = require $argv[1]."/bootstrap/app.php";
+    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+    if (method_exists(App\Services\Upgrade\RedisDatabaseConfig::class, "separateCacheDatabase")) {
+        $enabled = config("cache.default") === "redis" || config("queue.default") === "redis";
+        $before = (int) config("database.redis.cache.database");
+        App\Services\Upgrade\RedisDatabaseConfig::separateCacheDatabase($argv[2]);
+        if (!$enabled) {
+            echo "\033[0;34m[INFO] 缓存和队列未启用 Redis，跳过自动分库\033[0m\n";
+        } else {
+            $runtime = (int) config("database.redis.default.database");
+            $cache = (int) config("database.redis.cache.database");
+            echo $before === $cache
+                ? "\033[0;34m[INFO] Redis 最终编号（已分离，保持原样）：REDIS_DB={$runtime}，REDIS_CACHE_DB=$cache\033[0m\n"
+                : "\033[0;34m[INFO] Redis 最终编号：REDIS_DB={$runtime}，REDIS_CACHE_DB={$cache}（缓存库由 $before 自动调整为 {$cache}）\033[0m\n";
+        }
+    } else {
+        echo "\033[0;33m[WARN] 目标版本不支持 Redis 自动分库，已跳过\033[0m\n";
+    }
 ' "$INSTALL_DIR/backend" "${MANAGER_SITES_ROOT:-/www/wwwroot}"
 }
 

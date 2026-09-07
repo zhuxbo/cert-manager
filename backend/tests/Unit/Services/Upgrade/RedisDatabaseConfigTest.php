@@ -41,7 +41,9 @@ test('固定旧配置编号且保留其他内容与文件权限，重复执行�
     RedisDatabaseConfig::preserve();
     $saved = File::get($path);
     $parsed = Dotenv::parse($saved);
-    expect($saved)->toStartWith($content)
+    expect($saved)->toStartWith("APP_NAME=original_manager\r\n# 原配置\r\nCACHE_DRIVER=redis\r\n")
+        ->and(substr_count($saved, 'REDIS_DB='))->toBe(1)
+        ->and(substr_count($saved, 'REDIS_CACHE_DB='))->toBe(1)
         ->and($parsed['REDIS_DB'])->toBe((string) (int) $runtime)
         ->and($parsed['REDIS_CACHE_DB'])->toBe((string) (int) $cache)
         ->and($parsed['APP_NAME'])->toBe('original_manager')
@@ -57,6 +59,19 @@ test('固定旧配置编号且保留其他内容与文件权限，重复执行�
     '配置缓存优先于后来修改的 env' => ["REDIS_DB=1\r\nREDIS_CACHE_DB=2\r\n", '3', '4'],
     '带引号及重复键' => ["export 'REDIS_DB' = '03' # runtime\r\nREDIS_CACHE_DB=5\r\nREDIS_CACHE_DB=4", '03', '04'],
 ]);
+
+test('原位更新缓存编号并合并历史追加项，不改其他多行配置', function () {
+    $path = app()->environmentFilePath();
+    $other = "# REDIS_CACHE_DB=9\nOTHER=\"first\nREDIS_CACHE_DB=8\nlast\"\n";
+    File::put($path, "# 缓存库\nREDIS_CACHE_DB=1\n".$other."REDIS_DB=1\nREDIS_CACHE_DB=0\n");
+    config(['database.redis.default.database' => 1, 'database.redis.cache.database' => 0]);
+
+    RedisDatabaseConfig::preserve();
+
+    expect(File::get($path))->toBe("# 缓存库\nREDIS_CACHE_DB=0\n".$other."REDIS_DB=1\n");
+    RedisDatabaseConfig::preserve();
+    expect(File::get($path))->toBe("# 缓存库\nREDIS_CACHE_DB=0\n".$other."REDIS_DB=1\n");
+});
 
 test('相同或无效编号和 URL 在写入前拒绝', function (mixed $runtime, mixed $cache, string $extra, string $message) {
     $path = app()->environmentFilePath();
