@@ -10,7 +10,6 @@ use App\Services\Upgrade\UpgradeService;
 use App\Services\Upgrade\UpgradeStatusManager;
 use App\Services\Upgrade\VersionManager;
 use App\Utils\UpgradeFreezeLock;
-use Dotenv\Dotenv;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
@@ -149,42 +148,6 @@ test('H2-A 成功升级：apply 期间 freeze 生效，unfreeze 严格先于 up�
     $upIdx = collect($callLog)->search(fn ($c) => $c['cmd'] === 'up');
     expect($downIdx)->toBeLessThan($upIdx);
 });
-
-test('后台升级在覆盖代码前固定原 Redis 编号，同库则不进入 apply', function (int $cacheDatabase) {
-    $directory = storage_path('redis-upgrade-env');
-    File::ensureDirectoryExists($directory);
-    File::put("$directory/.env", "APP_NAME=old_manager\n");
-    $oldPath = app()->environmentPath();
-    $oldFile = app()->environmentFile();
-    app()->useEnvironmentPath($directory)->loadEnvironmentFrom('.env');
-    Config::set('cache.default', 'redis');
-    Config::set('database.redis.default', ['database' => 0]);
-    Config::set('database.redis.cache', ['database' => $cacheDatabase]);
-    Artisan::shouldReceive('call')->andReturn(0);
-    $applied = false;
-
-    try {
-        $service = h2MakeService(function () use (&$applied, $directory) {
-            $applied = true;
-            expect(Dotenv::parse(File::get("$directory/.env")))->toMatchArray([
-                'APP_NAME' => 'old_manager', 'REDIS_DB' => '0', 'REDIS_CACHE_DB' => '1',
-            ]);
-
-            return true;
-        }, bundledVendor: true);
-        $sm = new UpgradeStatusManager;
-        $sm->start('v1.0.0');
-        $result = $service->performUpgradeWithStatus('latest', $sm);
-        expect($result['success'])->toBe($cacheDatabase !== 0)
-            ->and($applied)->toBe($cacheDatabase !== 0);
-        if ($cacheDatabase === 0) {
-            expect($result['error'])->toContain('相同');
-        }
-    } finally {
-        app()->useEnvironmentPath($oldPath)->loadEnvironmentFrom($oldFile);
-        File::deleteDirectory($directory);
-    }
-})->with([0, 1]);
 
 test('restore 持锁时升级在备份和维护模式前停止且不覆盖 owner', function () {
     Config::set('upgrade.behavior.force_backup', true);

@@ -235,6 +235,7 @@ class PackageExtractor
             }
             $bootstrapLock = ApplicationBootstrapLock::acquireExclusive();
             ApplicationBootstrapLock::completeLegacyHttpEntryPreparation($targetIndex);
+            RedisDatabaseConfig::preserve(true);
 
             // 保护自定义 API 适配器：先备份
             $preservedApiAdapters = $this->preserveCustomApiAdapters($targetDir);

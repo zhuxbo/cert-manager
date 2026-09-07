@@ -2,19 +2,19 @@
 
 namespace App\Services\Upgrade;
 
+use App\Support\ApplicationBootstrapLock;
 use Dotenv\Dotenv;
 use Dotenv\Parser\Lines;
 use Dotenv\Parser\Parser;
+use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Redis;
 use RuntimeException;
-use Throwable;
 
 final class RedisDatabaseConfig
 {
-    public static function preserve(bool $allowSharedDatabase = false): void
+    public static function preserve(bool $bootstrapLockHeld = false, ?string $sitesRoot = null): void
     {
         if (config('cache.default') !== 'redis' && config('queue.default') !== 'redis') {
             return;
@@ -27,24 +27,63 @@ final class RedisDatabaseConfig
             throw new RuntimeException('请先将 REDIS_URL 改为显式 Redis 连接配置和数据库编号，再重试升级');
         }
 
-        $databases = [];
+        $current = $databases = [];
         foreach (['REDIS_DB' => 'default', 'REDIS_CACHE_DB' => 'cache'] as $key => $connection) {
-            // 必须读取旧应用已加载的配置（含配置缓存），不能使用新版本的默认值。
-            $value = config("database.redis.$connection.database");
-            if ((! is_int($value) && ! is_string($value)) || ! preg_match('/^\d+$/D', (string) $value)) {
-                throw new RuntimeException("无法确定当前 {$key}，请配置有效数据库编号后重试升级");
-            }
-            $number = ltrim((string) $value, '0') ?: '0';
-            if (filter_var($number, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) === false) {
-                throw new RuntimeException("无法确定当前 {$key}，请配置有效数据库编号后重试升级");
-            }
-            $databases[$key] = $number;
+            $current[$key] = self::databaseNumber(config("database.redis.$connection.database"), $key);
+            $databases[$key] = array_key_exists($key, $env)
+                ? self::databaseNumber($env[$key], $key) : $current[$key];
         }
 
-        if (! $allowSharedDatabase && $databases['REDIS_DB'] === $databases['REDIS_CACHE_DB']) {
-            throw new RuntimeException('当前 REDIS_DB 与 REDIS_CACHE_DB 相同，请先分开配置并处理现有队列，再重试升级');
+        $allocationLock = null;
+        $bootstrapLock = null;
+        try {
+            if ($databases['REDIS_DB'] === $databases['REDIS_CACHE_DB']) {
+                $sitesRoot ??= getenv('MANAGER_SITES_ROOT') ?: '/www/wwwroot';
+                $allocationLock = self::allocationLock($sitesRoot);
+                $databases['REDIS_CACHE_DB'] = self::availableCacheDatabase($sitesRoot, $databases['REDIS_DB']);
+            }
+            if ($databases !== $current) {
+                if (! app()->isDownForMaintenance()) {
+                    throw new RuntimeException('Redis 编号变更必须在维护模式下迁移，请开启维护模式后重试升级');
+                }
+                if (! $bootstrapLockHeld) {
+                    $bootstrapLock = ApplicationBootstrapLock::acquireExclusive();
+                }
+                // 目标数据全部就绪后才清除配置缓存；失败时旧库仍可继续使用。
+                RedisDatabaseMigration::run($current, $databases, function () use ($path, $content, $databases) {
+                    self::writeDatabases($path, $content, $databases);
+                    if (Artisan::call('config:clear') !== 0) {
+                        throw new RuntimeException('清除旧 Redis 配置缓存失败，已中止升级');
+                    }
+                });
+            } else {
+                self::writeDatabases($path, $content, $databases);
+            }
+        } finally {
+            ApplicationBootstrapLock::release($bootstrapLock);
+            if (is_resource($allocationLock)) {
+                flock($allocationLock, LOCK_UN);
+                fclose($allocationLock);
+            }
+        }
+    }
+
+    private static function databaseNumber(mixed $value, string $key): string
+    {
+        if ((! is_int($value) && ! is_string($value)) || ! preg_match('/^\d+$/D', (string) $value)) {
+            throw new RuntimeException("无法确定当前 {$key}，请配置有效数据库编号后重试升级");
+        }
+        $number = ltrim((string) $value, '0') ?: '0';
+        if (filter_var($number, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) === false) {
+            throw new RuntimeException("无法确定当前 {$key}，请配置有效数据库编号后重试升级");
         }
 
+        return $number;
+    }
+
+    /** @param array<string, string> $databases */
+    private static function writeDatabases(string $path, string $content, array $databases): void
+    {
         // 使用 dotenv 的逻辑行，避免误改其他多行值中看似 Redis 配置的文本。
         $newline = str_contains($content, "\r\n") ? "\r\n" : "\n";
         $normalized = str_replace("\r\n", "\n", $content);
@@ -83,32 +122,35 @@ final class RedisDatabaseConfig
         }
     }
 
-    /** 仅脚本升级在旧 JWT 黑名单迁移完成后调用；后台升级不自动分配。 */
+    /** 兼容脚本收尾入口；两种升级统一按 .env 决定目标编号。 */
     public static function separateCacheDatabase(string $sitesRoot): void
     {
-        if (config('cache.default') !== 'redis' && config('queue.default') !== 'redis') {
-            return;
-        }
-        self::preserve(true);
-        $runtime = (int) config('database.redis.default.database');
-        if ($runtime !== (int) config('database.redis.cache.database')) {
-            return;
-        }
+        self::preserve(false, $sitesRoot);
+    }
 
-        // 与安装器共用同一个 flock，分配与写入 .env 必须位于同一临界区。
+    /** @return resource */
+    private static function allocationLock(string $sitesRoot)
+    {
         $lock = fopen($sitesRoot.'/.ssl-manager-redis-db.lock', 'c');
         if ($lock === false) {
             throw new RuntimeException('无法打开 Redis DB 分配锁');
         }
+        $deadline = microtime(true) + 30;
+        while (! flock($lock, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) >= $deadline) {
+                fclose($lock);
+                throw new RuntimeException('等待 Redis DB 分配锁超时');
+            }
+            usleep(100000);
+        }
+
+        return $lock;
+    }
+
+    private static function availableCacheDatabase(string $sitesRoot, string $runtime): string
+    {
         $probe = null;
         try {
-            $deadline = microtime(true) + 30;
-            while (! flock($lock, LOCK_EX | LOCK_NB)) {
-                if (microtime(true) >= $deadline) {
-                    throw new RuntimeException('等待 Redis DB 分配锁超时');
-                }
-                usleep(100000);
-            }
             $used = [$runtime => true];
             $endpoint = self::endpoint(config('database.redis.cache.host', '127.0.0.1'), config('database.redis.cache.port', 6379));
             foreach (glob($sitesRoot.'/*/backend/.env') ?: [] as $path) {
@@ -152,35 +194,15 @@ final class RedisDatabaseConfig
                 if ($size !== 0) {
                     continue;
                 }
-                // 读取旧 repository，固定连接；旧 worker 只会监听原缓存库的重启信号。
-                $oldCache = Cache::store();
-                $restart = max(time(), (int) $oldCache->get('illuminate:queue:restart') + 1);
-                try {
-                    config(['database.redis.cache.database' => $candidate]);
-                    self::preserve();
-                    if (Artisan::call('config:clear') !== 0) {
-                        throw new RuntimeException('清除旧 Redis 配置缓存失败，已中止分库');
-                    }
-                    // 必须先让后继进程能读取新配置，同秒重试也需要一个变化的信号。
-                    if (! $oldCache->forever('illuminate:queue:restart', $restart)) {
-                        throw new RuntimeException('通知旧队列 worker 重启失败，已中止分库');
-                    }
-                } catch (Throwable $e) {
-                    config(['database.redis.cache.database' => $runtime]);
-                    self::preserve(true);
 
-                    throw $e;
-                }
-
-                return;
+                return (string) $candidate;
             }
             throw new RuntimeException('Redis DB 1-15 没有空闲缓存编号，当前 Manager 配置保持原样');
         } finally {
-            try {
-                $probe?->client()->close();
-            } finally {
-                flock($lock, LOCK_UN);
-                fclose($lock);
+            if ($probe instanceof PhpRedisConnection) {
+                $probe->disconnect();
+            } elseif ($probe !== null) {
+                $probe->client()->disconnect();
             }
         }
     }

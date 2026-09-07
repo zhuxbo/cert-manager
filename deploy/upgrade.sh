@@ -628,7 +628,7 @@ exit(1);
 ' 2>/dev/null
 }
 
-# 用旧应用引导配置，再调用目标包的兼容逻辑；只固定当前系统的 DB，不扫描其它站点。
+# 用旧应用引导源配置，以 .env 为目标迁移；调用时已持有启动锁并进入维护模式。
 _preserve_redis_databases() {
     local source_backend="$1/backend"
     local helper="$source_backend/app/Services/Upgrade/RedisDatabaseConfig.php"
@@ -642,28 +642,29 @@ _preserve_redis_databases() {
     $app = require $argv[1]."/bootstrap/app.php";
     $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
     require_once $argv[2];
+    $bootstrapHelper = dirname($argv[2], 3)."/Support/ApplicationBootstrapLock.php";
+    if (!class_exists(App\Support\ApplicationBootstrapLock::class) && is_file($bootstrapHelper)) require_once $bootstrapHelper;
+    $migrationHelper = dirname($argv[2])."/RedisDatabaseMigration.php";
+    if (is_file($migrationHelper)) require_once $migrationHelper;
     $enabled = config("cache.default") === "redis" || config("queue.default") === "redis";
-    $before = $enabled ? Dotenv\Dotenv::parse(file_get_contents($app->environmentFilePath())) : [];
-    App\Services\Upgrade\RedisDatabaseConfig::preserve(true);
+    $before = config("database.redis");
+    App\Services\Upgrade\RedisDatabaseConfig::preserve(true, $argv[4]);
     if (!$enabled) {
-        echo "\033[0;34m[INFO] 缓存和队列未启用 Redis，跳过数据库编号保留\033[0m\n";
+        echo "\033[0;34m[INFO]\033[0m 缓存和队列未启用 Redis，跳过数据库编号保留\n";
     } else {
         foreach (["REDIS_DB" => "default", "REDIS_CACHE_DB" => "cache"] as $key => $connection) {
             $value = (string) (int) config("database.redis.$connection.database");
-            if (isset($before[$key]) && $before[$key] !== $value) {
-                $previous = preg_match("/^\d+$/D", $before[$key]) ? $before[$key] : "非整数值";
-                echo "\033[0;33m[WARN] $key 的 .env 值（{$previous}）与已加载配置不同，采用实际运行编号 {$value}（可能来自配置缓存），避免切换现有运行数据\033[0m\n";
+            if ((int) $before[$connection]["database"] !== (int) $value) {
+                $previous = (int) $before[$connection]["database"];
+                echo "\033[0;34m[INFO]\033[0m $key 已从 {$previous} 迁移到 {$value}（以 .env 为准，同库时自动调整缓存库）\n";
             }
-            echo "\033[0;34m[INFO] 升级前保留 $key={$value}\033[0m\n";
-        }
-        if ((int) config("database.redis.default.database") === (int) config("database.redis.cache.database")) {
-            echo "\033[0;34m[INFO] 当前两库相同，暂时保留旧编号；会话迁移完成后自动分库，请以升级末尾的最终编号为准\033[0m\n";
+            echo "\033[0;34m[INFO]\033[0m 升级使用 $key={$value}\n";
         }
     }
-' "$INSTALL_DIR/backend" "$helper" "$fallback_vendor"
+' "$INSTALL_DIR/backend" "$helper" "$fallback_vendor" "${MANAGER_SITES_ROOT:-/www/wwwroot}"
 }
 
-# 旧 JWT 黑名单已迁移后，仅为同库的当前 Manager 分配新 cache DB。
+# 输出最终编号；保留对尚未提前处理 Redis 编号的历史目标包的兼容入口。
 _separate_redis_cache_database() {
     local helper="$INSTALL_DIR/backend/app/Services/Upgrade/RedisDatabaseConfig.php"
     [ -f "$helper" ] || return 0
@@ -676,13 +677,13 @@ _separate_redis_cache_database() {
         $before = (int) config("database.redis.cache.database");
         App\Services\Upgrade\RedisDatabaseConfig::separateCacheDatabase($argv[2]);
         if (!$enabled) {
-            echo "\033[0;34m[INFO] 缓存和队列未启用 Redis，跳过自动分库\033[0m\n";
+            echo "\033[0;34m[INFO]\033[0m 缓存和队列未启用 Redis，跳过自动分库\n";
         } else {
             $runtime = (int) config("database.redis.default.database");
             $cache = (int) config("database.redis.cache.database");
             echo $before === $cache
-                ? "\033[0;34m[INFO] Redis 最终编号（已分离，保持原样）：REDIS_DB={$runtime}，REDIS_CACHE_DB=$cache\033[0m\n"
-                : "\033[0;34m[INFO] Redis 最终编号：REDIS_DB={$runtime}，REDIS_CACHE_DB={$cache}（缓存库由 $before 自动调整为 {$cache}）\033[0m\n";
+                ? "\033[0;34m[INFO]\033[0m Redis 最终编号（已分离，保持原样）：REDIS_DB={$runtime}，REDIS_CACHE_DB=$cache\n"
+                : "\033[0;34m[INFO]\033[0m Redis 最终编号：REDIS_DB={$runtime}，REDIS_CACHE_DB={$cache}（缓存库由 $before 自动调整为 {$cache}）\n";
         }
     } else {
         echo "\033[0;33m[WARN] 目标版本不支持 Redis 自动分库，已跳过\033[0m\n";
@@ -2114,12 +2115,6 @@ perform_upgrade() {
         bundled_vendor=true
     fi
 
-    log_step "保留当前 Redis 数据库编号..."
-    if ! _preserve_redis_databases "$src_dir"; then
-        log_error "Redis 配置无法安全保留，已在覆盖代码前中止升级"
-        exit 1
-    fi
-
     # 5. 进入维护模式（必须在移动 vendor 之前）
     log_step "进入维护模式..."
     cd "$INSTALL_DIR/backend"
@@ -2144,6 +2139,12 @@ perform_upgrade() {
         --from="$(get_current_version)" --to="$target_version" || true
     # freeze 已点火：失败/中断路径据此打印恢复 runbook（unfreeze→up→queue:restart）
     FREEZE_FIRED=1
+
+    log_step "核对 Redis 编号并迁移数据..."
+    if ! _preserve_redis_databases "$src_dir"; then
+        log_error "Redis 数据库无法安全迁移，已在覆盖代码前中止升级"
+        exit 1
+    fi
 
     # 6. 提取需要保留的文件到临时目录
     log_step "保留关键文件..."

@@ -100,7 +100,7 @@ REDIS_CACHE_DB=2
 QUEUE_CONNECTION=redis
 ```
 
-`REDIS_DB` 保存队列、JWT 黑名单、业务锁、限流和任务进度等关键运行状态；`REDIS_CACHE_DB` 保存可重建的应用缓存，以及 Laravel 自带的队列 pause/restart 和 scheduler mutex。两者必须不同。同一 Redis 实例部署多套 Manager 时，每套必须独占两个 DB，不能与其它 Manager 复用。不要使用 `REDIS_URL`：Laravel 会让其中的 path/query 覆盖数据库编号，从而破坏双库隔离；连接信息统一使用上面的显式字段。
+`REDIS_DB` 保存队列、JWT 黑名单、业务锁、限流和任务进度等关键运行状态；`REDIS_CACHE_DB` 保存可重建的应用缓存，以及 Laravel 自带的队列 pause/restart 和 scheduler mutex。两者必须不同。同一 Redis 实例部署多套 Manager 时，每套必须独占两个 DB，不能与其它 Manager 复用。不要使用 `REDIS_URL`：Laravel 会让其中的 path/query 覆盖数据库编号，从而破坏双库隔离；连接信息统一使用上面的显式字段。 后台与脚本升级均以 `.env` 显式编号为准，从配置缓存中记录的现用编号迁移数据；缺失项才沿用现用编号。两项相同时保留 `REDIS_DB` 并自动分配空闲缓存库，写回时合并重复项。
 
 管理后台右上角的按钮只定向刷新系统设置与支付配置缓存，不执行全库 `cache:clear`，也不清理队列/调度状态、JWT 黑名单、限流、任务锁、会话文件、编译视图或 OPcache。首次升级到运行态分库版本时，数据库迁移会一次性吊销存量用户和管理员会话，需要重新登录。
 

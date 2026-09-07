@@ -10,7 +10,7 @@ return new class extends Migration
 {
     public function shouldRun(): bool
     {
-        // 旧版后台进程仍持有旧配置，必须在后续 config:clear 前保留 Redis 编号。
+        // 旧后台仍持有迁移源配置，在 config:clear 前按 .env 目标迁移并去重写回。
         if (config('cache.stores.runtime') === null) {
             RedisDatabaseConfig::preserve();
         }
