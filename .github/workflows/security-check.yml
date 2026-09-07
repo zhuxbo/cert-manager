@@ -44,20 +44,8 @@ jobs:
 
       - name: Check for private key content
         run: |
-          echo "检查文件内容是否包含私钥..."
-
-          # 检查文件内容是否包含私钥
-          if grep -rE "BEGIN (RSA|OPENSSH|EC|DSA|ENCRYPTED) PRIVATE KEY" \
-               --include="*.conf" --include="*.sh" --include="*.json" \
-               --include="*.yml" --include="*.yaml" --include="*.env*" \
-               --include="*.php" --include="*.js" --include="*.ts" \
-               --include="*.md" --include="*.txt" \
-               . 2>/dev/null; then
-            echo "::error::文件内容包含 SSH 私钥！请勿提交私钥到仓库"
-            exit 1
-          fi
-
-          echo "✅ 文件内容未包含私钥"
+          python3 .github/scripts/test_check_private_key_content.py
+          python3 .github/scripts/check-private-key-content.py
 
       - name: Check for sensitive config files
         run: |
