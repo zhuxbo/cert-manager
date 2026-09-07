@@ -106,6 +106,8 @@ src/
 
 ## 开发命令
 
+完成验证按 `skills/finish-check.md` 选择改动文件、测试和受影响端；下面的全量命令不表示每次必须全跑。
+
 ```bash
 # 在 monorepo 根目录运行
 pnpm install          # 安装依赖
@@ -118,12 +120,12 @@ pnpm build            # 构建所有前端
 pnpm build:admin      # 仅构建管理端
 pnpm build:user       # 仅用户端
 
-# 代码检查
-pnpm lint:eslint      # ESLint
-pnpm lint:prettier    # Prettier
-pnpm lint:stylelint   # Stylelint
-pnpm lint             # 全部检查
-pnpm typecheck        # 类型检查
+# 全量只读检查（完整前端检查时）
+pnpm lint:check
+# 单端类型检查，user 端改用 --filter user
+pnpm --filter admin build:typecheck
+# 自动修复，会修改源码，仅在需要时串行执行
+pnpm lint
 ```
 
 ### Markdown 格式化
@@ -132,14 +134,10 @@ Prettier 原生支持 markdown（无需额外插件，解析器列表里有 `mar
 项目根 `.prettierrc.js` 对所有 md 生效，prettier 装在 `frontend/admin/`。
 
 ```bash
-# 仅本次 PR 改过的 md（推荐，避免修历史格式问题污染 PR）
-git diff --name-only | grep "\.md$" | xargs npx --prefix frontend/admin prettier --write
-
-# 单个 md 文件
-npx --prefix frontend/admin prettier --write README.md
-
-# 检查（不修改，只列报错文件）
-npx --prefix frontend/admin prettier --check "**/*.md" --ignore-path .gitignore
+# 检查本次改动的 Markdown（包含暂存与未跟踪文件）
+python3 skills/scripts/finish-check-files.py check --kind markdown
+# 只修复确认需要格式化的文件
+frontend/admin/node_modules/.bin/prettier --write README.md
 ```
 
 Prettier 对 markdown 的处理：
@@ -147,7 +145,7 @@ Prettier 对 markdown 的处理：
 - 表格列宽对齐（管道符纵向对齐）
 - JSON 代码块多行展开（每属性一行）
 - 编号列表项之间不留空行
-- **不修改代码块内部**（fenced ` ``` ` / 缩进式 code block 保持原样；shell 脚本用 `shfmt` 单独处理）
+- 能识别语言的 fenced code block 也可能被格式化；写回后检查 diff。Shell 脚本用 `shfmt` 单独处理。
 
 ---
 

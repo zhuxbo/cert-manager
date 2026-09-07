@@ -2,6 +2,12 @@
 
 本目录包含项目开发规范和知识库，按领域组织。
 
+## 使用方式
+
+先根据任务和实际改动选择领域，只读相关章节及直接引用；下表是路由，不是逐项执行清单。领域约束在涉及对应行为时适用，测试命令是入口索引，具体范围统一由 `finish-check.md` 决定。
+
+普通修复不因加载了 skill 就追加计划、全量测试或多轮审核。已明确授权且不改变目标的实现选择直接完成；需要独立审核时才读取 `review-checklist.md` 的任务模板。
+
 ## Skill 列表
 
 | Skill           | 文件                                          | 触发场景                                                                                                                                                                               |
@@ -28,21 +34,21 @@
 | 插件·前端       | `plugins/frontend.md`                         | IIFE 打包、依赖锁定、共享依赖、样式、路由、Widget 与字典扩展                                                                                                                           |
 | 插件·生命周期   | `plugins/lifecycle.md`                        | 测试与 CI、构建发布、安装/更新/卸载、安全机制与内置实现                                                                                                                                |
 | 数据库结构导出  | `db-structure.md`                             | 重新生成并验证主系统 `backend/database/structure.json`                                                                                                                                 |
-| 完成检查        | `finish-check.md`                             | 完整本地门禁、范围推导、专项验证、文档同步与 reviewer 循环                                                                                                                             |
+| 完成检查        | `finish-check.md`                             | 默认按改动快检；高风险或明确要求时完整检查；范围、证据和停止条件                                                                                                                       |
 | 远程发布        | `remote-release.md`                           | dev/main 通道判定、发布前门禁、远端发布与发布后分支同步                                                                                                                                |
 | 部署运维        | `ops/deploy-ops.md`                           | 宝塔部署、环境配置、升级中断恢复 runbook、后台健康度/可选外部监控/孤儿订单收尾                                                                                                         |
 | 构建发布        | `ops/build-release.md`                        | 版本发布、打包、CI/CD                                                                                                                                                                  |
-| Review 清单     | `review-checklist.md`                         | 设计期"杀手场景 + 对端检查" + finish-check Reviewer Subagent 反模式扫描                                                                                                                |
+| Review 清单     | `review-checklist.md`                         | 按实际风险查阅历史反模式；重要设计和独立审核时使用对应章节                                                                                                                             |
 | ACME E2E 测试   | `acme-e2e-test/`                              | certbot 端到端测试（Manager + 上游系统）                                                                                                                                               |
-| 案例腐烂检测    | `scripts/check-review-checklist-staleness.sh` | finish-check §6 文档同步阶段跑，验证 review-checklist.md 与 finish-check.md 引用的类/方法/文件/SHA 是否仍存在                                                                          |
-| 孤儿快照检测    | `scripts/check-orphan-fixtures.sh`            | finish-check §6 硬零断言，检出「测试已删除/改名但 compat fixture 仍残留」的死文件（compare 只查反向查不出）                                                                            |
+| 案例腐烂检测    | `scripts/check-review-checklist-staleness.sh` | 修改 review/finish-check 引用或执行完整检查时，核对类/方法/文件/SHA 是否仍存在                                                                                                         |
+| 孤儿快照检测    | `scripts/check-orphan-fixtures.sh`            | 删除或重命名 Controller 测试、调整快照机制或完整后端检查时，检出孤儿 fixture                                                                                                           |
 
 ## 知识积累
 
-开发过程中遇到以下情况时，将信息写入对应 skill：
+只有本次改动使既有指导失效，或形成已验证且会反复使用的领域约束时，更新对应 skill：
 
 - 发现新的架构约定或设计模式
-- 解决了疑难问题（记录原因和解决方案）
+- 解决了会重复发生的疑难问题（提炼必要约束，不保留调试过程）
 - 确定了最佳实践
 - 发现文档中缺失的重要信息
 

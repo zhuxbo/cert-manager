@@ -2,6 +2,8 @@
 
 ## 测试与 CI
 
+本地验证范围按 `skills/finish-check.md`：插件内部小修改只测受影响插件；共享加载、迁移或生命周期契约变化才扩大。下述 CI 矩阵用于维护 CI，不是每次插件改动的全量本地清单。
+
 ### 测试目录
 
 插件测试放 `plugins/{name}/backend/tests/`，结构与主系统一致（Pest + `Feature/Unit` 子目录）。命名空间通过主系统 `tests/` 的自动加载链可用。

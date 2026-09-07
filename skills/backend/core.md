@@ -225,15 +225,20 @@ php artisan queue:work --queue tasks,notifications  # 队列 worker（消费 Tas
 
 ### 运行测试
 
+本地优先仓库 Docker，范围按 `skills/finish-check.md` 选择；命令示例不是每次任务的必跑清单。
+
 ```bash
-php artisan test --parallel                           # 全部测试（需 MySQL，推荐加 --parallel 与 CI 一致）
-php artisan test --parallel --exclude-group=database  # 纯单元测试（无需数据库）
-php artisan test --coverage --min=80                  # 覆盖率报告
+# 普通局部修复：选择覆盖变化行为的实际测试文件
+docker compose exec -T -e DB_DATABASE=ssl_manager_test app php artisan test tests/...Test.php
+# 完整后端检查：并行运行全部测试
+make test
+# 仅在需要检查覆盖率时使用
+docker compose exec -T -e DB_DATABASE=ssl_manager_test app php artisan test --coverage --min=80
 ```
 
 > **测试库隔离（双重兜底，勿移除）**：① `phpunit.xml` 的 `<env name="DB_DATABASE" value="ssl_manager_test" force="true"/>` 覆盖 `.env`/`.env.testing` **文件值**——但 `force` **不覆盖 OS 环境变量**（`docker -e DB_DATABASE=...` / shell `export`，实测带 `-e DB_DATABASE=ssl_manager` 仍会连开发库）；② 故 `TestCase::createApplication()` 加运行期物理断言：测试库名不含 `_test` 即 `fwrite(STDERR) + exit(1)`，在 `RefreshDatabase` 清库**之前**硬阻断，杜绝任何跑法（含 `-e` 误传 OS env）清空开发库 `ssl_manager`。`.env.testing`（gitignore、仅本地）DB 应为 `ssl_manager_test`；`make test` 显式 `-e ssl_manager_test`、CI 用 `.env`+sed 同名。注意 `make migrate`（=`migrate:fresh --seed`）走开发库、会清库重建，与测试无关。
 
-> **CI 经验**：本地务必用 `--parallel` 跑测试，与 CI 保持一致。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
+> **CI 经验**：完整后端检查用 `--parallel` 与 CI 对齐；局部测试可单文件运行，快照和连接清理等串行行为用串行复现。`paratest`（并行测试）对 PHP Warning 的处理比 `phpunit` 更严格——例如无命名空间文件中的 `use Mockery;`、`use ZipArchive;` 等全局类 use 语句，`phpunit` 仅输出 Warning 继续运行，而 `paratest` 会直接 fatal exit 导致 CI 失败。
 
 > **deploy shell 测试的 PHP 边界**：需要 PHP 做跨实现对照的 `deploy/test/test-*.sh` 统一 source `deploy/test/php-test-runner.sh`；本地优先调用 Compose `app` 容器 PHP，GitHub Actions 无 Compose app 时回落 `setup-php`。两者都不可用必须失败，禁止以“宿主机无 PHP”为由跳过并返回绿色。
 
@@ -241,7 +246,7 @@ php artisan test --coverage --min=80                  # 覆盖率报告
 >
 > **公共后缀表（PSL）夹具**：固定 token 只保证“后续复用”，**首跑仍是空目录**（全新克隆 / 干净 CI / 新增 paratest worker）→ 必须联网，且缓存过期重抓会把测试结果绑到上游当时的表。故 `isolateWorkerStorage()` 建好目录后由 `Tests\Support\PublicSuffixListFixture::seed()` 把仓内快照 `tests/Fixtures/public_suffix_list.dat` 灌进 `domain-rules/public_suffix_list.dat`（`xxh128` 内容比对而非只比体积——同尺寸的旧版本残留/写坏缓存会让 DomainUtil 读到别的表；写同目录 `.<pid>.tmp` 再 `rename` 保证不被读到半截；命中快路径也 `touch` 一次，让 mtime 恒为当下）——**测试离线确定性，生产 `DomainUtil` 一行不改、线上照旧抓最新表**。夹具刷新：`curl -fsSL -o backend/tests/Fixtures/public_suffix_list.dat https://publicsuffix.org/list/public_suffix_list.dat`，跑 `DomainUtilTest` 绿了再提交；按需刷新即可（PSL 只增量改后缀，陈旧不影响既有断言）。夹具被截断/换掉时 `seed()` 直接抛 `RuntimeException` 报出原因与刷新命令，不让 `DomainUtil` 静默回落到**无任何多级后缀**的内置表（那会让 `example.com.cn` / `sub.example.co.uk` 解析整体变形，`DomainUtilTest` 只报“两字符串不相等”）。`PublicSuffixListFixtureTest` 做常驻守卫：夹具行数下限 + `com.cn`/`co.uk` 等多级后缀存在、缓存内容与夹具一致且 mtime 恒为当下，以及**探针用例**——往缓存的 ICANN 段首插一条现实中不存在的后缀再断言 `DomainUtil::getRootDomain()` 随之变化。**探针不可省**：缓存路径是 `DomainUtil::loadRules()` 的手抄副本，抄错时联网 CI 下 DomainUtil 会自己把真表抓回来、一切照常全绿，整套离线机制静默失效。
 
-> **API 快照对照（compat-snapshot）+ tearDown 吞 rollback 陷阱**：`compat-snapshot` job 仅 push main / tag 触发（dev PR 不跑），改了 API schema 或新增 Controller 测试后**必须** `composer test:snapshot:capture` 重新生成 fixtures 并提交，否则合 main 首跑即大面积 diff。更隐蔽的是 `TestCase::tearDown` 把 `SnapshotListener::finalizeTest()`（compare 模式命中 diff 会 `Assert::fail()` 抛异常）放在 `parent::tearDown()` 之前——**任何在 `parent::tearDown()` 之前、可能抛异常的清理逻辑都必须 `try/finally` 兜住 `parent::tearDown()`**，否则异常跳过 RefreshDatabase 的事务 rollback → 连接持锁泄漏 + 事务层级逐测试漂移 → 串行跑全套时后续测试 setUp/seed 撞锁，雪崩成 `Lock wait timeout`（单次 50s × N，job 直接卡满超时）。**只有串行全套暴露**：`--parallel` 各 worker 独立库/连接把泄漏掩盖，单文件也因同连接层级漂移不自锁而看不出。排查时 job 日志会被 MySQL service 容器 health-check 的 `Access denied ... using password: NO` 噪音淹没，真正错因在 `Run snapshot compare` step 的 `php artisan test` 输出尾部。
+> **API 快照对照（compat-snapshot）+ tearDown 吞 rollback 陷阱**：`compat-snapshot` job 仅 push main / tag 触发（dev PR 不跑），普通修改先 compare 受影响端点的全部用例，确认 `fixture_missing` 或预期 schema 差异后才定向 capture；契约、公共快照设施变化或完整检查跑全量 `composer test:snapshot`。不默认重录全部 fixtures，也不为快照自动提交，具体范围与证据按 `skills/finish-check.md`。更隐蔽的是 `TestCase::tearDown` 把 `SnapshotListener::finalizeTest()`（compare 模式命中 diff 会 `Assert::fail()` 抛异常）放在 `parent::tearDown()` 之前——**任何在 `parent::tearDown()` 之前、可能抛异常的清理逻辑都必须 `try/finally` 兜住 `parent::tearDown()`**，否则异常跳过 RefreshDatabase 的事务 rollback → 连接持锁泄漏 + 事务层级逐测试漂移 → 串行跑全套时后续测试 setUp/seed 撞锁，雪崩成 `Lock wait timeout`（单次 50s × N，job 直接卡满超时）。**只有串行全套暴露**：`--parallel` 各 worker 独立库/连接把泄漏掩盖，单文件也因同连接层级漂移不自锁而看不出。排查时 job 日志会被 MySQL service 容器 health-check 的 `Access denied ... using password: NO` 噪音淹没，真正错因在 `Run snapshot compare` step 的 `php artisan test` 输出尾部。
 
 ### 测试分组
 

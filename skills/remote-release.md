@@ -52,7 +52,7 @@ docker compose exec -T -e DB_DATABASE=ssl_manager_test app composer test:snapsho
 docker compose exec -T -e DB_DATABASE=ssl_manager_test app php artisan test --parallel --processes=4  # = CI backend-core
 for p in easy notice invoice; do docker compose exec -T -e DB_DATABASE=ssl_manager_test app php artisan test ../plugins/$p/backend/tests; done
 # 前端 + 私钥扫描（裸跑 = CI lint + frontend-build + check-secrets）
-pnpm lint && pnpm build:admin && pnpm build:user && make plugins-build
+pnpm lint:check && pnpm build:admin && pnpm build:user && make plugins-build
 git grep -nE "BEGIN (RSA|OPENSSH|EC|DSA|ENCRYPTED) PRIVATE KEY" -- '*.php' '*.sh' '*.json' '*.yml' '*.env*' || echo "✓ 无私钥"
 ```
 
@@ -68,6 +68,8 @@ compat-snapshot 失败处理：
 覆盖范围（诚实）：快路径只跑 PHP 8.4 + MySQL 8.4 单点。**CI 的 PHP 8.5、MySQL 5.7 各组本机快路径不跑**（8.5 无现成镜像、5.7 需 qemu 慢），合并后仍靠云端 CI 兜；要本机补全矩阵见 finish-check §2.4（5.7 容器）+ `make test-compat`（PHP 8.3/8.4）。
 
 #### 3.1 发布前：合并 dev 领先的提交到 main
+
+日常 `finish-check` 快检不产生发布签字。合入 main 前，对本次聚合 diff 按 `skills/finish-check.md` 完成完整检查和独立审核，将真实 `REVIEW_PASS:` 写入 PR body（或已授权的 commit body），满足 PR→main 门禁。发布所需检查不能以此前某个小改的快检替代。
 
 确认当前在 dev 分支且工作区干净，然后通过 PR 合并：
 

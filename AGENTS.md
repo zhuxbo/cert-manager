@@ -13,6 +13,14 @@ ssl-manager 是 Laravel 13 + Vue 3 的证书管理 Monorepo，包含后端、adm
 - 过程性 plan、设计稿和调试记录只写入已忽略的 `.superpowers/`，不得被代码、注释或入库文档引用。
 - 匹配任务时优先使用工具原生薄入口；无对应入口时先读取 `skills/SKILL.md`，再按路由读取对应叶子资源。
 
+## 工作方式
+
+- 按用户目标完成最小充分改动；常规实现选择自行处理，只有缺失信息会实质改变结果时才澄清。
+- 先读实际 diff 和直接调用链，再选相关 skill 章节。领域资料按需查阅，不把历史案例当作每次任务的全量清单。
+- 局部维护直接实施和定向验证；重要能力、实质歧义或高风险变更才按需启用设计、计划和独立审核。普通改动不强制创建过程文档或派子智能体。
+- 验证范围由行为和风险决定。所需检查通过、无已知阻塞后结束；只有新修改、失败或具体未解决风险才扩大或重复验证。
+- 汇报改动结果、验证范围和未解决问题，保持简短；详细日志按需引用，不逐项复述清单。
+
 ## 权威入口
 
 - Skill 路由：`skills/SKILL.md`
@@ -29,9 +37,9 @@ ssl-manager 是 Laravel 13 + Vue 3 的证书管理 Monorepo，包含后端、adm
 - `make test`：在容器内并行运行后端测试。
 - `docker compose exec -T app ./vendor/bin/pint --test`：检查 PHP 格式。
 - `docker compose exec -T app ./vendor/bin/phpstan analyse --level=5 --memory-limit=2G`：运行后端静态分析。
-- `pnpm lint`、`pnpm build`：检查并构建 admin/user 前端。
+- `pnpm lint:check`、`pnpm build`：只读检查并构建 admin/user 前端；`pnpm lint` 会修改源码，局部改动的检查入口见完成检查 skill。
 - `make check-agent-config`：检查共享智能体配置和 Claude/Codex 薄入口防漂移。
-- `/finish-check`：执行 `skills/finish-check.md` 规定的完整门禁，不得自行缩减。
+- `/finish-check`：按 `skills/finish-check.md` 默认快检；高风险变更或明确要求完整检查时升级，按所选模式完成适用门禁。
 - 正式发布只按 `skills/remote-release.md` 执行；命令成功不等于发布完成，必须完成其中的远端验收。
 
 ## 更新原则
